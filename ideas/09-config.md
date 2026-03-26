@@ -1,10 +1,64 @@
 # Configuration
 
-## Two Tiers
+Configuration should be dead simple to start and powerful when you need it. You shouldn't need to read docs to change your font.
 
-Community pain point: config format wars (Lua vs TOML vs KDL vs key-value).
+## First Launch Experience
 
-Solution: flat file for simple cases, Lua for complex ones.
+On first launch with no config file, Phantom works with sensible defaults. But it also offers an interactive setup:
+
+```
+Welcome to Phantom.
+
+Let's set up the basics. You can change any of this later.
+
+Font:         [JetBrains Mono    ▾]    ← dropdown lists installed monospace fonts
+Size:         [14                  ]
+Theme:        [○ ○ ○ ○ ○ ○ ○ ○ ○ ○]    ← visual theme previews, click to select
+              catppuccin-mocha ✓
+
+Plugins:
+  ☑ Smart autocomplete (context engine)
+  ☑ Agent management (sidebar + worktrees)
+  ☑ Service monitoring (dev servers, docker)
+  ☐ Browser (text-mode web browsing)
+
+                          [Save & Start]
+```
+
+This writes a config file for you. No command line flags, no manual file creation.
+
+## Settings Palette
+
+After setup, every setting is changeable from inside the terminal via the command palette:
+
+```
+Cmd+Shift+P → :settings
+
+┌──────────────────────────────────────────────────┐
+│  settings:  Search settings                      │
+├──────────────────────────────────────────────────┤
+│  Font Family          JetBrains Mono             │
+│  Font Size            14                         │
+│  Font Ligatures       ✓ enabled                  │
+│  Theme                catppuccin-mocha           │
+│  Cursor Style         block                      │
+│  Scrollback Lines     10000                      │
+│  Status Bar           auto                       │
+│  Sidebar              left                       │
+│  ...                                             │
+└──────────────────────────────────────────────────┘
+```
+
+- Search to filter
+- Click or Enter to edit inline
+- Changes apply immediately (live preview)
+- Changes write back to the config file automatically
+
+**Theme preview in the palette** — when browsing themes, the terminal updates live as you arrow through the list. Pick one and it sticks. Like VS Code's theme picker.
+
+**Font preview in the palette** — same idea. Arrow through installed monospace fonts, see the change live, pick one.
+
+## Two Tiers of Config Files
 
 ### Flat Config (basics)
 
@@ -13,16 +67,18 @@ Solution: flat file for simple cases, Lua for complex ones.
 ```
 font-family = JetBrains Mono
 font-size = 14
+font-ligatures = true
+font-fallbacks = Symbols Nerd Font, Apple Color Emoji
 theme = catppuccin-mocha
 cursor-style = block
 scrollback-lines = 10000
 ```
 
-Familiar to Ghostty users. Covers 80% of configuration needs.
+Familiar to Ghostty users. The settings palette reads and writes this file.
 
 ### Lua Config (programmable)
 
-`~/.config/phantom/config.lua` — full programming language when you need logic:
+`~/.config/phantom/config.lua` — for when you need logic, conditionals, or dynamic behavior:
 
 ```lua
 -- Dynamic font size based on display
@@ -73,6 +129,96 @@ end
 
 Lua config takes priority if both exist. The flat config is syntactic sugar — it maps 1:1 to Lua settings.
 
-### Migration
+### Project-Level Config
 
-Reads Ghostty config format as a migration path. Warns about unsupported keys, maps the rest automatically.
+`<project>/.phantom/config` or `<project>/.phantom/config.lua` — project-specific overrides:
+
+```
+# .phantom/config in a monorepo
+font-size = 13
+theme = github-dark
+```
+
+This lets teams share terminal config per-repo without touching personal settings.
+
+## Plugin Settings
+
+Plugins register their own settings, which appear in the same palette:
+
+```
+Cmd+Shift+P → :settings agent
+
+┌──────────────────────────────────────────────────┐
+│  settings:  agent                                │
+├──────────────────────────────────────────────────┤
+│  Agent: Default Provider    claude               │
+│  Agent: Auto Worktree       ✓ enabled            │
+│  Agent: Notify on Done      ✓ enabled            │
+│  Agent: Notify on Approval  ✓ enabled            │
+│  Agent: Setup Script        pnpm install         │
+└──────────────────────────────────────────────────┘
+```
+
+Plugin settings live in the same config file, namespaced:
+
+```
+# In flat config
+agent.default-provider = claude
+agent.auto-worktree = true
+context-engine.ai-backend = ollama
+context-engine.ai-model = codellama:7b
+```
+
+## Keybind Configuration
+
+Keybinds are settings too — searchable and editable from the palette:
+
+```
+Cmd+Shift+P → :keybinds
+
+┌──────────────────────────────────────────────────┐
+│  keybinds:  split                                │
+├──────────────────────────────────────────────────┤
+│  Split Pane Right      Ctrl+\                    │
+│  Split Pane Down       Ctrl+-                    │
+│  Split Pane Float      Ctrl+F                    │
+│                                 [Edit] [Reset]   │
+└──────────────────────────────────────────────────┘
+```
+
+Click Edit → press your desired key combo → done. Written to config.
+
+In the flat config file:
+
+```
+keybind = ctrl+\ = split-right
+keybind = ctrl+- = split-down
+keybind = ctrl+f = split-float
+keybind = ctrl+b = toggle-sidebar
+keybind = ctrl+g = grid-view
+```
+
+In Lua (for conditionals):
+
+```lua
+keybinds = {
+  { key = "ctrl+\\", action = "split-right" },
+  { key = "ctrl+-", action = "split-down" },
+  { key = "ctrl+f", action = "split-float", when = "not_floating" },
+}
+```
+
+## Migration
+
+- Reads Ghostty config format automatically. Warns about unsupported keys, maps the rest.
+- `phantom migrate ghostty` — converts a Ghostty config to Phantom format
+- `phantom migrate kitty` — same for Kitty
+- `phantom migrate wezterm` — best-effort Lua→Lua translation
+
+## Design Principles
+
+1. **Zero-config is valid.** The terminal works perfectly with no config file.
+2. **The palette is the settings UI.** No separate preferences window, no JSON editing required.
+3. **Live preview everything.** Themes, fonts, colors — see the change before committing.
+4. **Write to file, not magic state.** Every change the palette makes is written to the config file. `cat config` always shows the truth.
+5. **Progressive complexity.** Flat file → Lua → project overrides. You only reach for the next level when you need it.
