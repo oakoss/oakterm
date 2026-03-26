@@ -71,11 +71,21 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 - Configurable character spacing and line height
 - No visual clutter by default
 
-## Accessibility Is Not a Plugin
+## Core + Extensible
 
-This is one area where accessibility belongs in the core, not in a plugin. The accessibility tree must be maintained by the renderer — it can't be bolted on after the fact. Every core component (panes, sidebar, palette, settings) exposes accessibility information.
+The accessibility tree lives in the core — it can't be bolted on as a plugin. But the accessibility system itself is extensible so the community can build on it.
 
-Plugins that add UI (sidebar sections, palette commands) must provide accessibility labels as part of the plugin API:
+### What the core provides
+
+- AccessKit integration maintaining the accessibility tree alongside the renderer
+- Every built-in component (panes, sidebar, palette, settings) exposes a11y information
+- Platform adapters for VoiceOver (macOS), NVDA/JAWS (Windows), Orca (Linux)
+- Accessible announce API for plugins to send screen reader announcements
+- System preference detection (high contrast, reduced motion, color filters)
+
+### What plugins must provide
+
+Plugins that add UI are **required** to provide accessibility labels. The API enforces this — entries without labels are rejected:
 
 ```rust
 // Plugin API requires accessible labels
@@ -85,7 +95,78 @@ sidebar.add_entry(SidebarEntry {
     badge: Badge::NeedsInput,
     // ...
 });
+
+// Palette commands need accessible descriptions
+palette.register(PaletteCommand {
+    name: ":docker logs",
+    accessible_description: "View logs for a Docker container",
+    // ...
+});
 ```
+
+### What plugins can extend
+
+Plugins get accessibility primitives to build on:
+
+```
+Plugin Accessibility API
+├── announce(message, priority)       — send text to screen reader
+│   priority: polite (queued) or assertive (interrupts)
+├── set_live_region(pane, politeness) — mark a pane as a live region
+│   screen reader auto-announces new content
+├── set_role(element, role)           — semantic role for custom UI
+│   roles: alert, status, log, timer, progressbar
+├── label(element, text)              — accessible name
+├── description(element, text)        — accessible description
+├── value(element, current, min, max) — for progress bars, meters
+└── relationship(element, rel, target)— links related elements
+```
+
+### Community plugin examples using the a11y API
+
+**Screen reader verbosity profiles:**
+```lua
+-- Plugin: a11y-verbosity
+-- Lets users choose how much the screen reader announces
+profiles = {
+  minimal = { announce_output = false, announce_status = true },
+  moderate = { announce_output = "summary", announce_status = true },
+  verbose = { announce_output = "full", announce_status = true },
+}
+```
+
+**Sound cues plugin:**
+```lua
+-- Plugin: a11y-sounds
+-- Maps terminal events to distinct audio cues
+sounds = {
+  command_success = "gentle-chime.wav",
+  command_failure = "low-buzz.wav",
+  agent_needs_input = "attention.wav",
+  agent_complete = "complete.wav",
+  test_pass = "tick.wav",
+  test_fail = "alert.wav",
+}
+```
+
+**High-contrast sidebar plugin:**
+```lua
+-- Plugin: a11y-high-contrast-sidebar
+-- Replaces icon-based badges with large text labels
+-- For users who can't distinguish small icons
+```
+
+**Braille display optimization plugin:**
+```lua
+-- Plugin: a11y-braille
+-- Optimizes output for braille displays
+-- Strips decorative Unicode, simplifies box-drawing characters
+-- Provides braille-friendly alternatives to TUI elements
+```
+
+### The rule
+
+Accessibility in the core is **mandatory and non-negotiable** — the tree, the platform adapters, the enforcement on plugin labels. But *how* that accessibility is experienced is extensible — verbosity, sounds, braille optimization, contrast profiles. The core guarantees the floor. Plugins raise the ceiling.
 
 ## Testing
 
