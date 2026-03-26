@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Check formatting
+        run: mise run fmt:check
+
+      - name: Lint markdown
+        run: mise run lint:md
+
+      # TODO: Add when Rust code exists
+      # - run: cargo fmt --check
+      # - run: cargo clippy -- -D warnings
+      # - run: cargo check
+
+  # TODO: Add when tests exist
+  # tests:
+  #   name: Tests
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+  #
+  #     - name: Setup
+  #       uses: ./.github/actions/setup
+  #
+  #     - run: cargo test
+
+  ci-summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [static-analysis]
+    # TODO: Add tests to needs when tests job is enabled
+    # needs: [static-analysis, tests]
+    steps:
+      - name: Summarize results
+        run: |
+          echo "## CI Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Status | Required |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Static analysis | \`${{ needs.static-analysis.result }}\` | Yes |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          fail_if_bad() {
+            if [ "$2" = "failure" ] || [ "$2" = "cancelled" ]; then
+              echo "Job '$1' failed or was cancelled"
+              exit 1
+            fi
+          }
+
+          fail_if_bad "static-analysis" "${{ needs.static-analysis.result }}"
