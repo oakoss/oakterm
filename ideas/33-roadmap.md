@@ -169,7 +169,7 @@ The long tail.
 - Multi-sidebar support
 - Advanced status bar widgets
 - `oakterm ctl` expanded commands
-- Accessibility audit and improvements
+- Accessibility audit and improvements (note: [ADR 0001](../docs/adrs/0001-accessibility-in-phase-zero.md) moved core accessibility to Phase 0 -- AccessKit integration is built alongside the renderer from day one; this Phase 5 item covers additional audits and polish)
 - Performance optimization pass
 - Documentation site
 - Plugin gallery / theme gallery

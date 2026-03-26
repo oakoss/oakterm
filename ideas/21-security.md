@@ -1,6 +1,6 @@
 ---
 title: 'Security'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'Escape injection, plugin sandbox, secure input, clipboard controls'
 tags: ['security', 'escape-injection', 'sandbox', 'clipboard', 'privacy']
@@ -81,7 +81,9 @@ WASM plugins are sandboxed, but a malicious plugin could still:
 - AI features use BYOK — API keys stored locally, never sent to us
 - Local LLM support (Ollama) for zero-network AI features
 - No first-party cloud service of any kind
-- The terminal never communicates with any server unless a plugin with network permission does
+- The terminal never communicates with any server unless a plugin with network permission does, or unless update checks are enabled (see note below)
+
+> **Note:** [ADR 0003](../docs/adrs/0003-update-check-policy.md) decided that the terminal may perform update checks using an install-source-aware policy. When installed via a package manager, updates defer to that package manager. When installed standalone, the terminal checks a static version manifest. Update checks are opt-out and contain no telemetry.
 
 ## Security Defaults
 

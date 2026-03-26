@@ -1,6 +1,6 @@
 ---
 title: 'Performance'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'Targets, budgets, CI benchmarks'
 tags: ['latency', 'memory', 'benchmarks', 'ci']
@@ -51,6 +51,8 @@ Plugins aren't loaded until first use or first relevant event. The `docker-manag
 
 The scroll buffer is a ring buffer with zero-copy access for rendering. Scrolling through 100k lines of output doesn't allocate or copy — it adjusts a viewport offset.
 
+> **ADR 0006:** Zero-copy scrolling applies to the hot ring buffer only (50 MB default per surface). Older lines are compressed to a disk archive with memory-mapped access. See [ADR 0006](../docs/adrs/0006-scroll-buffer-architecture.md).
+
 ### GPU text rendering
 
 Text is rendered via a glyph atlas on the GPU. Each frame uploads only new/changed glyphs. Static text (most of the screen, most of the time) costs zero CPU per frame.
@@ -86,6 +88,9 @@ Results are tracked over time. Performance dashboard is public.
 When performance and features conflict, performance wins. Specific rules:
 
 1. **No feature may add >0.5ms to input latency.** If it does, it runs async or it doesn't ship.
+
+   > **Note:** [ADR 0002](../docs/adrs/0002-performance-philosophy.md) replaced fixed per-component budgets with a measurement-driven approach. Performance targets come from competitive benchmarking, not pre-implementation estimates.
+
 2. **No plugin can block the render thread.** The API makes this architecturally impossible — plugins communicate via async messages.
 3. **Idle means idle.** 0% CPU when nothing is happening. No background polling, no animation timers when nothing is animating.
 4. **Memory scales with content, not features.** 10 installed but inactive plugins should cost near-zero memory. Only loaded plugins consume resources.

@@ -1,6 +1,6 @@
 ---
 title: 'Renderer'
-status: draft
+status: reviewing
 category: core
 description: 'GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images'
 tags: ['gpu', 'wgpu', 'fonts', 'ligatures', 'images', 'opacity', 'color']
@@ -159,6 +159,8 @@ Solution: support both, composited in the GPU pipeline alongside text.
 - Kitty graphics protocol as primary (de facto standard for modern terminals)
 - Sixel as fallback (legacy compatibility)
 - Both pass through the built-in multiplexer — no tmux image bugs
+
+> **ADR 0004:** Kitty graphics compositing is a core renderer feature. The VT parser handles Kitty graphics escape sequences, and the renderer composites image regions alongside text cells. The renderer exposes image placement primitives (place texture at cell position with dimensions) that plugins can use to implement other image protocols. See [ADR 0004](../docs/adrs/0004-kitty-graphics-in-core.md).
 
 ## Related Docs
 

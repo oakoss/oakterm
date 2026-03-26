@@ -1,6 +1,6 @@
 ---
 title: 'Configuration'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'First launch setup, settings palette, flat + Lua, dark/light themes'
 tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']
@@ -9,6 +9,8 @@ tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']
 # Configuration
 
 Configuration should be dead simple to start and powerful when you need it. You shouldn't need to read docs to change your font.
+
+> **ADR 0005:** Configuration uses sandboxed Lua 5.4 with a single entry point (`config.lua`) and `require()` for multi-file organization. No `io`, `os`, `package`, or `debug` standard library access. The Lua/WASM boundary is defined by capabilities: Lua handles config values and event reactions with no side effects beyond the terminal; WASM plugins handle anything requiring I/O, network, or persistent storage. See [ADR 0005](../docs/adrs/0005-lua-sandboxed-config.md).
 
 ## First Launch Experience
 

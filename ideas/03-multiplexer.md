@@ -1,6 +1,6 @@
 ---
 title: 'Multiplexer'
-status: draft
+status: reviewing
 category: core
 description: 'Workspaces, splits, floating panes, SSH domains, session persistence'
 tags:
@@ -345,7 +345,7 @@ copy-mode-keybinds = basic   # arrow keys only, no modal
 - tmux sessions don't persist → native session persistence
 - tmux keybinds are arcane → discoverable status bar + command palette
 - Clipboard over SSH+mux broken → OSC-52 passthrough everywhere
-- Image protocols don't work in tmux → both Kitty + Sixel work through multiplexer
+- Image protocols don't work in tmux → both Kitty + Sixel work through multiplexer (image protocol forwarding is core per [ADR 0004](../docs/adrs/0004-kitty-graphics-in-core.md))
 - SSH terminfo not on remote hosts → use xterm-256color, advertise extras via escape queries
 
 ## Related Docs
