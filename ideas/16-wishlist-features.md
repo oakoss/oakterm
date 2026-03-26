@@ -1,4 +1,12 @@
+---
+title: "Wishlist Features"
+status: reference
+category: research
+description: "Community-requested features, prioritized"
+tags: ["research", "community", "feature-requests"]
+---
 # Wishlist Features
+
 
 Features from community research (round 2) that we should consider. Organized by confidence level.
 

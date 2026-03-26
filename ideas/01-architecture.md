@@ -1,6 +1,12 @@
+---
+title: "Architecture"
+status: draft
+category: core
+description: "Layer stack, Rust, server/client model"
+tags: ["rust", "wgpu", "server-client", "layer-stack"]
+---
 # Architecture
 
-> Status: **Draft**
 
 ## Layer Stack
 

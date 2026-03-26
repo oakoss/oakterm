@@ -1,4 +1,12 @@
+---
+title: "Testing"
+status: draft
+category: cross-cutting
+description: "Unit, integration, platform, perf, security, a11y, VT compliance"
+tags: ["testing", "ci", "vttest", "fuzzing", "benchmarks", "a11y-testing"]
+---
 # Testing
+
 
 Extensive testing across every layer. A regression in any area — rendering, performance, accessibility, plugins — is treated as a bug.
 

@@ -1,4 +1,12 @@
+---
+title: "Debugging"
+status: draft
+category: cross-cutting
+description: "Debug commands, plugin profiling, blame chain"
+tags: ["debug", "profiling", "plugin-performance", "health"]
+---
 # Debugging
+
 
 Debugging is a first-class citizen. When something goes wrong — in the terminal, in a plugin, in a pane — you shouldn't have to guess.
 

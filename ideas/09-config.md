@@ -1,4 +1,12 @@
+---
+title: "Configuration"
+status: draft
+category: cross-cutting
+description: "First launch setup, settings palette, flat + Lua, dark/light themes"
+tags: ["config", "lua", "settings-palette", "first-launch", "dark-mode"]
+---
 # Configuration
+
 
 Configuration should be dead simple to start and powerful when you need it. You shouldn't need to read docs to change your font.
 

@@ -1,4 +1,12 @@
+---
+title: "Health Check"
+status: draft
+category: core
+description: "Neovim-style :health with actionable diagnostics"
+tags: ["diagnostics", "health", "doctor", "plugin-health"]
+---
 # Health Check
+
 
 A single `:health` command that runs every diagnostic and shows a complete picture. Inspired by Neovim's `:checkhealth`.
 

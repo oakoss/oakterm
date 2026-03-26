@@ -1,4 +1,12 @@
+---
+title: "Abstraction Layer"
+status: draft
+category: cross-cutting
+description: "Trait seams for swappable backends"
+tags: ["traits", "interfaces", "cross-platform", "testing"]
+---
 # Abstraction Layer
+
 
 The core defines interfaces, not implementations. Every major subsystem sits behind a trait so it can be swapped without rewriting the terminal.
 

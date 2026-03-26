@@ -1,4 +1,12 @@
+---
+title: "Inspiration & Prior Art"
+status: reference
+category: research
+description: "What we took from each terminal"
+tags: ["research", "ghostty", "kitty", "wezterm", "alacritty", "warp", "tmux", "zellij"]
+---
 # Inspiration & Prior Art
+
 
 What we took from each terminal and tool — and what we deliberately left out.
 

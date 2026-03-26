@@ -1,4 +1,12 @@
+---
+title: "Plugin System"
+status: draft
+category: cross-cutting
+description: "WASM runtime, API primitives, capabilities, registry, manager"
+tags: ["wasm", "wasmtime", "api", "capabilities", "registry", "lua"]
+---
 # Plugin System
+
 
 Extensibility is the core architecture, not an afterthought. The terminal is a platform — a fast rendering and multiplexing engine that exposes primitives. Plugins compose those primitives into features.
 

@@ -1,4 +1,12 @@
+---
+title: "Accessibility"
+status: draft
+category: cross-cutting
+description: "AccessKit, screen reader, color blindness, extensible a11y API"
+tags: ["a11y", "accesskit", "screen-reader", "voiceover", "color-blindness"]
+---
 # Accessibility
+
 
 Accessibility in terminal emulators is broken across the board. Zero modern GPU-rendered terminals on macOS or Linux have functional screen reader support. This is a massive gap and an opportunity to lead.
 

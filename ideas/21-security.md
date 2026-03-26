@@ -1,4 +1,12 @@
+---
+title: "Security"
+status: draft
+category: cross-cutting
+description: "Escape injection, plugin sandbox, secure input, clipboard controls"
+tags: ["security", "escape-injection", "sandbox", "clipboard", "privacy"]
+---
 # Security
+
 
 Security is a core principle. Terminals handle the most sensitive data on your machine — passwords, API keys, SSH credentials, production access. The terminal itself must be trustworthy.
 

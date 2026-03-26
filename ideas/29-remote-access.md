@@ -1,4 +1,12 @@
+---
+title: "Remote Access"
+status: draft
+category: community-plugin
+description: "WebSocket API, web client, tunnel-agnostic"
+tags: ["remote", "websocket", "mobile", "tailscale", "tunnel"]
+---
 # Remote Access
+
 
 Monitor and interact with your terminal from anywhere — phone, tablet, another machine. Built as a plugin, using the tunnel/proxy of your choice.
 

@@ -1,6 +1,12 @@
+---
+title: "Command Palette"
+status: draft
+category: core
+description: "Unified fuzzy launcher with prefix filters"
+tags: ["ui", "fuzzy-search", "commands", "keybinds"]
+---
 # Command Palette
 
-> Status: **Draft**
 
 `Cmd+Shift+P` (macOS) / `Ctrl+Shift+P` (Linux/Windows) opens a unified fuzzy launcher. One palette, everything reachable.
 

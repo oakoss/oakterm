@@ -1,4 +1,12 @@
+---
+title: "Memory Management"
+status: draft
+category: cross-cutting
+description: "Tiered scroll buffer, per-pane budgets, memory attribution"
+tags: ["memory", "scroll-buffer", "ring-buffer", "disk-archive", "agents"]
+---
 # Memory Management
+
 
 Memory is the #1 complaint in terminal + AI agent workflows. Ghostty hit 71 GB with Claude Code. iTerm2 routinely sits at 3 GB. WezTerm pre-allocates scrollback it may never use. This is a problem we solve from day one.
 
@@ -84,6 +92,16 @@ Archive region (on disk)
 └── Transparent — scrolling back into archived region loads seamlessly
 ```
 
+Flat config:
+```
+scrollback-memory-lines = 10000
+scrollback-archive = true
+scrollback-archive-path = ~/.local/state/phantom/scrollback/
+scrollback-archive-max = 1GB
+scrollback-compress = true
+```
+
+Lua config:
 ```lua
 scrollback = {
   memory_lines = 10000,         -- kept in RAM (ring buffer)

@@ -1,4 +1,12 @@
+---
+title: "Performance"
+status: draft
+category: cross-cutting
+description: "Targets, budgets, CI benchmarks"
+tags: ["latency", "memory", "benchmarks", "ci"]
+---
 # Performance
+
 
 Performance is a core principle, not an optimization pass. Every architectural decision is made with latency and resource usage as constraints.
 

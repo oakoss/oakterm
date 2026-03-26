@@ -1,4 +1,12 @@
+---
+title: "Community Pain Points Addressed"
+status: reference
+category: research
+description: "Community complaints that shaped the design"
+tags: ["research", "community", "github-issues"]
+---
 # Community Pain Points Addressed
+
 
 Real complaints from GitHub issues, Hacker News, and developer forums that directly shaped this design.
 

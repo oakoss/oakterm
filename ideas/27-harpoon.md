@@ -1,4 +1,12 @@
+---
+title: "Harpoon-Style Pane Bookmarks"
+status: draft
+category: plugin
+description: "Pane bookmarks — Ctrl+1-6 direct jump, editable list"
+tags: ["navigation", "bookmarks", "pane-switching", "muscle-memory"]
+---
 # Harpoon-Style Pane Bookmarks
+
 
 Inspired by ThePrimeagen's Harpoon for Neovim. A small, ordered, persistent list of panes you jump to by index — like speed dial, not a contact list.
 
