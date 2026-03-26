@@ -47,6 +47,7 @@ Full regex syntax (Rust `regex` crate — fast, no backtracking).
 
 - Default: smart case (case-insensitive unless you type an uppercase letter)
 - Toggle with `Alt+C`:
+
 ```text
   Search: Error    [case]  2 matches
 ```
