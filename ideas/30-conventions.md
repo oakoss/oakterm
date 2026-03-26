@@ -123,6 +123,7 @@ Not every doc needs every section. Research docs (`10`, `11`, `16`) have their o
 ## File Naming
 
 - Idea docs: `NN-topic.md` in `ideas/` — numbered for reading order, not priority
+- Reviews: `YYYY-MM-DD-HHMMSS-short-title.md` in `docs/reviews/` — timestamped for ordering
 - ADRs: `NNNN-short-title.md` in `docs/adrs/` — numbered sequentially, never renumber
 - Specs: `NNNN-short-title.md` in `docs/specs/` — numbered sequentially
 - Theme files: `name.toml` — in `~/.config/phantom/themes/`
@@ -187,3 +188,4 @@ Lowercase, kebab-case. Used for finding related docs. Common tags:
 - [Theming](22-theming.md) — theme file naming
 - [ADR Conventions](../docs/adrs/README.md) — ADR template and status lifecycle
 - [Spec Conventions](../docs/specs/README.md) — spec template and status lifecycle
+- [Review Conventions](../docs/reviews/README.md) — review template and format

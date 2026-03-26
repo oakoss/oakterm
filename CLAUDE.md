@@ -8,22 +8,27 @@ GPU-accelerated, extensible terminal emulator with a plugin-driven process dashb
 
 ```text
 ideas/          # Exploration — brainstorming, research, design sketches
+docs/reviews/   # Audits — point-in-time reviews that surface work (YYYY-MM-DD-title.md)
 docs/adrs/      # Decisions — resolve open questions from ideas (NNNN-title.md)
 docs/specs/     # Contracts — formal definitions that code must satisfy (NNNN-title.md)
-.trekker/       # Task tracking — references specs, not idea docs
+.trekker/       # Task tracking — implementation work that references specs
 ```
 
 ## Pipeline
 
 ```text
 ideas/ → docs/adrs/ → docs/specs/ → implementation
-explore    decide       formalize     build
+explore    decide       formalize     build (trekker)
+               ↑
+        docs/reviews/
+        (audits that surface corrections and ADR candidates)
 ```
 
 - **Ideas** explore possibilities. Status: `draft → reviewing`.
-- **ADRs** resolve questions that ideas surfaced. An accepted ADR moves the idea doc status to `decided`.
-- **Specs** formalize decided designs into implementation contracts. Trekker implementation tasks reference specs.
-- **Implementation** builds what specs define. Trekker epics reference their specs.
+- **Reviews** audit ideas and surface corrections, contradictions, and missing specs.
+- **ADRs** resolve questions that ideas or reviews surfaced. An accepted ADR moves the idea doc status to `decided`.
+- **Specs** formalize decided designs into implementation contracts.
+- **Implementation** builds what specs define. Trekker tracks implementation work.
 
 ## Conventions
 
@@ -49,6 +54,13 @@ explore    decide       formalize     build
 - Trekker tasks reference specs. Implementation builds what specs define.
 - See [docs/specs/README.md](docs/specs/README.md) for template
 
+### Reviews (`docs/reviews/`)
+
+- Format: `YYYY-MM-DD-HHMMSS-short-title.md`, timestamped for ordering
+- Point-in-time snapshots — findings may become stale
+- Surface corrections (fix directly), contradictions (write ADRs), and missing specs
+- See [docs/reviews/README.md](docs/reviews/README.md) for template
+
 ### General
 
 - **Config naming**: kebab-case (flat), snake_case (Lua), 1:1 mapping
@@ -66,7 +78,7 @@ explore    decide       formalize     build
 
 ## Task Tracking
 
-Use **Trekker** for all task tracking. `trekker ready` before starting work, summary comment before completing.
+**Trekker** tracks implementation work. Design-phase work is tracked by the docs themselves (review findings, ADR index, spec index).
 
 ### Organization
 
@@ -80,7 +92,7 @@ Use **Trekker** for all task tracking. `trekker ready` before starting work, sum
 
 ## Task Workflow
 
-Two workflow branches. Pick the one that matches the task. Both start and end the same way — trekker to begin, commit gate to finish.
+Two workflow branches. Pick the one that matches the task.
 
 ---
 
@@ -88,9 +100,9 @@ Two workflow branches. Pick the one that matches the task. Both start and end th
 
 Use for: idea docs, ADRs, specs, research, brainstorming, conventions, roadmap updates.
 
-#### D1. Review
+#### D1. Pick Work
 
-`trekker ready` — pick a task, check context/deps/blockers. Set to `in_progress`.
+Check review docs for open findings, ADR index for unresolved decisions, or start new exploration.
 
 #### D2. Research
 
@@ -138,12 +150,11 @@ For substantial design work, align on scope and approach first. Use `/grill-me` 
 - `/pr-review-toolkit:review-pr` — fix findings.
 - Re-run polish if anything changed.
 
-#### D7. Update Tracking
+#### D7. Update Indexes
 
-- Trekker comment summarizing what was done.
 - Update README tables if a new doc was added.
+- Update ADR/spec/review README index.
 - Update cross-references in other docs if the new work affects them.
-- Update ADR/spec README index.
 - Delete any plan files.
 
 #### D8. Commit Gate
@@ -220,7 +231,7 @@ Re-run step I7 if anything changed during polish or review.
 
 - **Never commit proactively** — always wait for the user's go-ahead.
 - **Never push** unless explicitly asked.
-- **Trekker is the task system** — `trekker ready` before starting, summary comment before completing.
+- **Trekker is for implementation** — `trekker ready` before starting implementation work, summary comment before completing. Design work is tracked by docs.
 - **Read before writing** — understand existing docs/code before modifying.
 - **Conventions are law** — follow [ideas/30-conventions.md](ideas/30-conventions.md) for idea docs, README templates for ADRs and specs.
 - **No empty docs** — every idea doc needs a problem statement, every ADR needs options + rationale, every spec needs formal definitions.
@@ -243,4 +254,4 @@ Conventional commits. Allowed types:
 
 Format: `type(scope): short description`
 
-Scopes: `ideas`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`
+Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`
