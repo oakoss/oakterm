@@ -250,11 +250,11 @@ Every pane's child process inherits these:
 | ---------------------- | --------------------------- | ----------------------------------------------------------------------- |
 | `TERM`                 | `xterm-256color`            | Universal compatibility — no custom terminfo to install on remote hosts |
 | `COLORTERM`            | `truecolor`                 | Signals 24-bit color support                                            |
-| `TERM_PROGRAM`         | `phantom`                   | Identifies the terminal to shells and tools                             |
+| `TERM_PROGRAM`         | `oakterm`                   | Identifies the terminal to shells and tools                             |
 | `TERM_PROGRAM_VERSION` | `0.7.0`                     | Terminal version                                                        |
-| `PHANTOM_SOCKET`       | `/tmp/phantom-<uid>/socket` | Daemon socket for `phantom ctl`                                         |
-| `PHANTOM_PANE_ID`      | `pane-a1b2c3d4`             | This pane's unique ID                                                   |
-| `PHANTOM_WORKSPACE`    | `work`                      | Current workspace name                                                  |
+| `OAKTERM_SOCKET`       | `/tmp/oakterm-<uid>/socket` | Daemon socket for `oakterm ctl`                                         |
+| `OAKTERM_PANE_ID`      | `pane-a1b2c3d4`             | This pane's unique ID                                                   |
+| `OAKTERM_WORKSPACE`    | `work`                      | Current workspace name                                                  |
 
 **Why `xterm-256color` instead of a custom TERM:**
 Ghostty uses `xterm-ghostty`, Kitty uses `xterm-kitty` — both break SSH to servers that don't have the terminfo installed. This is the #1 SSH complaint across both terminals. We use `xterm-256color` (universally available) and advertise extra capabilities via standard DA (Device Attributes) escape sequence responses.

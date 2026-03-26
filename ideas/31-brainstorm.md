@@ -237,7 +237,7 @@ What happens when things go wrong? The terminal should degrade gracefully, never
 - **Scroll buffer full (disk archive)** → oldest lines evicted. Never OOM. Show `:health` warning if archive is >80% of budget.
 - **SSH domain unreachable** → retry with backoff. Show status in sidebar. Don't block startup.
 - **Remote daemon disconnected** → show "reconnecting..." in sidebar. Buffer local input. Replay on reconnect if possible.
-- **Theme missing colors** → fill missing values from the default theme. Show warning in `phantom theme validate`.
+- **Theme missing colors** → fill missing values from the default theme. Show warning in `oakterm theme validate`.
 
 Principle: **every failure mode has a fallback, every fallback has a notification.**
 
@@ -475,7 +475,7 @@ No terminal shows token usage, cost estimates, or rate limit status for AI agent
 └──────────────────┘
 ```
 
-The agent-manager plugin could read cost data from agent output (Claude Code prints token counts) and display it. Or agents could report it via `phantom ctl self set-badge "$0.42"`.
+The agent-manager plugin could read cost data from agent output (Claude Code prints token counts) and display it. Or agents could report it via `oakterm ctl self set-badge "$0.42"`.
 
 ### Agent Session Continuity
 
@@ -499,7 +499,7 @@ Instead of running a separate tool, the status bar should have agent-aware widge
 How it works:
 
 - The agent-manager plugin parses known agent output formats (Claude Code prints token counts, model info)
-- Or agents report metrics via `phantom ctl self set-meta tokens=42000 cost=0.38 model=opus-4`
+- Or agents report metrics via `oakterm ctl self set-meta tokens=42000 cost=0.38 model=opus-4`
 - Status bar widgets read from pane metadata: `{agent_model}`, `{agent_tokens}`, `{agent_cost}`, `{agent_duration}`, `{agent_context}`
 - Only shows when an agent pane is focused — shell panes show different widgets
 
@@ -518,7 +518,7 @@ status_bar = {
 }
 ```
 
-The data flows: agent process → agent-manager plugin (parses output or reads `phantom ctl` metadata) → pane metadata → status bar widget reads metadata → renders.
+The data flows: agent process → agent-manager plugin (parses output or reads `oakterm ctl` metadata) → pane metadata → status bar widget reads metadata → renders.
 
 ### Instant Replay (from iTerm2)
 

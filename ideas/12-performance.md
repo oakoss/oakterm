@@ -95,6 +95,6 @@ When performance and features conflict, performance wins. Specific rules:
 
 - [Renderer](02-renderer.md) — GPU rendering approach
 - [Memory Management](15-memory-management.md) — memory targets and scroll buffer
-- [Debugging](14-debugging.md) — `:debug perf` and `phantom benchmark`
+- [Debugging](14-debugging.md) — `:debug perf` and `oakterm benchmark`
 - [Plugin System](06-plugins.md) — plugin frame budgets
 - [Testing](25-testing.md) — performance benchmarks in CI

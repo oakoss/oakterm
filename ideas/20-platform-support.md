@@ -43,7 +43,7 @@ wgpu handles the GPU abstraction across all three — Metal, Vulkan, and DX12 fr
 ### macOS-Specific Considerations
 
 - Notarization and signing for Gatekeeper
-- Homebrew cask distribution: `brew install --cask phantom`
+- Homebrew cask distribution: `brew install --cask oakterm`
 - `.app` bundle with proper Info.plist
 - Spotlight metadata for terminal sessions (optional)
 - Respects system text substitution settings
@@ -83,7 +83,7 @@ wgpu handles the GPU abstraction across all three — Metal, Vulkan, and DX12 fr
 
 - `.desktop` file with proper categories and keywords
 - D-Bus interface for scripting
-- XDG Base Directory compliance (`~/.config/phantom/`, `~/.local/state/phantom/`)
+- XDG Base Directory compliance (`~/.config/oakterm/`, `~/.local/state/oakterm/`)
 - File manager "Open Terminal Here" integration
 - Respects `$SHELL`, `$EDITOR`, `$BROWSER`
 
@@ -122,9 +122,9 @@ wsl = {
 ### Windows-Specific Considerations
 
 - MSIX packaging for Microsoft Store distribution
-- Winget: `winget install phantom`
-- Scoop: `scoop install phantom`
-- Chocolatey: `choco install phantom`
+- Winget: `winget install oakterm`
+- Scoop: `scoop install oakterm`
+- Chocolatey: `choco install oakterm`
 - Portable mode (no install, run from USB)
 - Proper handling of Ctrl vs Cmd (there is no Cmd on Windows — Ctrl is the primary modifier)
 
@@ -167,7 +167,7 @@ keybinds = {
 
 ## Headless Linux (Servers, Containers, CI)
 
-`phantom --headless` runs the daemon without a display server, GPU, or window manager.
+`oakterm --headless` runs the daemon without a display server, GPU, or window manager.
 
 Works on:
 

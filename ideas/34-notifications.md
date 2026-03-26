@@ -46,7 +46,7 @@ Used for:
 - Tests went red
 - Update available
 - Plugin errors
-- `phantom ctl notify` messages from agents
+- `oakterm ctl notify` messages from agents
 
 ### 3. OS Notifications (system-level)
 
@@ -180,6 +180,6 @@ notify.send(Notification {
 - [Sidebar](04-sidebar.md) — badge display
 - [Agent Management](07-agent-management.md) — agent state notifications
 - [Shell Integration](18-shell-integration.md) — process completion notifications
-- [Agent Control API](32-agent-control-api.md) — `phantom ctl notify`
+- [Agent Control API](32-agent-control-api.md) — `oakterm ctl notify`
 - [Accessibility](17-accessibility.md) — screen reader announcements, sound cue plugin
 - [Health Check](28-health-check.md) — notification permissions in `:health`

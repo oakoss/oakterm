@@ -126,9 +126,9 @@ Not every doc needs every section. Research docs (`10`, `11`, `16`) have their o
 - Reviews: `YYYY-MM-DD-HHMMSS-short-title.md` in `docs/reviews/` — timestamped for ordering
 - ADRs: `NNNN-short-title.md` in `docs/adrs/` — numbered sequentially, never renumber
 - Specs: `NNNN-short-title.md` in `docs/specs/` — numbered sequentially
-- Theme files: `name.toml` — in `~/.config/phantom/themes/`
-- Plugin manifests: `phantom-plugin.toml`
-- Config: `config` (flat) or `config.lua` (Lua) — in `~/.config/phantom/`
+- Theme files: `name.toml` — in `~/.config/oakterm/themes/`
+- Plugin manifests: `oakterm-plugin.toml`
+- Config: `config` (flat) or `config.lua` (Lua) — in `~/.config/oakterm/`
 
 ## Cross-References
 

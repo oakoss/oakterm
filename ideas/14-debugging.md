@@ -18,7 +18,7 @@ Debugging is a first-class citizen. When something goes wrong — in the termina
 Cmd+Shift+P → :debug
 
 ┌──────────────────────────────────────────────────┐
-│  Phantom Debug                                   │
+│  OakTerm Debug                                   │
 ├──────────────────────────────────────────────────┤
 │  Version          0.5.0                          │
 │  GPU Backend      wgpu (Metal)                   │
@@ -33,7 +33,7 @@ Cmd+Shift+P → :debug
 │  TERM             xterm-256color                 │
 │  COLORTERM        truecolor                      │
 │  Shell            /bin/zsh                       │
-│  Config           ~/.config/phantom/config.lua   │
+│  Config           ~/.config/oakterm/config.lua   │
 │                                                  │
 │  [Copy to Clipboard]  [Open Debug Log]           │
 └──────────────────────────────────────────────────┘
@@ -163,10 +163,10 @@ Decoded in real time with human-readable descriptions. Critical for debugging pr
 ### Structured debug log
 
 ```bash
-phantom --log-level=debug
+oakterm --log-level=debug
 ```
 
-Writes structured logs (JSON) to `~/.local/state/phantom/debug.log`:
+Writes structured logs (JSON) to `~/.local/state/oakterm/debug.log`:
 
 ```json
 {"ts":"...","level":"debug","component":"renderer","msg":"frame","fps":120,"latency_ms":6.2}
@@ -178,9 +178,9 @@ Writes structured logs (JSON) to `~/.local/state/phantom/debug.log`:
 Each log entry includes the component, so you can filter:
 
 ```bash
-phantom --log-level=debug --log-filter=plugin
-phantom --log-level=debug --log-filter=renderer
-phantom --log-level=debug --log-filter=vt
+oakterm --log-level=debug --log-filter=plugin
+oakterm --log-level=debug --log-filter=renderer
+oakterm --log-level=debug --log-filter=vt
 ```
 
 ### Plugin crash reporting
@@ -194,12 +194,12 @@ When a WASM plugin crashes (panic, OOM, infinite loop timeout):
 
 ## Health Checks
 
-### phantom doctor
+### oakterm doctor
 
 CLI diagnostic that checks the environment:
 
 ```bash
-$ phantom doctor
+$ oakterm doctor
 
 ✓ GPU:            Metal (Apple M2 Max)
 ✓ Font:           JetBrains Mono found
@@ -207,7 +207,7 @@ $ phantom doctor
 ✗ Fallback Font:  Noto Color Emoji NOT found (emoji may not render)
 ✓ Shell:          /bin/zsh
 ✓ TERM:           xterm-256color
-✓ Config:         ~/.config/phantom/config.lua (valid)
+✓ Config:         ~/.config/oakterm/config.lua (valid)
 ✓ Plugins:        5 installed, all valid WASM
 ⚠ Plugin:         docker-manager v1.2.0 (update available: v1.3.0)
 ✓ SSH:            ~/.ssh/config readable, 3 hosts
@@ -233,12 +233,12 @@ Live performance overlay (like a game FPS counter):
 
 Toggle with `:debug perf` — shows in a corner, updates per frame. Quick way to see if something is causing frame drops.
 
-### phantom benchmark
+### oakterm benchmark
 
 Automated performance test suite:
 
 ```bash
-$ phantom benchmark
+$ oakterm benchmark
 
 Input latency:     6.4ms avg / 9.1ms p99
 Throughput:        1.2 GB/s (cat /dev/urandom | head -c 100M)
@@ -365,7 +365,7 @@ User: "My terminal feels slow"
         └── Core > 5ms?
             YES → Our problem
             → :debug → check renderer, scroll buffer, glyph atlas
-            → phantom benchmark → identify which subsystem
+            → oakterm benchmark → identify which subsystem
 ```
 
 Every step in this chain is a command the user can run. No guessing. Paste the output in a bug report and we (or the plugin author) know exactly where to look.
@@ -375,7 +375,7 @@ Every step in this chain is a command the user can run. No guessing. Paste the o
 For plugin authors during development:
 
 ```bash
-phantom plugin profile docker-manager --duration 30s
+oakterm plugin profile docker-manager --duration 30s
 
 Profiling docker-manager for 30s...
 
@@ -407,9 +407,9 @@ log::error!("Failed to connect to Docker daemon");
 
 These are visible via:
 
-- `phantom plugin logs docker-manager` — CLI, tail style
+- `oakterm plugin logs docker-manager` — CLI, tail style
 - `:debug plugin docker-manager` — in the palette, last N entries
-- `~/.local/state/phantom/plugins/docker-manager/log` — on disk
+- `~/.local/state/oakterm/plugins/docker-manager/log` — on disk
 - `:debug plugins` — error count summary
 
 Logs are namespaced per-plugin. The core's logs and each plugin's logs are separate streams. No interleaving, no confusion about who logged what.
@@ -426,8 +426,8 @@ When a WASM plugin crashes:
 
 When the core crashes (shouldn't happen, but if it does):
 
-- Crash report saved to `~/.local/state/phantom/crash.log`
-- On next launch: "Phantom crashed. [View Crash Report] [Send Report]" (sending is opt-in, never automatic)
+- Crash report saved to `~/.local/state/oakterm/crash.log`
+- On next launch: "OakTerm crashed. [View Crash Report] [Send Report]" (sending is opt-in, never automatic)
 - Session restore offers to recover panes from before the crash
 
 ## Related Docs

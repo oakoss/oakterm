@@ -101,14 +101,14 @@ Auto-name tabs/panes based on the running command or cwd:
 Shell integration should be opt-in but trivial:
 
 ```bash
-phantom shell-integration install
+oakterm shell-integration install
 ```
 
 Adds one line to `.zshrc` / `.bashrc` / `config.fish`:
 
 ```bash
 # .zshrc
-source ~/.config/phantom/shell-integration.zsh
+source ~/.config/oakterm/shell-integration.zsh
 ```
 
 Or auto-inject without modifying shell config (like Ghostty does):
