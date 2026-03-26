@@ -58,6 +58,38 @@ The fallback chain should be per-style (regular, bold, italic) so bold text can 
 
 Kitty and Ghostty both do font fallback, but configuration varies. Ours should be explicit and ordered — you control exactly which font provides which glyphs.
 
+## Ligatures
+
+Alacritty has had a ligature request open since 2017 (issue #50) with no plans to implement. This is a solved problem — Kitty, Ghostty, and WezTerm all support ligatures. We ship with them on by default.
+
+Ligatures matter for coding fonts like:
+- **Fira Code** — `=>`, `->`, `!=`, `>=`, `===`, `<|>`, `>>`, `|>`
+- **JetBrains Mono** — `!=`, `<=`, `>=`, `-->`, `<->`
+- **Cascadia Code** — `www`, `&&`, `||`, `::`, `===`
+- **Monaspace** — texture healing + ligatures
+- **Iosevka** — extensive ligature sets
+
+How it works:
+- HarfBuzz / Core Text handle ligature substitution during text shaping — the font's OpenType `liga` and `calt` tables define which glyph sequences get replaced
+- The renderer treats a ligature as a single glyph spanning multiple cells
+- Cursor movement still advances per-character, not per-ligature
+
+```lua
+font = {
+  family = "JetBrains Mono",
+  ligatures = true,           -- default: true
+  -- Or selectively disable specific ligatures:
+  -- disabled_ligatures = { ">=", "!=" },
+  fallbacks = {
+    "Symbols Nerd Font",
+    "Apple Color Emoji",
+  },
+  size = 14,
+}
+```
+
+Disabling ligatures entirely is one setting: `ligatures = false`. No recompilation, no patching, no config gymnastics.
+
 ## Color Handling
 
 Community pain point: programs can't reliably detect true color support.
