@@ -30,11 +30,12 @@ The core exposes these primitives. Everything else is built on top of them by pl
 
 This is the primitive that enables a browser plugin, a markdown previewer, an image viewer, a media player — without the core knowing anything about any of them.
 
-### Sidebar
+### Sidebar Data Model (core)
 - Register sections (agents, containers, pods, browser tabs — anything)
 - Add/remove/update entries within a section
 - Set icons, labels, badges, progress bars
 - Handle click → focus a pane
+- Note: the sidebar **data model** is a core primitive. The sidebar **renderer** (the visual UI that draws it) is a bundled plugin (`sidebar-ui`) that can be replaced with a bottom bar, floating HUD, or nothing.
 
 ### Command Palette
 - Register commands with any name (:agent, :docker, :browse, :merge)
@@ -51,6 +52,38 @@ This is the primitive that enables a browser plugin, a markdown previewer, an im
 - Register completion providers (per command + argument position)
 - Register project type detectors
 - Register proactive suggestion triggers
+
+### Pane Query
+- `pane.list()` — enumerate all panes with their metadata
+- `pane.get(id)` — get a specific pane's full state
+- `pane.focus(id)` — switch focus to a pane
+- `pane.set_border_color(id, color)` — set visual border color
+- `pane.set_label(id, text)` — set a floating label on a pane
+- Enables: harpoon (enumerate + focus), environment coloring (border + label), input broadcast (enumerate + select)
+
+### Window
+- `window.position(x, y, w, h)` — set window position and size
+- `window.always_on_top(bool)` — keep above other windows
+- `window.animate(type, duration)` — slide/fade transitions
+- `global_hotkey.register(key, callback)` — system-wide hotkey registration
+- Enables: quake/dropdown mode, spotlight mode, any global-access plugin
+
+### Storage
+- `storage.get(key)` — read plugin-local persistent data
+- `storage.set(key, value)` — write plugin-local persistent data
+- `storage.delete(key)` — remove a key
+- Scoped per-plugin, persists across sessions
+- Stored in `~/.local/state/phantom/plugins/<name>/data`
+- Enables: harpoon (persist bookmark list), any plugin with state
+
+### Shell Integration Events
+- `shell.on_prompt_start` — fired when shell draws a prompt (OSC 133;A)
+- `shell.on_command_start` — fired when user executes a command (OSC 133;B)
+- `shell.on_command_finish(exit_code)` — fired when command completes (OSC 133;D)
+- `shell.on_cwd_change(path)` — fired when working directory changes (OSC 7)
+- `shell.get_prompts(pane)` — list all prompt positions in scrollback
+- Parsed by the VT parser (core), exposed to plugins as events
+- Enables: scroll-to-prompt, process notifications, semantic zones, context engine
 
 ### Lifecycle Hooks
 - on_pane_create / on_pane_close
@@ -144,7 +177,6 @@ Ship by default, can be disabled. They use the exact same API as community plugi
 | `git-worktree` | :workspace new creates worktree + tab + shell |
 | `service-monitor` | Services sidebar, port detection, crash alerts |
 | `watcher` | Watchers sidebar, parses test/type/build output |
-| `ssh-domains` | Remote multiplexing from config |
 | `kitty-graphics` | Inline image rendering (Kitty + Sixel) |
 | `browser-lite` | Text-mode browser (Carbonyl/w3m) in a floating pane |
 

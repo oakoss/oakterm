@@ -33,6 +33,33 @@ Cmd+Shift+P → :debug
 
 One command, full picture. Paste it in a bug report and we have everything we need.
 
+### :debug memory
+
+Full memory attribution — see `ideas/15-memory-management.md` for the complete spec.
+
+```
+┌──────────────────────────────────────────────────┐
+│  Memory Overview                                 │
+├──────────────────────────────────────────────────┤
+│  Terminal (ours)              48 MB              │
+│    Renderer / glyph atlas     12 MB              │
+│    Scroll buffers (all panes) 18 MB              │
+│    Plugin runtime              8 MB              │
+│    Multiplexer state           2 MB              │
+│    Other                       8 MB              │
+│                                                  │
+│  Child Processes (theirs)    1.2 GB              │
+│    ◉ feat/auth (claude)     890 MB  ⚠ growing   │
+│    ▶ next dev                142 MB              │
+│    👁 vitest --watch           68 MB              │
+│    ● scratch (zsh)            14 MB              │
+│                                                  │
+│  Total system impact         1.25 GB             │
+└──────────────────────────────────────────────────┘
+```
+
+Clearly separates terminal memory from child process memory — answers "is it us or them?" instantly.
+
 ### :debug pane
 
 Per-pane diagnostics — focus a pane and run `:debug pane`:

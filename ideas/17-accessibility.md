@@ -83,6 +83,15 @@ The accessibility tree lives in the core — it can't be bolted on as a plugin. 
 - Accessible announce API for plugins to send screen reader announcements
 - System preference detection (high contrast, reduced motion, color filters)
 
+### Performance consideration
+
+Maintaining an a11y tree alongside the renderer is not free. To stay within our performance budgets:
+- A11y tree updates are **batched and async** — not per-frame unless a screen reader is actively querying
+- When no assistive technology is detected, the tree is maintained lazily (structural updates only, no per-character tracking)
+- When a screen reader attaches, the tree activates fully with real-time updates
+- A11y overhead is tracked in `:debug perf` as a separate line item
+- Target: <0.5ms/frame overhead when a screen reader is active, ~0ms when inactive
+
 ### What plugins must provide
 
 Plugins that add UI are **required** to provide accessibility labels. The API enforces this — entries without labels are rejected:

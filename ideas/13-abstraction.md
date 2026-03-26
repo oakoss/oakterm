@@ -7,15 +7,17 @@ The core defines interfaces, not implementations. Every major subsystem sits beh
 ```
 Core
 ├── trait GpuBackend        → wgpu (default), raw Metal, raw Vulkan, software
-├── trait TextShaper         → Core Text (macOS), HarfBuzz (Linux), custom
-├── trait FontRasterizer     → Core Text (macOS), FreeType (Linux)
-├── trait PlatformShell      → AppKit (macOS), GTK (Linux), future: Windows
+├── trait TextShaper         → Core Text (macOS), HarfBuzz (Linux), DirectWrite (Windows)
+├── trait FontRasterizer     → Core Text (macOS), FreeType (Linux), DirectWrite (Windows)
+├── trait PlatformShell      → AppKit (macOS), GTK4 (Linux), WinUI 3 (Windows)
+├── trait AccessibilityBridge → NSAccessibility (macOS), AT-SPI (Linux), UIA (Windows)
 ├── trait PluginRuntime      → Wasmtime (default), Wasmer, WasmEdge
 ├── trait VtParser           → Built-in (default), custom/third-party
 ├── trait ScrollBuffer       → Ring buffer (default), memory-mapped, disk-backed
 ├── trait SshTransport       → russh (default), libssh2, custom
 ├── trait ConfigLoader       → Flat file, Lua, both
-└── trait ClipboardProvider  → Platform native, OSC-52, custom
+├── trait ClipboardProvider  → NSPasteboard (macOS), Wayland/X11 (Linux), Win32 (Windows), OSC-52
+└── trait NotificationProvider → NSUserNotification (macOS), libnotify (Linux), Windows Toast
 ```
 
 ## Why This Matters
@@ -44,13 +46,18 @@ Abstractions enable testing without real hardware:
 
 ### Platform ports
 
-A Windows port doesn't require rethinking the architecture — it implements:
-- `PlatformShell` → Win32/WinUI
-- `TextShaper` → DirectWrite
-- `FontRasterizer` → DirectWrite
-- `ClipboardProvider` → Win32 clipboard
+All three platforms implement the same traits:
 
-Everything else (multiplexer, plugins, config, VT parser) stays the same.
+| Trait | macOS | Linux | Windows |
+|-------|-------|-------|---------|
+| `PlatformShell` | AppKit | GTK4 | WinUI 3 |
+| `TextShaper` | Core Text | HarfBuzz | DirectWrite |
+| `FontRasterizer` | Core Text | FreeType | DirectWrite |
+| `AccessibilityBridge` | NSAccessibility | AT-SPI | UIA |
+| `ClipboardProvider` | NSPasteboard | Wayland/X11 | Win32 |
+| `NotificationProvider` | NSUserNotification | libnotify | Windows Toast |
+
+Everything above these traits (multiplexer, plugins, config, VT parser) is shared cross-platform code.
 
 ## Rules
 

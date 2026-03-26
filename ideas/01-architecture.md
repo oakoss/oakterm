@@ -12,7 +12,8 @@
 │       │───────────────────────────────────────────────│
 │ Ctrl+B│  Multiplexer                                  │
 │ toggle│  - Splits, tabs, workspaces, floating panes   │
-│       │  - SSH domains, session persistence           │
+│       │  - SSH domains (core — deep mux integration)  │
+│       │  - Session persistence                        │
 │       │───────────────────────────────────────────────│
 │       │  Context Engine (plugin)                      │
 │       │  - Smart autocomplete, ? NL commands          │
