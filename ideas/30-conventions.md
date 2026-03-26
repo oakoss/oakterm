@@ -137,3 +137,9 @@ Lowercase, kebab-case. Used for finding related docs. Common tags:
 - Tech: `rust`, `wgpu`, `wasm`, `wasmtime`, `lua`, `toml`
 - Feature area: `ui`, `keybinds`, `fonts`, `themes`, `shell`, `agents`, `notifications`
 - Concern: `a11y`, `security`, `memory`, `latency`, `testing`, `ci`
+
+## Related Docs
+
+- [Configuration](09-config.md) — authoritative config syntax reference
+- [Plugin System](06-plugins.md) — plugin naming and manifest format
+- [Theming](22-theming.md) — theme file naming

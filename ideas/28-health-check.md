@@ -167,3 +167,10 @@ Useful when the terminal itself won't start.
 ```
 
 `phantom doctor` and `:health` run the same checks, produce the same output. One is for inside the terminal, one is for outside.
+
+## Related Docs
+
+- [Debugging](14-debugging.md) — relationship between `:health` and `:debug` commands
+- [Plugin System](06-plugins.md) — plugins register custom health checks
+- [Testing](25-testing.md) — health checks verified in CI
+- [Security](21-security.md) — security section in health output

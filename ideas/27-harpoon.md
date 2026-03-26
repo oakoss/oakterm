@@ -84,23 +84,27 @@ Harpoon lists persist across sessions — part of the session serialization.
 
 ## Configuration
 
+Flat config:
+```
+harpoon.slots = 6
+harpoon.per-workspace = true
+harpoon.auto-remove-closed = true
+harpoon.preserve-scroll-position = true
+keybind = ctrl+shift+m = harpoon-mark
+keybind = ctrl+shift+h = harpoon-menu
+keybind = ctrl+1 = harpoon-jump-1
+keybind = ctrl+2 = harpoon-jump-2
+keybind = ctrl+3 = harpoon-jump-3
+keybind = ctrl+4 = harpoon-jump-4
+```
+
+Lua config:
 ```lua
-harpoon = {
-  slots = 6,                          -- max items in the list (default: 6)
-  keybinds = {
-    mark = "ctrl+shift+m",
-    menu = "ctrl+shift+h",
-    -- Direct jump keybinds
-    ["1"] = "ctrl+1",
-    ["2"] = "ctrl+2",
-    ["3"] = "ctrl+3",
-    ["4"] = "ctrl+4",
-    ["5"] = "ctrl+5",
-    ["6"] = "ctrl+6",
-  },
-  per_workspace = true,               -- separate list per workspace
-  auto_remove_closed = true,          -- remove panes when they close
-  preserve_scroll_position = true,    -- return to exact scroll position
+plugins["harpoon"] = {
+  slots = 6,
+  per_workspace = true,
+  auto_remove_closed = true,
+  preserve_scroll_position = true,
 }
 ```
 
@@ -124,3 +128,10 @@ The core provides everything it needs. Someone could write an alternative (e.g.,
 - **Tuxmux** — Rust tmux manager with a "jump list" inspired by Harpoon
 
 No terminal emulator has this built in. Closest is Cmd+1-9 for tab switching, which is positional (fragile) rather than bookmarked (stable).
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — `pane.list`, `pane.focus`, `storage` APIs
+- [Sidebar](04-sidebar.md) — complements sidebar for quick navigation
+- [Multiplexer](03-multiplexer.md) — workspace scoping for harpoon lists
+- [Configuration](09-config.md) — keybind configuration

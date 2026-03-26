@@ -107,3 +107,10 @@ Everything secure by default, relaxable when needed:
 │  Last Plugin Audit     2h ago (clean)            │
 └──────────────────────────────────────────────────┘
 ```
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — capability-based plugin permissions
+- [Debugging](14-debugging.md) — `:debug security` status
+- [Health Check](28-health-check.md) — security section in `:health`
+- [Remote Access](29-remote-access.md) — auth and encryption for daemon connections

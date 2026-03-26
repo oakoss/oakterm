@@ -108,3 +108,9 @@ Plugins never auto-update. Always explicit.
 - No update that requires closing all windows first (stage it, apply on next launch)
 - No broken command palette update — if it's in the palette, it works
 - No telemetry in the update check (we don't even know how many users we have)
+
+## Related Docs
+
+- [Command Palette](08-command-palette.md) — `:update` command
+- [Health Check](28-health-check.md) — version check in `:health`
+- [Platform Support](20-platform-support.md) — package manager awareness per platform

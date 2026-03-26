@@ -200,3 +200,11 @@ Accessibility in the core is **mandatory and non-negotiable** — the tree, the 
 - [NO_COLOR standard](https://no-color.org/) — respect this in our own output
 - [Modus Themes](https://protesilaos.com/emacs/modus-themes) — WCAG AAA color reference
 - [ACM CHI 2021: CLI Accessibility](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445544) — academic research on the problem
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — accessibility API primitives for plugins
+- [Theming](22-theming.md) — WCAG contrast requirements, high-contrast themes
+- [Renderer](02-renderer.md) — AccessKit tree alongside GPU rendering
+- [Platform Support](20-platform-support.md) — VoiceOver, NVDA, Orca per-platform
+- [Testing](25-testing.md) — automated a11y testing

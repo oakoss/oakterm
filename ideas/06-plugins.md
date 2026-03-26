@@ -160,16 +160,25 @@ If no — we're missing a primitive. Add the primitive, not the feature.
 
 | Feature | Primitives used |
 |---------|----------------|
-| Agent sidebar | `sidebar.section` + `pane.create` + `process.spawn` + `notify` + `fs.read` |
-| Context engine | `context.provider` + `fs.read` + `hook.directory_change` |
-| Docker manager | `sidebar.section` + `process.spawn` + `pane.create` + `notify` |
+| Agent sidebar | `sidebar.section` + `pane.create` + `process.spawn` + `notify` + `fs.read` + `pane.metadata` + `shell.on_command_finish` |
+| Context engine | `context.provider` + `fs.read` + `shell.on_cwd_change` + `network` (for AI backend) |
+| Harpoon | `pane.list` + `pane.focus` + `pane.metadata` + `storage` + `palette.command` + `hook.on_pane_close` |
+| Service monitor | `sidebar.section` + `process.spawn` + `pane.create` + `notify` + `hook.on_process_exit` |
+| Watcher | `sidebar.section` + `pane.output` + `notify` + `process.spawn` |
+| Quake mode | `window.position` + `window.always_on_top` + `window.animate` + `global_hotkey.register` |
+| Docker manager | `sidebar.section` + `process.spawn` + `pane.create` + `notify` + `network` |
 | WebView browser | `pane.surface(webview)` + `sidebar.section` + `palette.command` + `network` |
 | Markdown preview | `pane.surface(webview)` + `fs.read` + `fs.watch` |
 | Image viewer | `pane.surface(canvas)` + `fs.read` |
 | k8s pod manager | `sidebar.section` + `process.spawn` + `pane.create` + `network` + `notify` |
-| Theme | `theme.register` (colors, no special permissions) |
+| Web client (remote) | `network` + `pane.list` + `pane.output` + `pane.input` + `sidebar.list` |
+| Theme | Data package (TOML, no WASM, no permissions) |
+| Locale pack | Data package (JSON, no WASM, no permissions) |
 | Port monitor | `process.spawn` + `notify` + `sidebar.section` |
 | AI autocomplete | `context.provider` + `network` |
+| Sound cues (a11y) | `notify` + `shell.on_command_finish` + `hook.on_process_exit` |
+| Input broadcast | `pane.list` + `pane.input` + `palette.command` + `pane.set_border_color` |
+| Env coloring | `pane.set_border_color` + `pane.set_label` + `shell.on_cwd_change` + `pane.metadata` |
 
 If a plugin idea can't be expressed as a combination of primitives, we need a new primitive.
 
@@ -310,3 +319,12 @@ pane-surface = false
 - Not a walled garden — sideload any WASM binary from a URL or local path
 - No auto-update by default — `phantom plugin update` is explicit
 - No telemetry on installs, usage, or anything else
+
+## Related Docs
+
+- [Architecture](01-architecture.md) — core vs plugin boundary
+- [Security](21-security.md) — plugin sandboxing and permissions
+- [Performance](12-performance.md) — plugin frame budget
+- [Debugging](14-debugging.md) — plugin profiling and crash handling
+- [License](26-license.md) — registry requires open source
+- [Conventions](30-conventions.md) — plugin naming conventions

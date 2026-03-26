@@ -15,49 +15,52 @@ Features from community research (round 2) that we should consider. Organized by
 ### Hints Mode (Vimium for the terminal)
 Press a hotkey, all visible URLs/paths/git hashes/IPs get labeled with short key sequences. Type the label to act on it (open, copy, insert at cursor). Kitty and WezTerm have variants. Ghostty #2394 is highly upvoted.
 
-Custom regex patterns per user — match Jira tickets, PR numbers, branch names. Actions per match type: open in browser, copy, insert into prompt.
-
-**Fits:** Plugin (uses pane.output to scan, palette for action selection, keybinds)
+**Status:** Specced in [Smart Keybinds](19-smart-keybinds.md). Custom regex patterns, per-match actions, plugin-extensible.
 
 ### Quake/Dropdown Mode
 Global hotkey slides the terminal down from the top of the screen. iTerm2, Warp, Yakuake, Guake all have this. Ghostty #3733 is highly requested.
 
-**Fits:** Core feature (window management)
+**Status:** Specced in [Smart Keybinds](19-smart-keybinds.md) as a bundled plugin using Window API primitives.
 
 ### Scroll-to-Prompt
 Navigate between command prompts in scrollback with a keybinding. Jump to the previous/next `$` prompt instead of scrolling through output.
 
-**Fits:** Shell integration (needs prompt markers via OSC escape sequences)
+**Status:** Specced in [Shell Integration](18-shell-integration.md). Uses OSC 133 prompt markers.
 
 ### Input Broadcast to Multiple Panes
 Synchronized typing across selected panes — same command on multiple servers at once. iTerm2, tmux, and Terminator support this.
 
-**Fits:** Multiplexer feature
+**Status:** Specced in [Smart Keybinds](19-smart-keybinds.md). Palette-driven pane selection, toggle with `Ctrl+Shift+B`.
 
 ### Per-Tab/Pane Color Themes
 Different color schemes per tab to visually distinguish production vs staging vs local. Windows Terminal #3687.
 
-**Fits:** Multiplexer + config
+**Status:** Specced in [Smart Keybinds](19-smart-keybinds.md) as environment-aware pane coloring. Matches hostname, env vars, cwd patterns.
 
 ### Clickable File Paths
 `filename.ts:42` opens in your editor at line 42. Requires shell integration to resolve relative paths against the pane's cwd.
 
-**Fits:** Shell integration plugin
+**Status:** Partially covered by hints mode. Needs shell integration for cwd resolution. Not fully specced yet.
 
 ### Regex Pattern Highlighting
 Persistent rules that color-code output: `error` in red, `warning` in yellow, timestamps dimmed. iTerm2 calls these "triggers."
 
-**Fits:** Plugin (context engine or dedicated plugin)
+**Status:** Not specced yet. Good candidate for a bundled plugin using `pane.output` + regex matching.
 
 ### Drag and Drop
 Drop files from Finder onto the terminal to insert the quoted path at cursor. Also: drag a file path FROM the terminal to GUI apps.
 
-**Fits:** Platform shell layer
+**Status:** Partially covered in [Platform Support](20-platform-support.md) platform matrix (File drag-and-drop row). Needs detailed spec.
 
 ### Auto Dark/Light Mode
 Switch between themes based on system appearance. Ghostty, WezTerm, and Kitty support variants.
 
-**Fits:** Config/theme system
+**Status:** Specced in [Configuration](09-config.md). `appearance = system` with separate `theme-dark` / `theme-light`.
+
+### Process Completion Notifications
+Native OS notification when a long-running command finishes in a background tab/pane. Ghostty 1.3 added this.
+
+**Status:** Specced in [Shell Integration](18-shell-integration.md). Uses OSC 133;D exit code + configurable duration threshold.
 
 ### Process Completion Notifications
 Native OS notification when a long-running command finishes in a background tab/pane. Ghostty 1.3 added this.

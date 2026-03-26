@@ -73,3 +73,9 @@ Everything above these traits (multiplexer, plugins, config, VT parser) is share
 2. **Defaults are compile-time features, not runtime switches.** You pick your backends at build time. No runtime dispatch overhead in the hot path.
 3. **Traits are narrow.** A `GpuBackend` doesn't know about fonts. A `TextShaper` doesn't know about the GPU. Keep interfaces focused.
 4. **Don't abstract prematurely.** If there's only one possible implementation today and no clear reason for a second, skip the trait. Add it when the second implementation appears. The seams listed above are ones where alternatives already exist or are clearly coming.
+
+## Related Docs
+
+- [Architecture](01-architecture.md) — layer stack built on these traits
+- [Platform Support](20-platform-support.md) — per-platform trait implementations
+- [Remote Access](29-remote-access.md) — Null implementations for headless mode

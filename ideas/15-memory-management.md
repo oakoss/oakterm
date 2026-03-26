@@ -184,3 +184,10 @@ Every PR runs:
 - WezTerm pre-allocating scrollback → lazy allocation, grow with content
 - Kitty 350 MB at 64K lines → tiered buffer, most lines on disk
 - Claude Code's own memory leaks → surfaced in :debug memory with alerts, clearly attributed to the child process (not us)
+
+## Related Docs
+
+- [Sidebar](04-sidebar.md) — per-pane memory display
+- [Debugging](14-debugging.md) — `:debug memory` command
+- [Performance](12-performance.md) — memory targets
+- [Testing](25-testing.md) — soak tests and memory benchmarks
