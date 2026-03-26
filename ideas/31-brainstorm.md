@@ -434,3 +434,35 @@ ssh-predictive-echo-style = dim  # how predicted characters look: dim, italic, u
 - **Ctrl+S / Ctrl+Q** — standard XOFF/XON flow control. `Ctrl+S` pauses output (the process blocks on write). `Ctrl+Q` resumes. Most terminals support this but don't surface it. We should make it discoverable.
 - **Ring buffer ceiling** — old lines roll off (already specced in [Memory Management](15-memory-management.md)). The terminal never OOMs from output.
 - **Suggestion after flood** — after a massive output burst finishes, show a subtle hint: "Large output detected. Consider piping to less or redirecting to a file."
+
+## AI Workflow Gaps (not yet covered elsewhere)
+
+### Agent Cost/Usage Visibility
+No terminal shows token usage, cost estimates, or rate limit status for AI agents. A plugin could surface this in the sidebar:
+
+```
+┌──────────────────┐
+│ ◉ feat/auth      │
+│   claude         │
+│   ██████░░ 62%   │
+│   ~$0.42 this run│   ← token cost estimate
+│   890 MB         │
+└──────────────────┘
+```
+
+The agent-manager plugin could read cost data from agent output (Claude Code prints token counts) and display it. Or agents could report it via `phantom ctl self set-badge "$0.42"`.
+
+### Agent Session Continuity
+Agent crashes or terminal restarts — the agent's context is lost. Beyond session persistence (which restores pane layout and cwd), we could:
+- Serialize the agent's last known state (what it was working on, which files it modified)
+- On restore, show a summary: "Agent feat/auth was working on rate limiting. 3 files modified, uncommitted."
+- Offer: [Resume Agent] [View Diff] [Discard]
+- The agent-manager plugin stores this in its `storage` (persistent per-plugin data)
+
+### Agent Output Parsing
+Agents output structured information (file paths, diffs, tool calls, status updates) as plain text. The terminal could parse known agent output formats and render them richer:
+- File paths in Claude Code output become clickable (already in smart URL/path detection)
+- Diff output gets syntax highlighting (tree-sitter plugin)
+- Tool call sections could be collapsible (stretch goal — needs semantic output understanding)
+
+This is plugin territory — an `agent-output-parser` plugin that enhances how agent output renders.
