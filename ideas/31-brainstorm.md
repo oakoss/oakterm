@@ -511,3 +511,187 @@ Agents output structured information (file paths, diffs, tool calls, status upda
 - Tool call sections could be collapsible (stretch goal — needs semantic output understanding)
 
 This is plugin territory — an `agent-output-parser` plugin that enhances how agent output renders.
+
+---
+
+## Fundamental UX (missed in initial spec)
+
+These are daily-use interactions that need to be specced before implementation.
+
+### Split/Pane Navigation
+
+How you move focus between panes. Used hundreds of times a day.
+
+**Default keybinds (borrow from vim + tmux):**
+
+| Action | Keybind | Familiar from |
+|--------|---------|---------------|
+| Focus pane left | `Ctrl+Shift+H` or `Alt+H` | vim `Ctrl+W h` |
+| Focus pane down | `Ctrl+Shift+J` or `Alt+J` | vim `Ctrl+W j` |
+| Focus pane up | `Ctrl+Shift+K` or `Alt+K` | vim `Ctrl+W k` |
+| Focus pane right | `Ctrl+Shift+L` or `Alt+L` | vim `Ctrl+W l` |
+| Focus next pane | `Ctrl+Shift+]` | tmux `Ctrl+B o` |
+| Focus previous pane | `Ctrl+Shift+[` | tmux |
+| Swap pane with direction | `Ctrl+Shift+Alt+H/J/K/L` | vim `Ctrl+W H/J/K/L` |
+
+Also: click a pane to focus it. Click a sidebar entry to focus that pane.
+
+Should support a configurable prefix mode for people who want tmux-style `Ctrl+B` then arrow, but direct keybinds (no prefix) should be the default.
+
+### Pane Zoom
+
+Temporarily maximize one pane to fill the entire tab area. Toggle back to restore the previous layout. The process keeps running — nothing changes except the visual size.
+
+```
+Ctrl+Shift+Z  — toggle zoom on current pane
+```
+
+When zoomed:
+- Tab title shows a zoom indicator: `● scratch 🔍`
+- Status bar shows "ZOOM" mode
+- All other panes in the tab still run — they're just not visible
+- Any navigation keybind (focus left/right/etc.) unzooms and moves to that pane
+- Sidebar still shows all panes — clicking one unzooms
+
+Familiar from: tmux `Ctrl+B z`, VS Code maximize panel.
+
+### Right-Click Context Menu
+
+Platform-native context menu on right-click. Contents are context-aware:
+
+**On selected text:**
+```
+Copy
+Copy Without Trailing Newline
+Search Selection
+Open URL (if URL selected)
+Open in Editor (if file path selected)
+```
+
+**On terminal (no selection):**
+```
+Paste
+Split Right
+Split Down
+New Floating Pane
+Toggle Sidebar
+Select All
+Clear Scrollback
+```
+
+**On a tab:**
+```
+Rename Tab
+Set Tab Color
+Duplicate Tab
+Close Tab
+Close Other Tabs
+Move Tab to New Window
+```
+
+**On the sidebar:**
+```
+Focus Pane
+Rename
+Set Color
+Close
+Move to Other Sidebar (if multi-sidebar)
+```
+
+Plugins can add items to the context menu:
+```rust
+context_menu.register(ContextMenuItem {
+    label: "View Diff",
+    context: ContextMenuContext::Pane,    // when right-clicking a pane
+    condition: |pane| pane.metadata.get("agent") == Some("true"),
+    action: |pane| { /* open diff */ },
+    accessible_label: "View agent diff for this pane",
+});
+```
+
+### Mouse Behavior
+
+**Click:**
+- Single click: place cursor (if shell integration supports it) or clear selection
+- Double click: select word (semantic — understands paths, URLs, identifiers)
+- Triple click: select line (or command output if shell integration active)
+- Quad click: select entire command + output (semantic zone, if shell integration)
+
+**Trackpad / scroll:**
+- Scroll: smooth pixel scrolling in scrollback (macOS momentum, Linux platform-dependent)
+- Scroll in alternate screen (vim, less): send scroll events to the application
+- Horizontal scroll: `Shift+scroll` (for wide content, if applicable)
+
+**Middle click (Linux):**
+- Paste from primary selection (X11/Wayland standard)
+
+**Drag:**
+- Drag to select text
+- Drag with `Alt` held: block/rectangular selection
+- Drag a file from Finder/Nautilus onto terminal: insert quoted path
+- Drag a pane border: resize the split
+
+**Mouse reporting:**
+- Support SGR mouse mode (modern), legacy mouse modes for older TUI apps
+- When a TUI app captures the mouse, terminal selection requires holding `Shift`
+- Configurable: `shift-click-selection = true` (default)
+
+### Profiles
+
+Named configuration bundles that can be switched per-tab, per-pane, or per-environment. Different from themes (visual only) — profiles change behavior.
+
+```lua
+profiles = {
+  default = {
+    -- inherits global config
+  },
+  work = {
+    font_size = 13,
+    theme_dark = "github-dark",
+    env = { GIT_AUTHOR_EMAIL = "jace@work.com" },
+  },
+  production = {
+    theme_dark = "high-contrast-dark",
+    border_color = "#f38ba8",
+    paste_warning_lines = 1,            -- warn on ANY multi-line paste
+    paste_dangerous_patterns = true,
+    tab_label = "PROD",
+    read_only = false,                  -- could be true for view-only prod access
+  },
+  personal = {
+    font_size = 15,
+    theme_dark = "catppuccin-mocha",
+    env = { GIT_AUTHOR_EMAIL = "jace@personal.com" },
+  },
+}
+```
+
+Flat config:
+```
+profile.work.font-size = 13
+profile.work.theme-dark = github-dark
+profile.production.paste-warning-lines = 1
+profile.production.border-color = #f38ba8
+profile.production.tab-label = PROD
+```
+
+**How to use profiles:**
+- New tab with profile: `:new --profile work`
+- SSH domains can specify a profile: `ssh_domains = { { name = "prod", profile = "production" } }`
+- Environment detection can auto-switch: matches hostname/cwd/env → activates profile
+- Per-pane override: `:profile production` switches the current pane
+
+**Relationship to environment coloring:** Profiles are a superset. Environment coloring (from [Smart Keybinds](19-smart-keybinds.md)) sets border color and label. Profiles change font, theme, paste behavior, env vars, and more.
+
+### Window Management
+
+Multiple windows and how they interact.
+
+- **New window:** `Cmd+N` (macOS) / `Ctrl+Shift+N` (Linux/Windows)
+- **Tab to window:** Drag a tab out of the tab bar → becomes its own window
+- **Window to tab:** Drag a window's tab bar onto another window → merges as a tab
+- **Multiple monitors:** Windows remember which monitor they were on. Session restore puts them back.
+- **Native window behavior:** Minimize, maximize, full-screen all work as expected per-platform
+- **Window-specific config:** Each window can have different profiles active per-tab
+
+All windows share the same daemon process (server/client architecture). Glyph atlas, plugins, and config are shared. Opening a new window is cheap.
