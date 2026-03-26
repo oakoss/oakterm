@@ -23,6 +23,6 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 - Zero telemetry. No login. No account. No phoning home. Ever.
 - AI features are opt-in, BYOK, and work with local models.
 - Open protocols — Kitty graphics, standard escape sequences, WASM plugins.
-- Platform-native — AppKit on macOS, GTK on Linux. Not Electron.
+- Platform-native — AppKit on macOS, GTK on Linux, WinUI on Windows. All three from day one. Not Electron.
 - Replaces tmux, not complements it.
 - Memory-conscious — tiered scroll buffer, per-pane budgets, no pre-allocation.
