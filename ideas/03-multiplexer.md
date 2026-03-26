@@ -92,3 +92,11 @@ Modal navigation in scrollback — vi keybindings for search, selection, and yan
 - Clipboard over SSH+mux broken → OSC-52 passthrough everywhere
 - Image protocols don't work in tmux → both Kitty + Sixel work through multiplexer
 - SSH terminfo not on remote hosts → use xterm-256color, advertise extras via escape queries
+
+## Related Docs
+
+- [Architecture](01-architecture.md) — where the multiplexer sits in the layer stack
+- [Sidebar](04-sidebar.md) — pane navigation and process dashboard
+- [Memory Management](15-memory-management.md) — scroll buffer strategy (ring + disk archive)
+- [Session persistence is part of the multiplexer, serialization format TBD]
+- [Platform Support](20-platform-support.md) — Wayland vs X11, clipboard handling per platform
