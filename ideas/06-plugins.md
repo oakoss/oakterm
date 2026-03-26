@@ -177,10 +177,84 @@ Still boots in 5ms. Still the fastest terminal. No smart features.
 - Portable — same plugin works on macOS and Linux
 - Proven — Zellij already ships a WASM plugin system
 
-## Plugin Distribution
+## Plugin Manager & Registry
 
-- Registry for discovering and installing plugins (like crates.io or npm)
-- `phantom plugin install browser-webview`
-- Plugins are WASM binaries — small, auditable, no native code execution
-- Versioned, with dependency declarations
-- Plugins can depend on core API version (semver)
+### CLI
+
+```
+phantom plugin install docker-manager
+phantom plugin remove docker-manager
+phantom plugin list
+phantom plugin search browser
+phantom plugin update
+phantom plugin update docker-manager
+phantom plugin info docker-manager
+```
+
+### In the Palette
+
+```
+Cmd+Shift+P → :plugins
+
+┌──────────────────────────────────────────────────┐
+│  plugins:  Search plugins                        │
+├──────────────────────────────────────────────────┤
+│  Installed                                       │
+│  ✓ agent-manager        bundled    enabled       │
+│  ✓ context-engine       bundled    enabled       │
+│  ✓ docker-manager       v1.2.0     enabled       │
+│  ○ browser-lite         bundled    disabled      │
+│                                                  │
+│  Available                                       │
+│  ↓ k8s-pods             Kubernetes pod manager   │
+│  ↓ browser-webview      Native WebView browser   │
+│  ↓ serial-terminal      Serial port connections  │
+│  ↓ theme-catppuccin     Catppuccin color scheme  │
+└──────────────────────────────────────────────────┘
+```
+
+- Toggle enabled/disabled inline
+- Install with Enter — shows permission request before first enable
+- One-click update when new version available
+
+### The Registry
+
+A lightweight, public index — not an app store.
+
+- Static API or git repo mapping plugin names to WASM binary URLs
+- Each entry: name, version, description, declared capabilities, source repo URL, checksum
+- Community submits plugins via PR
+- No approval gate beyond "valid WASM binary with a manifest"
+- No reviews, no ratings — stars on the plugin's source repo are enough
+- No install count telemetry
+
+### Plugin Manifest
+
+Every plugin ships a `phantom-plugin.toml`:
+
+```toml
+[plugin]
+name = "docker-manager"
+version = "1.2.0"
+description = "Sidebar section for Docker containers"
+authors = ["someone"]
+repository = "https://github.com/someone/phantom-docker"
+license = "MIT"
+min-core-version = "0.5.0"
+
+[capabilities]
+sidebar = true
+pane-create = true
+process-spawn = true
+notify = true
+network = false
+fs-read = true
+pane-surface = false
+```
+
+### What It's Not
+
+- Not a paid marketplace — all plugins are free and open source
+- Not a walled garden — sideload any WASM binary from a URL or local path
+- No auto-update by default — `phantom plugin update` is explicit
+- No telemetry on installs, usage, or anything else
