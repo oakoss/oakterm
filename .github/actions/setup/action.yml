@@ -1,0 +1,28 @@
+name: Setup
+description: Install mise and project toolchain
+
+runs:
+  using: composite
+  steps:
+    - name: Install mise
+      uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+      with:
+        install: true
+        cache: true
+
+    # TODO: Add Rust toolchain setup when code exists
+    # - name: Setup Rust
+    #   uses: dtolnay/rust-toolchain@stable
+    #   with:
+    #     components: clippy, rustfmt
+
+    # TODO: Add cargo caching when code exists
+    # - name: Cache cargo
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.cargo/bin/
+    #       ~/.cargo/registry/
+    #       ~/.cargo/git/
+    #       target/
+    #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
