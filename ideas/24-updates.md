@@ -23,7 +23,7 @@ Ghostty shows an "update available" notification in the bottom-right corner. You
 - Check for updates on launch (configurable interval, default: daily)
 - No background process — check happens when the terminal opens
 - Zero telemetry — the check is a single HTTP GET to a static version manifest
-- `phantom --version` and `:debug` show current version and whether an update is available
+- `oakterm --version` and `:debug` show current version and whether an update is available
 
 ### Notification
 
@@ -47,9 +47,9 @@ When an update is available:
 | Notification banner      | Click "Update Now"                                       |
 | Command palette          | `:update`                                                |
 | Settings palette         | "Update Available" entry at the top                      |
-| CLI                      | `phantom update`                                         |
+| CLI                      | `oakterm update`                                         |
 | Status bar               | Click the version indicator                              |
-| Package manager          | `brew upgrade phantom` / `winget upgrade phantom` / etc. |
+| Package manager          | `brew upgrade oakterm` / `winget upgrade oakterm` / etc. |
 
 All of these trigger the same update flow. None of them silently fail.
 
@@ -66,7 +66,7 @@ All of these trigger the same update flow. None of them silently fail.
 If the new version crashes on launch or has a critical bug:
 
 ```bash
-phantom rollback
+oakterm rollback
 ```
 
 Reverts to the previous version. Keeps the last 2 versions on disk.
@@ -84,7 +84,7 @@ update-channel = none      # disable update checks entirely
 On macOS with Homebrew, the terminal detects it was installed via `brew` and defers to:
 
 ```bash
-brew upgrade phantom
+brew upgrade oakterm
 ```
 
 On Linux with Flatpak, it defers to the Flatpak update system. On Windows with winget, it defers to winget. The built-in updater only runs when installed standalone.
@@ -94,8 +94,8 @@ On Linux with Flatpak, it defers to the Flatpak update system. On Windows with w
 Plugin updates are separate from core updates:
 
 ```bash
-phantom plugin update              # update all plugins
-phantom plugin update agent-manager # update specific plugin
+oakterm plugin update              # update all plugins
+oakterm plugin update agent-manager # update specific plugin
 ```
 
 Or from the palette: `:plugins` shows which plugins have updates available.

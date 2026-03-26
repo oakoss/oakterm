@@ -20,7 +20,7 @@ Health checks need to verify the core itself — renderer, VT parser, platform i
 Cmd+Shift+P → :health
 
 ┌──────────────────────────────────────────────────────┐
-│  Phantom Health Check                                │
+│  OakTerm Health Check                                │
 ├──────────────────────────────────────────────────────┤
 │                                                      │
 │  ## Core                                             │
@@ -29,7 +29,7 @@ Cmd+Shift+P → :health
 │  ✓ Text Shaper       Core Text                       │
 │  ✓ VT Parser         built-in                        │
 │  ✓ Plugin Runtime    Wasmtime 25.0                   │
-│  ✓ Config            ~/.config/phantom/config (valid) │
+│  ✓ Config            ~/.config/oakterm/config (valid) │
 │                                                      │
 │  ## Performance                                      │
 │  ✓ Input Latency     6.2ms avg (target: <8ms)        │
@@ -154,20 +154,20 @@ This means the docker-manager plugin can check if Docker is actually running, th
 | `:debug input`    | Input inspector — "what did I press?"                                  |
 | `:debug escape`   | Escape inspector — "what's the program sending?"                       |
 | `:debug security` | Security state — "what's locked down?"                                 |
-| `phantom doctor`  | CLI-only health check — same as `:health` but for outside the terminal |
+| `oakterm doctor`  | CLI-only health check — same as `:health` but for outside the terminal |
 
 `:health` is the "run everything" option. The specific `:debug` commands are for targeted investigation after `:health` tells you where to look.
 
 ### CLI Equivalent
 
 ```bash
-$ phantom doctor
+$ oakterm doctor
 
 Same output as :health, but on the command line.
 Useful when the terminal itself won't start.
 ```
 
-`phantom doctor` and `:health` run the same checks, produce the same output. One is for inside the terminal, one is for outside.
+`oakterm doctor` and `:health` run the same checks, produce the same output. One is for inside the terminal, one is for outside.
 
 ## Related Docs
 

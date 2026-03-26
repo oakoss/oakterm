@@ -26,7 +26,7 @@ Run the terminal daemon on a server. Connect to it from your desktop terminal li
 ┌─────────────────────────────────┐     ┌─────────────────────────────┐
 │  Your Mac (client)              │     │  Proxmox Server (daemon)    │
 │                                 │     │                             │
-│  Phantom Terminal               │     │  phantom --headless         │
+│  OakTerm                        │     │  oakterm --headless         │
 │  ├── Local panes (shells, etc.) │     │  ├── 3 agents running       │
 │  │                              │     │  ├── docker compose         │
 │  └── Remote tab: homelab ───────┼────→│  ├── test watcher           │
@@ -43,7 +43,7 @@ The remote panes appear in your sidebar alongside local panes. You can split a r
 ### 1. Headless Daemon (server-side)
 
 ```bash
-phantom --headless
+oakterm --headless
 ```
 
 Runs the full daemon without a window — no GPU, no display server, no GTK/AppKit/WinUI. Just the multiplexer, plugin host, scroll buffers, and network API.
@@ -67,11 +67,11 @@ Everything else — multiplexer, plugins, config, VT parser, scroll buffer — r
 
 ```bash
 # On your server
-phantom --headless --port 7890 --auth-token "$PHANTOM_TOKEN"
+oakterm --headless --port 7890 --auth-token "$OAKTERM_TOKEN"
 
 # Or daemonize it
-phantom --headless --port 7890 --auth-token "$PHANTOM_TOKEN" --daemon
-# Writes PID to ~/.local/state/phantom/daemon.pid
+oakterm --headless --port 7890 --auth-token "$OAKTERM_TOKEN" --daemon
+# Writes PID to ~/.local/state/oakterm/daemon.pid
 ```
 
 ### 2. Client Connection (desktop-side)
@@ -88,7 +88,7 @@ Or in config:
 remote-domain.homelab.host = proxmox.local
 remote-domain.homelab.port = 7890
 remote-domain.homelab.auth = token
-remote-domain.homelab.token = ${PHANTOM_HOMELAB_TOKEN}
+remote-domain.homelab.token = ${OAKTERM_HOMELAB_TOKEN}
 ```
 
 ```lua
@@ -105,7 +105,7 @@ remote_domains = {
     host = "prod.example.com",
     port = 7890,
     auth = "mtls",
-    cert = "~/.config/phantom/certs/prod-client.pem",
+    cert = "~/.config/oakterm/certs/prod-client.pem",
   },
 }
 ```
@@ -148,18 +148,18 @@ The client does its own rendering — the server doesn't need a GPU. The protoco
 
 SSH domains (in the multiplexer) open an SSH connection and run a remote shell. The remote machine runs your shell, not the daemon. There's no plugin host, no sidebar, no agent management on the remote side.
 
-Remote domains connect to a full Phantom daemon. The remote side has its own plugins, sidebar state, agent management, scroll buffers. The client synchronizes with that state.
+Remote domains connect to a full OakTerm daemon. The remote side has its own plugins, sidebar state, agent management, scroll buffers. The client synchronizes with that state.
 
 | Feature             | SSH Domain             | Remote Domain                           |
 | ------------------- | ---------------------- | --------------------------------------- |
-| Remote side runs    | Your shell (bash/zsh)  | Full Phantom daemon                     |
+| Remote side runs    | Your shell (bash/zsh)  | Full OakTerm daemon                     |
 | Plugins             | Local only             | Both local and remote                   |
 | Sidebar             | Local state only       | Merged local + remote                   |
 | Agent management    | Not available remotely | Full remote agent lifecycle             |
 | Session persistence | Reconnects SSH         | Daemon keeps running, client reconnects |
-| Requires on remote  | SSH server             | Phantom binary                          |
+| Requires on remote  | SSH server             | OakTerm binary                          |
 
-You'll use both. SSH domains for quick shell access to machines where you don't have Phantom installed. Remote domains for your homelab, dev servers, and CI machines where you want the full experience.
+You'll use both. SSH domains for quick shell access to machines where you don't have OakTerm installed. Remote domains for your homelab, dev servers, and CI machines where you want the full experience.
 
 ## Web Client (for mobile/lightweight access)
 
@@ -193,7 +193,7 @@ The daemon listens on localhost by default. You bring your own tunnel:
 
 | Method    | Best for                                                              |
 | --------- | --------------------------------------------------------------------- |
-| **Token** | Personal use — generate with `phantom remote token`, pass via env var |
+| **Token** | Personal use — generate with `oakterm remote token`, pass via env var |
 | **mTLS**  | Team/production — mutual TLS with client certificates                 |
 
 Tokens are never stored in config files — always via environment variable or credential manager.
@@ -217,7 +217,7 @@ The daemon-to-client connection is a core feature — networking for remote doma
 ### What's a plugin
 
 - **Web client** — the HTML/JS bundle served to browsers (plugin: `web-client`)
-- **Auto-discovery** — mDNS/Bonjour to find Phantom daemons on the LAN (plugin: `lan-discovery`)
+- **Auto-discovery** — mDNS/Bonjour to find OakTerm daemons on the LAN (plugin: `lan-discovery`)
 - **Tunnel helpers** — auto-start/configure Tailscale, Cloudflare, Pangolin (plugin: `tunnel-manager`)
 - **Multi-daemon dashboard** — managing connections to many servers (plugin: `remote-dashboard`)
 

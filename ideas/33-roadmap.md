@@ -86,7 +86,7 @@ The extension runtime and core plugin API.
 - Lua config engine (full — beyond flat file)
 - Plugin API primitives: pane, sidebar data model, palette, notify, lifecycle hooks, process, filesystem
 - Capability-based permissions
-- Plugin manager CLI (`phantom plugin install/remove/list`)
+- Plugin manager CLI (`oakterm plugin install/remove/list`)
 - Plugin registry (initial, lightweight)
 - Bundled plugins (first batch):
   - `sidebar-ui` — the sidebar renderer
@@ -96,7 +96,7 @@ The extension runtime and core plugin API.
 - Drawer panes, popup panes, modal panes
 - Settings palette (`:settings`, `:keybinds`, `:theme` with live preview)
 - Theme system (TOML, inheritance, import, validation)
-- Health check (`:health` / `phantom doctor`)
+- Health check (`:health` / `oakterm doctor`)
 
 **What does NOT ship:**
 
@@ -121,7 +121,7 @@ Smart features that know what you're doing.
 - Context engine plugin (smart autocomplete, project detection, typed completions)
 - Agent management plugin (`:agent`, worktrees, sidebar status, `:merge`, `:diff`)
 - Harpoon plugin (pane bookmarks)
-- Agent control API (`phantom ctl`)
+- Agent control API (`oakterm ctl`)
 - Hints mode
 - Input broadcast
 - Environment-aware pane coloring
@@ -145,7 +145,7 @@ Connect to remote machines and daemons.
 
 - SSH domains (core — in the multiplexer)
 - Remote domains (headless daemon + client connection)
-- Headless mode (`phantom --headless`)
+- Headless mode (`oakterm --headless`)
 - Web client plugin (for mobile/browser access)
 - Auto-reconnection on network drop
 - Token and mTLS authentication
@@ -168,7 +168,7 @@ The long tail.
 - Syntax highlighting plugin (tree-sitter)
 - Multi-sidebar support
 - Advanced status bar widgets
-- `phantom ctl` expanded commands
+- `oakterm ctl` expanded commands
 - Accessibility audit and improvements
 - Performance optimization pass
 - Documentation site

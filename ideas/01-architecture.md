@@ -98,7 +98,7 @@ If a feature deeply integrates with the renderer, multiplexer, or VT parser — 
 Inspired by Foot. One daemon process, many terminal windows.
 
 ```text
-phantom-daemon (one process)
+oakterm-daemon (one process)
 ├── Glyph atlas + font cache (shared)
 ├── Plugin host (shared, one WASM runtime)
 ├── Config state (shared)

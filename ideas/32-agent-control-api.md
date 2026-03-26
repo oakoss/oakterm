@@ -8,13 +8,13 @@ tags: ['agents', 'cli', 'api', 'control', 'permissions', 'socket']
 
 # Agent Control API
 
-A CLI (`phantom ctl`) that lets agents — or any process running in a pane — interact with the terminal. Not an MCP server. Just a binary that talks to the daemon over its Unix socket.
+A CLI (`oakterm ctl`) that lets agents — or any process running in a pane — interact with the terminal. Not an MCP server. Just a binary that talks to the daemon over its Unix socket.
 
 ## Why CLI
 
 - Works with any agent (Claude Code, Codex, Aider, Goose, custom scripts)
 - No protocol to implement — it's just a command
-- Debuggable — run `phantom ctl` yourself in a shell to test
+- Debuggable — run `oakterm ctl` yourself in a shell to test
 - Scriptable — works in bash scripts, makefiles, CI
 - Already available — the daemon socket exists for the server/client architecture
 - Agents can use it via tool_use/bash without any special integration
@@ -22,94 +22,94 @@ A CLI (`phantom ctl`) that lets agents — or any process running in a pane — 
 ## The CLI
 
 ```bash
-phantom ctl <command> [args]
+oakterm ctl <command> [args]
 ```
 
-The `ctl` subcommand connects to the running daemon via `$PHANTOM_SOCKET` (auto-set in every pane's environment). The daemon knows which pane the request came from.
+The `ctl` subcommand connects to the running daemon via `$OAKTERM_SOCKET` (auto-set in every pane's environment). The daemon knows which pane the request came from.
 
 ### Pane Management
 
 ```bash
 # Create panes
-phantom ctl pane create                           # new shell pane (tiled)
-phantom ctl pane create --floating                # floating pane
-phantom ctl pane create --drawer bottom           # bottom drawer
-phantom ctl pane create --popup                   # centered popup
-phantom ctl pane create --command "npm test"      # run a command
-phantom ctl pane create --popup --command "lazygit"
+oakterm ctl pane create                           # new shell pane (tiled)
+oakterm ctl pane create --floating                # floating pane
+oakterm ctl pane create --drawer bottom           # bottom drawer
+oakterm ctl pane create --popup                   # centered popup
+oakterm ctl pane create --command "npm test"      # run a command
+oakterm ctl pane create --popup --command "lazygit"
 
 # List panes
-phantom ctl pane list                             # all panes (JSON)
-phantom ctl pane list --format table              # human-readable
+oakterm ctl pane list                             # all panes (JSON)
+oakterm ctl pane list --format table              # human-readable
 
 # Read output from another pane
-phantom ctl pane output <pane-id>                 # last 100 lines
-phantom ctl pane output <pane-id> --lines 500     # last 500 lines
-phantom ctl pane output <pane-id> --follow        # stream new output
+oakterm ctl pane output <pane-id>                 # last 100 lines
+oakterm ctl pane output <pane-id> --lines 500     # last 500 lines
+oakterm ctl pane output <pane-id> --follow        # stream new output
 
 # Send input to another pane
-phantom ctl pane input <pane-id> "npm run build"
-phantom ctl pane input <pane-id> --enter          # press enter
+oakterm ctl pane input <pane-id> "npm run build"
+oakterm ctl pane input <pane-id> --enter          # press enter
 
 # Focus
-phantom ctl pane focus <pane-id>                  # switch view to a pane
+oakterm ctl pane focus <pane-id>                  # switch view to a pane
 
 # Close
-phantom ctl pane close <pane-id>
+oakterm ctl pane close <pane-id>
 ```
 
 ### Self (current pane)
 
 ```bash
 # Set metadata on the calling pane
-phantom ctl self set-title "Building auth module"
-phantom ctl self set-status working               # working, needs-input, done, error
-phantom ctl self set-color "#a6e3a1"              # tab/sidebar accent color
-phantom ctl self set-progress 65                  # progress bar (0-100)
-phantom ctl self set-badge "3 files changed"
+oakterm ctl self set-title "Building auth module"
+oakterm ctl self set-status working               # working, needs-input, done, error
+oakterm ctl self set-color "#a6e3a1"              # tab/sidebar accent color
+oakterm ctl self set-progress 65                  # progress bar (0-100)
+oakterm ctl self set-badge "3 files changed"
 
 # Read own pane info
-phantom ctl self info                             # JSON: pane-id, cwd, title, status
+oakterm ctl self info                             # JSON: pane-id, cwd, title, status
 ```
 
 ### Notifications
 
 ```bash
-phantom ctl notify "Build complete"                           # simple notification
-phantom ctl notify "Tests failed" --level error               # error badge
-phantom ctl notify "Approve changes?" --level warn --sticky   # stays until dismissed
+oakterm ctl notify "Build complete"                           # simple notification
+oakterm ctl notify "Tests failed" --level error               # error badge
+oakterm ctl notify "Approve changes?" --level warn --sticky   # stays until dismissed
 ```
 
 ### Sidebar
 
 ```bash
-phantom ctl sidebar set-section "Build" --entries '[...]'     # custom section (JSON)
-phantom ctl sidebar add-entry --section agents --label "cleanup" --status working
+oakterm ctl sidebar set-section "Build" --entries '[...]'     # custom section (JSON)
+oakterm ctl sidebar add-entry --section agents --label "cleanup" --status working
 ```
 
 ### Prompts (get user input)
 
 ```bash
 # Show a popup asking the user a question, return their answer
-ANSWER=$(phantom ctl prompt "Use sliding window or token bucket?" --choices "sliding,token")
+ANSWER=$(oakterm ctl prompt "Use sliding window or token bucket?" --choices "sliding,token")
 echo "User chose: $ANSWER"
 
 # Yes/no confirmation
-phantom ctl confirm "Merge feat/auth to main?"
+oakterm ctl confirm "Merge feat/auth to main?"
 # Exit code 0 = yes, 1 = no
 
 # Free text input
-RESPONSE=$(phantom ctl prompt "Enter the API endpoint:" --input)
+RESPONSE=$(oakterm ctl prompt "Enter the API endpoint:" --input)
 ```
 
 ### Environment
 
 ```bash
 # Read terminal/pane info
-phantom ctl env pane-id                           # current pane ID
-phantom ctl env workspace                         # current workspace name
-phantom ctl env panes                             # JSON list of all panes
-phantom ctl env version                           # terminal version
+oakterm ctl env pane-id                           # current pane ID
+oakterm ctl env workspace                         # current workspace name
+oakterm ctl env panes                             # JSON list of all panes
+oakterm ctl env version                           # terminal version
 ```
 
 ## Permission Model
@@ -173,28 +173,28 @@ If an agent tries a denied action, the terminal can prompt the user:
 Every pane gets these environment variables automatically:
 
 ```bash
-PHANTOM_SOCKET=/tmp/phantom-<uid>/socket    # daemon socket path
-PHANTOM_PANE_ID=pane-a1b2c3d4               # this pane's unique ID
-PHANTOM_WORKSPACE=work                       # current workspace name
-PHANTOM_VERSION=0.7.0                        # terminal version
+OAKTERM_SOCKET=/tmp/oakterm-<uid>/socket    # daemon socket path
+OAKTERM_PANE_ID=pane-a1b2c3d4               # this pane's unique ID
+OAKTERM_WORKSPACE=work                       # current workspace name
+OAKTERM_VERSION=0.7.0                        # terminal version
 ```
 
-Agents (and scripts) use these to talk to the daemon. If `PHANTOM_SOCKET` is unset, `phantom ctl` knows it's not running inside the terminal and exits with a helpful error.
+Agents (and scripts) use these to talk to the daemon. If `OAKTERM_SOCKET` is unset, `oakterm ctl` knows it's not running inside the terminal and exits with a helpful error.
 
 ## Use Cases
 
 ### Agent sets its own status as it works
 
 ```bash
-phantom ctl self set-status working
-phantom ctl self set-title "Analyzing codebase"
+oakterm ctl self set-status working
+oakterm ctl self set-title "Analyzing codebase"
 # ... does work ...
-phantom ctl self set-progress 50
-phantom ctl self set-title "Writing tests"
+oakterm ctl self set-progress 50
+oakterm ctl self set-title "Writing tests"
 # ... does more work ...
-phantom ctl self set-status done
-phantom ctl self set-badge "4 files, 12 tests"
-phantom ctl notify "feat/auth complete" --level success
+oakterm ctl self set-status done
+oakterm ctl self set-badge "4 files, 12 tests"
+oakterm ctl notify "feat/auth complete" --level success
 ```
 
 The sidebar and tab automatically reflect these updates in real-time.
@@ -202,16 +202,16 @@ The sidebar and tab automatically reflect these updates in real-time.
 ### Agent opens a test runner to verify its work
 
 ```bash
-phantom ctl pane create --drawer bottom --command "npm test"
+oakterm ctl pane create --drawer bottom --command "npm test"
 # waits for tests...
-TEST_OUTPUT=$(phantom ctl pane output $TEST_PANE --lines 5)
+TEST_OUTPUT=$(oakterm ctl pane output $TEST_PANE --lines 5)
 # reads results, continues working
 ```
 
 ### Agent asks user for a decision
 
 ```bash
-APPROACH=$(phantom ctl prompt "Rate limiting approach?" --choices "sliding-window,token-bucket,leaky-bucket")
+APPROACH=$(oakterm ctl prompt "Rate limiting approach?" --choices "sliding-window,token-bucket,leaky-bucket")
 # Agent uses the answer to guide its implementation
 ```
 
@@ -220,10 +220,10 @@ APPROACH=$(phantom ctl prompt "Rate limiting approach?" --choices "sliding-windo
 ```bash
 #!/bin/bash
 # dev-setup.sh — run inside the terminal
-phantom ctl pane create --command "npm run dev" --title "Dev Server"
-phantom ctl pane create --drawer bottom --command "vitest --watch" --title "Tests"
-phantom ctl pane create --floating --command "docker compose up" --title "Docker"
-phantom ctl notify "Dev environment ready"
+oakterm ctl pane create --command "npm run dev" --title "Dev Server"
+oakterm ctl pane create --drawer bottom --command "vitest --watch" --title "Tests"
+oakterm ctl pane create --floating --command "docker compose up" --title "Docker"
+oakterm ctl notify "Dev environment ready"
 ```
 
 ## What This Is Not

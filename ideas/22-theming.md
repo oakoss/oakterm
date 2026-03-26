@@ -12,10 +12,10 @@ Users should be able to change anything they want. The theming system is deep �
 
 ## Theme File Format
 
-Themes are TOML files in `~/.config/phantom/themes/`:
+Themes are TOML files in `~/.config/oakterm/themes/`:
 
 ```toml
-# ~/.config/phantom/themes/my-theme.toml
+# ~/.config/oakterm/themes/my-theme.toml
 [metadata]
 name = "My Custom Theme"
 author = "jace"
@@ -247,10 +247,10 @@ environments = {
 The window title is separate from tab titles:
 
 ```lua
-window-title = Phantom             # static
+window-title = OakTerm             # static
 window-title = {cwd}               # dynamic: working directory
 window-title = {tab} — {cwd}      # tab name + cwd
-window-title = Phantom — {tab}    # default
+window-title = OakTerm — {tab}    # default
 ```
 
 Plugins and programs can update the window title via `OSC 0` / `OSC 2`. This is controlled by the same `tab-title-mode` config — when set to `custom`, programs can't change the window title either.
@@ -286,18 +286,18 @@ Themes are **data packages**, not WASM plugins. They're just `.toml` files — n
 
 Distributable as:
 
-- Single `.toml` files (drop in `~/.config/phantom/themes/`)
-- Via the registry as a data package: `phantom theme install catppuccin` (downloads the TOML files, no WASM involved)
+- Single `.toml` files (drop in `~/.config/oakterm/themes/`)
+- Via the registry as a data package: `oakterm theme install catppuccin` (downloads the TOML files, no WASM involved)
 - Via a dedicated theme gallery on the website (browse, preview, one-click install)
 
 Themes use the same registry infrastructure as plugins but are a different package type (`type = "theme"` in the manifest). They require no capabilities and run no code.
 
 ## Theme Authoring
 
-`phantom theme create` scaffolds a new theme file with all fields documented. `phantom theme validate my-theme.toml` checks for missing fields, contrast issues, and accessibility.
+`oakterm theme create` scaffolds a new theme file with all fields documented. `oakterm theme validate my-theme.toml` checks for missing fields, contrast issues, and accessibility.
 
 ```bash
-$ phantom theme validate my-theme.toml
+$ oakterm theme validate my-theme.toml
 
 ✓ All required colors defined
 ✓ Foreground/background contrast: 7.2:1 (WCAG AAA)
@@ -328,13 +328,13 @@ pane-active-border = "#ff0000"
 ## Import from Other Terminals
 
 ```bash
-phantom theme import ghostty ~/.config/ghostty/config
-phantom theme import kitty ~/.config/kitty/kitty.conf
-phantom theme import alacritty ~/.config/alacritty/alacritty.toml
-phantom theme import iterm2 ~/my-profile.itermcolors
+oakterm theme import ghostty ~/.config/ghostty/config
+oakterm theme import kitty ~/.config/kitty/kitty.conf
+oakterm theme import alacritty ~/.config/alacritty/alacritty.toml
+oakterm theme import iterm2 ~/my-profile.itermcolors
 ```
 
-Converts the terminal's color scheme to a Phantom theme file. Maps what it can, leaves UI chrome at defaults.
+Converts the terminal's color scheme to an OakTerm theme file. Maps what it can, leaves UI chrome at defaults.
 
 ## Related Docs
 

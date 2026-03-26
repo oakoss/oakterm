@@ -1,4 +1,4 @@
-# Phantom Terminal
+# OakTerm
 
 GPU-accelerated, extensible terminal emulator with a plugin-driven process dashboard and context-aware shell.
 

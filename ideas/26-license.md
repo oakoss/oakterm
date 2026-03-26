@@ -54,7 +54,7 @@ MPL 2.0 is used by Firefox, Thunderbird, and LibreOffice. It's well-understood, 
 
 **Official registry: open source required.**
 
-Any plugin listed in the official registry (`phantom plugin install <name>`) must be open source — MIT, Apache, MPL, GPL, or any OSI-approved license. This ensures:
+Any plugin listed in the official registry (`oakterm plugin install <name>`) must be open source — MIT, Apache, MPL, GPL, or any OSI-approved license. This ensures:
 
 - The ecosystem is transparent and auditable (critical — plugins run in your terminal)
 - Users can inspect what a plugin does before trusting it with capabilities like `pane.output` or `network`
@@ -66,8 +66,8 @@ Any plugin listed in the official registry (`phantom plugin install <name>`) mus
 Users can install any WASM binary from a URL or local path:
 
 ```bash
-phantom plugin install --from ./my-plugin.wasm
-phantom plugin install --from https://example.com/plugin.wasm
+oakterm plugin install --from ./my-plugin.wasm
+oakterm plugin install --from https://example.com/plugin.wasm
 ```
 
 Sideloaded plugins show a clear warning: "This plugin is not from the official registry and has not been reviewed." The user accepts the risk. No license restriction on sideloads.

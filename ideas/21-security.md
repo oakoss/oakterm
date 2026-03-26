@@ -71,7 +71,7 @@ WASM plugins are sandboxed, but a malicious plugin could still:
 
 - Plugin registry entries include checksums (SHA-256)
 - Plugins are signed by their authors (optional but surfaced in the UI)
-- `phantom plugin audit` checks installed plugins against known vulnerabilities
+- `oakterm plugin audit` checks installed plugins against known vulnerabilities
 - Plugin updates require explicit user action — no auto-update
 
 ## Privacy

@@ -90,7 +90,7 @@ This is the primitive that enables a browser plugin, a markdown previewer, an im
 - `storage.set(key, value)` — write plugin-local persistent data
 - `storage.delete(key)` — remove a key
 - Scoped per-plugin, persists across sessions
-- Stored in `~/.local/state/phantom/plugins/<name>/data`
+- Stored in `~/.local/state/oakterm/plugins/<name>/data`
 - Enables: harpoon (persist bookmark list), any plugin with state
 
 ### Shell Integration Events
@@ -255,13 +255,13 @@ Still boots in 5ms. Still the fastest terminal. No smart features.
 ### CLI
 
 ```bash
-phantom plugin install docker-manager
-phantom plugin remove docker-manager
-phantom plugin list
-phantom plugin search browser
-phantom plugin update
-phantom plugin update docker-manager
-phantom plugin info docker-manager
+oakterm plugin install docker-manager
+oakterm plugin remove docker-manager
+oakterm plugin list
+oakterm plugin search browser
+oakterm plugin update
+oakterm plugin update docker-manager
+oakterm plugin info docker-manager
 ```
 
 ### In the Palette
@@ -306,7 +306,7 @@ A lightweight, public index — not an app store. **All registry plugins must be
 
 ### Plugin Manifest
 
-Every plugin ships a `phantom-plugin.toml`:
+Every plugin ships a `oakterm-plugin.toml`:
 
 ```toml
 [plugin]
@@ -314,7 +314,7 @@ name = "docker-manager"
 version = "1.2.0"
 description = "Sidebar section for Docker containers"
 authors = ["someone"]
-repository = "https://github.com/someone/phantom-docker"
+repository = "https://github.com/someone/oakterm-docker"
 license = "MIT"
 min-core-version = "0.5.0"
 
@@ -332,7 +332,7 @@ pane-surface = false
 
 - Not a paid marketplace — all registry plugins are open source
 - Not a walled garden — sideload any WASM binary from a URL or local path
-- No auto-update by default — `phantom plugin update` is explicit
+- No auto-update by default — `oakterm plugin update` is explicit
 - No telemetry on installs, usage, or anything else
 
 ## Related Docs

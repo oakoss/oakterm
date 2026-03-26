@@ -12,10 +12,10 @@ Configuration should be dead simple to start and powerful when you need it. You 
 
 ## First Launch Experience
 
-On first launch with no config file, Phantom works with sensible defaults. But it also offers an interactive setup:
+On first launch with no config file, OakTerm works with sensible defaults. But it also offers an interactive setup:
 
 ```text
-Welcome to Phantom.
+Welcome to OakTerm.
 
 Let's set up the basics. You can change any of this later.
 
@@ -75,7 +75,7 @@ Cmd+Shift+P → :settings
 
 ### Flat Config (basics)
 
-`~/.config/phantom/config` — key-value pairs, no ceremony:
+`~/.config/oakterm/config` — key-value pairs, no ceremony:
 
 ```ini
 font-family = JetBrains Mono
@@ -97,7 +97,7 @@ Familiar to Ghostty users. The settings palette reads and writes this file.
 
 ### Lua Config (programmable)
 
-`~/.config/phantom/config.lua` — for when you need logic, conditionals, or dynamic behavior:
+`~/.config/oakterm/config.lua` — for when you need logic, conditionals, or dynamic behavior:
 
 ```lua
 -- Dynamic font size based on display
@@ -150,10 +150,10 @@ Lua config takes priority if both exist. The flat config is syntactic sugar — 
 
 ### Project-Level Config
 
-`<project>/.phantom/config` or `<project>/.phantom/config.lua` — project-specific overrides:
+`<project>/.oakterm/config` or `<project>/.oakterm/config.lua` — project-specific overrides:
 
 ```ini
-# .phantom/config in a monorepo
+# .oakterm/config in a monorepo
 font-size = 13
 theme = github-dark
 ```
@@ -230,9 +230,9 @@ keybinds = {
 ## Migration
 
 - Reads Ghostty config format automatically. Warns about unsupported keys, maps the rest.
-- `phantom migrate ghostty` — converts a Ghostty config to Phantom format
-- `phantom migrate kitty` — same for Kitty
-- `phantom migrate wezterm` — best-effort Lua→Lua translation
+- `oakterm migrate ghostty` — converts a Ghostty config to OakTerm format
+- `oakterm migrate kitty` — same for Kitty
+- `oakterm migrate wezterm` — best-effort Lua→Lua translation
 
 ## Naming Convention
 

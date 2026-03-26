@@ -97,7 +97,7 @@ Flat config:
 ```ini
 scrollback-memory-lines = 10000
 scrollback-archive = true
-scrollback-archive-path = ~/.local/state/phantom/scrollback/
+scrollback-archive-path = ~/.local/state/oakterm/scrollback/
 scrollback-archive-max = 1GB
 scrollback-compress = true
 ```
@@ -108,7 +108,7 @@ Lua config:
 scrollback = {
   memory_lines = 10000,         -- kept in RAM (ring buffer)
   archive = true,               -- overflow goes to disk
-  archive_path = "~/.local/state/phantom/scrollback/",
+  archive_path = "~/.local/state/oakterm/scrollback/",
   archive_max = "1GB",          -- total disk budget across all panes
   compress = true,              -- zstd compression on archived lines
 }

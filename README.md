@@ -1,4 +1,4 @@
-# Phantom Terminal
+# OakTerm
 
 A GPU-accelerated, extensible terminal emulator with a plugin-driven process dashboard and context-aware shell.
 
@@ -17,7 +17,7 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 5. **Accessible from day one.** Zero modern GPU-rendered terminals have functional screen reader support. We ship with AccessKit integration, a full accessibility tree, high-contrast themes, and keyboard-only navigation. Accessibility is in the core, not a plugin.
 6. **Everything is a pane.** Agents, dev servers, test watchers, web views, shells — they're all panes. The terminal just knows a little more about each one.
 7. **The plugin is the product.** We don't ship features — we ship a platform and a set of bundled plugins. If a plugin can't do something, the answer is to improve the core API, not to hardcode the feature.
-8. **Debugging is built in.** `:debug` gives you full diagnostics — input, escape sequences, plugin state, performance, per-pane info. `phantom doctor` checks your environment. When something breaks, you shouldn't have to guess.
+8. **Debugging is built in.** `:debug` gives you full diagnostics — input, escape sequences, plugin state, performance, per-pane info. `oakterm doctor` checks your environment. When something breaks, you shouldn't have to guess.
 
 ## Principles
 
@@ -84,7 +84,7 @@ Ideas explore possibilities. ADRs resolve questions that ideas surface. Specs fo
 | [Notifications](ideas/34-notifications.md)         | OS notifications, in-terminal banners, history, DND mode           |
 | [Search](ideas/35-search.md)                       | Regex search, cross-pane, per-command, persistent highlights       |
 | [Conventions](ideas/30-conventions.md)             | Naming, config syntax, keybinds, file structure                    |
-| [Agent Control API](ideas/32-agent-control-api.md) | CLI for agents to interact with the terminal (`phantom ctl`)       |
+| [Agent Control API](ideas/32-agent-control-api.md) | CLI for agents to interact with the terminal (`oakterm ctl`)       |
 
 ### Remote & Headless
 
