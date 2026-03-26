@@ -1,6 +1,6 @@
 ---
 title: 'Architecture'
-status: draft
+status: reviewing
 category: core
 description: 'Layer stack, Rust, server/client model'
 tags: ['rust', 'wgpu', 'server-client', 'layer-stack']
@@ -41,7 +41,7 @@ tags: ['rust', 'wgpu', 'server-client', 'layer-stack']
 │  Bundled Plugins                                      │
 │  - sidebar-ui, agent-manager, context-engine          │
 │  - service-monitor, watcher, harpoon, browser-lite    │
-│  - kitty-graphics, quake-mode                         │
+│  - quake-mode                                         │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -59,13 +59,18 @@ The line is simple: **core provides primitives, plugins compose them into featur
 | Scroll buffer (ring + disk archive)    | Harpoon (pane bookmarks)       |
 | Accessibility tree (AccessKit)         | Quake/dropdown mode            |
 | Plugin host + API primitives           | Browser (lite and webview)     |
-| Config engine (flat + Lua)             | Kitty graphics rendering       |
-| Health check (`:health`)               | Docker/k8s manager             |
-| Clipboard (OSC-52 passthrough)         | Themes (data packages)         |
-| Security (sandbox, escape filtering)   | Locale packs                   |
-| Platform shell (AppKit/GTK4/WinUI)     | Remote access                  |
+| Kitty graphics protocol (renderer)     | Docker/k8s manager             |
+| Config engine (flat + Lua)             | —                              |
+| Health check (`:health`)               | Themes (data packages)         |
+| Clipboard (OSC-52 passthrough)         | Locale packs                   |
+| Security (sandbox, escape filtering)   | Remote access                  |
+| Platform shell (AppKit/GTK4/WinUI)     |                                |
 
 If a feature deeply integrates with the renderer, multiplexer, or VT parser — it's core. If it can be expressed as a combination of plugin API primitives — it's a plugin.
+
+> **ADR 0004:** Kitty graphics protocol is a core renderer feature, not a plugin. The renderer exposes image placement primitives that plugins can use to implement other image protocols (Sixel, iTerm2 inline images). See [ADR 0004](../docs/adrs/0004-kitty-graphics-in-core.md).
+>
+> **ADR 0005:** The Lua config engine is sandboxed and separate from the WASM extension runtime. Lua has no `io`, `os`, `package`, or `debug` access. The boundary between Lua config and WASM plugins is defined by capabilities. See [ADR 0005](../docs/adrs/0005-lua-sandboxed-config.md).
 
 ## Language
 

@@ -1,6 +1,6 @@
 ---
 title: 'Memory Management'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'Tiered scroll buffer, per-pane budgets, memory attribution'
 tags: ['memory', 'scroll-buffer', 'ring-buffer', 'disk-archive', 'agents']
@@ -9,6 +9,8 @@ tags: ['memory', 'scroll-buffer', 'ring-buffer', 'disk-archive', 'agents']
 # Memory Management
 
 Memory is the #1 complaint in terminal + AI agent workflows. Ghostty hit 71 GB with Claude Code. iTerm2 routinely sits at 3 GB. WezTerm pre-allocates scrollback it may never use. This is a problem we solve from day one.
+
+> **ADR 0006:** Scroll buffer uses a two-tier architecture: a hot ring buffer in memory (50 MB default per surface, byte-based limit) and a cold disk archive (1 GB default per surface, zstd level 3 compression, AES-256-GCM encryption). Memory is returned to the OS on pruning — no arena pooling. See [ADR 0006](../docs/adrs/0006-scroll-buffer-architecture.md).
 
 ## The Two Memory Problems
 

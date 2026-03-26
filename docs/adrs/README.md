@@ -23,46 +23,15 @@ proposed → accepted → [superseded | deprecated]
 
 ## Template
 
-```markdown
----
-adr: NNNN
-title: Short Decision Title
-status: proposed
-date: YYYY-MM-DD
-tags: [area tags]
----
-
-# NNNN. Short Decision Title
-
-## Context
-
-What question needs answering? Link to the idea docs that surfaced it.
-
-## Options
-
-### Option A: Name
-
-Description. Pros/cons.
-
-### Option B: Name
-
-Description. Pros/cons.
-
-## Decision
-
-What we chose and a one-sentence summary of why.
-
-## Consequences
-
-What changes as a result. What becomes easier or harder.
-Update idea doc frontmatter status if this resolves an open question.
-
-## References
-
-- [Idea Doc](../../ideas/NN-topic.md)
-- [Spec](../specs/NNNN-title.md) (if one results from this decision)
-```
+Copy [0000-template.md](0000-template.md) and renumber.
 
 ## Index
 
-(none yet)
+| ADR                                         | Title                      | Status   | Tags              |
+| ------------------------------------------- | -------------------------- | -------- | ----------------- |
+| [0001](0001-accessibility-in-phase-zero.md) | Accessibility in Phase 0   | accepted | a11y, renderer    |
+| [0002](0002-performance-philosophy.md)      | Performance Philosophy     | accepted | renderer, core    |
+| [0003](0003-update-check-policy.md)         | Update Check Policy        | accepted | security, core    |
+| [0004](0004-kitty-graphics-in-core.md)      | Kitty Graphics in Core     | accepted | renderer, plugins |
+| [0005](0005-lua-sandboxed-config.md)        | Lua 5.4 Sandboxed Config   | accepted | config, core      |
+| [0006](0006-scroll-buffer-architecture.md)  | Scroll Buffer Architecture | accepted | renderer, core    |

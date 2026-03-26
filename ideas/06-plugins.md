@@ -1,6 +1,6 @@
 ---
 title: 'Plugin System'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'WASM runtime, API primitives, capabilities, registry, manager'
 tags: ['wasm', 'wasmtime', 'api', 'capabilities', 'registry', 'lua']
@@ -17,6 +17,8 @@ If something can't be built as a plugin, the answer is to improve the core API â
 - **Lua** for config and keybinds (proven by WezTerm)
 - **WASM** for plugins (sandboxed, fast, polyglot)
 - Wasmtime as the WASM runtime (Rust-native)
+
+> **ADR 0005:** The Lua/WASM boundary is defined by capabilities. Lua config is sandboxed (no `io`, `os`, `package`, `debug`) and handles config values and event reactions with no side effects beyond the terminal. WASM plugins handle anything requiring capabilities: filesystem I/O, network access, process spawning, sidebar panels, and persistent storage. See [ADR 0005](../docs/adrs/0005-lua-sandboxed-config.md).
 
 ## Core Primitives
 
@@ -209,7 +211,6 @@ Ship by default, can be disabled. They use the exact same API as community plugi
 | `git-worktree`    | :workspace new creates worktree + tab + shell                         |
 | `service-monitor` | Services sidebar, port detection, crash alerts                        |
 | `watcher`         | Watchers sidebar, parses test/type/build output                       |
-| `kitty-graphics`  | Inline image rendering (Kitty + Sixel)                                |
 | `browser-lite`    | Text-mode browser (Carbonyl/w3m) in a floating pane                   |
 
 ## Community Plugin Examples
