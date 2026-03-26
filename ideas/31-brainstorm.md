@@ -203,3 +203,17 @@ From the Zed architecture research:
 6. **Pre-rasterize ASCII** — for monospaced terminal rendering, pre-rasterize the entire ASCII range (32-126) on startup into the glyph atlas. Skip font shaping for ASCII entirely. Only fall back to full OpenType shaping for non-ASCII (CJK, emoji, combining marks).
 
 7. **Channel-based message passing** — subsystems communicate via channels, not direct calls. Terminal event loop, plugin host, and renderer are decoupled.
+
+## Configurable Status Bar
+
+Like tmux's status line or Neovim's lualine. Core renders the bar, plugins register widgets.
+
+- Position: bottom, top, or hidden
+- Three segments: left, center, right
+- Widgets: `{mode}`, `{pane_title}`, `{git_branch}`, `{test_status}`, `{memory}`, `{ports}`, `{time}`, `{agent_count}`, etc.
+- Plugins register custom widgets (watcher provides `{test_status}`, agent-manager provides `{agent_count}`)
+- User places widgets wherever they want in config
+- Themeable — colors from the theme's `status-bar-bg`/`status-bar-fg`
+- Can be hidden completely: `status-bar = none`
+- Should respect `prefers-reduced-motion` for any animated widgets
+- Accessible — screen reader can read status bar content
