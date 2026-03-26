@@ -73,6 +73,15 @@ This is the primitive that enables a browser plugin, a markdown previewer, an im
 - HTTP requests (for API integrations, AI backends)
 - WebSocket connections
 
+### Accessibility
+- `announce(message, priority)` — send text to screen reader (polite or assertive)
+- `set_live_region(pane, politeness)` — mark a pane for auto-announcement
+- `set_role(element, role)` — semantic role (alert, status, log, progressbar)
+- `label(element, text)` — accessible name (required for all UI elements)
+- `description(element, text)` — accessible description
+- `value(element, current, min, max)` — for progress bars and meters
+- Plugins that add UI **must** provide accessible labels — the API rejects entries without them
+
 ## Capability-Based Permissions
 
 Plugins declare what they need. Users approve once per plugin.
