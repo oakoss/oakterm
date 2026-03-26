@@ -33,5 +33,5 @@ Update idea doc frontmatter status if this resolves an open question.
 
 ## References
 
-- [Idea Doc](../../ideas/NN-topic.md)
+- [Idea Doc](../ideas/NN-topic.md)
 - [Spec](../specs/NNNN-title.md) (if one results from this decision)

@@ -12,8 +12,8 @@ tags: [security, core]
 
 Two idea docs contradict each other on network behavior:
 
-- [21-security.md](../../ideas/21-security.md): "the terminal never communicates with any server"
-- [24-updates.md](../../ideas/24-updates.md): describes an HTTP GET to a version manifest on every launch
+- [21-security.md](../ideas/21-security.md): "the terminal never communicates with any server"
+- [24-updates.md](../ideas/24-updates.md): describes an HTTP GET to a version manifest on every launch
 
 The review audit flagged this as a contradiction requiring a decision. The broader question is OakTerm's network policy and how update checking should work across different installation methods.
 
@@ -137,16 +137,16 @@ oakterm 0.1.0-dev+abc1234 (dev, source)
 
 ## Consequences
 
-- Update [21-security.md](../../ideas/21-security.md) from "never communicates with any server" to "no network requests except an optional update check with explicit user consent. No telemetry, analytics, or user data is ever collected or transmitted."
-- Update [24-updates.md](../../ideas/24-updates.md) to reflect install-source-aware behavior instead of unconditional launch-time checks.
+- Update [21-security.md](../ideas/21-security.md) from "never communicates with any server" to "no network requests except an optional update check with explicit user consent. No telemetry, analytics, or user data is ever collected or transmitted."
+- Update [24-updates.md](../ideas/24-updates.md) to reflect install-source-aware behavior instead of unconditional launch-time checks.
 - Homebrew formula, winget manifest, scoop manifest, and CI release workflows must set `INSTALL_SOURCE` and `RELEASE_CHANNEL` environment variables during build.
 - Release infrastructure needs a static version manifest hosted on a CDN (no server-side logic).
 - Phase 0 includes `build.rs` with metadata embedding. Update check UI deferred to when releases exist.
 
 ## References
 
-- [21-security.md](../../ideas/21-security.md)
-- [24-updates.md](../../ideas/24-updates.md)
+- [21-security.md](../ideas/21-security.md)
+- [24-updates.md](../ideas/24-updates.md)
 - [Ghostty update backlash (Discussion #3859)](https://github.com/ghostty-org/ghostty/discussions/3859)
 - [Ghostty "demogate" redesign (PR #9116)](https://github.com/ghostty-org/ghostty/pull/9116)
 - [WezTerm update popup complaints (Issue #248)](https://github.com/wezterm/wezterm/issues/248)

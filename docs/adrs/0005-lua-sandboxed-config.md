@@ -12,8 +12,8 @@ tags: [config, core]
 
 The idea docs describe a two-tier configuration system — flat config for simple values and Lua for scripting — but disagree on the boundary:
 
-- [01-architecture.md](../../ideas/01-architecture.md): puts the "Lua config engine" inside the Extension Runtime alongside the WASM plugin host
-- [09-config.md](../../ideas/09-config.md): treats Lua as declarative configuration
+- [01-architecture.md](../ideas/01-architecture.md): puts the "Lua config engine" inside the Extension Runtime alongside the WASM plugin host
+- [09-config.md](../ideas/09-config.md): treats Lua as declarative configuration
 - Config examples include event handlers (`workspace.on_create = function(ws) ... end`) which are imperative and long-lived
 
 The review audit flagged this as a contradiction. The decision must define: what can Lua do, what can it not do, and how does it relate to WASM plugins?
@@ -161,17 +161,17 @@ Implemented via mlua's selective standard library loading:
 
 ## Consequences
 
-- Update [09-config.md](../../ideas/09-config.md) to reflect single-language Lua config with sandboxing and multi-file organization.
-- Update [01-architecture.md](../../ideas/01-architecture.md) to clarify Lua config engine is sandboxed and separate from the WASM extension runtime.
+- Update [09-config.md](../ideas/09-config.md) to reflect single-language Lua config with sandboxing and multi-file organization.
+- Update [01-architecture.md](../ideas/01-architecture.md) to clarify Lua config engine is sandboxed and separate from the WASM extension runtime.
 - Ship LLS type stubs as part of the OakTerm install.
 - The custom `require()` implementation must be part of Phase 0.
 - WASM plugin API (Phase 2) must cover the capabilities that Lua intentionally lacks (I/O, network, storage).
 
 ## References
 
-- [09-config.md](../../ideas/09-config.md)
-- [01-architecture.md](../../ideas/01-architecture.md)
-- [06-plugins.md](../../ideas/06-plugins.md)
+- [09-config.md](../ideas/09-config.md)
+- [01-architecture.md](../ideas/01-architecture.md)
+- [06-plugins.md](../ideas/06-plugins.md)
 - [mlua documentation](https://docs.rs/mlua/latest/mlua/)
 - [Lua Language Server](https://github.com/LuaLS/lua-language-server)
 - [WezTerm configuration system](https://wezterm.org/config/lua/general.html)

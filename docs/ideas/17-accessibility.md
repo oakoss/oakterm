@@ -8,7 +8,7 @@ tags: ['a11y', 'accesskit', 'screen-reader', 'voiceover', 'color-blindness']
 
 # Accessibility
 
-> **Note:** [ADR 0001](../docs/adrs/0001-accessibility-in-phase-zero.md) moved accessibility from Phase 5 to Phase 0. AccessKit integration is built alongside the renderer from day one.
+> **Note:** [ADR 0001](../adrs/0001-accessibility-in-phase-zero.md) moved accessibility from Phase 5 to Phase 0. AccessKit integration is built alongside the renderer from day one.
 
 Accessibility in terminal emulators is broken across the board. Zero modern GPU-rendered terminals on macOS or Linux have functional screen reader support. This is a massive gap and an opportunity to lead.
 

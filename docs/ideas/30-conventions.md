@@ -136,11 +136,11 @@ When referencing another idea doc, use relative path: `See [Memory Management](1
 
 When referencing a specific section, describe it: "the tiered scroll buffer (see [Memory Management](15-memory-management.md), Scroll Buffer Strategy section)".
 
-When referencing an ADR from an idea doc: `See [ADR-0001](../docs/adrs/0001-kitty-graphics-placement.md)`.
+When referencing an ADR from an idea doc: `See [ADR-0001](../adrs/0001-accessibility-in-phase-zero.md)`.
 
-When referencing a spec from an idea doc: `See [Spec-0001](../docs/specs/0001-plugin-api.md)`.
+When referencing a spec from an idea doc: `See [Spec-0001](../specs/0001-plugin-api.md)`.
 
-ADRs and specs reference idea docs with: `See [Architecture](../../ideas/01-architecture.md)`.
+ADRs and specs reference idea docs with: `See [Architecture](../ideas/01-architecture.md)`.
 
 ## Frontmatter
 
@@ -186,6 +186,6 @@ Lowercase, kebab-case. Used for finding related docs. Common tags:
 - [Configuration](09-config.md) — authoritative config syntax reference
 - [Plugin System](06-plugins.md) — plugin naming and manifest format
 - [Theming](22-theming.md) — theme file naming
-- [ADR Conventions](../docs/adrs/README.md) — ADR template and status lifecycle
-- [Spec Conventions](../docs/specs/README.md) — spec template and status lifecycle
-- [Review Conventions](../docs/reviews/README.md) — review template and format
+- [ADR Conventions](../adrs/README.md) — ADR template and status lifecycle
+- [Spec Conventions](../specs/README.md) — spec template and status lifecycle
+- [Review Conventions](../reviews/README.md) — review template and format

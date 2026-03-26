@@ -18,7 +18,7 @@ If something can't be built as a plugin, the answer is to improve the core API â
 - **WASM** for plugins (sandboxed, fast, polyglot)
 - Wasmtime as the WASM runtime (Rust-native)
 
-> **ADR 0005:** The Lua/WASM boundary is defined by capabilities. Lua config is sandboxed (no `io`, `os`, `package`, `debug`) and handles config values and event reactions with no side effects beyond the terminal. WASM plugins handle anything requiring capabilities: filesystem I/O, network access, process spawning, sidebar panels, and persistent storage. See [ADR 0005](../docs/adrs/0005-lua-sandboxed-config.md).
+> **ADR 0005:** The Lua/WASM boundary is defined by capabilities. Lua config is sandboxed (no `io`, `os`, `package`, `debug`) and handles config values and event reactions with no side effects beyond the terminal. WASM plugins handle anything requiring capabilities: filesystem I/O, network access, process spawning, sidebar panels, and persistent storage. See [ADR 0005](../adrs/0005-lua-sandboxed-config.md).
 
 ## Core Primitives
 

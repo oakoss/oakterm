@@ -12,8 +12,8 @@ tags: [renderer, core]
 
 Two idea docs make conflicting claims about scrollback behavior:
 
-- [12-performance.md](../../ideas/12-performance.md): scrolling "doesn't allocate or copy — adjusts a viewport offset"
-- [15-memory-management.md](../../ideas/15-memory-management.md): describes compressed disk archives with memory-mapped access for old scrollback
+- [12-performance.md](../ideas/12-performance.md): scrolling "doesn't allocate or copy — adjusts a viewport offset"
+- [15-memory-management.md](../ideas/15-memory-management.md): describes compressed disk archives with memory-mapped access for old scrollback
 
 Both claims are individually correct but describe different tiers of the buffer. The review audit flagged this as needing reconciliation.
 
@@ -134,8 +134,8 @@ Correct `TIOCGWINSZ` before the first byte is written to the PTY. Send `SIGWINCH
 
 ## Consequences
 
-- Update [12-performance.md](../../ideas/12-performance.md) to clarify zero-copy applies to the hot ring buffer only.
-- Update [15-memory-management.md](../../ideas/15-memory-management.md) to document the two-tier architecture, encryption, and configurable limits.
+- Update [12-performance.md](../ideas/12-performance.md) to clarify zero-copy applies to the hot ring buffer only.
+- Update [15-memory-management.md](../ideas/15-memory-management.md) to document the two-tier architecture, encryption, and configurable limits.
 - The ring buffer implementation must return memory to the OS on pruning — no arena allocator pooling.
 - Phase 0 includes hot ring buffer and alternate screen capture. Disk archive can follow in Phase 0 or early Phase 1.
 - Encryption key management for the disk archive needs a spec (per-session ephemeral key is the simplest approach).
@@ -143,8 +143,8 @@ Correct `TIOCGWINSZ` before the first byte is written to the PTY. Send `SIGWINCH
 
 ## References
 
-- [12-performance.md](../../ideas/12-performance.md)
-- [15-memory-management.md](../../ideas/15-memory-management.md)
+- [12-performance.md](../ideas/12-performance.md)
+- [15-memory-management.md](../ideas/15-memory-management.md)
 - [Ghostty memory leak blog post](https://mitchellh.com/writing/ghostty-memory-leak-fix)
 - [Ghostty memory leak fix (PR #10251)](https://github.com/ghostty-org/ghostty/pull/10251)
 - [Claude Code scrollback issue #28077](https://github.com/anthropics/claude-code/issues/28077)

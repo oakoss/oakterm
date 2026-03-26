@@ -7,7 +7,7 @@ GPU-accelerated, extensible terminal emulator with a plugin-driven process dashb
 ## Project Structure
 
 ```text
-ideas/          # Exploration — brainstorming, research, design sketches
+docs/ideas/     # Exploration — brainstorming, research, design sketches
 docs/reviews/   # Audits — point-in-time reviews that surface work (YYYY-MM-DD-title.md)
 docs/adrs/      # Decisions — resolve open questions from ideas (NNNN-title.md)
 docs/specs/     # Contracts — formal definitions that code must satisfy (NNNN-title.md)
@@ -17,7 +17,7 @@ docs/specs/     # Contracts — formal definitions that code must satisfy (NNNN-
 ## Pipeline
 
 ```text
-ideas/ → docs/adrs/ → docs/specs/ → implementation
+docs/ideas/ → docs/adrs/ → docs/specs/ → implementation
 explore    decide       formalize     build (trekker)
                ↑
         docs/reviews/
@@ -32,9 +32,9 @@ explore    decide       formalize     build (trekker)
 
 ## Conventions
 
-### Idea Docs (`ideas/`)
+### Idea Docs (`docs/ideas/`)
 
-- Follow structure in [ideas/30-conventions.md](ideas/30-conventions.md) — YAML frontmatter, sections for Problem, Design, Configuration, Plugin API, What This Is Not
+- Follow structure in [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md) — YAML frontmatter, sections for Problem, Design, Configuration, Plugin API, What This Is Not
 - **Frontmatter status**: `draft → reviewing → decided → implementing → reference`
 - **Frontmatter category**: core, plugin, community-plugin, cross-cutting, research
 - An accepted ADR moves the idea doc status from `reviewing` to `decided`
@@ -119,7 +119,7 @@ Check review docs for open findings, ADR index for unresolved decisions, or star
 
 #### D2. Research
 
-- **Ideas**: Read related idea docs in `ideas/` and their cross-references. Read [ideas/30-conventions.md](ideas/30-conventions.md). Web search for prior art.
+- **Ideas**: Read related idea docs in `docs/ideas/` and their cross-references. Read [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md). Web search for prior art.
 - **ADRs**: Read the idea docs that surfaced the question. Read any existing ADRs in the same area. Research how competitors solved it.
 - **Specs**: Read the accepted ADR(s) that led here. Read the idea docs for design context. Read existing specs for API consistency.
 
@@ -131,7 +131,7 @@ For substantial design work, align on scope and approach first. Use `/grill-me` 
 
 **Idea docs:**
 
-- Follow [ideas/30-conventions.md](ideas/30-conventions.md). YAML frontmatter required.
+- Follow [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md). YAML frontmatter required.
 - Clear problem statement, concrete design, explicit scope boundaries ("What This Is Not").
 - Cross-reference related docs with relative paths.
 
@@ -192,8 +192,8 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 - Read the ADR(s) behind the spec for decision rationale.
 - Read the idea doc(s) for broader design context.
 - Read existing source code in the area you're changing.
-- Check [ideas/12-performance.md](ideas/12-performance.md) if the work touches a hot path.
-- Check [ideas/21-security.md](ideas/21-security.md) if the work touches input handling, plugins, or IPC.
+- Check [docs/ideas/12-performance.md](docs/ideas/12-performance.md) if the work touches a hot path.
+- Check [docs/ideas/21-security.md](docs/ideas/21-security.md) if the work touches input handling, plugins, or IPC.
 
 #### I3. Plan
 
@@ -247,7 +247,7 @@ Re-run step I7 if anything changed during polish or review.
 - **Never push** unless explicitly asked.
 - **Trekker is for implementation** — `trekker ready` before starting implementation work, summary comment before completing. Design work is tracked by docs.
 - **Read before writing** — understand existing docs/code before modifying.
-- **Conventions are law** — follow [ideas/30-conventions.md](ideas/30-conventions.md) for idea docs, README templates for ADRs and specs.
+- **Conventions are law** — follow [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md) for idea docs, README templates for ADRs and specs.
 - **No empty docs** — every idea doc needs a problem statement, every ADR needs options + rationale, every spec needs formal definitions.
 - **Scope is explicit** — include "What This Is Not" to prevent feature creep.
 - **Implementation references specs** — trekker tasks link to specs, not idea docs. No spec = not ready to implement.

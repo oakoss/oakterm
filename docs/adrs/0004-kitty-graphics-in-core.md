@@ -12,9 +12,9 @@ tags: [renderer, plugins]
 
 Three idea docs disagree on where image protocol support lives:
 
-- [01-architecture.md](../../ideas/01-architecture.md): lists Kitty graphics rendering as a plugin
-- [02-renderer.md](../../ideas/02-renderer.md): describes it as part of the GPU pipeline (core), composited alongside text
-- [03-multiplexer.md](../../ideas/03-multiplexer.md): says image protocols "work through the multiplexer" (implies core)
+- [01-architecture.md](../ideas/01-architecture.md): lists Kitty graphics rendering as a plugin
+- [02-renderer.md](../ideas/02-renderer.md): describes it as part of the GPU pipeline (core), composited alongside text
+- [03-multiplexer.md](../ideas/03-multiplexer.md): says image protocols "work through the multiplexer" (implies core)
 
 The review audit flagged this as a contradiction. The decision determines whether the renderer needs image compositing primitives from day one or whether the plugin API must be powerful enough to composite images into the GPU pipeline.
 
@@ -79,12 +79,12 @@ Image display is a terminal fundamental, not an optional extension. The Kitty gr
 - The multiplexer forwards image data between panes as part of VT stream forwarding.
 - Phase 2 plugin API includes image placement primitives: place texture at cell (X, Y) with width, height, z-order, and crop parameters.
 - Community plugins can implement Sixel, iTerm2 inline images (`OSC 1337`), and future protocols using the same API core uses.
-- Update [01-architecture.md](../../ideas/01-architecture.md) to move Kitty graphics from the plugin list to core renderer features.
+- Update [01-architecture.md](../ideas/01-architecture.md) to move Kitty graphics from the plugin list to core renderer features.
 - The Phase 2 bundled plugins list should remove `kitty-graphics` (it's core, not a plugin).
 
 ## References
 
-- [01-architecture.md](../../ideas/01-architecture.md)
-- [02-renderer.md](../../ideas/02-renderer.md)
-- [03-multiplexer.md](../../ideas/03-multiplexer.md)
+- [01-architecture.md](../ideas/01-architecture.md)
+- [02-renderer.md](../ideas/02-renderer.md)
+- [03-multiplexer.md](../ideas/03-multiplexer.md)
 - [Kitty graphics protocol specification](https://sw.kovidgoyal.net/kitty/graphics-protocol/)

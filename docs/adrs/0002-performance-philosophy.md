@@ -12,9 +12,9 @@ tags: [renderer, core]
 
 Multiple idea docs claim independent per-component performance budgets that contradict each other when summed:
 
-- [12-performance.md](../../ideas/12-performance.md): "no feature may add >0.5ms to input latency"
-- [17-accessibility.md](../../ideas/17-accessibility.md): budgets "<0.5ms/frame" for accessibility
-- [14-debugging.md](../../ideas/14-debugging.md): shows plugin overhead of 1.31ms across 5 plugins
+- [12-performance.md](../ideas/12-performance.md): "no feature may add >0.5ms to input latency"
+- [17-accessibility.md](../ideas/17-accessibility.md): budgets "<0.5ms/frame" for accessibility
+- [14-debugging.md](../ideas/14-debugging.md): shows plugin overhead of 1.31ms across 5 plugins
 
 These are additive. Applied independently, they exceed any reasonable frame budget. The review audit flagged this as a contradiction requiring a decision.
 
@@ -84,10 +84,10 @@ Phase 0 includes setting up a benchmark framework (criterion) for end-to-end inp
 - CI runs benchmarks on every PR. Regressions beyond noise threshold are blocking.
 - The wgpu overhead question is answered by Phase 0 prototyping, not assumption.
 - When performance and features conflict, performance wins — but "performance" means measured regression on the benchmark suite, not theoretical concern.
-- Update [12-performance.md](../../ideas/12-performance.md) to reflect this philosophy.
+- Update [12-performance.md](../ideas/12-performance.md) to reflect this philosophy.
 
 ## References
 
-- [12-performance.md](../../ideas/12-performance.md)
-- [17-accessibility.md](../../ideas/17-accessibility.md)
-- [14-debugging.md](../../ideas/14-debugging.md)
+- [12-performance.md](../ideas/12-performance.md)
+- [17-accessibility.md](../ideas/17-accessibility.md)
+- [14-debugging.md](../ideas/14-debugging.md)

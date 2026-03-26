@@ -68,9 +68,9 @@ The line is simple: **core provides primitives, plugins compose them into featur
 
 If a feature deeply integrates with the renderer, multiplexer, or VT parser — it's core. If it can be expressed as a combination of plugin API primitives — it's a plugin.
 
-> **ADR 0004:** Kitty graphics protocol is a core renderer feature, not a plugin. The renderer exposes image placement primitives that plugins can use to implement other image protocols (Sixel, iTerm2 inline images). See [ADR 0004](../docs/adrs/0004-kitty-graphics-in-core.md).
+> **ADR 0004:** Kitty graphics protocol is a core renderer feature, not a plugin. The renderer exposes image placement primitives that plugins can use to implement other image protocols (Sixel, iTerm2 inline images). See [ADR 0004](../adrs/0004-kitty-graphics-in-core.md).
 >
-> **ADR 0005:** The Lua config engine is sandboxed and separate from the WASM extension runtime. Lua has no `io`, `os`, `package`, or `debug` access. The boundary between Lua config and WASM plugins is defined by capabilities. See [ADR 0005](../docs/adrs/0005-lua-sandboxed-config.md).
+> **ADR 0005:** The Lua config engine is sandboxed and separate from the WASM extension runtime. Lua has no `io`, `os`, `package`, or `debug` access. The boundary between Lua config and WASM plugins is defined by capabilities. See [ADR 0005](../adrs/0005-lua-sandboxed-config.md).
 
 ## Language
 
