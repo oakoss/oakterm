@@ -116,3 +116,10 @@ Fork a workspace at its current state to try something risky. Git worktrees make
 - Not a custom protocol agents must support (cmux notification API)
 - No built-in diff viewer — uses your tools (delta, difftastic, etc.)
 - No PR review UI — that belongs in GitHub/Linear
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — API primitives this plugin uses (sidebar, pane, process, notify)
+- [Sidebar](04-sidebar.md) — where agents appear in the process dashboard
+- [Memory Management](15-memory-management.md) — child process memory attribution
+- [Shell Integration](18-shell-integration.md) — command completion notifications

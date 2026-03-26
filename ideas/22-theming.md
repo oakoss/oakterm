@@ -202,3 +202,10 @@ phantom theme import iterm2 ~/my-profile.itermcolors
 ```
 
 Converts the terminal's color scheme to a Phantom theme file. Maps what it can, leaves UI chrome at defaults.
+
+## Related Docs
+
+- [Accessibility](17-accessibility.md) — WCAG contrast requirements for themes
+- [Configuration](09-config.md) — `theme-dark` / `theme-light` / `appearance` settings
+- [Renderer](02-renderer.md) — opacity and blur per-theme
+- [Conventions](30-conventions.md) — theme file and display name conventions

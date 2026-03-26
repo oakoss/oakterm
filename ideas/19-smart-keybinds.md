@@ -172,3 +172,11 @@ The plugin is bundled but disabled by default. Enable it and set your hotkey.
 - The implementation is just window positioning + animation + a global hotkey
 - Making it a plugin proves the core primitives are powerful enough
 - Someone could write a "spotlight mode" (centered floating terminal) using the same primitives
+
+## Related Docs
+
+- [Configuration](09-config.md) — keybind syntax and naming convention
+- [Plugin System](06-plugins.md) — Window and Pane Query primitives used by quake mode, broadcast, env coloring
+- [Command Palette](08-command-palette.md) — `:broadcast` and other commands registered via palette
+- [Platform Support](20-platform-support.md) — platform-specific keybind behavior (Cmd vs Ctrl)
+- [Accessibility](17-accessibility.md) — hints mode as keyboard alternative to clicking
