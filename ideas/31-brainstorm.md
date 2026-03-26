@@ -269,3 +269,168 @@ Not needed for idea phase but worth thinking about early:
 - **Release process** — who cuts releases? What's the cadence? Semver for core, independent versioning for plugins?
 - **Code of conduct** — standard Contributor Covenant or similar
 - **Architecture decision records (ADRs)** — document significant decisions with context, alternatives considered, and rationale
+
+---
+
+## Things Terminals Still Get Wrong
+
+Common daily-use pain points that no terminal has fully solved.
+
+### Smart Selection
+
+Text selection in terminals is stuck in the 1980s.
+
+**Problems:**
+- Selecting wrapped lines includes trailing whitespace and newlines
+- Selecting across splits grabs border characters
+- Double-click selects a "word" but doesn't understand paths (`src/components/Button.tsx` is three selections, not one)
+- Can't select just a command's output without getting the prompt
+- No way to select a semantic object (URL, path, IP, hash) in one action
+
+**Our approach:**
+- **Semantic word boundaries** — double-click understands file paths, URLs, dot-separated identifiers. `src/components/Button.tsx:42` is one selection.
+- **Command-output selection** — with shell integration, triple-click or a keybind selects the entire output of one command (semantic zone selection, from WezTerm)
+- **Cross-pane selection blocked** — selecting stops at pane borders. No garbage border characters in clipboard.
+- **Block/rectangular selection** — `Ctrl+V` in copy mode (vim preset) or `Alt+drag` for column selection
+- **Smart trim** — auto-strip trailing whitespace and leading indentation when copying. Configurable.
+- **Multi-select** — hold `Cmd/Ctrl` and click to add multiple selections. Yank copies all selections joined by newlines. (Stretch goal)
+
+```
+smart-selection = true                    # default
+smart-selection-trim-whitespace = true    # strip trailing spaces
+smart-selection-trim-indent = false       # strip common leading indent
+```
+
+### Paste Safety
+
+Pasting into a terminal is the most dangerous operation most developers do daily.
+
+**Problems:**
+- Paste 500 lines? Dumped straight into the shell, every newline triggers execution
+- Trailing newline in clipboard? Command executes immediately, no confirmation
+- Paste contains `sudo rm -rf /`? No warning
+- No preview of what you're about to paste
+- Bracketed paste helps but not all shells/programs support it
+
+**Our approach:**
+- **Large paste warning** — pastes over a configurable line threshold (default: 5 lines) show a preview popup:
+  ```
+  ┌──────────────────────────────────────────────────┐
+  │  Paste Preview (23 lines)                        │
+  │                                                  │
+  │  npm install                                     │
+  │  npm run build                                   │
+  │  npm run test                                    │
+  │  ... (20 more lines)                             │
+  │                                                  │
+  │  ⚠ Contains newlines — will execute sequentially │
+  │                                                  │
+  │  [Paste] [Paste as Single Line] [Edit] [Cancel]  │
+  └──────────────────────────────────────────────────┘
+  ```
+- **Dangerous command detection** — warn on patterns like `rm -rf`, `sudo`, `DROP TABLE`, `mkfs`, `dd if=`, `> /dev/sda`. Configurable pattern list.
+- **Trailing newline strip** — option to auto-strip trailing newline so pasted commands don't auto-execute
+- **Bracketed paste enforced** — always use bracketed paste mode. If the program doesn't support it, fall back gracefully.
+- **Paste-as-single-line** — option to join multi-line paste into one line (useful for pasting paths with line breaks)
+
+```
+paste-warning-lines = 5          # warn on pastes > 5 lines (0 = never warn)
+paste-dangerous-patterns = true  # warn on rm -rf, sudo, etc.
+paste-strip-trailing-newline = false  # don't auto-strip (safety over convenience)
+paste-bracketed = true           # always use bracketed paste
+```
+
+### Smart URL/Path Detection
+
+Terminals detect URLs with dumb regex. It breaks constantly.
+
+**Problems:**
+- URLs wrapping across lines break detection
+- URLs with parentheses: `https://en.wikipedia.org/wiki/Rust_(language)` — the `)` gets excluded
+- URLs with trailing punctuation: `Check https://example.com.` — the `.` gets included
+- File paths like `src/components/Button.tsx:42:15` aren't recognized
+- Relative paths can't be resolved without cwd
+
+**Our approach:**
+- **Wrap-aware URL detection** — when a URL wraps to the next line, detect it as one continuous URL. Use soft-wrap metadata from the VT parser.
+- **Balanced delimiter handling** — track parentheses, brackets, and angle brackets. `https://en.wikipedia.org/wiki/Rust_(language)` includes the closing `)`. Trailing punctuation (`.`, `,`, `:`, `;`) excluded.
+- **File path detection** — recognize patterns like `file.ext:line:col`, resolve relative paths against the pane's cwd (from shell integration). Clicking opens in `$EDITOR`.
+- **OSC 8 hyperlinks** — programs can emit semantic hyperlinks with custom display text. We support the standard fully.
+- **All detected links get hints labels** — hints mode (from [Smart Keybinds](19-smart-keybinds.md)) labels every link/path for keyboard-only access.
+
+### Resize Reflow
+
+Resizing a terminal is surprisingly hard to get right.
+
+**Problems:**
+- Wrapped lines don't unwrap when you make the terminal wider
+- TUI apps (vim, htop) don't always redraw after resize
+- Content jumps and the viewport shifts to a random position
+- Cursor position gets lost
+
+**Our approach:**
+- **Proper reflow** — when the terminal widens, soft-wrapped lines unwrap. When it narrows, lines re-wrap. Track which line breaks are soft (from wrapping) vs hard (from the program).
+- **SIGWINCH delivery** — send the resize signal to the child process immediately. TUI apps that handle SIGWINCH will redraw.
+- **Viewport anchoring** — during resize, keep the viewport anchored to the content you're looking at, not the top or bottom. If you're reading line 500, you're still reading line 500 after resize.
+- **Smooth resize** — on platforms that support it (macOS), render at the new size progressively rather than blanking and redrawing.
+
+### Smart Tab Close
+
+Closing a tab should be smart about what's running.
+
+**Problems:**
+- "Are you sure?" on every tab close is annoying when it's just an idle shell
+- Silently killing a running build is dangerous
+- No way to tell if a process is "important" or just a shell
+
+**Our approach:**
+- **Process-aware close** — the terminal knows what's running in each pane (via PTY process tree):
+  - **Idle shell** (just bash/zsh/fish, no child) → close immediately, no prompt
+  - **Running foreground process** (build, test, agent) → confirm: "npm run build is running. Close? [Yes] [Cancel]"
+  - **Agent pane** → warn: "Agent feat/auth is working. Close will abandon changes. [Close] [Cancel]"
+  - **Background process only** (like a completed command, cursor at prompt) → close immediately
+
+```
+tab-close-confirm = smart    # default: ask only when a process is running
+tab-close-confirm = always   # always ask
+tab-close-confirm = never    # never ask (dangerous)
+```
+
+### Predictive Local Echo for SSH
+
+Every keystroke on an SSH connection round-trips to the server. On high-latency connections this is miserable.
+
+**Problems:**
+- 100ms latency means you feel every keypress lag
+- Mosh solved this in 2012 but requires a separate tool + UDP port
+- No terminal has built-in predictive echo
+
+**Our approach (for SSH domains):**
+- **Predictive echo** — when typing in an SSH domain pane, immediately render the character locally (dimmed/italic). When the server echoes it back, replace with the confirmed character.
+- **Prediction confidence** — simple predictions (typing characters at a prompt) are high confidence. Complex predictions (backspace through a completion menu) are low confidence and skipped.
+- **Mismatch handling** — if the server's echo doesn't match the prediction, discard the prediction and show the server's version. Brief visual flash to indicate the correction.
+- **Only for SSH domains** — local panes don't need this. Only activates on remote connections with measurable latency.
+
+This is inspired by Mosh's approach but implemented in the terminal itself, not as a separate protocol. It works over standard SSH — no server-side component needed.
+
+```
+ssh-predictive-echo = true       # default for SSH domains
+ssh-predictive-echo-style = dim  # how predicted characters look: dim, italic, underline
+```
+
+### Large Output Handling
+
+`cat` a 100MB log file and most terminals freeze or OOM.
+
+**Problems:**
+- Terminal tries to render all output as fast as it arrives
+- Scroll buffer grows unbounded (addressed by our ring buffer, but rendering is still the issue)
+- No way to cancel output mid-stream without killing the process
+- User intended to pipe to `less` but forgot
+
+**Our approach:**
+- **Render throttling** — if output exceeds a threshold (configurable, default: 10,000 lines/second), the renderer skips frames. Scroll buffer still captures everything. The terminal stays responsive.
+- **Output rate indicator** — status bar shows output rate when it's high: `⚡ 45,000 lines/s`. Visual signal that something is flooding the terminal.
+- **Ctrl+S / Ctrl+Q** — standard XOFF/XON flow control. `Ctrl+S` pauses output (the process blocks on write). `Ctrl+Q` resumes. Most terminals support this but don't surface it. We should make it discoverable.
+- **Ring buffer ceiling** — old lines roll off (already specced in [Memory Management](15-memory-management.md)). The terminal never OOMs from output.
+- **Suggestion after flood** — after a massive output burst finishes, show a subtle hint: "Large output detected. Consider piping to less or redirecting to a file."
