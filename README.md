@@ -44,6 +44,7 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 | [Shell Integration](ideas/18-shell-integration.md) | Prompt markers, semantic zones, scroll-to-prompt, notifications |
 | [Smart Keybinds](ideas/19-smart-keybinds.md) | Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring |
 | [Health Check](ideas/28-health-check.md) | Neovim-style `:health` with actionable diagnostics |
+| [Terminal Fundamentals](ideas/36-terminal-fundamentals.md) | Cursor, bell, scrollbar, padding, text styles, env vars, links, process handling |
 
 ### Features (Bundled Plugins)
 
