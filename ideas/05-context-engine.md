@@ -113,3 +113,10 @@ plugins["context-engine"] = {
 - Not a shell replacement (works with bash, zsh, fish, nushell)
 - Not a chatbot
 - Not required — disable the plugin and it's gone
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — `context.provider` and `shell.on_cwd_change` APIs
+- [Shell Integration](18-shell-integration.md) — provides cwd and prompt data
+- [Smart Keybinds](19-smart-keybinds.md) — hints mode uses similar pattern matching
+- [Configuration](09-config.md) — plugin config syntax

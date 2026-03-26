@@ -123,3 +123,11 @@ The sidebar is a view into the data model. Someone who doesn't want it disables 
 ## Container Support (from Ptyxis)
 
 A Docker/Podman plugin adds a CONTAINERS section to the sidebar. Auto-discovers running containers. Click to attach a shell. Shows image, status, ports.
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — sidebar data model (core) and sidebar-ui (plugin)
+- [Agent Management](07-agent-management.md) — AGENTS section
+- [Memory Management](15-memory-management.md) — per-pane memory display
+- [Harpoon](27-harpoon.md) — pane bookmarks complement the sidebar
+- [Remote Access](29-remote-access.md) — remote panes appear in sidebar

@@ -256,3 +256,10 @@ The flat config and Lua config map 1:1. `font-family` in flat = `font_family` in
 3. **Live preview everything.** Themes, fonts, colors — see the change before committing.
 4. **Write to file, not magic state.** Every change the palette makes is written to the config file. `cat config` always shows the truth.
 5. **Progressive complexity.** Flat file → Lua → project overrides. You only reach for the next level when you need it.
+
+## Related Docs
+
+- [Theming](22-theming.md) — theme file format (TOML)
+- [Conventions](30-conventions.md) — naming conventions for config keys
+- [Plugin System](06-plugins.md) — plugin settings namespace
+- [Platform Support](20-platform-support.md) — platform-aware keybind defaults

@@ -152,3 +152,12 @@ Solution: support both, composited in the GPU pipeline alongside text.
 - Kitty graphics protocol as primary (de facto standard for modern terminals)
 - Sixel as fallback (legacy compatibility)
 - Both pass through the built-in multiplexer — no tmux image bugs
+
+## Related Docs
+
+- [Architecture](01-architecture.md) — where the renderer sits in the layer stack
+- [Abstraction Layer](13-abstraction.md) — `GpuBackend`, `TextShaper`, `FontRasterizer` traits
+- [Performance](12-performance.md) — latency and FPS targets
+- [Theming](22-theming.md) — color definitions that the renderer applies
+- [Accessibility](17-accessibility.md) — AccessKit tree maintained alongside rendering
+- [Platform Support](20-platform-support.md) — per-platform rendering backends

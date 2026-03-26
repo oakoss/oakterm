@@ -424,3 +424,11 @@ When the core crashes (shouldn't happen, but if it does):
 - Crash report saved to `~/.local/state/phantom/crash.log`
 - On next launch: "Phantom crashed. [View Crash Report] [Send Report]" (sending is opt-in, never automatic)
 - Session restore offers to recover panes from before the crash
+
+## Related Docs
+
+- [Health Check](28-health-check.md) — `:health` runs all diagnostics
+- [Performance](12-performance.md) — performance targets that `:debug perf` measures
+- [Memory Management](15-memory-management.md) — `:debug memory` spec
+- [Plugin System](06-plugins.md) — plugin profiling API
+- [Security](21-security.md) — `:debug security` status

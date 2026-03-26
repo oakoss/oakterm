@@ -89,3 +89,11 @@ Regressions fail the build. Performance dashboard is public.
 - Nightly extended runs — soak tests, fuzzing, performance regression
 - Public performance dashboard tracking metrics over time
 - Flaky test policy: a flaky test is a bug, not a retry
+
+## Related Docs
+
+- [Performance](12-performance.md) — performance targets and benchmarks
+- [Memory Management](15-memory-management.md) — soak tests
+- [Accessibility](17-accessibility.md) — a11y testing requirements
+- [Security](21-security.md) — security fuzzing and sandbox testing
+- [Theming](22-theming.md) — theme contrast validation

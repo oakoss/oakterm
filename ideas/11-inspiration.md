@@ -3,7 +3,7 @@ title: "Inspiration & Prior Art"
 status: reference
 category: research
 description: "What we took from each terminal"
-tags: ["research", "ghostty", "kitty", "wezterm", "alacritty", "warp", "tmux", "zellij"]
+tags: ["research", "ghostty", "kitty", "wezterm", "alacritty", "warp", "tmux", "zellij", "cmux", "foot", "contour", "ptyxis", "rio", "wave", "harpoon"]
 ---
 # Inspiration & Prior Art
 
@@ -56,6 +56,22 @@ What we took from each terminal and tool — and what we deliberately left out.
 **Took:** Validates wgpu/WebGPU as a viable rendering approach for terminals
 **Left:** CRT shader novelty features
 
+### Wave
+**Took:** Proves users want inline file previews and that a terminal can embed non-terminal content in panes
+**Left:** Drag-and-drop workspace model, built-in editor, too many concerns in one app
+
+### iTerm2
+**Took:** Smart selection (quad-click selects semantic objects), triggers (regex → action), process completion notifications, automatic profile switching per directory
+**Left:** No GPU rendering (high CPU/memory), bloated feature set, macOS-only
+
+### Windows Terminal
+**Took:** UIA accessibility tree implementation (reference for how to do a11y right), fragment-based extension, per-tab color profiles
+**Left:** Windows-only, JSON config, no plugin system
+
+### Tabby
+**Took:** Quake console mode (global hotkey dropdown), SSH connection manager concept, serial terminal support
+**Left:** Electron (performance), plugin sprawl
+
 ## Apps (not terminals, but UX inspiration)
 
 ### T3 Chat
@@ -79,3 +95,13 @@ What we took from each terminal and tool — and what we deliberately left out.
 ### Zellij
 **Took:** Floating panes, layout system, mode indicators, WASM plugins, session resurrection
 **Left:** Memory overhead, mode conflicts with Neovim, KDL config
+
+## Neovim Ecosystem
+
+### Harpoon (ThePrimeagen)
+**Took:** Fixed-size bookmark register for instant navigation by index. Muscle memory over fuzzy search. Per-project persistence.
+**Left:** File-centric model (we adapted it for panes)
+
+### Neovim `:checkhealth`
+**Took:** Single command that runs all diagnostics with actionable fix suggestions. Our `:health` is directly inspired by this.
+**Left:** Neovim-specific health checks

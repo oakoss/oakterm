@@ -187,3 +187,11 @@ trait GpuBackend       → Metal / Vulkan / DX12 (all via wgpu) / NullBackend
 ```
 
 Everything above these traits is shared code. The platform layer is thin — window creation, input events, clipboard, notifications. The renderer, multiplexer, plugin host, and config system are 100% cross-platform.
+
+## Related Docs
+
+- [Abstraction Layer](13-abstraction.md) — traits for each platform
+- [Renderer](02-renderer.md) — per-platform text shaping and GPU backends
+- [Accessibility](17-accessibility.md) — per-platform screen reader support
+- [Remote Access](29-remote-access.md) — headless Linux support
+- [Smart Keybinds](19-smart-keybinds.md) — platform-aware keybind defaults

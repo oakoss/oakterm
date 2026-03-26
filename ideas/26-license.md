@@ -80,3 +80,8 @@ Sideloaded plugins show a clear warning: "This plugin is not from the official r
 | Themes (registry) | Any OSI-approved open source license | Source link verified |
 
 This keeps the official ecosystem open and trustworthy while not preventing anyone from running whatever they want on their own machine.
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — registry open source requirement
+- [Conventions](30-conventions.md) — plugin licensing conventions

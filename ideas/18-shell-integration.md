@@ -124,3 +124,10 @@ shell_integration = "auto"  -- inject at launch, no file modification
 - Not a shell replacement — it's a thin layer on top of your existing shell
 - Not required — everything works without it, you just lose the smart features
 - Not a custom prompt — it works alongside Starship, p10k, or whatever you use
+
+## Related Docs
+
+- [Plugin System](06-plugins.md) — shell integration events API
+- [Context Engine](05-context-engine.md) — consumes cwd and prompt data
+- [Smart Keybinds](19-smart-keybinds.md) — scroll-to-prompt uses prompt markers
+- [Agent Management](07-agent-management.md) — process completion notifications

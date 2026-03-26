@@ -89,3 +89,11 @@ When performance and features conflict, performance wins. Specific rules:
 3. **Idle means idle.** 0% CPU when nothing is happening. No background polling, no animation timers when nothing is animating.
 4. **Memory scales with content, not features.** 10 installed but inactive plugins should cost near-zero memory. Only loaded plugins consume resources.
 5. **Benchmarks are tests.** A performance regression is a bug, same as a crash.
+
+## Related Docs
+
+- [Renderer](02-renderer.md) — GPU rendering approach
+- [Memory Management](15-memory-management.md) — memory targets and scroll buffer
+- [Debugging](14-debugging.md) — `:debug perf` and `phantom benchmark`
+- [Plugin System](06-plugins.md) — plugin frame budgets
+- [Testing](25-testing.md) — performance benchmarks in CI
