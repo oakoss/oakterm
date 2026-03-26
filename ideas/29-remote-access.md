@@ -189,17 +189,34 @@ Tokens are never stored in config files — always via environment variable or c
 
 ### What's core
 
+The daemon-to-client connection is a core feature — networking for remote domains lives alongside SSH domains in the multiplexer, not in a plugin.
+
 - Headless mode (`--headless`) — NullBackend implementations for all platform traits
 - Daemon mode (`--daemon`) — background process management, PID file
-- Remote domain configuration (`remote_domains` in config)
-- Client-side remote pane rendering (VT stream from WebSocket, rendered locally)
-- Protocol definition (WebSocket + message format for pane I/O, sidebar sync, notifications)
+- **Network listener** — TLS-encrypted WebSocket server on configurable port
+- **Authentication** — token and mTLS built into the protocol
+- **Protocol** — WebSocket message format for pane I/O, sidebar sync, notifications, plugin state
+- **Remote domain configuration** — `remote_domains` in config, same level as `ssh_domains`
+- **`:connect` command** — core command to connect to a remote daemon
+- **Client-side remote pane rendering** — VT stream from WebSocket, rendered by local GPU
+- **Connection management** — reconnection on network drop, session resumption
 
 ### What's a plugin
 
-- Web client serving (the HTML/JS bundle that runs in a browser)
-- Advanced tunnel management (auto-start Tailscale, configure Cloudflare)
-- Multi-daemon dashboard (managing connections to many servers)
+- **Web client** — the HTML/JS bundle served to browsers (plugin: `web-client`)
+- **Auto-discovery** — mDNS/Bonjour to find Phantom daemons on the LAN (plugin: `lan-discovery`)
+- **Tunnel helpers** — auto-start/configure Tailscale, Cloudflare, Pangolin (plugin: `tunnel-manager`)
+- **Multi-daemon dashboard** — managing connections to many servers (plugin: `remote-dashboard`)
+
+### Why core, not plugin
+
+The remote connection is too deep to be a plugin:
+- It needs to synchronize the full multiplexer state (panes, tabs, workspaces)
+- Sidebar data from remote plugins needs to merge with local sidebar state
+- Harpoon bookmarks need to reference remote panes by stable IDs
+- Session persistence needs to include remote connection state
+- `:health` needs to check remote daemon connectivity
+- The protocol is effectively an extension of the multiplexer, not an add-on
 
 ## Security
 
