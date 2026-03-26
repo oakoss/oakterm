@@ -215,11 +215,177 @@ Plugin overhead:   +0.2ms/frame (5 active plugins)
 All targets met ✓
 ```
 
-## Plugin Debugging
+## Plugin Debugging & Performance Attribution
 
-Plugins get their own debug tools:
+The goal: when something is slow, leaking memory, or broken — know instantly whether it's us or a plugin, and which plugin.
 
-- `phantom plugin logs docker-manager` — tail plugin logs
-- `phantom plugin inspect docker-manager` — show capabilities, memory, state
-- Plugins can emit structured logs via the plugin API, visible in `:debug plugins`
-- WASM stack traces on crash, mapped to source if debug symbols are present
+### :debug plugins (extended)
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Plugin Performance                                           │
+├───────────────────────────────────────────────────────────────┤
+│  Plugin             CPU/frame  Mem     Events/s  Errors  │
+│  ──────────────────────────────────────────────────────────── │
+│  agent-manager      0.12ms     2.1MB   4.2       0       │
+│  context-engine     0.31ms     1.8MB   12.8      0       │
+│  service-monitor    0.05ms     0.6MB   0.3       0       │
+│  docker-manager     0.82ms ⚠  3.2MB   1.1       3 ⚠     │
+│  harpoon            0.01ms     0.2MB   0.0       0       │
+│  ──────────────────────────────────────────────────────────── │
+│  Total plugins      1.31ms     7.9MB                      │
+│  Core (no plugins)  4.89ms    40.1MB                      │
+│  ──────────────────────────────────────────────────────────── │
+│  Total              6.20ms    48.0MB                      │
+│                                                               │
+│  ⚠ docker-manager: 0.82ms/frame (budget: 0.5ms)              │
+│    3 errors in last 5m (network timeout → unix socket)        │
+│    [View Logs]  [Disable]  [Report Issue]                     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Every plugin's CPU time, memory, event throughput, and error count — separated from core. At a glance you see: "docker-manager is using 0.82ms/frame and erroring — that's the problem, not the terminal."
+
+### :debug plugin <name>
+
+Deep dive into a single plugin:
+
+```
+:debug plugin docker-manager
+
+┌───────────────────────────────────────────────────────────────┐
+│  docker-manager v1.2.0                                        │
+├───────────────────────────────────────────────────────────────┤
+│  Status:          active                                      │
+│  Loaded:          14m ago                                     │
+│  Memory:          3.2MB (limit: 16MB)                         │
+│  Memory trend:    ↑ +0.4MB in last 5m ⚠                      │
+│                                                               │
+│  CPU per frame:   0.82ms avg / 2.1ms p99                      │
+│  Event loop:      1.1 events/sec                              │
+│                                                               │
+│  API Calls (last 5m):                                         │
+│    sidebar.update      312 calls   0.05ms avg                 │
+│    process.spawn         2 calls   1.20ms avg                 │
+│    pane.output          48 calls   0.08ms avg                 │
+│    network.request      24 calls   45ms avg  ⚠                │
+│    notify                3 calls   0.01ms avg                 │
+│                                                               │
+│  Errors (last 5m):                                            │
+│    12:04:32  network.request timeout (unix:///var/run/docker)  │
+│    12:06:15  network.request timeout (unix:///var/run/docker)  │
+│    12:08:44  network.request timeout (unix:///var/run/docker)  │
+│                                                               │
+│  Capabilities:                                                │
+│    ✓ sidebar.section  ✓ process.spawn  ✓ notify               │
+│    ✓ pane.create      ✓ fs.read        ✓ network              │
+│                                                               │
+│  [View Full Logs]  [Restart]  [Disable]  [Report Issue]       │
+└───────────────────────────────────────────────────────────────┘
+```
+
+This tells the plugin author exactly what's wrong: network requests to the Docker socket are averaging 45ms and timing out. That's not our problem — it's their network call strategy.
+
+### Plugin Performance Budgets
+
+Each plugin gets a frame-time budget. Exceed it and we flag it:
+
+```lua
+-- config.lua (defaults, overridable per-plugin)
+plugin_defaults = {
+  frame_budget = "0.5ms",      -- max CPU time per frame
+  memory_limit = "16MB",       -- max WASM linear memory
+  event_timeout = "100ms",     -- max time to respond to an event
+  error_threshold = 10,        -- errors in 5m before auto-disable warning
+}
+
+plugins = {
+  -- Override for a specific plugin that needs more room
+  ["context-engine"] = { frame_budget = "1ms" },
+}
+```
+
+When a plugin exceeds its budget:
+1. First: `⚠` indicator in `:debug plugins` and the perf overlay
+2. Sustained: notification — "docker-manager is slowing down your terminal (0.82ms/frame, budget 0.5ms). [View Details] [Disable]"
+3. Critical: if a plugin blocks for >1s, it's killed and restarted with a notification
+
+### The Blame Chain
+
+When the user notices something slow, the diagnostic path is:
+
+```
+User: "My terminal feels slow"
+        │
+        ▼
+:debug perf  →  "6.2ms total, 1.3ms plugins, 4.9ms core"
+        │
+        ├── Plugins > 50% of frame time?
+        │   YES → :debug plugins → identify the slow plugin
+        │         → :debug plugin <name> → see which API calls are slow
+        │         → Plugin author's problem
+        │
+        └── Core > 5ms?
+            YES → Our problem
+            → :debug → check renderer, scroll buffer, glyph atlas
+            → phantom benchmark → identify which subsystem
+```
+
+Every step in this chain is a command the user can run. No guessing. Paste the output in a bug report and we (or the plugin author) know exactly where to look.
+
+### Plugin Profiling CLI
+
+For plugin authors during development:
+
+```
+phantom plugin profile docker-manager --duration 30s
+
+Profiling docker-manager for 30s...
+
+Results:
+  Total CPU:         24.6ms over 3,600 frames (0.68ms/frame avg)
+  Peak CPU:          4.2ms (frame 2,847 — sidebar.update after docker event)
+  Memory start:      2.8MB
+  Memory end:        3.2MB (+0.4MB, possible slow leak)
+  API call breakdown:
+    network.request:   73% of CPU time (avg 45ms per call)
+    sidebar.update:    18% of CPU time (avg 0.05ms but 312 calls)
+    pane.output:        6% of CPU time
+    other:              3%
+
+Recommendation: network.request calls are dominating. Consider caching
+Docker state and polling less frequently.
+```
+
+### Plugin Logs
+
+Every plugin can emit structured logs via the API:
+
+```rust
+// In plugin code
+log::info!("Refreshing container list");
+log::warn!("Docker socket timeout, retrying");
+log::error!("Failed to connect to Docker daemon");
+```
+
+These are visible via:
+- `phantom plugin logs docker-manager` — CLI, tail style
+- `:debug plugin docker-manager` — in the palette, last N entries
+- `~/.local/state/phantom/plugins/docker-manager/log` — on disk
+- `:debug plugins` — error count summary
+
+Logs are namespaced per-plugin. The core's logs and each plugin's logs are separate streams. No interleaving, no confusion about who logged what.
+
+### Crash Attribution
+
+When a WASM plugin crashes:
+- The plugin is killed, not the terminal
+- Notification: "Plugin docker-manager crashed. [Restart] [Disable] [View Error]"
+- The crash log includes the WASM stack trace, mapped to source if debug symbols present
+- The crash is logged with full context: which API call triggered it, memory state at crash, last N log entries
+- Terminal continues running — no panes are lost
+
+When the core crashes (shouldn't happen, but if it does):
+- Crash report saved to `~/.local/state/phantom/crash.log`
+- On next launch: "Phantom crashed. [View Crash Report] [Send Report]" (sending is opt-in, never automatic)
+- Session restore offers to recover panes from before the crash
