@@ -1,17 +1,28 @@
 ---
-title: "Remote Access & Headless Mode"
+title: 'Remote Access & Headless Mode'
 status: draft
 category: cross-cutting
-description: "Headless daemon, native client connection, web client, tunnel-agnostic"
-tags: ["remote", "headless", "websocket", "mobile", "tailscale", "tunnel", "server", "daemon"]
+description: 'Headless daemon, native client connection, web client, tunnel-agnostic'
+tags:
+  [
+    'remote',
+    'headless',
+    'websocket',
+    'mobile',
+    'tailscale',
+    'tunnel',
+    'server',
+    'daemon',
+  ]
 ---
+
 # Remote Access & Headless Mode
 
 Run the terminal daemon on a server. Connect to it from your desktop terminal like it's local.
 
 ## The Model
 
-```
+```lua
 ┌─────────────────────────────────┐     ┌─────────────────────────────┐
 │  Your Mac (client)              │     │  Proxmox Server (daemon)    │
 │                                 │     │                             │
@@ -38,6 +49,7 @@ phantom --headless
 Runs the full daemon without a window — no GPU, no display server, no GTK/AppKit/WinUI. Just the multiplexer, plugin host, scroll buffers, and network API.
 
 Works on:
+
 - Ubuntu Server (no desktop environment)
 - Any headless Linux (Alpine, Debian, RHEL)
 - Docker containers
@@ -45,6 +57,7 @@ Works on:
 - CI/CD runners
 
 The abstraction layer makes this possible:
+
 - `trait GpuBackend` → `NullBackend` (no rendering)
 - `trait PlatformShell` → `HeadlessShell` (no windows)
 - `trait TextShaper` → `NullShaper` (no font rendering — clients handle it)
@@ -65,13 +78,13 @@ phantom --headless --port 7890 --auth-token "$PHANTOM_TOKEN" --daemon
 
 From your Mac/Linux/Windows terminal, connect to the remote daemon:
 
-```
+```text
 :connect homelab
 ```
 
 Or in config:
 
-```
+```text
 remote-domain.homelab.host = proxmox.local
 remote-domain.homelab.port = 7890
 remote-domain.homelab.auth = token
@@ -99,7 +112,7 @@ remote_domains = {
 
 ### What connecting looks like
 
-```
+```text
 :connect homelab
 
 ┌──────────────────┬─────────────────────────────┐
@@ -119,15 +132,15 @@ Remote panes show under their domain name with a connection indicator. Click one
 
 ### What the protocol handles
 
-| Capability | How |
-|-----------|-----|
+| Capability            | How                                                                            |
+| --------------------- | ------------------------------------------------------------------------------ |
 | Pane output streaming | VT byte stream over WebSocket — the client renders it locally with its own GPU |
-| Pane input | Keystrokes sent over WebSocket to the daemon |
-| Sidebar state | Structured data (JSON) — sections, entries, badges |
-| Notifications | Push events from daemon to client |
-| Plugin state | Remote plugins run on the daemon, their sidebar/palette entries sync to client |
-| Scroll buffer | Client requests scroll regions on demand, daemon sends from its buffer |
-| File operations | Plugins on the daemon access the server filesystem, not the client's |
+| Pane input            | Keystrokes sent over WebSocket to the daemon                                   |
+| Sidebar state         | Structured data (JSON) — sections, entries, badges                             |
+| Notifications         | Push events from daemon to client                                              |
+| Plugin state          | Remote plugins run on the daemon, their sidebar/palette entries sync to client |
+| Scroll buffer         | Client requests scroll regions on demand, daemon sends from its buffer         |
+| File operations       | Plugins on the daemon access the server filesystem, not the client's           |
 
 The client does its own rendering — the server doesn't need a GPU. The protocol sends VT output (same bytes a PTY would produce) and the client's local renderer handles fonts, ligatures, images, everything.
 
@@ -137,14 +150,14 @@ SSH domains (in the multiplexer) open an SSH connection and run a remote shell. 
 
 Remote domains connect to a full Phantom daemon. The remote side has its own plugins, sidebar state, agent management, scroll buffers. The client synchronizes with that state.
 
-| Feature | SSH Domain | Remote Domain |
-|---------|-----------|---------------|
-| Remote side runs | Your shell (bash/zsh) | Full Phantom daemon |
-| Plugins | Local only | Both local and remote |
-| Sidebar | Local state only | Merged local + remote |
-| Agent management | Not available remotely | Full remote agent lifecycle |
-| Session persistence | Reconnects SSH | Daemon keeps running, client reconnects |
-| Requires on remote | SSH server | Phantom binary |
+| Feature             | SSH Domain             | Remote Domain                           |
+| ------------------- | ---------------------- | --------------------------------------- |
+| Remote side runs    | Your shell (bash/zsh)  | Full Phantom daemon                     |
+| Plugins             | Local only             | Both local and remote                   |
+| Sidebar             | Local state only       | Merged local + remote                   |
+| Agent management    | Not available remotely | Full remote agent lifecycle             |
+| Session persistence | Reconnects SSH         | Daemon keeps running, client reconnects |
+| Requires on remote  | SSH server             | Phantom binary                          |
 
 You'll use both. SSH domains for quick shell access to machines where you don't have Phantom installed. Remote domains for your homelab, dev servers, and CI machines where you want the full experience.
 
@@ -152,36 +165,36 @@ You'll use both. SSH domains for quick shell access to machines where you don't 
 
 The daemon also serves a web client for when you don't have the desktop terminal:
 
-```
+```text
 https://proxmox.local:7890  (via Tailscale, Cloudflare Tunnel, etc.)
 ```
 
 The web client is lighter than the native client — monitor mode by default, interactive on opt-in. Good for checking on agents from your phone.
 
-| Client | Rendering | Full features | Offline |
-|--------|-----------|--------------|---------|
+| Client           | Rendering | Full features                       | Offline           |
+| ---------------- | --------- | ----------------------------------- | ----------------- |
 | Desktop terminal | Local GPU | Yes — full sidebar, harpoon, splits | Yes (local panes) |
-| Web client | Browser | Monitor + basic interaction | No |
+| Web client       | Browser   | Monitor + basic interaction         | No                |
 
 ## Tunneling
 
 The daemon listens on localhost by default. You bring your own tunnel:
 
-| Tunnel | Best for |
-|--------|----------|
-| **Tailscale** | Personal use — zero config, private network, already on your devices |
-| **Pangolin** | Self-hosted — your own tunnel infrastructure |
-| **Cloudflare Tunnel** | Public edge — fast, no port forwarding |
-| **SSH port forward** | Simple — `ssh -L 7890:localhost:7890 server` |
-| **WireGuard** | Direct VPN — low latency |
-| **Direct LAN** | Home network — `--listen 0.0.0.0` |
+| Tunnel                | Best for                                                             |
+| --------------------- | -------------------------------------------------------------------- |
+| **Tailscale**         | Personal use — zero config, private network, already on your devices |
+| **Pangolin**          | Self-hosted — your own tunnel infrastructure                         |
+| **Cloudflare Tunnel** | Public edge — fast, no port forwarding                               |
+| **SSH port forward**  | Simple — `ssh -L 7890:localhost:7890 server`                         |
+| **WireGuard**         | Direct VPN — low latency                                             |
+| **Direct LAN**        | Home network — `--listen 0.0.0.0`                                    |
 
 ## Authentication
 
-| Method | Best for |
-|--------|----------|
+| Method    | Best for                                                              |
+| --------- | --------------------------------------------------------------------- |
 | **Token** | Personal use — generate with `phantom remote token`, pass via env var |
-| **mTLS** | Team/production — mutual TLS with client certificates |
+| **mTLS**  | Team/production — mutual TLS with client certificates                 |
 
 Tokens are never stored in config files — always via environment variable or credential manager.
 
@@ -211,6 +224,7 @@ The daemon-to-client connection is a core feature — networking for remote doma
 ### Why core, not plugin
 
 The remote connection is too deep to be a plugin:
+
 - It needs to synchronize the full multiplexer state (panes, tabs, workspaces)
 - Sidebar data from remote plugins needs to merge with local sidebar state
 - Harpoon bookmarks need to reference remote panes by stable IDs

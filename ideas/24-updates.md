@@ -1,12 +1,12 @@
 ---
-title: "Updates"
+title: 'Updates'
 status: draft
 category: cross-cutting
-description: "Every update path works, staged updates, rollback"
-tags: ["updates", "rollback", "release-channels", "package-manager"]
+description: 'Every update path works, staged updates, rollback'
+tags: ['updates', 'rollback', 'release-channels', 'package-manager']
 ---
-# Updates
 
+# Updates
 
 Updates should be frictionless. When you're told there's an update, every path to installing it should work.
 
@@ -29,7 +29,7 @@ Ghostty shows an "update available" notification in the bottom-right corner. You
 
 When an update is available:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Update available: v0.6.0 → v0.7.0              │
 │  [View Changes]  [Update Now]  [Later]  [Skip]  │
@@ -42,14 +42,14 @@ When an update is available:
 
 ### Every Path Works
 
-| Where you see the update | How you install it |
-|--------------------------|-------------------|
-| Notification banner | Click "Update Now" |
-| Command palette | `:update` |
-| Settings palette | "Update Available" entry at the top |
-| CLI | `phantom update` |
-| Status bar | Click the version indicator |
-| Package manager | `brew upgrade phantom` / `winget upgrade phantom` / etc. |
+| Where you see the update | How you install it                                       |
+| ------------------------ | -------------------------------------------------------- |
+| Notification banner      | Click "Update Now"                                       |
+| Command palette          | `:update`                                                |
+| Settings palette         | "Update Available" entry at the top                      |
+| CLI                      | `phantom update`                                         |
+| Status bar               | Click the version indicator                              |
+| Package manager          | `brew upgrade phantom` / `winget upgrade phantom` / etc. |
 
 All of these trigger the same update flow. None of them silently fail.
 
@@ -65,7 +65,7 @@ All of these trigger the same update flow. None of them silently fail.
 
 If the new version crashes on launch or has a critical bug:
 
-```
+```bash
 phantom rollback
 ```
 
@@ -73,7 +73,7 @@ Reverts to the previous version. Keeps the last 2 versions on disk.
 
 ### Release Channels
 
-```
+```ini
 update-channel = stable    # default — tested releases
 update-channel = nightly   # latest builds, may be unstable
 update-channel = none      # disable update checks entirely
@@ -82,7 +82,8 @@ update-channel = none      # disable update checks entirely
 ### Package Manager Awareness
 
 On macOS with Homebrew, the terminal detects it was installed via `brew` and defers to:
-```
+
+```bash
 brew upgrade phantom
 ```
 
@@ -92,7 +93,7 @@ On Linux with Flatpak, it defers to the Flatpak update system. On Windows with w
 
 Plugin updates are separate from core updates:
 
-```
+```bash
 phantom plugin update              # update all plugins
 phantom plugin update agent-manager # update specific plugin
 ```

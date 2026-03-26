@@ -1,10 +1,11 @@
 ---
-title: "Agent Control API"
+title: 'Agent Control API'
 status: draft
 category: core
-description: "CLI for agents to interact with and control the terminal"
-tags: ["agents", "cli", "api", "control", "permissions", "socket"]
+description: 'CLI for agents to interact with and control the terminal'
+tags: ['agents', 'cli', 'api', 'control', 'permissions', 'socket']
 ---
+
 # Agent Control API
 
 A CLI (`phantom ctl`) that lets agents — or any process running in a pane — interact with the terminal. Not an MCP server. Just a binary that talks to the daemon over its Unix socket.
@@ -130,7 +131,8 @@ agent_permissions = {
 ```
 
 Flat config:
-```
+
+```text
 agent.permissions.self = true
 agent.permissions.notify = true
 agent.permissions.pane-create = false
@@ -140,22 +142,22 @@ agent.permissions.pane-input = false
 
 ### Default permissions
 
-| Permission | Default | Why |
-|-----------|---------|-----|
-| `self` | Always allowed | An agent should always be able to set its own status |
-| `notify` | Allowed | Notifications are passive — they don't control anything |
-| `prompt` | Allowed | Asking the user a question is safe — user controls the answer |
-| `pane_create` | Denied | Opening panes is a visible action — opt-in |
-| `pane_read` | Denied | Reading other panes could expose secrets |
-| `pane_input` | Denied | Sending input to other panes could execute commands |
-| `pane_close` | Denied | Closing panes could destroy work |
-| `sidebar` | Denied | Modifying the sidebar could be confusing |
+| Permission    | Default        | Why                                                           |
+| ------------- | -------------- | ------------------------------------------------------------- |
+| `self`        | Always allowed | An agent should always be able to set its own status          |
+| `notify`      | Allowed        | Notifications are passive — they don't control anything       |
+| `prompt`      | Allowed        | Asking the user a question is safe — user controls the answer |
+| `pane_create` | Denied         | Opening panes is a visible action — opt-in                    |
+| `pane_read`   | Denied         | Reading other panes could expose secrets                      |
+| `pane_input`  | Denied         | Sending input to other panes could execute commands           |
+| `pane_close`  | Denied         | Closing panes could destroy work                              |
+| `sidebar`     | Denied         | Modifying the sidebar could be confusing                      |
 
 ### Escalation
 
 If an agent tries a denied action, the terminal can prompt the user:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Agent "feat/auth" wants to:                     │
 │  Read output from pane "dev-server"              │
@@ -182,6 +184,7 @@ Agents (and scripts) use these to talk to the daemon. If `PHANTOM_SOCKET` is uns
 ## Use Cases
 
 ### Agent sets its own status as it works
+
 ```bash
 phantom ctl self set-status working
 phantom ctl self set-title "Analyzing codebase"
@@ -197,6 +200,7 @@ phantom ctl notify "feat/auth complete" --level success
 The sidebar and tab automatically reflect these updates in real-time.
 
 ### Agent opens a test runner to verify its work
+
 ```bash
 phantom ctl pane create --drawer bottom --command "npm test"
 # waits for tests...
@@ -205,12 +209,14 @@ TEST_OUTPUT=$(phantom ctl pane output $TEST_PANE --lines 5)
 ```
 
 ### Agent asks user for a decision
+
 ```bash
 APPROACH=$(phantom ctl prompt "Rate limiting approach?" --choices "sliding-window,token-bucket,leaky-bucket")
 # Agent uses the answer to guide its implementation
 ```
 
 ### Script that sets up a dev environment
+
 ```bash
 #!/bin/bash
 # dev-setup.sh — run inside the terminal

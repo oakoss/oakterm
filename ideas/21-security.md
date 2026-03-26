@@ -1,25 +1,28 @@
 ---
-title: "Security"
+title: 'Security'
 status: draft
 category: cross-cutting
-description: "Escape injection, plugin sandbox, secure input, clipboard controls"
-tags: ["security", "escape-injection", "sandbox", "clipboard", "privacy"]
+description: 'Escape injection, plugin sandbox, secure input, clipboard controls'
+tags: ['security', 'escape-injection', 'sandbox', 'clipboard', 'privacy']
 ---
-# Security
 
+# Security
 
 Security is a core principle. Terminals handle the most sensitive data on your machine — passwords, API keys, SSH credentials, production access. The terminal itself must be trustworthy.
 
 ## Threat Model
 
 ### Escape Sequence Injection
+
 Malicious content in `curl` output, log files, or git repos can contain terminal escape sequences that:
+
 - Rewrite visible text (hide malicious commands behind innocent-looking output)
 - Set window titles to misleading text
 - Attempt to paste commands via bracketed paste abuse
 - Exfiltrate data via OSC sequences that report terminal state
 
 **Mitigations:**
+
 - Bracketed paste mode enabled by default — pasted content is always clearly delimited
 - Dangerous escape sequences (title reporting, clipboard read) disabled by default
 - OSC sequences that exfiltrate data (e.g., OSC 52 read, DA responses) are opt-in
@@ -27,12 +30,15 @@ Malicious content in `curl` output, log files, or git repos can contain terminal
 - Visual indicator when a pasted command contains control characters
 
 ### Plugin Security
+
 WASM plugins are sandboxed, but a malicious plugin could still:
+
 - Request excessive permissions (sidebar + network + fs = data exfiltration)
 - Exfiltrate visible terminal content via the `pane.output` API
 - Inject keystrokes via the `pane.input` API
 
 **Mitigations:**
+
 - Capability-based permissions — plugins can only access what they requested and the user approved
 - Permission prompts show exactly what the plugin can do in plain language
 - `pane.input` requires explicit `pane.input` capability — separate from `pane.create`
@@ -42,23 +48,27 @@ WASM plugins are sandboxed, but a malicious plugin could still:
 - Sideloaded plugins show a stronger warning than registry plugins
 
 ### Secure Input
+
 - **Secure keyboard entry** mode: when a password prompt is detected, other processes cannot read keystrokes (macOS Secure Event Input, equivalent on other platforms)
 - Password detection is heuristic (common patterns: `Password:`, `passphrase`, `sudo`) + configurable patterns
 - Visual indicator in the tab/status bar when secure input is active
 - Secure input can be toggled manually via keybind
 
 ### Clipboard Security
+
 - Clipboard write (OSC 52 write) is allowed by default — programs can copy to clipboard
 - Clipboard read (OSC 52 read) is denied by default — programs cannot read your clipboard without permission
 - Configurable per-pane: agent panes may need different clipboard permissions than shells
 
 ### Configuration Security
+
 - Config files are never executed with elevated privileges
 - Lua config runs in a restricted sandbox — no `os.execute`, no `io.popen`, no shell access
 - Lua config can read files (for project detection) but cannot write files or make network calls
 - Plugin configs are validated against declared schemas
 
 ### Supply Chain
+
 - Plugin registry entries include checksums (SHA-256)
 - Plugins are signed by their authors (optional but surfaced in the UI)
 - `phantom plugin audit` checks installed plugins against known vulnerabilities
@@ -77,22 +87,22 @@ WASM plugins are sandboxed, but a malicious plugin could still:
 
 Everything secure by default, relaxable when needed:
 
-| Setting | Default | Can be changed |
-|---------|---------|---------------|
-| Bracketed paste | On | Yes |
-| OSC 52 clipboard write | On | Yes |
-| OSC 52 clipboard read | Off | Yes |
-| Title reporting | Off | Yes |
-| Secure keyboard entry | Auto-detect | Yes |
-| Plugin auto-update | Off | Yes |
-| Plugin network access | Per-plugin approval | Yes |
-| Lua sandbox (no os/io) | On | No (hardcoded) |
+| Setting                | Default             | Can be changed |
+| ---------------------- | ------------------- | -------------- |
+| Bracketed paste        | On                  | Yes            |
+| OSC 52 clipboard write | On                  | Yes            |
+| OSC 52 clipboard read  | Off                 | Yes            |
+| Title reporting        | Off                 | Yes            |
+| Secure keyboard entry  | Auto-detect         | Yes            |
+| Plugin auto-update     | Off                 | Yes            |
+| Plugin network access  | Per-plugin approval | Yes            |
+| Lua sandbox (no os/io) | On                  | No (hardcoded) |
 
 ## Auditing
 
 `:debug security` shows the current security state:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Security Status                                 │
 ├──────────────────────────────────────────────────┤

@@ -1,24 +1,24 @@
 ---
-title: "Conventions"
+title: 'Conventions'
 status: draft
 category: cross-cutting
-description: "Naming, config syntax, keybinds, file structure"
-tags: ["naming", "config-syntax", "style-guide"]
+description: 'Naming, config syntax, keybinds, file structure'
+tags: ['naming', 'config-syntax', 'style-guide']
 ---
-# Conventions
 
+# Conventions
 
 Naming and formatting standards across the project. When in doubt, check here.
 
 ## Config Naming
 
-| Context | Convention | Example |
-|---------|-----------|---------|
-| Flat config keys | kebab-case | `font-family`, `theme-dark`, `scrollback-lines` |
-| Flat config plugin namespace | `plugin-name.key` | `agent.default-provider`, `context-engine.ai-backend` |
-| Lua config keys | snake_case | `font_size`, `ssh_domains`, `shell_integration` |
-| Lua config plugin namespace | table | `plugins["agent-manager"].default_provider` |
-| CLI flags | kebab-case with `--` prefix | `--log-level`, `--log-filter` |
+| Context                      | Convention                  | Example                                               |
+| ---------------------------- | --------------------------- | ----------------------------------------------------- |
+| Flat config keys             | kebab-case                  | `font-family`, `theme-dark`, `scrollback-lines`       |
+| Flat config plugin namespace | `plugin-name.key`           | `agent.default-provider`, `context-engine.ai-backend` |
+| Lua config keys              | snake_case                  | `font_size`, `ssh_domains`, `shell_integration`       |
+| Lua config plugin namespace  | table                       | `plugins["agent-manager"].default_provider`           |
+| CLI flags                    | kebab-case with `--` prefix | `--log-level`, `--log-filter`                         |
 
 Flat and Lua map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles translation.
 
@@ -30,14 +30,14 @@ Users come from tmux, vim, VS Code, browsers, and their OS. Default keybinds sho
 
 ### Borrow from what people already know
 
-| Source | What we take |
-|--------|-------------|
-| **Their OS** | Cmd+C/V (macOS), Ctrl+C/V (smart on Linux/Windows), Cmd+T/W for tabs |
-| **VS Code** | Cmd+Shift+P for command palette, Cmd+, for settings, Ctrl+` for terminal toggle |
-| **tmux** | Ctrl+B prefix concept for multiplexer actions (but optional, not required) |
-| **Vim** | j/k/h/l, gg/G, /, v/V/y in copy mode |
-| **Browsers** | Ctrl+F for search, Ctrl+Tab for tab switching, Ctrl+Shift+T for reopen tab |
-| **Ghostty/Kitty** | Common terminal keybinds users already have in muscle memory |
+| Source            | What we take                                                                    |
+| ----------------- | ------------------------------------------------------------------------------- |
+| **Their OS**      | Cmd+C/V (macOS), Ctrl+C/V (smart on Linux/Windows), Cmd+T/W for tabs            |
+| **VS Code**       | Cmd+Shift+P for command palette, Cmd+, for settings, Ctrl+` for terminal toggle |
+| **tmux**          | Ctrl+B prefix concept for multiplexer actions (but optional, not required)      |
+| **Vim**           | j/k/h/l, gg/G, /, v/V/y in copy mode                                            |
+| **Browsers**      | Ctrl+F for search, Ctrl+Tab for tab switching, Ctrl+Shift+T for reopen tab      |
+| **Ghostty/Kitty** | Common terminal keybinds users already have in muscle memory                    |
 
 ### Never do this
 
@@ -54,7 +54,7 @@ Nothing is hardcoded. If our default conflicts with your workflow, change it.
 
 All keybind action names use kebab-case:
 
-```
+```text
 split-right, split-down, split-float
 toggle-sidebar, grid-view
 copy-or-interrupt, paste
@@ -67,7 +67,7 @@ broadcast-toggle
 
 All palette commands use `:` prefix + kebab-case:
 
-```
+```text
 :agent, :merge, :diff, :agents
 :health, :debug, :update
 :settings, :keybinds, :theme, :plugins
@@ -97,19 +97,24 @@ Each idea doc in `ideas/` should follow this structure where applicable:
 One-line description of what this is.
 
 ## [Problem / Why]
+
 What problem does this solve? Why does it exist?
 
 ## [How It Works / Design]
+
 The core design. Diagrams, ASCII mockups, examples.
 
 ## [Configuration]
+
 Config examples in both flat and Lua format.
 
 ## [Plugin API / Primitives Used]
+
 For plugins: which API primitives does this use?
 For core: what does this expose to plugins?
 
 ## [What This Is Not]
+
 Explicit scope boundaries. What we chose not to do and why.
 ```
 
@@ -134,11 +139,11 @@ Every idea doc has YAML frontmatter:
 
 ```yaml
 ---
-title: "Feature Name"
+title: 'Feature Name'
 status: draft
 category: core
-description: "One-line summary for the index"
-tags: ["relevant", "keywords"]
+description: 'One-line summary for the index'
+tags: ['relevant', 'keywords']
 ---
 ```
 
@@ -161,6 +166,7 @@ tags: ["relevant", "keywords"]
 ### Tags
 
 Lowercase, kebab-case. Used for finding related docs. Common tags:
+
 - Platform: `macos`, `linux`, `windows`, `cross-platform`, `wayland`, `wsl`
 - Tech: `rust`, `wgpu`, `wasm`, `wasmtime`, `lua`, `toml`
 - Feature area: `ui`, `keybinds`, `fonts`, `themes`, `shell`, `agents`, `notifications`

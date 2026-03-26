@@ -1,22 +1,23 @@
 ---
-title: "Agent Management"
+title: 'Agent Management'
 status: draft
 category: plugin
-description: "Worktree lifecycle, notifications, merge/diff"
-tags: ["agents", "git-worktree", "claude-code", "codex", "notifications"]
+description: 'Worktree lifecycle, notifications, merge/diff'
+tags: ['agents', 'git-worktree', 'claude-code', 'codex', 'notifications']
 ---
-# Agent Management
 
+# Agent Management
 
 A bundled plugin, not a core feature. When enabled, the terminal becomes agent-aware without becoming an agent dashboard.
 
 ## Launching Agents
 
-```
+```text
 :agent claude --task="add rate limiting to /api/users"
 ```
 
 This:
+
 1. Creates a git worktree on a new branch
 2. Opens a pane in that worktree
 3. Starts the agent process
@@ -29,12 +30,12 @@ Agents never touch your working directory. Run 5 agents in parallel on the same 
 
 The plugin watches agent processes for state changes:
 
-| Badge | Meaning |
-|-------|---------|
-| ⟳ | Working |
-| ❓ | Needs approval or input |
-| ✓ | Finished |
-| ✗ | Errored |
+| Badge | Meaning                 |
+| ----- | ----------------------- |
+| ⟳     | Working                 |
+| ❓    | Needs approval or input |
+| ✓     | Finished                |
+| ✗     | Errored                 |
 
 Context window usage shown as a progress bar in the sidebar.
 
@@ -49,22 +50,23 @@ Solution: the terminal knows a pane is an agent process. Agent panes get scroll 
 `Cmd+Shift+U` jumps to the most recent pane that needs attention.
 
 Tab badge shows status at a glance:
-```
+
+```text
 ● server │ ◉ feat/auth ❓ │ ◉ fix/typo ✓ │
 ```
 
 ## Quick Actions
 
-| Command | What it does |
-|---------|-------------|
-| `:diff` | Opens floating pane with your diff tool showing agent's changes |
-| `:diff --all` | Summary across all agent panes |
-| `:merge` | Commit + merge worktree to parent branch + cleanup + close pane |
-| `:agents` | Palette view of all agents with status |
+| Command       | What it does                                                    |
+| ------------- | --------------------------------------------------------------- |
+| `:diff`       | Opens floating pane with your diff tool showing agent's changes |
+| `:diff --all` | Summary across all agent panes                                  |
+| `:merge`      | Commit + merge worktree to parent branch + cleanup + close pane |
+| `:agents`     | Palette view of all agents with status                          |
 
 ## Agent Palette
 
-```
+```text
 Cmd+Shift+P → :agents
 
 ┌──────────────────────────────────────────────────┐

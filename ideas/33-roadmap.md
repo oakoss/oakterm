@@ -1,10 +1,11 @@
 ---
-title: "Roadmap"
+title: 'Roadmap'
 status: draft
 category: cross-cutting
-description: "Phased implementation plan from MVP to full vision"
-tags: ["roadmap", "mvp", "phases", "priorities"]
+description: 'Phased implementation plan from MVP to full vision'
+tags: ['roadmap', 'mvp', 'phases', 'priorities']
 ---
+
 # Roadmap
 
 What gets built first and why.
@@ -18,6 +19,7 @@ Ship a usable terminal as fast as possible. Then add layers. Every phase produce
 A terminal that boots, renders text, and runs a shell. Nothing else.
 
 **What ships:**
+
 - VT parser (xterm-256color compatible)
 - GPU renderer (wgpu) with glyph atlas
 - Platform-native text shaping (Core Text / HarfBuzz / DirectWrite)
@@ -33,6 +35,7 @@ A terminal that boots, renders text, and runs a shell. Nothing else.
 - macOS + Linux (Windows can follow closely)
 
 **What does NOT ship:**
+
 - No multiplexer, no tabs, no splits
 - No plugins
 - No sidebar
@@ -47,6 +50,7 @@ A terminal that boots, renders text, and runs a shell. Nothing else.
 Tabs, splits, and session management.
 
 **What ships:**
+
 - Tabs
 - Tiled splits (horizontal, vertical)
 - Floating panes
@@ -62,6 +66,7 @@ Tabs, splits, and session management.
 - Status bar (basic — mode, pane title, time)
 
 **What does NOT ship:**
+
 - No plugins yet
 - No sidebar
 - No SSH domains
@@ -76,6 +81,7 @@ Tabs, splits, and session management.
 The extension runtime and core plugin API.
 
 **What ships:**
+
 - WASM plugin host (Wasmtime)
 - Lua config engine (full — beyond flat file)
 - Plugin API primitives: pane, sidebar data model, palette, notify, lifecycle hooks, process, filesystem
@@ -93,6 +99,7 @@ The extension runtime and core plugin API.
 - Health check (`:health` / `phantom doctor`)
 
 **What does NOT ship:**
+
 - No agents yet
 - No context engine
 - No SSH domains
@@ -107,6 +114,7 @@ The extension runtime and core plugin API.
 Smart features that know what you're doing.
 
 **What ships:**
+
 - Shell integration (bash, zsh, fish scripts + OSC 133/7 parsing)
 - Scroll-to-prompt
 - Process completion notifications
@@ -120,6 +128,7 @@ Smart features that know what you're doing.
 - Pane Query + Window + Storage + Shell Events plugin APIs
 
 **What does NOT ship:**
+
 - No AI / NL commands yet (context engine works without AI)
 - No remote access
 - No SSH domains
@@ -133,6 +142,7 @@ Smart features that know what you're doing.
 Connect to remote machines and daemons.
 
 **What ships:**
+
 - SSH domains (core — in the multiplexer)
 - Remote domains (headless daemon + client connection)
 - Headless mode (`phantom --headless`)
@@ -150,6 +160,7 @@ Connect to remote machines and daemons.
 The long tail.
 
 **What ships:**
+
 - NL commands (`?` prefix with AI backend)
 - Quake/dropdown mode plugin
 - Browser plugins (lite + webview)
@@ -170,14 +181,14 @@ The long tail.
 
 No dates. The phases ship when they're ready. Each phase is usable on its own:
 
-| Phase | What you can use it as |
-|-------|----------------------|
-| 0 | Fast, clean terminal (Alacritty alternative) |
-| 1 | Terminal + multiplexer (tmux replacement) |
-| 2 | Extensible terminal platform |
-| 3 | Smart, agent-aware terminal |
-| 4 | Remote-capable terminal |
-| 5 | Full vision |
+| Phase | What you can use it as                       |
+| ----- | -------------------------------------------- |
+| 0     | Fast, clean terminal (Alacritty alternative) |
+| 1     | Terminal + multiplexer (tmux replacement)    |
+| 2     | Extensible terminal platform                 |
+| 3     | Smart, agent-aware terminal                  |
+| 4     | Remote-capable terminal                      |
+| 5     | Full vision                                  |
 
 Each phase is a valid stopping point. If we only ever ship Phase 1, it's still a useful product.
 

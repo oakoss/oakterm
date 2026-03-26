@@ -1,12 +1,12 @@
 ---
-title: "Renderer"
+title: 'Renderer'
 status: draft
 category: core
-description: "GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images"
-tags: ["gpu", "wgpu", "fonts", "ligatures", "images", "opacity", "color"]
+description: 'GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images'
+tags: ['gpu', 'wgpu', 'fonts', 'ligatures', 'images', 'opacity', 'color']
 ---
-# Renderer
 
+# Renderer
 
 ## Goals
 
@@ -29,6 +29,7 @@ tags: ["gpu", "wgpu", "fonts", "ligatures", "images", "opacity", "color"]
 Community pain point: every terminal gets complaints about font rendering on macOS.
 
 Solution: defer to the platform.
+
 - macOS: Core Text for shaping and rasterization
 - Linux: HarfBuzz for shaping, FreeType for rasterization
 - Don't fight the OS — let it do what it's good at
@@ -50,12 +51,14 @@ font = {
 ```
 
 How it works:
+
 1. Render glyph with primary font (`JetBrains Mono`)
 2. Glyph missing? Try first fallback (`Symbols Nerd Font`)
 3. Still missing? Try next fallback, and so on
 4. Last resort: platform default symbol font
 
 This means:
+
 - Use any font you want — no patching, no Nerd Font versions
 - Nerd Font symbols work by having the symbols-only font in the fallback chain
 - Emoji just works — platform emoji font is in the chain
@@ -71,6 +74,7 @@ Kitty and Ghostty both do font fallback, but configuration varies. Ours should b
 Alacritty has had a ligature request open since 2017 (issue #50) with no plans to implement. This is a solved problem — Kitty, Ghostty, and WezTerm all support ligatures. We ship with them on by default.
 
 Ligatures matter for coding fonts like:
+
 - **Fira Code** — `=>`, `->`, `!=`, `>=`, `===`, `<|>`, `>>`, `|>`
 - **JetBrains Mono** — `!=`, `<=`, `>=`, `-->`, `<->`
 - **Cascadia Code** — `www`, `&&`, `||`, `::`, `===`
@@ -78,6 +82,7 @@ Ligatures matter for coding fonts like:
 - **Iosevka** — extensive ligature sets
 
 How it works:
+
 - HarfBuzz / Core Text handle ligature substitution during text shaping — the font's OpenType `liga` and `calt` tables define which glyph sequences get replaced
 - The renderer treats a ligature as a single glyph spanning multiple cells
 - Cursor movement still advances per-character, not per-ligature
@@ -100,7 +105,7 @@ Disabling ligatures entirely is one setting: `ligatures = false`. No recompilati
 
 ## Window Opacity & Blur
 
-```
+```ini
 background-opacity = 0.9
 background-blur = true
 ```
@@ -113,7 +118,7 @@ background-blur = true
 - Works with both dark and light themes
 - Can be set per-theme so your dark theme is slightly transparent and your light theme is opaque:
 
-```
+```ini
 theme-dark = catppuccin-mocha
 theme-light = catppuccin-latte
 theme-dark.background-opacity = 0.85
@@ -139,6 +144,7 @@ Settable from the palette with live preview — slide the opacity and see it cha
 Community pain point: programs can't reliably detect true color support.
 
 Solution:
+
 - Set `COLORTERM=truecolor` in child processes
 - Respond correctly to DA (Device Attributes) queries
 - Forward COLORTERM through SSH domains
@@ -149,6 +155,7 @@ Solution:
 Community pain point: Sixel vs Kitty graphics fragmentation, neither works in tmux.
 
 Solution: support both, composited in the GPU pipeline alongside text.
+
 - Kitty graphics protocol as primary (de facto standard for modern terminals)
 - Sixel as fallback (legacy compatibility)
 - Both pass through the built-in multiplexer — no tmux image bugs

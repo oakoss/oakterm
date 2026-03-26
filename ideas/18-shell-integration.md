@@ -1,12 +1,12 @@
 ---
-title: "Shell Integration"
+title: 'Shell Integration'
 status: draft
 category: core
-description: "Prompt markers, semantic zones, scroll-to-prompt, notifications"
-tags: ["shell", "osc-133", "prompt-markers", "scroll-to-prompt"]
+description: 'Prompt markers, semantic zones, scroll-to-prompt, notifications'
+tags: ['shell', 'osc-133', 'prompt-markers', 'scroll-to-prompt']
 ---
-# Shell Integration
 
+# Shell Integration
 
 The layer between the terminal and the shell that makes smart features possible. Without this, the terminal is blind — it can't tell prompts from output, doesn't know when commands start or finish, and can't resolve relative paths.
 
@@ -24,7 +24,7 @@ The core owns parsing and storage. Plugins consume the events. Features like scr
 
 The terminal installs a lightweight shell script (bash, zsh, fish) that emits escape sequences at key moments:
 
-```
+```text
 OSC 133;A ST  → prompt started
 OSC 133;B ST  → command started (user pressed enter)
 OSC 133;C ST  → command output started
@@ -37,15 +37,18 @@ This is the same protocol iTerm2, Ghostty, and WezTerm use. We follow the standa
 ## What This Enables
 
 ### Scroll-to-Prompt
+
 `Ctrl+Up` / `Ctrl+Down` — jump between command prompts in scrollback instead of scrolling line by line through output. The terminal knows where every prompt is because the shell told it.
 
 ### Click-to-Position Cursor
+
 Click anywhere in the current prompt line to place the cursor there. The terminal knows which line is the prompt and can calculate the cursor offset.
 
 ### Command Exit Code Visualization
+
 Failed commands get a visual marker — a red left border, a dimmed `✗` in the margin, or a colored prompt. The terminal knows the exit code.
 
-```
+```bash
   $ npm test                    ← prompt
   14 tests passed               ← output
 ✗ $ npm run build               ← failed (exit code 1)
@@ -54,10 +57,13 @@ Failed commands get a visual marker — a red left border, a dimmed `✗` in the
 ```
 
 ### Semantic Zone Selection
+
 Triple-click or a keybind selects the entire output of a single command — not just one line. The terminal knows where output starts and ends.
 
 ### Process Completion Notifications
+
 When a command finishes in a background pane/tab:
+
 - Sidebar badge updates
 - OS notification if configured: "npm run build finished (exit 0)"
 - `Cmd+Shift+U` includes it in the attention cycle
@@ -74,14 +80,18 @@ notifications = {
 ```
 
 ### Context Engine Integration
+
 The context engine needs shell integration to:
+
 - Know the current working directory (for file/dir completions)
 - Know what command is being typed (for typed completions)
 - Know recent command history with exit codes (for suggestions)
 - Distinguish prompt from output (for proactive suggestions)
 
 ### Smart Pane Titles
+
 Auto-name tabs/panes based on the running command or cwd:
+
 - Typing a command → tab shows the command
 - Running `npm run dev` → tab shows "npm run dev"
 - Idle → tab shows the directory name
@@ -90,7 +100,7 @@ Auto-name tabs/panes based on the running command or cwd:
 
 Shell integration should be opt-in but trivial:
 
-```
+```bash
 phantom shell-integration install
 ```
 
@@ -111,13 +121,13 @@ shell_integration = "auto"  -- inject at launch, no file modification
 
 ## Shell Support
 
-| Shell | Status |
-|-------|--------|
-| zsh | Full support |
-| bash | Full support |
-| fish | Full support |
-| nushell | Partial (structured output is different) |
-| powershell | Future |
+| Shell      | Status                                   |
+| ---------- | ---------------------------------------- |
+| zsh        | Full support                             |
+| bash       | Full support                             |
+| fish       | Full support                             |
+| nushell    | Partial (structured output is different) |
+| powershell | Future                                   |
 
 ## What Shell Integration Is Not
 

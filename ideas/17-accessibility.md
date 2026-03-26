@@ -1,12 +1,12 @@
 ---
-title: "Accessibility"
+title: 'Accessibility'
 status: draft
 category: cross-cutting
-description: "AccessKit, screen reader, color blindness, extensible a11y API"
-tags: ["a11y", "accesskit", "screen-reader", "voiceover", "color-blindness"]
+description: 'AccessKit, screen reader, color blindness, extensible a11y API'
+tags: ['a11y', 'accesskit', 'screen-reader', 'voiceover', 'color-blindness']
 ---
-# Accessibility
 
+# Accessibility
 
 Accessibility in terminal emulators is broken across the board. Zero modern GPU-rendered terminals on macOS or Linux have functional screen reader support. This is a massive gap and an opportunity to lead.
 
@@ -14,20 +14,21 @@ Accessibility in terminal emulators is broken across the board. Zero modern GPU-
 
 GPU-rendered terminals paint pixels to a framebuffer. Screen readers see nothing — there's no accessibility tree to traverse. Blind developers are forced to choose their entire stack based on screen reader compatibility, not preference.
 
-| Terminal | Screen Reader Status |
-|----------|---------------------|
-| Windows Terminal | Only GPU terminal with real a11y (UIA tree) |
-| macOS Terminal.app | Basic VoiceOver support |
-| iTerm2 | Better VoiceOver than Terminal.app |
-| Ghostty | "Basically nonexistent" (their words) |
-| Alacritty | None |
-| Kitty | None |
-| WezTerm | Designed on paper, nothing implemented |
-| Warp | Custom UI doesn't expose to system a11y API |
+| Terminal           | Screen Reader Status                        |
+| ------------------ | ------------------------------------------- |
+| Windows Terminal   | Only GPU terminal with real a11y (UIA tree) |
+| macOS Terminal.app | Basic VoiceOver support                     |
+| iTerm2             | Better VoiceOver than Terminal.app          |
+| Ghostty            | "Basically nonexistent" (their words)       |
+| Alacritty          | None                                        |
+| Kitty              | None                                        |
+| WezTerm            | Designed on paper, nothing implemented      |
+| Warp               | Custom UI doesn't expose to system a11y API |
 
 ## Our Approach: AccessKit Integration
 
 [AccessKit](https://github.com/AccessKit/accesskit) is a cross-platform Rust accessibility library. It provides a unified API that maps to:
+
 - NSAccessibility on macOS (VoiceOver)
 - UIA on Windows (NVDA, JAWS)
 - AT-SPI on Linux (Orca)
@@ -37,6 +38,7 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 ## Specific Requirements
 
 ### Screen Reader Support
+
 - Full accessibility tree for terminal content
 - Announce new output as it arrives (configurable verbosity)
 - Navigate by line, word, character in scrollback
@@ -46,6 +48,7 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 - Palette is fully screen-reader navigable
 
 ### Low Vision
+
 - macOS zoom follows keyboard focus (Ghostty #4053 — broken there, we fix it)
 - High-contrast theme bundled and auto-activated from system settings
 - Configurable minimum contrast ratio enforcement on ANSI colors
@@ -53,6 +56,7 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 - Adjustable line height and character spacing
 
 ### Color Blindness
+
 - Default theme passes WCAG AA (4.5:1 contrast)
 - Bundled high-contrast theme passes WCAG AAA (7:1)
 - Status indicators never rely on color alone — always include shape/icon/text
@@ -62,6 +66,7 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 - Color simulation mode for testing (deuteranopia, protanopia, tritanopia)
 
 ### Motor Accessibility
+
 - Full Keyboard Access works (Ghostty #6764 — broken there, we fix it)
 - Voice Control / dictation works (Ghostty #8717 — broken there, we fix it)
 - Keyboard text selection without mouse (Alacritty #3855)
@@ -69,12 +74,14 @@ Since we're building in Rust, AccessKit is a natural fit. The terminal maintains
 - Hints mode is the keyboard alternative to clicking links/paths
 
 ### Cognitive Accessibility
+
 - Respect `prefers-reduced-motion` — disable cursor blink, tab transitions, animations
 - Discoverable mode bar (from Zellij) — always know what mode you're in
 - Progressive disclosure in settings — simple view by default, advanced on demand
 - Consistent, predictable keybinds
 
 ### Dyslexia
+
 - Font fallback chain means any font works — including OpenDyslexic Mono
 - Configurable character spacing and line height
 - No visual clutter by default
@@ -94,6 +101,7 @@ The accessibility tree lives in the core — it can't be bolted on as a plugin. 
 ### Performance consideration
 
 Maintaining an a11y tree alongside the renderer is not free. To stay within our performance budgets:
+
 - A11y tree updates are **batched and async** — not per-frame unless a screen reader is actively querying
 - When no assistive technology is detected, the tree is maintained lazily (structural updates only, no per-character tracking)
 - When a screen reader attaches, the tree activates fully with real-time updates
@@ -125,7 +133,7 @@ palette.register(PaletteCommand {
 
 Plugins get accessibility primitives to build on:
 
-```
+```text
 Plugin Accessibility API
 ├── announce(message, priority)       — send text to screen reader
 │   priority: polite (queued) or assertive (interrupts)
@@ -142,6 +150,7 @@ Plugin Accessibility API
 ### Community plugin examples using the a11y API
 
 **Screen reader verbosity profiles:**
+
 ```lua
 -- Plugin: a11y-verbosity
 -- Lets users choose how much the screen reader announces
@@ -153,6 +162,7 @@ profiles = {
 ```
 
 **Sound cues plugin:**
+
 ```lua
 -- Plugin: a11y-sounds
 -- Maps terminal events to distinct audio cues
@@ -167,6 +177,7 @@ sounds = {
 ```
 
 **High-contrast sidebar plugin:**
+
 ```lua
 -- Plugin: a11y-high-contrast-sidebar
 -- Replaces icon-based badges with large text labels
@@ -174,6 +185,7 @@ sounds = {
 ```
 
 **Braille display optimization plugin:**
+
 ```lua
 -- Plugin: a11y-braille
 -- Optimizes output for braille displays
@@ -183,7 +195,7 @@ sounds = {
 
 ### The rule
 
-Accessibility in the core is **mandatory and non-negotiable** — the tree, the platform adapters, the enforcement on plugin labels. But *how* that accessibility is experienced is extensible — verbosity, sounds, braille optimization, contrast profiles. The core guarantees the floor. Plugins raise the ceiling.
+Accessibility in the core is **mandatory and non-negotiable** — the tree, the platform adapters, the enforcement on plugin labels. But _how_ that accessibility is experienced is extensible — verbosity, sounds, braille optimization, contrast profiles. The core guarantees the floor. Plugins raise the ceiling.
 
 ## Testing
 

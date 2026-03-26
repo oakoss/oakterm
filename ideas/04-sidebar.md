@@ -1,12 +1,12 @@
 ---
-title: "Sidebar"
+title: 'Sidebar'
 status: draft
 category: plugin
-description: "Collapsible process dashboard — agents, services, watchers, shells"
-tags: ["ui", "process-dashboard", "notifications", "agents", "services"]
+description: 'Collapsible process dashboard — agents, services, watchers, shells'
+tags: ['ui', 'process-dashboard', 'notifications', 'agents', 'services']
 ---
-# Sidebar
 
+# Sidebar
 
 A collapsible process dashboard on the left. `Ctrl+B` to toggle.
 
@@ -15,7 +15,8 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 ## States
 
 **Collapsed** — icon strip with status badges:
-```
+
+```text
 ┌──┬────────────────────────────────────┐
 │◉❓│                                    │
 │◉ │  ~/project $ _                     │
@@ -26,7 +27,8 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 ```
 
 **Expanded** — names, status, metadata per entry:
-```
+
+```text
 ┌──────────────────┬─────────────────────────────┐
 │ AGENTS           │                             │
 │ ◉ feat/auth      │                             │
@@ -49,17 +51,20 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 ## Categories
 
 **Agents** — autonomous processes that produce code and need review
+
 - Status: working / needs input / done / error
 - Context window %, branch, files changed
 - Memory usage (child process RSS) with growth indicator
 
 **Services** — long-running processes you want to keep alive
+
 - Ports they're listening on (auto-detected)
 - Health: running / crashed / restarting
 - Memory usage
 - Restart on crash
 
 **Watchers** — processes that produce rolling status
+
 - Test runners: pass/fail count
 - Type checkers: error count
 - Bundlers: build status
@@ -70,7 +75,7 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 
 Every sidebar entry can show memory usage of its child process. This makes it immediately clear what's consuming resources — the terminal or something running inside it.
 
-```
+```text
 ┌──────────────────┐
 │ AGENTS           │
 │ ◉ feat/auth      │
@@ -99,12 +104,12 @@ The `⚠ ↑` indicator means the process memory is growing abnormally. A notifi
 
 Each category has its own notification logic:
 
-| Category | Notifies when |
-|----------|--------------|
-| Agent | Needs approval, finished, errored |
-| Service | Crashes, port conflict, restart loop |
-| Watcher | Tests go red, type errors appear, build fails |
-| Shell | Process exits (configurable) |
+| Category | Notifies when                                 |
+| -------- | --------------------------------------------- |
+| Agent    | Needs approval, finished, errored             |
+| Service  | Crashes, port conflict, restart loop          |
+| Watcher  | Tests go red, type errors appear, build fails |
+| Shell    | Process exits (configurable)                  |
 
 `Cmd+Shift+U` cycles through everything that needs attention.
 

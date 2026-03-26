@@ -1,12 +1,12 @@
 ---
-title: "Configuration"
+title: 'Configuration'
 status: draft
 category: cross-cutting
-description: "First launch setup, settings palette, flat + Lua, dark/light themes"
-tags: ["config", "lua", "settings-palette", "first-launch", "dark-mode"]
+description: 'First launch setup, settings palette, flat + Lua, dark/light themes'
+tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']
 ---
-# Configuration
 
+# Configuration
 
 Configuration should be dead simple to start and powerful when you need it. You shouldn't need to read docs to change your font.
 
@@ -14,7 +14,7 @@ Configuration should be dead simple to start and powerful when you need it. You 
 
 On first launch with no config file, Phantom works with sensible defaults. But it also offers an interactive setup:
 
-```
+```text
 Welcome to Phantom.
 
 Let's set up the basics. You can change any of this later.
@@ -42,7 +42,7 @@ This writes a config file for you. No command line flags, no manual file creatio
 
 After setup, every setting is changeable from inside the terminal via the command palette:
 
-```
+```text
 Cmd+Shift+P → :settings
 
 ┌──────────────────────────────────────────────────┐
@@ -77,7 +77,7 @@ Cmd+Shift+P → :settings
 
 `~/.config/phantom/config` — key-value pairs, no ceremony:
 
-```
+```ini
 font-family = JetBrains Mono
 font-size = 14
 font-ligatures = true
@@ -152,7 +152,7 @@ Lua config takes priority if both exist. The flat config is syntactic sugar — 
 
 `<project>/.phantom/config` or `<project>/.phantom/config.lua` — project-specific overrides:
 
-```
+```ini
 # .phantom/config in a monorepo
 font-size = 13
 theme = github-dark
@@ -164,7 +164,7 @@ This lets teams share terminal config per-repo without touching personal setting
 
 Plugins register their own settings, which appear in the same palette:
 
-```
+```text
 Cmd+Shift+P → :settings agent
 
 ┌──────────────────────────────────────────────────┐
@@ -180,7 +180,7 @@ Cmd+Shift+P → :settings agent
 
 Plugin settings live in the same config file, namespaced:
 
-```
+```ini
 # In flat config
 agent.default-provider = claude
 agent.auto-worktree = true
@@ -192,7 +192,7 @@ context-engine.ai-model = codellama:7b
 
 Keybinds are settings too — searchable and editable from the palette:
 
-```
+```text
 Cmd+Shift+P → :keybinds
 
 ┌──────────────────────────────────────────────────┐
@@ -209,7 +209,7 @@ Click Edit → press your desired key combo → done. Written to config.
 
 In the flat config file:
 
-```
+```ini
 keybind = ctrl+\ = split-right
 keybind = ctrl+- = split-down
 keybind = ctrl+f = split-float
@@ -238,14 +238,14 @@ keybinds = {
 
 Consistency across all config surfaces:
 
-| Context | Convention | Example |
-|---------|-----------|---------|
-| Flat config keys | kebab-case | `font-family`, `theme-dark`, `scrollback-lines` |
+| Context                      | Convention        | Example                                               |
+| ---------------------------- | ----------------- | ----------------------------------------------------- |
+| Flat config keys             | kebab-case        | `font-family`, `theme-dark`, `scrollback-lines`       |
 | Flat config plugin namespace | `plugin-name.key` | `agent.default-provider`, `context-engine.ai-backend` |
-| Lua config keys | snake_case | `font_size`, `ssh_domains`, `shell_integration` |
-| Lua config plugin namespace | table | `plugins["agent-manager"].default_provider` |
-| Keybind actions | kebab-case | `split-right`, `toggle-sidebar`, `copy-or-interrupt` |
-| CLI flags | kebab-case | `--log-level`, `--log-filter` |
+| Lua config keys              | snake_case        | `font_size`, `ssh_domains`, `shell_integration`       |
+| Lua config plugin namespace  | table             | `plugins["agent-manager"].default_provider`           |
+| Keybind actions              | kebab-case        | `split-right`, `toggle-sidebar`, `copy-or-interrupt`  |
+| CLI flags                    | kebab-case        | `--log-level`, `--log-filter`                         |
 
 The flat config and Lua config map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles the translation.
 

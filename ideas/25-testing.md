@@ -1,18 +1,19 @@
 ---
-title: "Testing"
+title: 'Testing'
 status: draft
 category: cross-cutting
-description: "Unit, integration, platform, perf, security, a11y, VT compliance"
-tags: ["testing", "ci", "vttest", "fuzzing", "benchmarks", "a11y-testing"]
+description: 'Unit, integration, platform, perf, security, a11y, VT compliance'
+tags: ['testing', 'ci', 'vttest', 'fuzzing', 'benchmarks', 'a11y-testing']
 ---
-# Testing
 
+# Testing
 
 Extensive testing across every layer. A regression in any area — rendering, performance, accessibility, plugins — is treated as a bug.
 
 ## Test Layers
 
 ### Unit Tests
+
 - VT parser: every escape sequence against the xterm/VT220 spec
 - Scroll buffer: ring buffer operations, archival, compression
 - Unicode: grapheme cluster width, BiDi, combining marks, ZWJ emoji sequences
@@ -20,6 +21,7 @@ Extensive testing across every layer. A regression in any area — rendering, pe
 - Plugin host: capability checking, message routing, lifecycle
 
 ### Integration Tests
+
 - Renderer: screenshot comparison tests for font rendering, ligatures, color
 - Multiplexer: split/tab/workspace operations, session serialize/restore
 - Shell integration: prompt markers, scroll-to-prompt, cwd tracking
@@ -27,6 +29,7 @@ Extensive testing across every layer. A regression in any area — rendering, pe
 - Plugin API: full lifecycle test for each API surface (sidebar, panes, palette, notify, a11y)
 
 ### Platform Tests
+
 - CI runs on macOS, Linux (Wayland + X11), and Windows
 - Platform-specific: AppKit, GTK4, WinUI chrome behavior
 - Font rendering comparison across platforms
@@ -34,6 +37,7 @@ Extensive testing across every layer. A regression in any area — rendering, pe
 - Accessibility: VoiceOver (macOS), NVDA (Windows), Orca (Linux)
 
 ### Performance Tests (from ideas/12-performance.md)
+
 - Input latency benchmark (target: <8ms)
 - Throughput benchmark (cat large file)
 - Memory at idle, under load, after 100k lines
@@ -44,6 +48,7 @@ Extensive testing across every layer. A regression in any area — rendering, pe
 Regressions fail the build. Performance dashboard is public.
 
 ### Security Tests
+
 - Escape sequence injection fuzzing
 - Plugin sandbox escape testing
 - Lua config sandbox verification (no os.execute, no io.popen)
@@ -51,6 +56,7 @@ Regressions fail the build. Performance dashboard is public.
 - Bracketed paste integrity
 
 ### Accessibility Tests
+
 - Automated screen reader tree verification
 - WCAG contrast ratio checks on all bundled themes
 - Keyboard-only navigation of all UI elements
@@ -58,6 +64,7 @@ Regressions fail the build. Performance dashboard is public.
 - Tab order correctness for sidebar, palette, settings
 
 ### Plugin Compatibility Tests
+
 - All bundled plugins tested against the current API version
 - Plugin load/unload 1000 cycles — verify no memory leak
 - Plugin crash recovery — verify terminal survives
@@ -65,12 +72,14 @@ Regressions fail the build. Performance dashboard is public.
 - Plugin a11y label enforcement — verify unlabeled UI is rejected
 
 ### VT Compliance Tests
+
 - vttest (standard VT terminal test suite)
 - esctest (comprehensive escape sequence test suite from iTerm2)
 - Our own test suite for modern extensions (Kitty graphics, OSC-52, synchronized output)
 - Comparison tests against xterm behavior (the reference implementation)
 
 ### Memory Tests (from ideas/15-memory-management.md)
+
 - 24-hour soak test with simulated AI agent output
 - Verify ring buffer ceiling holds under sustained output
 - Verify disk archive works for overflow
@@ -78,6 +87,7 @@ Regressions fail the build. Performance dashboard is public.
 - Glyph atlas LRU eviction under font-heavy workloads
 
 ### Theme Tests
+
 - All bundled themes pass WCAG AA contrast (4.5:1)
 - High-contrast themes pass WCAG AAA (7:1)
 - Theme validator catches missing fields
