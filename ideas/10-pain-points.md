@@ -2,6 +2,10 @@
 
 Real complaints from GitHub issues, Hacker News, and developer forums that directly shaped this design.
 
+## Terminal memory explodes with AI agents
+**Source:** Ghostty #10289 (71 GB with Claude Code), Claude Code #11315 (129 GB), #4953 (120 GB), #32752 (18 GB/hour growth). iTerm2 routinely 3 GB+. WezTerm pre-allocates scrollback.
+**Solution:** Tiered scroll buffer — ring buffer in memory (hard ceiling), overflow to compressed disk archive. Per-pane memory budgets. Memory attribution in `:debug memory` and sidebar clearly shows terminal memory vs child process memory. Alerts when a child process grows abnormally. See `ideas/15-memory-management.md`.
+
 ## Clipboard over SSH + multiplexer is universally broken
 **Source:** Every terminal's issue tracker, dozens of tmux complaints
 **Solution:** We own both the terminal and multiplexer. OSC-52 passthrough works everywhere — no configuration, no tmux hacks. Clipboard passes through splits, SSH domains, everything.

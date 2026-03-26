@@ -43,10 +43,12 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 **Agents** — autonomous processes that produce code and need review
 - Status: working / needs input / done / error
 - Context window %, branch, files changed
+- Memory usage (child process RSS) with growth indicator
 
 **Services** — long-running processes you want to keep alive
 - Ports they're listening on (auto-detected)
 - Health: running / crashed / restarting
+- Memory usage
 - Restart on crash
 
 **Watchers** — processes that produce rolling status
@@ -55,6 +57,29 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 - Bundlers: build status
 
 **Shells** — interactive sessions
+
+## Memory Visibility
+
+Every sidebar entry can show memory usage of its child process. This makes it immediately clear what's consuming resources — the terminal or something running inside it.
+
+```
+┌──────────────────┐
+│ AGENTS           │
+│ ◉ feat/auth      │
+│   claude  ❓      │
+│   ██████░░ 62%   │
+│   890 MB ⚠ ↑     │  ← child process memory, growing
+│──────────────────│
+│ SERVICES         │
+│ ▶ next dev       │
+│   :3000 ✓        │
+│   142 MB         │  ← stable, no warning
+│──────────────────│
+│ TERMINAL    48 MB│  ← our own memory, always at the bottom
+└──────────────────┘
+```
+
+The `⚠ ↑` indicator means the process memory is growing abnormally. A notification fires if it exceeds the configured threshold. See `ideas/15-memory-management.md` for the full memory strategy.
 
 ## How Things Get Into the Sidebar
 
