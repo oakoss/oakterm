@@ -16,6 +16,9 @@ target/
 # Task tracking
 .trekker/
 
+# Node (managed by mise)
+node_modules/
+
 # Environment
 .env*
 

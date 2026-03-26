@@ -1,0 +1,10 @@
+{
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "markdownlint.config": {},
+  "markdownlint.run": "onSave",
+  "prettier.requireConfig": true
+}

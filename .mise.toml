@@ -1,0 +1,30 @@
+[tools]
+node = "25"
+"npm:prettier" = "3"
+"npm:markdownlint-cli2" = "0"
+lefthook = "2"
+"cargo:cocogitto" = "7"
+
+[tasks.fmt]
+description = "Format all non-Rust files"
+run = "prettier -uwl ."
+
+[tasks."fmt:check"]
+description = "Check formatting"
+run = "prettier -uc ."
+
+[tasks.lint]
+description = "Run all linters"
+depends = ["lint:md"]
+
+[tasks."lint:md"]
+description = "Lint markdown files"
+run = "markdownlint-cli2 '**/*.md' '#node_modules'"
+
+[tasks."lint:md:fix"]
+description = "Lint and fix markdown files"
+run = "markdownlint-cli2 --fix '**/*.md' '#node_modules'"
+
+[tasks.check]
+description = "Run all checks (format + lint)"
+depends = ["fmt:check", "lint"]
