@@ -1,1 +1,30 @@
-.claude/plan
+# Rust
+target/
+*.rs.bk
+
+# Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+
+# Claude Code
+.claude/plans/
+
+# Task tracking
+.trekker/
+
+# Environment
+.env*
+
+# Profiling
+perf.data
+perf.data.old
+flamegraph.svg
+*.profraw
+
+# OS
+.DS_Store
+Thumbs.db
