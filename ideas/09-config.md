@@ -13,8 +13,11 @@ Let's set up the basics. You can change any of this later.
 
 Font:         [JetBrains Mono    ▾]    ← dropdown lists installed monospace fonts
 Size:         [14                  ]
-Theme:        [○ ○ ○ ○ ○ ○ ○ ○ ○ ○]    ← visual theme previews, click to select
+Appearance:   [○ System  ○ Light  ● Dark]
+Dark Theme:   [○ ○ ○ ○ ○ ○ ○ ○ ○ ○]    ← visual theme previews
               catppuccin-mocha ✓
+Light Theme:  [○ ○ ○ ○ ○ ○ ○ ○ ○ ○]
+              catppuccin-latte ✓
 
 Plugins:
   ☑ Smart autocomplete (context engine)
@@ -40,7 +43,9 @@ Cmd+Shift+P → :settings
 │  Font Family          JetBrains Mono             │
 │  Font Size            14                         │
 │  Font Ligatures       ✓ enabled                  │
-│  Theme                catppuccin-mocha           │
+│  Appearance           System (auto)              │
+│  Dark Theme           catppuccin-mocha           │
+│  Light Theme          catppuccin-latte           │
 │  Cursor Style         block                      │
 │  Scrollback Lines     10000                      │
 │  Status Bar           auto                       │
@@ -69,10 +74,16 @@ font-family = JetBrains Mono
 font-size = 14
 font-ligatures = true
 font-fallbacks = Symbols Nerd Font, Apple Color Emoji
-theme = catppuccin-mocha
+appearance = system
+theme-dark = catppuccin-mocha
+theme-light = catppuccin-latte
 cursor-style = block
 scrollback-lines = 10000
 ```
+
+`appearance` accepts: `system` (follows OS), `dark`, or `light`. When set to `system`, the terminal listens for OS appearance changes and switches between `theme-dark` and `theme-light` instantly. No restart, no flicker.
+
+Single `theme` still works as a shorthand — it sets both dark and light to the same value and locks appearance to that theme regardless of OS setting.
 
 Familiar to Ghostty users. The settings palette reads and writes this file.
 
