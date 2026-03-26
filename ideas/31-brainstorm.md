@@ -326,6 +326,7 @@ Pasting into a terminal is the most dangerous operation most developers do daily
 **Our approach:**
 
 - **Large paste warning** — pastes over a configurable line threshold (default: 5 lines) show a preview popup:
+
 ```text
   ┌──────────────────────────────────────────────────┐
   │  Paste Preview (23 lines)                        │
@@ -340,6 +341,7 @@ Pasting into a terminal is the most dangerous operation most developers do daily
   │  [Paste] [Paste as Single Line] [Edit] [Cancel]  │
   └──────────────────────────────────────────────────┘
 ```
+
 - **Dangerous command detection** — warn on patterns like `rm -rf`, `sudo`, `DROP TABLE`, `mkfs`, `dd if=`, `> /dev/sda`. Configurable pattern list.
 - **Trailing newline strip** — option to auto-strip trailing newline so pasted commands don't auto-execute
 - **Bracketed paste enforced** — always use bracketed paste mode. If the program doesn't support it, fall back gracefully.
