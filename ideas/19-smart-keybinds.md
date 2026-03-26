@@ -17,14 +17,28 @@ The most requested quality-of-life improvement across terminal discussions.
 
 This matches every other application on the system. Ghostty calls these "performable" keybindings — the action depends on whether it can be performed (text is selected) or falls through to the default (send the raw keycode).
 
+### Platform behavior
+
+| Platform | Copy | Paste | Interrupt |
+|----------|------|-------|-----------|
+| macOS | Cmd+C (always copies) | Cmd+V (always pastes) | Ctrl+C (always SIGINT) |
+| Linux/Windows | Ctrl+C (smart: copy if selected, SIGINT if not) | Ctrl+V (always pastes) | Ctrl+C with no selection |
+
+On macOS, this is already natural — Cmd and Ctrl are separate keys. Smart behavior is only needed on Linux/Windows where Ctrl serves double duty.
+
 ```lua
 keybinds = {
-  { key = "ctrl+c", action = "copy-or-interrupt" },  -- default
-  { key = "ctrl+v", action = "paste" },               -- default
+  -- Linux/Windows default
+  { key = "ctrl+c", action = "copy-or-interrupt" },
+  { key = "ctrl+v", action = "paste" },
+  -- macOS default (set automatically, shown for clarity)
+  -- { key = "super+c", action = "copy" },
+  -- { key = "super+v", action = "paste" },
+  -- { key = "ctrl+c", action = "sigint" },
 }
 ```
 
-Disable with `smart_keybinds = false` if you want traditional terminal behavior.
+Disable with `smart-keybinds = false` if you want traditional terminal behavior (Ctrl+Shift+C to copy on Linux/Windows).
 
 ## Hints Mode
 

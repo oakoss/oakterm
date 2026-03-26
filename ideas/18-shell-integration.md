@@ -2,6 +2,16 @@
 
 The layer between the terminal and the shell that makes smart features possible. Without this, the terminal is blind — it can't tell prompts from output, doesn't know when commands start or finish, and can't resolve relative paths.
 
+## Ownership
+
+Shell integration spans three layers:
+
+1. **Shell scripts** (shipped with the terminal) — lightweight scripts sourced by bash/zsh/fish that emit escape sequences at key moments
+2. **VT parser** (core) — parses the OSC 133 / OSC 7 escape sequences and stores prompt/command markers in the scroll buffer
+3. **Plugin API** (core) — exposes shell events (`shell.on_prompt_start`, `shell.on_command_finish`, etc.) so plugins can react
+
+The core owns parsing and storage. Plugins consume the events. Features like scroll-to-prompt use the stored markers directly in the multiplexer (core). Features like process notifications use the plugin API events.
+
 ## What Shell Integration Provides
 
 The terminal installs a lightweight shell script (bash, zsh, fish) that emits escape sequences at key moments:

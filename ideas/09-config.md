@@ -226,6 +226,21 @@ keybinds = {
 - `phantom migrate kitty` — same for Kitty
 - `phantom migrate wezterm` — best-effort Lua→Lua translation
 
+## Naming Convention
+
+Consistency across all config surfaces:
+
+| Context | Convention | Example |
+|---------|-----------|---------|
+| Flat config keys | kebab-case | `font-family`, `theme-dark`, `scrollback-lines` |
+| Flat config plugin namespace | `plugin-name.key` | `agent.default-provider`, `context-engine.ai-backend` |
+| Lua config keys | snake_case | `font_size`, `ssh_domains`, `shell_integration` |
+| Lua config plugin namespace | table | `plugins["agent-manager"].default_provider` |
+| Keybind actions | kebab-case | `split-right`, `toggle-sidebar`, `copy-or-interrupt` |
+| CLI flags | kebab-case | `--log-level`, `--log-filter` |
+
+The flat config and Lua config map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles the translation.
+
 ## Design Principles
 
 1. **Zero-config is valid.** The terminal works perfectly with no config file.

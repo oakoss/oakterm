@@ -150,10 +150,14 @@ Arrow keys to preview live — the terminal updates instantly as you move throug
 
 ## Community Themes
 
-Themes are distributable as:
+Themes are **data packages**, not WASM plugins. They're just `.toml` files — no code execution, no permissions needed.
+
+Distributable as:
 - Single `.toml` files (drop in `~/.config/phantom/themes/`)
-- Via the plugin registry: `phantom plugin install theme-catppuccin`
+- Via the registry as a data package: `phantom theme install catppuccin` (downloads the TOML files, no WASM involved)
 - Via a dedicated theme gallery on the website (browse, preview, one-click install)
+
+Themes use the same registry infrastructure as plugins but are a different package type (`type = "theme"` in the manifest). They require no capabilities and run no code.
 
 ## Theme Authoring
 
