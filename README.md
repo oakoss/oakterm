@@ -70,13 +70,23 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 | [Updates](ideas/24-updates.md) | Every update path works, staged updates, rollback |
 | [Testing](ideas/25-testing.md) | Unit, integration, platform, perf, security, a11y, VT compliance |
 | [License](ideas/26-license.md) | MPL 2.0 — core stays open, registry requires open source |
+| [Notifications](ideas/34-notifications.md) | OS notifications, in-terminal banners, history, DND mode |
+| [Search](ideas/35-search.md) | Regex search, cross-pane, per-command, persistent highlights |
 | [Conventions](ideas/30-conventions.md) | Naming, config syntax, keybinds, file structure |
+| [Agent Control API](ideas/32-agent-control-api.md) | CLI for agents to interact with the terminal (`phantom ctl`) |
 
 ### Remote & Headless
 
 | Doc | Topic |
 |-----|-------|
 | [Remote Access & Headless Mode](ideas/29-remote-access.md) | Headless daemon on servers, native client connection, web client, tunnel-agnostic |
+
+### Planning
+
+| Doc | Topic |
+|-----|-------|
+| [Roadmap](ideas/33-roadmap.md) | Phased implementation: MVP → multiplexer → plugins → agents → networking |
+| [Brainstorm](ideas/31-brainstorm.md) | Raw ideas: syntax highlighting, auto-tiling, status bar, multi-sidebar, error handling |
 
 ### Research
 
