@@ -90,6 +90,42 @@ font = {
 
 Disabling ligatures entirely is one setting: `ligatures = false`. No recompilation, no patching, no config gymnastics.
 
+## Window Opacity & Blur
+
+```
+background-opacity = 0.9
+background-blur = true
+```
+
+- `background-opacity` — 0.0 (fully transparent) to 1.0 (fully opaque, default)
+- `background-blur` — platform-native blur behind the transparent window
+  - macOS: NSVisualEffectView (vibrancy/blur)
+  - Linux/GTK: compositor-dependent (KDE/Sway support blur, GNOME does not)
+- Text stays fully opaque regardless of background opacity — only the background is affected
+- Works with both dark and light themes
+- Can be set per-theme so your dark theme is slightly transparent and your light theme is opaque:
+
+```
+theme-dark = catppuccin-mocha
+theme-light = catppuccin-latte
+theme-dark.background-opacity = 0.85
+theme-dark.background-blur = true
+theme-light.background-opacity = 1.0
+```
+
+In Lua for more control:
+
+```lua
+window = {
+  opacity = 0.9,
+  blur = true,
+  -- or dynamic based on focus:
+  opacity_unfocused = 0.7,  -- dim when not focused
+}
+```
+
+Settable from the palette with live preview — slide the opacity and see it change in real time.
+
 ## Color Handling
 
 Community pain point: programs can't reliably detect true color support.
