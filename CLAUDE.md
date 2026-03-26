@@ -7,16 +7,50 @@ GPU-accelerated, extensible terminal emulator with a plugin-driven process dashb
 ## Project Structure
 
 ```text
-ideas/          # Design documents (NN-topic.md, numbered for reading order)
-docs/           # Implementation docs (empty until code begins)
-.trekker/       # Task tracking
+ideas/          # Exploration — brainstorming, research, design sketches
+docs/adrs/      # Decisions — resolve open questions from ideas (NNNN-title.md)
+docs/specs/     # Contracts — formal definitions that code must satisfy (NNNN-title.md)
+.trekker/       # Task tracking — references specs, not idea docs
 ```
+
+## Pipeline
+
+```text
+ideas/ → docs/adrs/ → docs/specs/ → implementation
+explore    decide       formalize     build
+```
+
+- **Ideas** explore possibilities. Status: `draft → reviewing`.
+- **ADRs** resolve questions that ideas surfaced. An accepted ADR moves the idea doc status to `decided`.
+- **Specs** formalize decided designs into implementation contracts. Trekker implementation tasks reference specs.
+- **Implementation** builds what specs define. Trekker epics reference their specs.
 
 ## Conventions
 
-- **Idea docs**: Follow structure in [ideas/30-conventions.md](ideas/30-conventions.md) — YAML frontmatter (title, status, category, description, tags), sections for Problem, Design, Configuration, Plugin API, What This Is Not
-- **Frontmatter status**: draft → reviewing → decided → implementing → reference
+### Idea Docs (`ideas/`)
+
+- Follow structure in [ideas/30-conventions.md](ideas/30-conventions.md) — YAML frontmatter, sections for Problem, Design, Configuration, Plugin API, What This Is Not
+- **Frontmatter status**: `draft → reviewing → decided → implementing → reference`
 - **Frontmatter category**: core, plugin, community-plugin, cross-cutting, research
+- An accepted ADR moves the idea doc status from `reviewing` to `decided`
+
+### ADRs (`docs/adrs/`)
+
+- Format: `NNNN-short-title.md`, numbered sequentially, never renumber
+- **Status**: `proposed → accepted → [superseded | deprecated]`
+- One ADR per decision. Link to the idea docs that surfaced the question.
+- See [docs/adrs/README.md](docs/adrs/README.md) for template
+
+### Specs (`docs/specs/`)
+
+- Format: `NNNN-short-title.md`, numbered sequentially
+- **Status**: `draft → review → accepted → implementing → complete`
+- One spec per bounded concern (API surface, wire protocol, data format)
+- Trekker tasks reference specs. Implementation builds what specs define.
+- See [docs/specs/README.md](docs/specs/README.md) for template
+
+### General
+
 - **Config naming**: kebab-case (flat), snake_case (Lua), 1:1 mapping
 - **Plugin naming**: lowercase kebab-case registry name, title case display name
 - **Theme naming**: lowercase kebab-case file name, title case display name
@@ -34,15 +68,25 @@ docs/           # Implementation docs (empty until code begins)
 
 Use **Trekker** for all task tracking. `trekker ready` before starting work, summary comment before completing.
 
+### Organization
+
+- **Epics** = committed work streams scoped by user-visible outcome (5-15 tasks, 2-6 weeks). Must answer "what is different when this is done?"
+- **Tags** = cross-cutting labels for type (`feature`, `chore`, `spike`) + area (`renderer`, `multiplexer`, `plugins`, `config`, `a11y`, `security`, `docs`, `ideas`)
+- **Priority** goes on tasks, not epics — distinguishes must-ship from nice-to-have within an epic
+- **Standalone tasks** (priority 3) for shaped but uncommitted features — promote to epic when committed
+- **Icebox** = priority 4-5 tasks with no epic; archive if nobody mentions them in 3 months
+- Don't create epics for uncommitted work
+- Don't use catch-all epics like "Features" or "Improvements"
+
 ## Task Workflow
 
 Two workflow branches. Pick the one that matches the task. Both start and end the same way — trekker to begin, commit gate to finish.
 
 ---
 
-### Design Workflow (ideas, research, docs)
+### Design Workflow (ideas, ADRs, specs)
 
-Use for: new idea docs, doc revisions, research, brainstorming, conventions, roadmap updates.
+Use for: idea docs, ADRs, specs, research, brainstorming, conventions, roadmap updates.
 
 #### D1. Review
 
@@ -50,24 +94,36 @@ Use for: new idea docs, doc revisions, research, brainstorming, conventions, roa
 
 #### D2. Research
 
-- Read related idea docs in `ideas/` and their cross-references.
-- Read [ideas/30-conventions.md](ideas/30-conventions.md) for structure, naming, and frontmatter requirements.
-- For research tasks: read [ideas/10-pain-points.md](ideas/10-pain-points.md), [ideas/11-inspiration.md](ideas/11-inspiration.md), [ideas/16-wishlist-features.md](ideas/16-wishlist-features.md) for prior art.
-- Web search for prior art, competing implementations, community discussions as needed.
+- **Ideas**: Read related idea docs in `ideas/` and their cross-references. Read [ideas/30-conventions.md](ideas/30-conventions.md). Web search for prior art.
+- **ADRs**: Read the idea docs that surfaced the question. Read any existing ADRs in the same area. Research how competitors solved it.
+- **Specs**: Read the accepted ADR(s) that led here. Read the idea docs for design context. Read existing specs for API consistency.
 
 #### D3. Plan
 
-For substantial design work (new idea docs, major revisions), align on scope and approach first. Use `/grill-me` to stress-test the design. Skip for small edits, typo fixes, or brainstorm additions.
+For substantial design work, align on scope and approach first. Use `/grill-me` to stress-test the design. Skip for small edits, typo fixes, or brainstorm additions.
 
 #### D4. Write
 
-- Follow the doc structure in [ideas/30-conventions.md](ideas/30-conventions.md).
-- YAML frontmatter: title, status, category, description, tags — all required.
-- Clear problem statement ("Why does this exist?").
-- Concrete design with examples, ASCII mockups, config samples.
-- Explicit scope boundaries ("What This Is Not").
+**Idea docs:**
+
+- Follow [ideas/30-conventions.md](ideas/30-conventions.md). YAML frontmatter required.
+- Clear problem statement, concrete design, explicit scope boundaries ("What This Is Not").
 - Cross-reference related docs with relative paths.
-- For brainstorm additions: add to [ideas/31-brainstorm.md](ideas/31-brainstorm.md) under the right section.
+
+**ADRs:**
+
+- Follow [docs/adrs/README.md](docs/adrs/README.md) template. One decision per ADR.
+- List options considered with pros/cons. State the decision and rationale.
+- Link to the idea docs that surfaced the question.
+- Update the idea doc's frontmatter status to `decided` when the ADR is accepted.
+
+**Specs:**
+
+- Follow [docs/specs/README.md](docs/specs/README.md) template. One bounded concern per spec.
+- Formal definitions: function signatures, wire formats, type definitions, error types.
+- State behavior for normal and error cases. Call out edge cases.
+- Include constraints (performance budgets, memory limits, security).
+- Link to the ADR(s) that led here.
 
 #### D5. Polish
 
@@ -75,7 +131,7 @@ For substantial design work (new idea docs, major revisions), align on scope and
 - Verify frontmatter is complete and status is correct.
 - Check all cross-references resolve to real docs.
 - Ensure fenced code blocks have language tags.
-- Check for broken markdown (unclosed links, bad tables).
+- For specs: verify all types are defined, no hand-waving ("TBD", "details later").
 
 #### D6. Review
 
@@ -85,8 +141,9 @@ For substantial design work (new idea docs, major revisions), align on scope and
 #### D7. Update Tracking
 
 - Trekker comment summarizing what was done.
-- Update README idea docs table if a new doc was added.
+- Update README tables if a new doc was added.
 - Update cross-references in other docs if the new work affects them.
+- Update ADR/spec README index.
 - Delete any plan files.
 
 #### D8. Commit Gate
@@ -106,8 +163,9 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
 #### I2. Research
 
-- Read the relevant design doc(s) in `ideas/` — the spec for what you're building.
-- Read [ideas/01-architecture.md](ideas/01-architecture.md) for layer boundaries and abstraction seams.
+- Read the **spec** this task references — the contract you're implementing.
+- Read the ADR(s) behind the spec for decision rationale.
+- Read the idea doc(s) for broader design context.
 - Read existing source code in the area you're changing.
 - Check [ideas/12-performance.md](ideas/12-performance.md) if the work touches a hot path.
 - Check [ideas/21-security.md](ideas/21-security.md) if the work touches input handling, plugins, or IPC.
@@ -164,9 +222,11 @@ Re-run step I7 if anything changed during polish or review.
 - **Never push** unless explicitly asked.
 - **Trekker is the task system** — `trekker ready` before starting, summary comment before completing.
 - **Read before writing** — understand existing docs/code before modifying.
-- **Conventions are law** — follow [ideas/30-conventions.md](ideas/30-conventions.md) for all design docs.
-- **No empty docs** — every idea doc must have a clear problem statement and concrete design.
+- **Conventions are law** — follow [ideas/30-conventions.md](ideas/30-conventions.md) for idea docs, README templates for ADRs and specs.
+- **No empty docs** — every idea doc needs a problem statement, every ADR needs options + rationale, every spec needs formal definitions.
 - **Scope is explicit** — include "What This Is Not" to prevent feature creep.
+- **Implementation references specs** — trekker tasks link to specs, not idea docs. No spec = not ready to implement.
+- **Decisions go in ADRs** — don't resolve contradictions inline in idea docs. Write an ADR, then update the idea doc to reflect the decision.
 
 ## Commit Style
 
@@ -183,4 +243,4 @@ Conventional commits. Allowed types:
 
 Format: `type(scope): short description`
 
-Scopes (current phase): `ideas`, `docs`, `readme`, `config`, `trekker`
+Scopes: `ideas`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`
