@@ -1,10 +1,24 @@
 ---
-title: "Terminal Fundamentals"
+title: 'Terminal Fundamentals'
 status: draft
 category: core
-description: "Baseline terminal behavior — cursor, bell, scrollbar, padding, text styles, env vars, window, links, process handling"
-tags: ["cursor", "bell", "scrollbar", "padding", "bold", "underline", "links", "process", "env", "reflow", "fundamentals"]
+description: 'Baseline terminal behavior — cursor, bell, scrollbar, padding, text styles, env vars, window, links, process handling'
+tags:
+  [
+    'cursor',
+    'bell',
+    'scrollbar',
+    'padding',
+    'bold',
+    'underline',
+    'links',
+    'process',
+    'env',
+    'reflow',
+    'fundamentals',
+  ]
 ---
+
 # Terminal Fundamentals
 
 The features every terminal ships that users expect to just work. These must be correct before any smart feature matters.
@@ -15,7 +29,7 @@ The features every terminal ships that users expect to just work. These must be 
 
 Four styles, configurable and changeable by applications via DECSCUSR escape sequence:
 
-```
+```ini
 cursor-style = block              # block, bar, underline, hollow
 cursor-style-blink = true         # true, false
 cursor-blink-interval = 750       # milliseconds, 0 = no blink
@@ -28,7 +42,7 @@ Applications (vim, zsh vi-mode) can change cursor style via escape sequences. Wh
 
 Cursor color is independent of text color:
 
-```
+```ini
 cursor-color = #f5e0dc            # cursor fill color
 cursor-text-color = #1e1e2e       # text rendered under the cursor
 ```
@@ -39,7 +53,7 @@ If unset, cursor uses reverse video (swap fg/bg). Theme can override both — se
 
 When the window loses focus, the cursor changes to hollow block by default:
 
-```
+```ini
 cursor-unfocused-style = hollow   # hollow, unchanged, bar, underline, hidden
 ```
 
@@ -47,7 +61,7 @@ cursor-unfocused-style = hollow   # hollow, unchanged, bar, underline, hidden
 
 For bar and underline cursors:
 
-```
+```ini
 cursor-bar-width = 2              # pixels
 cursor-underline-height = 2       # pixels
 ```
@@ -56,7 +70,7 @@ cursor-underline-height = 2       # pixels
 
 Four independent bell behaviors. Mix and match:
 
-```
+```ini
 bell-audio = false                # system beep / custom sound
 bell-visual = false               # flash the pane background briefly
 bell-badge = true                 # show badge on tab when bell fires in background pane
@@ -65,18 +79,19 @@ bell-dock = true                  # bounce dock icon (macOS) / flash taskbar (Wi
 
 Visual bell uses the `visual-bell` color from the theme. Flash duration:
 
-```
+```ini
 bell-visual-duration = 100        # milliseconds
 ```
 
 Custom bell sound (overrides system beep):
 
-```
+```ini
 bell-audio-file = ~/sounds/ping.wav
 bell-audio-volume = 0.5           # 0.0 to 1.0
 ```
 
 Lua:
+
 ```lua
 bell = {
   audio = false,
@@ -91,7 +106,7 @@ bell = {
 
 Standard behavior: programs like vim, less, htop switch to the alternate screen. When they exit, the primary screen (with scrollback) is restored.
 
-```
+```ini
 alt-screen-scroll-mouse = 3       # in alt screen, mouse wheel sends this many arrow keys (like WezTerm)
 ```
 
@@ -99,7 +114,7 @@ No scrollback is available in the alternate screen — this is the VT standard. 
 
 ## Scrollbar
 
-```
+```ini
 scrollbar = auto                  # auto, always, never
 scrollbar-width = 8               # pixels
 scrollbar-position = right        # right, left
@@ -113,26 +128,27 @@ Scrollbar colors come from the theme (`scrollbar-thumb`, `scrollbar-track`).
 
 Space between the terminal content and the window edge:
 
-```
+```ini
 padding-x = 4                    # left and right, in points
 padding-y = 4                    # top and bottom, in points
 ```
 
 Or per-side:
 
-```
+```ini
 padding-left = 4
 padding-right = 4
 padding-top = 8
 padding-bottom = 4
 ```
 
-```
+```ini
 padding-balance = true            # center content when cells don't perfectly fill the window
 padding-color = extend            # background, extend (theme bg color fills padding)
 ```
 
 Lua:
+
 ```lua
 padding = {
   x = 4,
@@ -146,7 +162,7 @@ padding = {
 
 ### Bold
 
-```
+```ini
 bold-is-bright = false            # default: bold text uses bold font weight, not bright ANSI color
 font-family-bold = auto           # auto (synthesize from main font), or explicit font name
 ```
@@ -155,7 +171,7 @@ font-family-bold = auto           # auto (synthesize from main font), or explici
 
 ### Italic
 
-```
+```ini
 font-family-italic = auto         # auto (synthesize), or explicit font name
 font-family-bold-italic = auto    # same
 font-synthetic-style = true       # synthesize bold/italic if the font doesn't have them
@@ -165,18 +181,18 @@ font-synthetic-style = true       # synthesize bold/italic if the font doesn't h
 
 Full support for styled underlines via SGR escape sequences:
 
-| SGR | Style | Config adjustment |
-|-----|-------|-------------------|
-| `4:0` | Off | |
+| SGR   | Style           | Config adjustment                           |
+| ----- | --------------- | ------------------------------------------- |
+| `4:0` | Off             |                                             |
 | `4:1` | Single straight | `underline-position`, `underline-thickness` |
-| `4:2` | Double | |
-| `4:3` | Curly/wavy | |
-| `4:4` | Dotted | |
-| `4:5` | Dashed | |
+| `4:2` | Double          |                                             |
+| `4:3` | Curly/wavy      |                                             |
+| `4:4` | Dotted          |                                             |
+| `4:5` | Dashed          |                                             |
 
 Colored underlines via SGR 58/59 (set/clear underline color). Used by LSP diagnostics in terminal editors.
 
-```
+```ini
 underline-position = auto         # auto, or pixel offset from baseline
 underline-thickness = auto        # auto, or pixel value
 ```
@@ -185,7 +201,7 @@ underline-thickness = auto        # auto, or pixel value
 
 Full support via SGR 9 (on) / SGR 29 (off):
 
-```
+```ini
 strikethrough-position = auto     # auto, or pixel offset
 strikethrough-thickness = auto    # auto, or pixel value
 ```
@@ -194,33 +210,33 @@ strikethrough-thickness = auto    # auto, or pixel value
 
 ### Initial size
 
-```
+```ini
 window-width = 120                # columns (cell count)
 window-height = 40                # rows (cell count)
 ```
 
 ### Initial position
 
-```
+```ini
 window-position-x = auto          # auto (OS decides) or pixel value
 window-position-y = auto
 ```
 
 ### Remember state
 
-```
+```ini
 window-save-state = true          # remember size and position across sessions
 ```
 
 ### Startup mode
 
-```
+```ini
 window-startup-mode = windowed    # windowed, maximized, fullscreen
 ```
 
 ### Decorations
 
-```
+```ini
 window-decorations = native       # native, none (borderless)
 ```
 
@@ -230,34 +246,35 @@ On macOS with `native`: standard title bar with traffic lights. On Linux: GTK4 c
 
 Every pane's child process inherits these:
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `TERM` | `xterm-256color` | Universal compatibility — no custom terminfo to install on remote hosts |
-| `COLORTERM` | `truecolor` | Signals 24-bit color support |
-| `TERM_PROGRAM` | `phantom` | Identifies the terminal to shells and tools |
-| `TERM_PROGRAM_VERSION` | `0.7.0` | Terminal version |
-| `PHANTOM_SOCKET` | `/tmp/phantom-<uid>/socket` | Daemon socket for `phantom ctl` |
-| `PHANTOM_PANE_ID` | `pane-a1b2c3d4` | This pane's unique ID |
-| `PHANTOM_WORKSPACE` | `work` | Current workspace name |
+| Variable               | Value                       | Notes                                                                   |
+| ---------------------- | --------------------------- | ----------------------------------------------------------------------- |
+| `TERM`                 | `xterm-256color`            | Universal compatibility — no custom terminfo to install on remote hosts |
+| `COLORTERM`            | `truecolor`                 | Signals 24-bit color support                                            |
+| `TERM_PROGRAM`         | `phantom`                   | Identifies the terminal to shells and tools                             |
+| `TERM_PROGRAM_VERSION` | `0.7.0`                     | Terminal version                                                        |
+| `PHANTOM_SOCKET`       | `/tmp/phantom-<uid>/socket` | Daemon socket for `phantom ctl`                                         |
+| `PHANTOM_PANE_ID`      | `pane-a1b2c3d4`             | This pane's unique ID                                                   |
+| `PHANTOM_WORKSPACE`    | `work`                      | Current workspace name                                                  |
 
 **Why `xterm-256color` instead of a custom TERM:**
 Ghostty uses `xterm-ghostty`, Kitty uses `xterm-kitty` — both break SSH to servers that don't have the terminfo installed. This is the #1 SSH complaint across both terminals. We use `xterm-256color` (universally available) and advertise extra capabilities via standard DA (Device Attributes) escape sequence responses.
 
 Users who want a custom TERM can set it:
 
-```
+```ini
 term = xterm-256color             # default
 ```
 
 Custom environment variables:
 
-```
+```ini
 env = EDITOR=nvim
 env = GIT_EDITOR=nvim
 env = FOO=bar
 ```
 
 Lua:
+
 ```lua
 env = {
   EDITOR = "nvim",
@@ -269,21 +286,22 @@ env = {
 
 We set `TERM=xterm-256color` but support features beyond what xterm-256color declares:
 
-| Capability | How we advertise |
-|-----------|-----------------|
-| True color (24-bit) | `COLORTERM=truecolor` + correct DA responses |
-| Styled underlines (curly, dotted, dashed) | Via escape sequence support (SGR 4:1-4:5) |
-| Kitty graphics protocol | Respond to graphics protocol queries |
-| OSC 8 hyperlinks | Render on receive |
-| Synchronized output (DEC mode 2026) | Respond to mode query |
-| Bracketed paste | Respond to mode query |
-| OSC 52 clipboard | Respond based on security config |
+| Capability                                | How we advertise                             |
+| ----------------------------------------- | -------------------------------------------- |
+| True color (24-bit)                       | `COLORTERM=truecolor` + correct DA responses |
+| Styled underlines (curly, dotted, dashed) | Via escape sequence support (SGR 4:1-4:5)    |
+| Kitty graphics protocol                   | Respond to graphics protocol queries         |
+| OSC 8 hyperlinks                          | Render on receive                            |
+| Synchronized output (DEC mode 2026)       | Respond to mode query                        |
+| Bracketed paste                           | Respond to mode query                        |
+| OSC 52 clipboard                          | Respond based on security config             |
 
 No custom terminfo to install. Everything works over SSH because `xterm-256color` is on every server.
 
 ## Text Reflow on Resize
 
 When the terminal is resized:
+
 - **Wider**: soft-wrapped lines unwrap into single lines
 - **Narrower**: long lines re-wrap
 - Viewport anchored to content you're reading, not the top or bottom
@@ -297,7 +315,7 @@ The VT parser tracks which line breaks are soft (from wrapping) vs hard (from th
 
 Programs can emit semantic hyperlinks:
 
-```
+```text
 \e]8;id=link1;https://example.com\e\\Click here\e]8;;\e\\
 ```
 
@@ -307,7 +325,7 @@ Rendered as clickable text with the display text the program chose. Hover shows 
 
 The terminal detects URLs in output via regex and makes them clickable:
 
-```
+```ini
 link-detection = true             # default
 link-click-modifier = super       # super (Cmd/Ctrl) + click to open, or "none" for plain click
 ```
@@ -320,7 +338,7 @@ URL hover shows the destination and underlines the link using the `url-color` fr
 
 Paths like `src/components/Button.tsx:42:15` are detected when shell integration provides the pane's cwd for resolution. Click opens in `$EDITOR` at the specified line.
 
-```
+```ini
 link-file-paths = true            # default, requires shell integration for relative path resolution
 ```
 
@@ -328,11 +346,12 @@ link-file-paths = true            # default, requires shell integration for rela
 
 ### On tab/pane close
 
-```
+```ini
 close-confirm = smart             # smart, always, never
 ```
 
 `smart` behavior (default):
+
 - **Idle shell** (no child process beyond the shell itself) → close immediately
 - **Running process** → show confirmation: "npm run build is running. Close? [Yes] [Cancel]"
 - **Agent pane** → stronger warning: "Agent feat/auth is working. Closing will abandon changes."
@@ -341,7 +360,7 @@ Process detection uses the PTY process tree, not just the direct child.
 
 ### On terminal quit
 
-```
+```ini
 quit-confirm = smart              # smart, always, never
 ```
 
@@ -350,6 +369,7 @@ quit-confirm = smart              # smart, always, never
 ### Signal handling
 
 When a pane is closed:
+
 1. Send `SIGHUP` to the child process group
 2. Wait briefly for graceful shutdown
 3. Send `SIGTERM` if still running
@@ -357,7 +377,7 @@ When a pane is closed:
 
 ### Exit behavior
 
-```
+```ini
 close-on-exit = true              # close the pane when the process exits (default)
 hold-on-exit = false              # keep the pane open after process exits, showing exit code
 ```
@@ -366,17 +386,17 @@ hold-on-exit = false              # keep the pane open after process exits, show
 
 ## Scrollback Navigation
 
-| Action | Default keybind | Notes |
-|--------|----------------|-------|
-| Scroll up one line | `Shift+Up` | |
-| Scroll down one line | `Shift+Down` | |
-| Page up | `Shift+PageUp` | |
-| Page down | `Shift+PageDown` | |
-| Scroll to top | `Shift+Home` | |
-| Scroll to bottom | `Shift+End` | |
-| Mouse wheel | Platform-native | Smooth scrolling on macOS, line-by-line on Linux (configurable) |
+| Action               | Default keybind  | Notes                                                           |
+| -------------------- | ---------------- | --------------------------------------------------------------- |
+| Scroll up one line   | `Shift+Up`       |                                                                 |
+| Scroll down one line | `Shift+Down`     |                                                                 |
+| Page up              | `Shift+PageUp`   |                                                                 |
+| Page down            | `Shift+PageDown` |                                                                 |
+| Scroll to top        | `Shift+Home`     |                                                                 |
+| Scroll to bottom     | `Shift+End`      |                                                                 |
+| Mouse wheel          | Platform-native  | Smooth scrolling on macOS, line-by-line on Linux (configurable) |
 
-```
+```ini
 scroll-multiplier = 3             # lines per scroll event (mouse wheel)
 scroll-to-bottom-on-input = true  # snap to bottom when you start typing
 ```
@@ -385,7 +405,7 @@ In the alternate screen (vim, less), mouse wheel sends arrow keys to the applica
 
 ## Initial Working Directory
 
-```
+```ini
 working-directory = inherit       # inherit, home, or absolute path
 ```
 
@@ -395,19 +415,20 @@ working-directory = inherit       # inherit, home, or absolute path
 
 New splits and tabs inherit the current pane's working directory by default:
 
-```
+```ini
 split-inherit-cwd = true          # default
 tab-inherit-cwd = true            # default
 ```
 
 ## Shell Selection
 
-```
+```ini
 shell = auto                      # auto, or explicit path
 shell-login = true                # run as login shell (default)
 ```
 
 `auto` resolves in order:
+
 1. `$SHELL` environment variable
 2. User's login shell from passwd
 3. `/bin/sh` as last resort
@@ -415,6 +436,7 @@ shell-login = true                # run as login shell (default)
 Explicit: `shell = /opt/homebrew/bin/fish`
 
 With arguments: use Lua:
+
 ```lua
 shell = { "/bin/zsh", "-l", "--no-rcs" }
 ```
@@ -423,7 +445,7 @@ shell = { "/bin/zsh", "-l", "--no-rcs" }
 
 Characters that break word selection on double-click:
 
-```
+```ini
 word-delimiters = " \t\n{}[]()\"'`,;:@|<>"
 ```
 
@@ -443,7 +465,7 @@ Application mode vs normal mode is controlled entirely by the application via DE
 
 Initial support for BiDi text rendering:
 
-```
+```ini
 bidi = auto                       # auto, force-ltr, true
 ```
 

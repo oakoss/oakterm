@@ -1,26 +1,26 @@
 ---
-title: "Performance"
+title: 'Performance'
 status: draft
 category: cross-cutting
-description: "Targets, budgets, CI benchmarks"
-tags: ["latency", "memory", "benchmarks", "ci"]
+description: 'Targets, budgets, CI benchmarks'
+tags: ['latency', 'memory', 'benchmarks', 'ci']
 ---
-# Performance
 
+# Performance
 
 Performance is a core principle, not an optimization pass. Every architectural decision is made with latency and resource usage as constraints.
 
 ## Targets
 
-| Metric | Target | Reference |
-|--------|--------|-----------|
-| Input latency (keystroke → pixel) | <8ms | Foot ~7ms, Alacritty ~10ms |
-| Cold start (no plugins) | <5ms | Alacritty-class |
-| Cold start (all bundled plugins) | <15ms | Faster than WezTerm |
-| Memory (single empty pane) | <30MB | Foot ~15MB, Alacritty ~80MB |
-| Memory (10 panes, sidebar, plugins) | <100MB | Less than WezTerm (~170MB) |
-| Idle CPU | 0% | No polling, no timers, pure event-driven |
-| Scrollback (100k lines) | No typing lag | iTerm2 fails this |
+| Metric                              | Target        | Reference                                |
+| ----------------------------------- | ------------- | ---------------------------------------- |
+| Input latency (keystroke → pixel)   | <8ms          | Foot ~7ms, Alacritty ~10ms               |
+| Cold start (no plugins)             | <5ms          | Alacritty-class                          |
+| Cold start (all bundled plugins)    | <15ms         | Faster than WezTerm                      |
+| Memory (single empty pane)          | <30MB         | Foot ~15MB, Alacritty ~80MB              |
+| Memory (10 panes, sidebar, plugins) | <100MB        | Less than WezTerm (~170MB)               |
+| Idle CPU                            | 0%            | No polling, no timers, pure event-driven |
+| Scrollback (100k lines)             | No typing lag | iTerm2 fails this                        |
 
 These are budgets, not aspirations. CI runs performance benchmarks on every commit. A regression fails the build.
 
@@ -29,6 +29,7 @@ These are budgets, not aspirations. CI runs performance benchmarks on every comm
 ### The renderer never waits
 
 The GPU render loop is the highest-priority thread. Nothing blocks it:
+
 - Plugin responses are async — if a plugin is slow, the frame renders without its data
 - Context engine runs in a separate process — completions arrive when ready
 - Font fallback lookups are cached in the glyph atlas after first resolution
@@ -69,16 +70,16 @@ Results are tracked over time. Performance dashboard is public.
 
 ## Performance Anti-Patterns We Avoid
 
-| Anti-pattern | Who does it | Our approach |
-|-------------|-------------|-------------|
-| Electron/web rendering | Hyper, Tabby | Native GPU rendering |
-| No GPU acceleration | iTerm2 | wgpu from day one |
-| Polling for events | Various | Pure event-driven (epoll/kqueue) |
-| Single-threaded plugin execution | Kitty (Python GIL) | Thread pool + WASM |
-| Unbounded scroll buffer allocation | iTerm2 (3GB RSS) | Ring buffer with configurable cap |
-| Loading all plugins at startup | — | Lazy loading on first use |
-| Synchronous font fallback | — | Cached in glyph atlas, async resolve |
-| Full redraw on every frame | — | Damage tracking, only redraw changed regions |
+| Anti-pattern                       | Who does it        | Our approach                                 |
+| ---------------------------------- | ------------------ | -------------------------------------------- |
+| Electron/web rendering             | Hyper, Tabby       | Native GPU rendering                         |
+| No GPU acceleration                | iTerm2             | wgpu from day one                            |
+| Polling for events                 | Various            | Pure event-driven (epoll/kqueue)             |
+| Single-threaded plugin execution   | Kitty (Python GIL) | Thread pool + WASM                           |
+| Unbounded scroll buffer allocation | iTerm2 (3GB RSS)   | Ring buffer with configurable cap            |
+| Loading all plugins at startup     | —                  | Lazy loading on first use                    |
+| Synchronous font fallback          | —                  | Cached in glyph atlas, async resolve         |
+| Full redraw on every frame         | —                  | Damage tracking, only redraw changed regions |
 
 ## Performance vs Features
 

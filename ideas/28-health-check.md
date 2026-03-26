@@ -1,12 +1,12 @@
 ---
-title: "Health Check"
+title: 'Health Check'
 status: draft
 category: core
-description: "Neovim-style :health with actionable diagnostics"
-tags: ["diagnostics", "health", "doctor", "plugin-health"]
+description: 'Neovim-style :health with actionable diagnostics'
+tags: ['diagnostics', 'health', 'doctor', 'plugin-health']
 ---
-# Health Check
 
+# Health Check
 
 A single `:health` command that runs every diagnostic and shows a complete picture. Inspired by Neovim's `:checkhealth`.
 
@@ -16,7 +16,7 @@ Health checks need to verify the core itself — renderer, VT parser, platform i
 
 ## :health
 
-```
+```lua
 Cmd+Shift+P → :health
 
 ┌──────────────────────────────────────────────────────┐
@@ -103,6 +103,7 @@ Cmd+Shift+P → :health
 ### Actionable
 
 Every warning and error includes:
+
 - What's wrong (the symptom)
 - Why it matters (what breaks)
 - How to fix it (specific command or config change)
@@ -111,17 +112,17 @@ No cryptic error codes. No "check the docs." The fix is right there.
 
 ### Sections
 
-| Section | What it checks |
-|---------|---------------|
-| Core | Version, GPU, text shaping, VT parser, plugin runtime, config validity |
-| Performance | Input latency, FPS, memory, idle CPU, scroll buffer usage |
-| Fonts | Primary + all fallbacks loaded, ligature support |
-| Shell Integration | Shell detected, integration loaded, TERM/COLORTERM set, prompt markers |
-| Plugins | Health, performance budget, errors, available updates |
-| Accessibility | AccessKit status, screen reader detection, system preferences, theme contrast |
-| Platform | OS version, display, clipboard, notifications, secure input |
-| SSH Domains | Connectivity test for each configured domain |
-| Security | All security settings, plugin verification |
+| Section           | What it checks                                                                |
+| ----------------- | ----------------------------------------------------------------------------- |
+| Core              | Version, GPU, text shaping, VT parser, plugin runtime, config validity        |
+| Performance       | Input latency, FPS, memory, idle CPU, scroll buffer usage                     |
+| Fonts             | Primary + all fallbacks loaded, ligature support                              |
+| Shell Integration | Shell detected, integration loaded, TERM/COLORTERM set, prompt markers        |
+| Plugins           | Health, performance budget, errors, available updates                         |
+| Accessibility     | AccessKit status, screen reader detection, system preferences, theme contrast |
+| Platform          | OS version, display, clipboard, notifications, secure input                   |
+| SSH Domains       | Connectivity test for each configured domain                                  |
+| Security          | All security settings, plugin verification                                    |
 
 ### Plugin Health
 
@@ -142,24 +143,24 @@ This means the docker-manager plugin can check if Docker is actually running, th
 
 ### Relationship to Existing Debug Commands
 
-| Command | Purpose |
-|---------|---------|
-| `:health` | Full diagnostic — "is everything working?" Run when something's wrong. |
-| `:debug` | System info — "what's my current state?" Quick reference. |
-| `:debug perf` | Live overlay — "is it slow right now?" Real-time monitoring. |
-| `:debug memory` | Memory attribution — "what's using RAM?" |
-| `:debug plugins` | Plugin performance — "which plugin is slow?" |
-| `:debug plugin X` | Deep dive — "why is this plugin slow?" |
-| `:debug input` | Input inspector — "what did I press?" |
-| `:debug escape` | Escape inspector — "what's the program sending?" |
-| `:debug security` | Security state — "what's locked down?" |
-| `phantom doctor` | CLI-only health check — same as `:health` but for outside the terminal |
+| Command           | Purpose                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `:health`         | Full diagnostic — "is everything working?" Run when something's wrong. |
+| `:debug`          | System info — "what's my current state?" Quick reference.              |
+| `:debug perf`     | Live overlay — "is it slow right now?" Real-time monitoring.           |
+| `:debug memory`   | Memory attribution — "what's using RAM?"                               |
+| `:debug plugins`  | Plugin performance — "which plugin is slow?"                           |
+| `:debug plugin X` | Deep dive — "why is this plugin slow?"                                 |
+| `:debug input`    | Input inspector — "what did I press?"                                  |
+| `:debug escape`   | Escape inspector — "what's the program sending?"                       |
+| `:debug security` | Security state — "what's locked down?"                                 |
+| `phantom doctor`  | CLI-only health check — same as `:health` but for outside the terminal |
 
 `:health` is the "run everything" option. The specific `:debug` commands are for targeted investigation after `:health` tells you where to look.
 
 ### CLI Equivalent
 
-```
+```bash
 $ phantom doctor
 
 Same output as :health, but on the command line.

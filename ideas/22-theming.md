@@ -1,12 +1,12 @@
 ---
-title: "Theming"
+title: 'Theming'
 status: draft
 category: cross-cutting
-description: "Deep customization, TOML format, inheritance, live preview"
-tags: ["themes", "toml", "colors", "ui-chrome", "live-preview", "wcag"]
+description: 'Deep customization, TOML format, inheritance, live preview'
+tags: ['themes', 'toml', 'colors', 'ui-chrome', 'live-preview', 'wcag']
 ---
-# Theming
 
+# Theming
 
 Users should be able to change anything they want. The theming system is deep — not just 16 ANSI colors, but every visual element the terminal renders.
 
@@ -131,21 +131,21 @@ blink                = true
 
 Everything visual — approximately 60+ properties:
 
-| Category | What's customizable |
-|----------|-------------------|
-| Terminal colors | All 16 ANSI colors, 256-color overrides, fg/bg/cursor/selection |
-| Tab bar | Bar bg, active/inactive/hover/new tab states (fg + bg each) |
-| Sidebar | Background, foreground, sections, active state, badge colors (4 levels) |
-| Command palette | Background, foreground, border, match highlight, selected |
-| Splits and borders | Split divider, active/inactive/bell pane borders |
-| Status bar | Background, foreground |
-| Scrollbar | Thumb and track colors |
-| Search | Match and selected-match colors (fg + bg) |
-| URL hover | Hover underline color |
-| Marks | 3 levels of mark fg/bg (for hints mode) |
-| Visual bell | Flash color |
-| Window | Opacity, blur, unfocused dimming |
-| Cursor | Style, color, text-under-cursor color, blink |
+| Category           | What's customizable                                                     |
+| ------------------ | ----------------------------------------------------------------------- |
+| Terminal colors    | All 16 ANSI colors, 256-color overrides, fg/bg/cursor/selection         |
+| Tab bar            | Bar bg, active/inactive/hover/new tab states (fg + bg each)             |
+| Sidebar            | Background, foreground, sections, active state, badge colors (4 levels) |
+| Command palette    | Background, foreground, border, match highlight, selected               |
+| Splits and borders | Split divider, active/inactive/bell pane borders                        |
+| Status bar         | Background, foreground                                                  |
+| Scrollbar          | Thumb and track colors                                                  |
+| Search             | Match and selected-match colors (fg + bg)                               |
+| URL hover          | Hover underline color                                                   |
+| Marks              | 3 levels of mark fg/bg (for hints mode)                                 |
+| Visual bell        | Flash color                                                             |
+| Window             | Opacity, blur, unfocused dimming                                        |
+| Cursor             | Style, color, text-under-cursor color, blink                            |
 
 ## Bundled Themes
 
@@ -173,7 +173,7 @@ Tabs are more than just names — they're visual indicators of state and context
 
 Set a tab's title manually or let it auto-detect:
 
-```
+```text
 # Palette
 :tab rename "API Server"
 
@@ -182,6 +182,7 @@ Ctrl+Shift+T → rename current tab
 ```
 
 Tab titles can also be set programmatically by:
+
 - Shell integration (running command becomes the title, idle shows cwd)
 - Plugins (agent-manager sets title to branch name)
 - The user (double-click tab to rename, persists across sessions)
@@ -189,7 +190,8 @@ Tab titles can also be set programmatically by:
 - Terminal title (`OSC 0`) and tab title are separate — a program setting the terminal title doesn't overwrite your custom tab name unless you want it to
 
 Config:
-```
+
+```ini
 tab-title-mode = custom          # keep my name, ignore OSC
 tab-title-mode = shell           # auto from running command / cwd
 tab-title-mode = osc             # let programs set the title
@@ -200,7 +202,7 @@ tab-title-mode = auto            # shell integration when idle, OSC when running
 
 Tabs can have individual color overrides — independent of the global theme:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │ ● scratch  │ ● API Server  │ ◉ feat/auth  │ ◉ add-tests   │
 │            │   🟢           │   🔴          │   🟡           │
@@ -210,7 +212,8 @@ Tabs can have individual color overrides — independent of the global theme:
 Colors can be set:
 
 **Manually per-tab:**
-```
+
+```text
 :tab color #a6e3a1         # set current tab's accent color
 :tab color reset           # back to theme default
 ```
@@ -243,7 +246,7 @@ environments = {
 
 The window title is separate from tab titles:
 
-```
+```lua
 window-title = Phantom             # static
 window-title = {cwd}               # dynamic: working directory
 window-title = {tab} — {cwd}      # tab name + cwd
@@ -256,7 +259,7 @@ Plugins and programs can update the window title via `OSC 0` / `OSC 2`. This is 
 
 From the palette:
 
-```
+```lua
 Cmd+Shift+P → :theme
 
 ┌──────────────────────────────────────────────────┐
@@ -282,6 +285,7 @@ Arrow keys to preview live — the terminal updates instantly as you move throug
 Themes are **data packages**, not WASM plugins. They're just `.toml` files — no code execution, no permissions needed.
 
 Distributable as:
+
 - Single `.toml` files (drop in `~/.config/phantom/themes/`)
 - Via the registry as a data package: `phantom theme install catppuccin` (downloads the TOML files, no WASM involved)
 - Via a dedicated theme gallery on the website (browse, preview, one-click install)
@@ -292,7 +296,7 @@ Themes use the same registry infrastructure as plugins but are a different packa
 
 `phantom theme create` scaffolds a new theme file with all fields documented. `phantom theme validate my-theme.toml` checks for missing fields, contrast issues, and accessibility.
 
-```
+```bash
 $ phantom theme validate my-theme.toml
 
 ✓ All required colors defined
@@ -323,7 +327,7 @@ pane-active-border = "#ff0000"
 
 ## Import from Other Terminals
 
-```
+```bash
 phantom theme import ghostty ~/.config/ghostty/config
 phantom theme import kitty ~/.config/kitty/kitty.conf
 phantom theme import alacritty ~/.config/alacritty/alacritty.toml

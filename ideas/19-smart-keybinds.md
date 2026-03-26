@@ -1,12 +1,13 @@
 ---
-title: "Smart Keybinds"
+title: 'Smart Keybinds'
 status: draft
 category: core
-description: "Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring"
-tags: ["keybinds", "hints-mode", "broadcast", "quake-mode", "environment-coloring"]
+description: 'Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring'
+tags:
+  ['keybinds', 'hints-mode', 'broadcast', 'quake-mode', 'environment-coloring']
 ---
-# Smart Keybinds
 
+# Smart Keybinds
 
 Context-aware keybindings that do the right thing based on terminal state.
 
@@ -15,11 +16,13 @@ Context-aware keybindings that do the right thing based on terminal state.
 The most requested quality-of-life improvement across terminal discussions.
 
 **Ctrl+C:**
+
 - Text selected → copy to clipboard
 - Nothing selected → send SIGINT (interrupt process)
 - No more Ctrl+Shift+C for copying
 
 **Ctrl+V:**
+
 - Always paste from clipboard
 - No more Ctrl+Shift+V
 
@@ -27,9 +30,9 @@ This matches every other application on the system. Ghostty calls these "perform
 
 ### Platform behavior
 
-| Platform | Copy | Paste | Interrupt |
-|----------|------|-------|-----------|
-| macOS | Cmd+C (always copies) | Cmd+V (always pastes) | Ctrl+C (always SIGINT) |
+| Platform      | Copy                                            | Paste                  | Interrupt                |
+| ------------- | ----------------------------------------------- | ---------------------- | ------------------------ |
+| macOS         | Cmd+C (always copies)                           | Cmd+V (always pastes)  | Ctrl+C (always SIGINT)   |
 | Linux/Windows | Ctrl+C (smart: copy if selected, SIGINT if not) | Ctrl+V (always pastes) | Ctrl+C with no selection |
 
 On macOS, this is already natural — Cmd and Ctrl are separate keys. Smart behavior is only needed on Linux/Windows where Ctrl serves double duty.
@@ -52,7 +55,7 @@ Disable with `smart-keybinds = false` if you want traditional terminal behavior 
 
 Press a hotkey, every actionable pattern on screen gets a short label. Type the label to act on it. Like Vimium for the browser.
 
-```
+```text
 Ctrl+Shift+H → activate hints
 
 ┌────────────────────────────────────────────────┐
@@ -73,6 +76,7 @@ Type 'e' → inserts 'components/' at cursor
 ```
 
 ### Built-in Pattern Matchers
+
 - URLs (http/https)
 - File paths (relative and absolute)
 - Git commit hashes
@@ -80,6 +84,7 @@ Type 'e' → inserts 'components/' at cursor
 - Email addresses
 
 ### Custom Patterns via Config
+
 ```lua
 hints = {
   patterns = {
@@ -91,21 +96,23 @@ hints = {
 ```
 
 ### Actions Per Match
-| Action | What it does |
-|--------|-------------|
-| `open` | Open in default browser (URLs) or editor (file paths) |
-| `copy` | Copy to clipboard |
-| `insert` | Insert at cursor position in the prompt |
-| `run` | Execute a command with the match as argument |
+
+| Action   | What it does                                          |
+| -------- | ----------------------------------------------------- |
+| `open`   | Open in default browser (URLs) or editor (file paths) |
+| `copy`   | Copy to clipboard                                     |
+| `insert` | Insert at cursor position in the prompt               |
+| `run`    | Execute a command with the match as argument          |
 
 ### Plugin Extensible
+
 Plugins can register additional hint patterns and actions via the context engine API.
 
 ## Input Broadcast
 
 Type in multiple panes simultaneously — same command on multiple servers at once.
 
-```
+```text
 Cmd+Shift+P → :broadcast
 
 ┌──────────────────────────────────────────────────┐
@@ -121,6 +128,7 @@ Cmd+Shift+P → :broadcast
 ```
 
 When active:
+
 - A visual indicator on all broadcasting panes (colored border or badge)
 - Everything you type goes to all selected panes
 - `Ctrl+Shift+B` to toggle broadcast on/off quickly
@@ -142,6 +150,7 @@ environments = {
 A pane connected to production gets a red left border and a small "PROD" label. You never accidentally run `rm -rf` in the wrong environment because it doesn't look like your local shell.
 
 Works with:
+
 - SSH domain connections (hostname matching)
 - Environment variables
 - Working directory patterns
@@ -152,6 +161,7 @@ Works with:
 Global hotkey slides the terminal from the top of the screen. This is a plugin, not core — but the core provides the window management primitives it needs.
 
 Core provides:
+
 - `window.position` — set window position and size
 - `window.always_on_top` — keep above other windows
 - `window.animate` — slide/fade transitions
@@ -176,6 +186,7 @@ plugins = {
 The plugin is bundled but disabled by default. Enable it and set your hotkey.
 
 ### Why Plugin, Not Core
+
 - Not everyone wants it — it's a specific workflow preference
 - The implementation is just window positioning + animation + a global hotkey
 - Making it a plugin proves the core primitives are powerful enough

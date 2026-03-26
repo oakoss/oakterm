@@ -1,12 +1,12 @@
 ---
-title: "Memory Management"
+title: 'Memory Management'
 status: draft
 category: cross-cutting
-description: "Tiered scroll buffer, per-pane budgets, memory attribution"
-tags: ["memory", "scroll-buffer", "ring-buffer", "disk-archive", "agents"]
+description: 'Tiered scroll buffer, per-pane budgets, memory attribution'
+tags: ['memory', 'scroll-buffer', 'ring-buffer', 'disk-archive', 'agents']
 ---
-# Memory Management
 
+# Memory Management
 
 Memory is the #1 complaint in terminal + AI agent workflows. Ghostty hit 71 GB with Claude Code. iTerm2 routinely sits at 3 GB. WezTerm pre-allocates scrollback it may never use. This is a problem we solve from day one.
 
@@ -21,7 +21,7 @@ We need to clearly separate and surface both.
 
 ### Memory attribution in :debug
 
-```
+```text
 Cmd+Shift+P → :debug memory
 
 ┌──────────────────────────────────────────────────┐
@@ -51,7 +51,7 @@ This answers "is my terminal leaking or is Claude Code leaking?" instantly. The 
 
 When a child process grows abnormally:
 
-```
+```text
 ⚠ feat/auth (claude) is using 890 MB and growing at ~18 MB/min
   [Ignore] [Restart Process] [Kill]
 ```
@@ -69,16 +69,16 @@ memory = {
 
 The scroll buffer is the biggest terminal-side memory consumer. Every terminal gets this wrong in a different way.
 
-| Terminal | Problem |
-|----------|---------|
-| iTerm2 | Unlimited scrollback = unbounded memory growth |
-| WezTerm | Pre-allocates full scrollback on tab open |
+| Terminal        | Problem                                           |
+| --------------- | ------------------------------------------------- |
+| iTerm2          | Unlimited scrollback = unbounded memory growth    |
+| WezTerm         | Pre-allocates full scrollback on tab open         |
 | Ghostty pre-1.3 | Non-standard page leak under heavy Unicode output |
-| Kitty | 64K scrollback = ~350 MB |
+| Kitty           | 64K scrollback = ~350 MB                          |
 
 ### Our approach: tiered scroll buffer
 
-```
+```text
 Active region (in memory)
 ├── Last N lines (configurable, default 10,000)
 ├── Ring buffer — zero-copy, fixed memory ceiling
@@ -93,7 +93,8 @@ Archive region (on disk)
 ```
 
 Flat config:
-```
+
+```ini
 scrollback-memory-lines = 10000
 scrollback-archive = true
 scrollback-archive-path = ~/.local/state/phantom/scrollback/
@@ -102,6 +103,7 @@ scrollback-compress = true
 ```
 
 Lua config:
+
 ```lua
 scrollback = {
   memory_lines = 10000,         -- kept in RAM (ring buffer)
@@ -158,19 +160,20 @@ If a plugin exceeds its budget, it's killed and restarted (or disabled with a no
 
 ## What We Guarantee
 
-| Metric | Guarantee |
-|--------|-----------|
-| Terminal idle memory | <30 MB (no plugins), <50 MB (all bundled) |
-| Memory per empty pane | <1 MB |
-| Scrollback memory ceiling | Hard cap via ring buffer size |
-| Plugin memory | Capped per-plugin via WASM linear memory |
-| No pre-allocation | Memory grows with actual content, never with config values |
-| Glyph atlas ceiling | LRU eviction, configurable max |
-| Zero memory leaks | Continuous fuzzing + leak detection in CI |
+| Metric                    | Guarantee                                                  |
+| ------------------------- | ---------------------------------------------------------- |
+| Terminal idle memory      | <30 MB (no plugins), <50 MB (all bundled)                  |
+| Memory per empty pane     | <1 MB                                                      |
+| Scrollback memory ceiling | Hard cap via ring buffer size                              |
+| Plugin memory             | Capped per-plugin via WASM linear memory                   |
+| No pre-allocation         | Memory grows with actual content, never with config values |
+| Glyph atlas ceiling       | LRU eviction, configurable max                             |
+| Zero memory leaks         | Continuous fuzzing + leak detection in CI                  |
 
 ## CI Memory Tests
 
 Every PR runs:
+
 - Valgrind / AddressSanitizer on the core
 - 24-hour soak test: open 10 panes, stream random output, verify memory stays bounded
 - "Claude Code simulation": rapid Unicode + escape sequence output for 1 hour, measure RSS delta

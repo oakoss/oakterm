@@ -1,12 +1,12 @@
 ---
-title: "Debugging"
+title: 'Debugging'
 status: draft
 category: cross-cutting
-description: "Debug commands, plugin profiling, blame chain"
-tags: ["debug", "profiling", "plugin-performance", "health"]
+description: 'Debug commands, plugin profiling, blame chain'
+tags: ['debug', 'profiling', 'plugin-performance', 'health']
 ---
-# Debugging
 
+# Debugging
 
 Debugging is a first-class citizen. When something goes wrong — in the terminal, in a plugin, in a pane — you shouldn't have to guess.
 
@@ -14,7 +14,7 @@ Debugging is a first-class citizen. When something goes wrong — in the termina
 
 ### :debug command
 
-```
+```text
 Cmd+Shift+P → :debug
 
 ┌──────────────────────────────────────────────────┐
@@ -45,7 +45,7 @@ One command, full picture. Paste it in a bug report and we have everything we ne
 
 Full memory attribution — see `ideas/15-memory-management.md` for the complete spec.
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Memory Overview                                 │
 ├──────────────────────────────────────────────────┤
@@ -72,7 +72,7 @@ Clearly separates terminal memory from child process memory — answers "is it u
 
 Per-pane diagnostics — focus a pane and run `:debug pane`:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Pane Debug: feat/auth                           │
 ├──────────────────────────────────────────────────┤
@@ -93,7 +93,7 @@ Per-pane diagnostics — focus a pane and run `:debug pane`:
 
 ### :debug plugins
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Plugin Debug                                    │
 ├──────────────────────────────────────────────────┤
@@ -120,7 +120,7 @@ See which plugins are slow, which are erroring, and how much memory each uses.
 
 Live input debugger — shows exactly what the terminal receives and sends for each keystroke:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Input Debug (press keys, Esc to exit)           │
 ├──────────────────────────────────────────────────┤
@@ -144,7 +144,7 @@ Essential for diagnosing keybind conflicts, escape sequence issues, and SSH pass
 
 Live escape sequence debugger — shows what programs are sending to the terminal:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Escape Sequence Debug (watching active pane)    │
 ├──────────────────────────────────────────────────┤
@@ -162,7 +162,7 @@ Decoded in real time with human-readable descriptions. Critical for debugging pr
 
 ### Structured debug log
 
-```
+```bash
 phantom --log-level=debug
 ```
 
@@ -177,7 +177,7 @@ Writes structured logs (JSON) to `~/.local/state/phantom/debug.log`:
 
 Each log entry includes the component, so you can filter:
 
-```
+```bash
 phantom --log-level=debug --log-filter=plugin
 phantom --log-level=debug --log-filter=renderer
 phantom --log-level=debug --log-filter=vt
@@ -186,6 +186,7 @@ phantom --log-level=debug --log-filter=vt
 ### Plugin crash reporting
 
 When a WASM plugin crashes (panic, OOM, infinite loop timeout):
+
 - The plugin is killed, not the terminal
 - A notification appears: "Plugin docker-manager crashed. [Restart] [Disable] [View Error]"
 - The crash log includes the WASM stack trace
@@ -197,7 +198,7 @@ When a WASM plugin crashes (panic, OOM, infinite loop timeout):
 
 CLI diagnostic that checks the environment:
 
-```
+```bash
 $ phantom doctor
 
 ✓ GPU:            Metal (Apple M2 Max)
@@ -221,7 +222,7 @@ Run it when something's wrong, paste in a bug report.
 
 Live performance overlay (like a game FPS counter):
 
-```
+```text
 ┌──────────────────────┐
 │ FPS: 120 │ 6.2ms avg │
 │ GPU: 2.1ms │ CPU: 0.8ms│
@@ -236,7 +237,7 @@ Toggle with `:debug perf` — shows in a corner, updates per frame. Quick way to
 
 Automated performance test suite:
 
-```
+```bash
 $ phantom benchmark
 
 Input latency:     6.4ms avg / 9.1ms p99
@@ -256,7 +257,7 @@ The goal: when something is slow, leaking memory, or broken — know instantly w
 
 ### :debug plugins (extended)
 
-```
+```text
 ┌───────────────────────────────────────────────────────────────┐
 │  Plugin Performance                                           │
 ├───────────────────────────────────────────────────────────────┤
@@ -285,7 +286,7 @@ Every plugin's CPU time, memory, event throughput, and error count — separated
 
 Deep dive into a single plugin:
 
-```
+```text
 :debug plugin docker-manager
 
 ┌───────────────────────────────────────────────────────────────┐
@@ -341,6 +342,7 @@ plugins = {
 ```
 
 When a plugin exceeds its budget:
+
 1. First: `⚠` indicator in `:debug plugins` and the perf overlay
 2. Sustained: notification — "docker-manager is slowing down your terminal (0.82ms/frame, budget 0.5ms). [View Details] [Disable]"
 3. Critical: if a plugin blocks for >1s, it's killed and restarted with a notification
@@ -349,7 +351,7 @@ When a plugin exceeds its budget:
 
 When the user notices something slow, the diagnostic path is:
 
-```
+```bash
 User: "My terminal feels slow"
         │
         ▼
@@ -372,7 +374,7 @@ Every step in this chain is a command the user can run. No guessing. Paste the o
 
 For plugin authors during development:
 
-```
+```bash
 phantom plugin profile docker-manager --duration 30s
 
 Profiling docker-manager for 30s...
@@ -404,6 +406,7 @@ log::error!("Failed to connect to Docker daemon");
 ```
 
 These are visible via:
+
 - `phantom plugin logs docker-manager` — CLI, tail style
 - `:debug plugin docker-manager` — in the palette, last N entries
 - `~/.local/state/phantom/plugins/docker-manager/log` — on disk
@@ -414,6 +417,7 @@ Logs are namespaced per-plugin. The core's logs and each plugin's logs are separ
 ### Crash Attribution
 
 When a WASM plugin crashes:
+
 - The plugin is killed, not the terminal
 - Notification: "Plugin docker-manager crashed. [Restart] [Disable] [View Error]"
 - The crash log includes the WASM stack trace, mapped to source if debug symbols present
@@ -421,6 +425,7 @@ When a WASM plugin crashes:
 - Terminal continues running — no panes are lost
 
 When the core crashes (shouldn't happen, but if it does):
+
 - Crash report saved to `~/.local/state/phantom/crash.log`
 - On next launch: "Phantom crashed. [View Crash Report] [Send Report]" (sending is opt-in, never automatic)
 - Session restore offers to recover panes from before the crash

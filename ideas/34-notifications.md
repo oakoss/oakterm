@@ -1,10 +1,11 @@
 ---
-title: "Notifications"
+title: 'Notifications'
 status: draft
 category: cross-cutting
-description: "OS notifications, in-terminal notifications, history, DND mode"
-tags: ["notifications", "os-notification", "badges", "dnd", "attention"]
+description: 'OS notifications, in-terminal notifications, history, DND mode'
+tags: ['notifications', 'os-notification', 'badges', 'dnd', 'attention']
 ---
+
 # Notifications
 
 Referenced in 10+ docs but never fully specced. There are three notification surfaces and they serve different purposes.
@@ -15,13 +16,13 @@ Referenced in 10+ docs but never fully specced. There are three notification sur
 
 The primary notification surface. Badges on sidebar entries show state at a glance without interrupting you.
 
-| Badge | Meaning | Set by |
-|-------|---------|--------|
-| ⟳ | Working | agent-manager, watcher |
-| ❓ | Needs input/approval | agent-manager |
-| ✓ | Done/success | agent-manager, watcher |
-| ✗ | Error/failed | agent-manager, service-monitor, watcher |
-| ⚠ | Warning (memory, crash) | service-monitor, memory alerts |
+| Badge | Meaning                 | Set by                                  |
+| ----- | ----------------------- | --------------------------------------- |
+| ⟳     | Working                 | agent-manager, watcher                  |
+| ❓    | Needs input/approval    | agent-manager                           |
+| ✓     | Done/success            | agent-manager, watcher                  |
+| ✗     | Error/failed            | agent-manager, service-monitor, watcher |
+| ⚠     | Warning (memory, crash) | service-monitor, memory alerts          |
 
 These are passive — you see them when you glance at the sidebar. No popup, no sound, no interruption.
 
@@ -29,7 +30,7 @@ These are passive — you see them when you glance at the sidebar. No popup, no 
 
 A non-modal banner that appears at the top or bottom of the terminal for time-sensitive information. Auto-dismisses after a few seconds or can be dismissed manually.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │ ℹ Agent feat/auth finished — 4 files changed  [View] [Merge]│
 └──────────────────────────────────────────────────────────────┘
@@ -39,6 +40,7 @@ A non-modal banner that appears at the top or bottom of the terminal for time-se
 ```
 
 Used for:
+
 - Agent finished / needs input
 - Service crashed / restarted
 - Tests went red
@@ -51,6 +53,7 @@ Used for:
 Native notifications via NSUserNotification (macOS), libnotify (Linux), Windows Toast. Only used when the terminal is not focused or is minimized.
 
 Used for:
+
 - Long-running command finished (shell integration, configurable threshold)
 - Agent needs approval (you walked away)
 - Service crashed
@@ -59,7 +62,7 @@ OS notifications respect the system's Do Not Disturb settings automatically.
 
 ## Notification Flow
 
-```
+```text
 Event (agent done, test failed, etc.)
   │
   ├── Always: update sidebar badge
@@ -76,6 +79,7 @@ Event (agent done, test failed, etc.)
 `Cmd+Shift+U` cycles through panes that need attention, most urgent first.
 
 Priority order:
+
 1. Errors (✗)
 2. Needs input (❓)
 3. Warnings (⚠)
@@ -87,7 +91,7 @@ Pressing `Cmd+Shift+U` focuses the next pane in the cycle. The badge clears when
 
 `:notifications` in the palette shows recent notifications:
 
-```
+```text
 Cmd+Shift+P → :notifications
 
 ┌──────────────────────────────────────────────────┐
@@ -105,7 +109,7 @@ History is kept for the current session. Cleared on terminal restart.
 
 ## Do Not Disturb
 
-```
+```text
 :dnd                    # toggle DND mode
 :dnd on                 # enable
 :dnd off                # disable
@@ -113,13 +117,14 @@ History is kept for the current session. Cleared on terminal restart.
 ```
 
 When DND is active:
+
 - Sidebar badges still update (passive, can't be silenced)
 - In-terminal banners are suppressed
 - OS notifications are suppressed
 - `Cmd+Shift+U` still works (you can still check on demand)
 - A small 🔕 indicator in the status bar shows DND is active
 
-```
+```ini
 dnd = false                     # default
 dnd-suppress-banners = true     # suppress in-terminal banners during DND
 dnd-suppress-os = true          # suppress OS notifications during DND
@@ -127,7 +132,7 @@ dnd-suppress-os = true          # suppress OS notifications during DND
 
 ## Configuration
 
-```
+```ini
 # Flat config
 notification-banners = true
 notification-os = true

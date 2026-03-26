@@ -1,18 +1,18 @@
 ---
-title: "Abstraction Layer"
+title: 'Abstraction Layer'
 status: draft
 category: cross-cutting
-description: "Trait seams for swappable backends"
-tags: ["traits", "interfaces", "cross-platform", "testing"]
+description: 'Trait seams for swappable backends'
+tags: ['traits', 'interfaces', 'cross-platform', 'testing']
 ---
-# Abstraction Layer
 
+# Abstraction Layer
 
 The core defines interfaces, not implementations. Every major subsystem sits behind a trait so it can be swapped without rewriting the terminal.
 
 ## Seams
 
-```
+```text
 Core
 ├── trait GpuBackend        → wgpu (default), raw Metal, raw Vulkan, software
 ├── trait TextShaper         → Core Text (macOS), HarfBuzz (Linux), DirectWrite (Windows)
@@ -47,6 +47,7 @@ No feature code changes. Just the backend.
 ### Testing
 
 Abstractions enable testing without real hardware:
+
 - Mock `GpuBackend` for CI — verify frame output without a GPU
 - Mock `PlatformShell` for headless testing
 - Mock `SshTransport` for multiplexer integration tests
@@ -56,14 +57,14 @@ Abstractions enable testing without real hardware:
 
 All three platforms implement the same traits:
 
-| Trait | macOS | Linux | Windows |
-|-------|-------|-------|---------|
-| `PlatformShell` | AppKit | GTK4 | WinUI 3 |
-| `TextShaper` | Core Text | HarfBuzz | DirectWrite |
-| `FontRasterizer` | Core Text | FreeType | DirectWrite |
-| `AccessibilityBridge` | NSAccessibility | AT-SPI | UIA |
-| `ClipboardProvider` | NSPasteboard | Wayland/X11 | Win32 |
-| `NotificationProvider` | NSUserNotification | libnotify | Windows Toast |
+| Trait                  | macOS              | Linux       | Windows       |
+| ---------------------- | ------------------ | ----------- | ------------- |
+| `PlatformShell`        | AppKit             | GTK4        | WinUI 3       |
+| `TextShaper`           | Core Text          | HarfBuzz    | DirectWrite   |
+| `FontRasterizer`       | Core Text          | FreeType    | DirectWrite   |
+| `AccessibilityBridge`  | NSAccessibility    | AT-SPI      | UIA           |
+| `ClipboardProvider`    | NSPasteboard       | Wayland/X11 | Win32         |
+| `NotificationProvider` | NSUserNotification | libnotify   | Windows Toast |
 
 Everything above these traits (multiplexer, plugins, config, VT parser) is shared cross-platform code.
 

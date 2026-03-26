@@ -1,10 +1,11 @@
 ---
-title: "Search"
+title: 'Search'
 status: draft
 category: core
-description: "Search within terminal output — regex, cross-pane, per-command"
-tags: ["search", "regex", "find", "scrollback", "highlights"]
+description: 'Search within terminal output — regex, cross-pane, per-command'
+tags: ['search', 'regex', 'find', 'scrollback', 'highlights']
 ---
+
 # Search
 
 Search within terminal output. Core feature — not a plugin.
@@ -13,7 +14,7 @@ Search within terminal output. Core feature — not a plugin.
 
 `Ctrl+Shift+F` (or `/` in copy mode) opens a search bar at the bottom of the pane:
 
-```
+```text
 ┌──────────────────────────────────────────────────┐
 │  Terminal output with matches highlighted        │
 │                                                  │
@@ -36,7 +37,7 @@ Search within terminal output. Core feature — not a plugin.
 
 Toggle regex mode with a button or `Alt+R`:
 
-```
+```text
 Search: error|warn.*timeout    [regex]  12 matches  [1/12]  ↑ ↓
 ```
 
@@ -46,9 +47,9 @@ Full regex syntax (Rust `regex` crate — fast, no backtracking).
 
 - Default: smart case (case-insensitive unless you type an uppercase letter)
 - Toggle with `Alt+C`:
-  ```
+```text
   Search: Error    [case]  2 matches
-  ```
+```
 
 ## Search Scope
 
@@ -58,7 +59,7 @@ By default, search operates on the current pane's visible + scrollback content. 
 
 `Ctrl+Shift+F` then `Alt+S` scopes search to the output of a single command:
 
-```
+```text
 Search: error    [scope: last command]  1 match
 ```
 
@@ -68,7 +69,7 @@ Arrow through commands to search within different ones. Shell integration marker
 
 `Ctrl+Shift+F` then `Alt+A` searches across all panes:
 
-```
+```text
 Search: error    [scope: all panes]  7 matches across 3 panes
 
   ● scratch:     2 matches
@@ -93,7 +94,8 @@ highlights = {
 ```
 
 Flat config:
-```
+
+```ini
 highlight = error red bold
 highlight = warn yellow
 highlight = PASS green
@@ -117,17 +119,17 @@ search-selected-fg        = "#1e1e2e"
 
 ## Keyboard Summary
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+F` | Open search bar |
-| `/` (in copy mode) | Open search bar |
-| `Enter` / `n` | Next match |
-| `Shift+Enter` / `N` | Previous match |
-| `Alt+R` | Toggle regex mode |
-| `Alt+C` | Toggle case sensitivity |
-| `Alt+S` | Scope to current command |
-| `Alt+A` | Scope to all panes |
-| `Esc` | Close search |
+| Key                 | Action                   |
+| ------------------- | ------------------------ |
+| `Ctrl+Shift+F`      | Open search bar          |
+| `/` (in copy mode)  | Open search bar          |
+| `Enter` / `n`       | Next match               |
+| `Shift+Enter` / `N` | Previous match           |
+| `Alt+R`             | Toggle regex mode        |
+| `Alt+C`             | Toggle case sensitivity  |
+| `Alt+S`             | Scope to current command |
+| `Alt+A`             | Scope to all panes       |
+| `Esc`               | Close search             |
 
 ## Related Docs
 

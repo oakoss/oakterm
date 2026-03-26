@@ -1,16 +1,16 @@
 ---
-title: "Architecture"
+title: 'Architecture'
 status: draft
 category: core
-description: "Layer stack, Rust, server/client model"
-tags: ["rust", "wgpu", "server-client", "layer-stack"]
+description: 'Layer stack, Rust, server/client model'
+tags: ['rust', 'wgpu', 'server-client', 'layer-stack']
 ---
-# Architecture
 
+# Architecture
 
 ## Layer Stack
 
-```
+```text
 ┌───────────────────────────────────────────────────────┐
 │  Native Platform Shell (AppKit / GTK4 / WinUI 3)      │
 ├───────┬───────────────────────────────────────────────┤
@@ -49,21 +49,21 @@ tags: ["rust", "wgpu", "server-client", "layer-stack"]
 
 The line is simple: **core provides primitives, plugins compose them into features.**
 
-| Core (ships in the binary) | Plugin (WASM, can be disabled) |
-|---|---|
-| Renderer, VT parser | Sidebar UI |
-| Multiplexer (splits, tabs, workspaces) | Agent management |
-| SSH domains | Context engine / autocomplete |
-| Session persistence | Service monitor |
-| Shell integration parsing (OSC 133/7) | Watcher |
-| Scroll buffer (ring + disk archive) | Harpoon (pane bookmarks) |
-| Accessibility tree (AccessKit) | Quake/dropdown mode |
-| Plugin host + API primitives | Browser (lite and webview) |
-| Config engine (flat + Lua) | Kitty graphics rendering |
-| Health check (`:health`) | Docker/k8s manager |
-| Clipboard (OSC-52 passthrough) | Themes (data packages) |
-| Security (sandbox, escape filtering) | Locale packs |
-| Platform shell (AppKit/GTK4/WinUI) | Remote access |
+| Core (ships in the binary)             | Plugin (WASM, can be disabled) |
+| -------------------------------------- | ------------------------------ |
+| Renderer, VT parser                    | Sidebar UI                     |
+| Multiplexer (splits, tabs, workspaces) | Agent management               |
+| SSH domains                            | Context engine / autocomplete  |
+| Session persistence                    | Service monitor                |
+| Shell integration parsing (OSC 133/7)  | Watcher                        |
+| Scroll buffer (ring + disk archive)    | Harpoon (pane bookmarks)       |
+| Accessibility tree (AccessKit)         | Quake/dropdown mode            |
+| Plugin host + API primitives           | Browser (lite and webview)     |
+| Config engine (flat + Lua)             | Kitty graphics rendering       |
+| Health check (`:health`)               | Docker/k8s manager             |
+| Clipboard (OSC-52 passthrough)         | Themes (data packages)         |
+| Security (sandbox, escape filtering)   | Locale packs                   |
+| Platform shell (AppKit/GTK4/WinUI)     | Remote access                  |
 
 If a feature deeply integrates with the renderer, multiplexer, or VT parser — it's core. If it can be expressed as a combination of plugin API primitives — it's a plugin.
 
@@ -71,18 +71,18 @@ If a feature deeply integrates with the renderer, multiplexer, or VT parser — 
 
 **Pure Rust.**
 
-| Component | Crate / Approach |
-|-----------|-----------------|
-| GPU renderer | `wgpu` (WebGPU — Metal/Vulkan/DX12) |
-| Text shaping | Core Text (macOS), HarfBuzz (Linux), DirectWrite (Windows) |
+| Component          | Crate / Approach                                           |
+| ------------------ | ---------------------------------------------------------- |
+| GPU renderer       | `wgpu` (WebGPU — Metal/Vulkan/DX12)                        |
+| Text shaping       | Core Text (macOS), HarfBuzz (Linux), DirectWrite (Windows) |
 | Font rasterization | Core Text (macOS), FreeType (Linux), DirectWrite (Windows) |
-| Async / networking | `tokio` |
-| WASM plugin host | `wasmtime` |
-| Platform native | `objc2` (AppKit), `gtk4-rs` (GTK4), `windows-rs` (WinUI 3) |
-| VT parser | Custom (based on `vte` crate) |
-| Lua config | `mlua` |
-| SSH | `russh` |
-| Accessibility | `accesskit` |
+| Async / networking | `tokio`                                                    |
+| WASM plugin host   | `wasmtime`                                                 |
+| Platform native    | `objc2` (AppKit), `gtk4-rs` (GTK4), `windows-rs` (WinUI 3) |
+| VT parser          | Custom (based on `vte` crate)                              |
+| Lua config         | `mlua`                                                     |
+| SSH                | `russh`                                                    |
+| Accessibility      | `accesskit`                                                |
 
 ### Why Rust
 
@@ -97,7 +97,7 @@ If a feature deeply integrates with the renderer, multiplexer, or VT parser — 
 
 Inspired by Foot. One daemon process, many terminal windows.
 
-```
+```text
 phantom-daemon (one process)
 ├── Glyph atlas + font cache (shared)
 ├── Plugin host (shared, one WASM runtime)
@@ -115,6 +115,7 @@ phantom-daemon (one process)
 ```
 
 Benefits:
+
 - Shared glyph atlas — opening a second window doesn't duplicate font data
 - Shared plugin state — sidebar, harpoon list, notifications are global
 - Lower memory — each window costs a few MB, not a full process
@@ -124,7 +125,7 @@ The daemon starts on first window open and exits when the last window closes (or
 
 ## Data Flow
 
-```
+```text
 Keystroke → Platform Shell → Input Handler
                                 │
                 ┌───────────────┼───────────────┐
