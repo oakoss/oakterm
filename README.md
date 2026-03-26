@@ -29,70 +29,80 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 - Memory-conscious — tiered scroll buffer, per-pane budgets, no pre-allocation.
 - MPL 2.0 licensed — core stays open source, plugins can be any license.
 
+## Documentation
+
+```text
+ideas/          Exploration — brainstorming, research, design sketches
+docs/adrs/      Decisions — resolve open questions from ideas
+docs/specs/     Contracts — formal definitions that code must satisfy
+```
+
+Ideas explore possibilities. ADRs resolve questions that ideas surface. Specs formalize decided designs into implementation contracts.
+
 ## Idea Docs
 
 ### Core
 
-| Doc | Topic |
-|-----|-------|
-| [Architecture](ideas/01-architecture.md) | Layer stack, Rust, server/client model |
-| [Renderer](ideas/02-renderer.md) | GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images |
-| [Multiplexer](ideas/03-multiplexer.md) | Workspaces, splits, floating panes, SSH domains, session persistence |
-| [Command Palette](ideas/08-command-palette.md) | Unified fuzzy launcher with prefix filters |
-| [Configuration](ideas/09-config.md) | First launch setup, settings palette, flat + Lua, dark/light themes |
-| [Abstraction Layer](ideas/13-abstraction.md) | Trait seams for swappable backends across all platforms |
-| [Shell Integration](ideas/18-shell-integration.md) | Prompt markers, semantic zones, scroll-to-prompt, notifications |
-| [Smart Keybinds](ideas/19-smart-keybinds.md) | Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring |
-| [Health Check](ideas/28-health-check.md) | Neovim-style `:health` with actionable diagnostics |
+| Doc                                                        | Topic                                                                            |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [Architecture](ideas/01-architecture.md)                   | Layer stack, Rust, server/client model                                           |
+| [Renderer](ideas/02-renderer.md)                           | GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images                  |
+| [Multiplexer](ideas/03-multiplexer.md)                     | Workspaces, splits, floating panes, SSH domains, session persistence             |
+| [Command Palette](ideas/08-command-palette.md)             | Unified fuzzy launcher with prefix filters                                       |
+| [Configuration](ideas/09-config.md)                        | First launch setup, settings palette, flat + Lua, dark/light themes              |
+| [Abstraction Layer](ideas/13-abstraction.md)               | Trait seams for swappable backends across all platforms                          |
+| [Shell Integration](ideas/18-shell-integration.md)         | Prompt markers, semantic zones, scroll-to-prompt, notifications                  |
+| [Smart Keybinds](ideas/19-smart-keybinds.md)               | Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring                |
+| [Health Check](ideas/28-health-check.md)                   | Neovim-style `:health` with actionable diagnostics                               |
 | [Terminal Fundamentals](ideas/36-terminal-fundamentals.md) | Cursor, bell, scrollbar, padding, text styles, env vars, links, process handling |
 
 ### Features (Bundled Plugins)
 
-| Doc | Topic |
-|-----|-------|
-| [Sidebar](ideas/04-sidebar.md) | Collapsible process dashboard — agents, services, watchers, shells |
-| [Context Engine](ideas/05-context-engine.md) | Smart autocomplete, typed completions, `?` NL commands |
-| [Agent Management](ideas/07-agent-management.md) | Worktree lifecycle, notifications, `:merge` / `:diff` |
-| [Harpoon](ideas/27-harpoon.md) | Pane bookmarks — Ctrl+1-6 direct jump, editable list |
+| Doc                                              | Topic                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| [Sidebar](ideas/04-sidebar.md)                   | Collapsible process dashboard — agents, services, watchers, shells |
+| [Context Engine](ideas/05-context-engine.md)     | Smart autocomplete, typed completions, `?` NL commands             |
+| [Agent Management](ideas/07-agent-management.md) | Worktree lifecycle, notifications, `:merge` / `:diff`              |
+| [Harpoon](ideas/27-harpoon.md)                   | Pane bookmarks — Ctrl+1-6 direct jump, editable list               |
 
 ### Cross-Cutting Concerns
 
-| Doc | Topic |
-|-----|-------|
-| [Plugin System](ideas/06-plugins.md) | WASM runtime, API primitives, capabilities, registry, manager |
-| [Performance](ideas/12-performance.md) | Targets, budgets, CI benchmarks |
-| [Memory Management](ideas/15-memory-management.md) | Tiered scroll buffer, per-pane budgets, memory attribution |
-| [Debugging](ideas/14-debugging.md) | `:debug` commands, plugin profiling, blame chain |
-| [Security](ideas/21-security.md) | Escape injection, plugin sandbox, secure input, clipboard controls |
-| [Accessibility](ideas/17-accessibility.md) | AccessKit, screen reader, color blindness, extensible a11y API |
-| [Theming](ideas/22-theming.md) | Deep customization, TOML format, inheritance, live preview |
-| [Internationalization](ideas/23-i18n.md) | Unicode rendering, locale packs via plugins |
-| [Platform Support](ideas/20-platform-support.md) | macOS, Linux, Windows — all first-class |
-| [Updates](ideas/24-updates.md) | Every update path works, staged updates, rollback |
-| [Testing](ideas/25-testing.md) | Unit, integration, platform, perf, security, a11y, VT compliance |
-| [License](ideas/26-license.md) | MPL 2.0 — core stays open, registry requires open source |
-| [Notifications](ideas/34-notifications.md) | OS notifications, in-terminal banners, history, DND mode |
-| [Search](ideas/35-search.md) | Regex search, cross-pane, per-command, persistent highlights |
-| [Conventions](ideas/30-conventions.md) | Naming, config syntax, keybinds, file structure |
-| [Agent Control API](ideas/32-agent-control-api.md) | CLI for agents to interact with the terminal (`phantom ctl`) |
+| Doc                                                | Topic                                                              |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| [Plugin System](ideas/06-plugins.md)               | WASM runtime, API primitives, capabilities, registry, manager      |
+| [Performance](ideas/12-performance.md)             | Targets, budgets, CI benchmarks                                    |
+| [Memory Management](ideas/15-memory-management.md) | Tiered scroll buffer, per-pane budgets, memory attribution         |
+| [Debugging](ideas/14-debugging.md)                 | `:debug` commands, plugin profiling, blame chain                   |
+| [Security](ideas/21-security.md)                   | Escape injection, plugin sandbox, secure input, clipboard controls |
+| [Accessibility](ideas/17-accessibility.md)         | AccessKit, screen reader, color blindness, extensible a11y API     |
+| [Theming](ideas/22-theming.md)                     | Deep customization, TOML format, inheritance, live preview         |
+| [Internationalization](ideas/23-i18n.md)           | Unicode rendering, locale packs via plugins                        |
+| [Platform Support](ideas/20-platform-support.md)   | macOS, Linux, Windows — all first-class                            |
+| [Updates](ideas/24-updates.md)                     | Every update path works, staged updates, rollback                  |
+| [Testing](ideas/25-testing.md)                     | Unit, integration, platform, perf, security, a11y, VT compliance   |
+| [License](ideas/26-license.md)                     | MPL 2.0 — core stays open, registry requires open source           |
+| [Notifications](ideas/34-notifications.md)         | OS notifications, in-terminal banners, history, DND mode           |
+| [Search](ideas/35-search.md)                       | Regex search, cross-pane, per-command, persistent highlights       |
+| [Conventions](ideas/30-conventions.md)             | Naming, config syntax, keybinds, file structure                    |
+| [Agent Control API](ideas/32-agent-control-api.md) | CLI for agents to interact with the terminal (`phantom ctl`)       |
 
 ### Remote & Headless
 
-| Doc | Topic |
-|-----|-------|
+| Doc                                                        | Topic                                                                             |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | [Remote Access & Headless Mode](ideas/29-remote-access.md) | Headless daemon on servers, native client connection, web client, tunnel-agnostic |
 
 ### Planning
 
-| Doc | Topic |
-|-----|-------|
-| [Roadmap](ideas/33-roadmap.md) | Phased implementation: MVP → multiplexer → plugins → agents → networking |
+| Doc                                  | Topic                                                                                  |
+| ------------------------------------ | -------------------------------------------------------------------------------------- |
+| [Roadmap](ideas/33-roadmap.md)       | Phased implementation: MVP → multiplexer → plugins → agents → networking               |
 | [Brainstorm](ideas/31-brainstorm.md) | Raw ideas: syntax highlighting, auto-tiling, status bar, multi-sidebar, error handling |
 
 ### Research
 
-| Doc | Topic |
-|-----|-------|
-| [Pain Points](ideas/10-pain-points.md) | Community complaints that shaped the design |
-| [Inspiration](ideas/11-inspiration.md) | What we took (and left) from each terminal |
-| [Wishlist Features](ideas/16-wishlist-features.md) | Community-requested features, prioritized |
+| Doc                                                | Topic                                       |
+| -------------------------------------------------- | ------------------------------------------- |
+| [Pain Points](ideas/10-pain-points.md)             | Community complaints that shaped the design |
+| [Inspiration](ideas/11-inspiration.md)             | What we took (and left) from each terminal  |
+| [Wishlist Features](ideas/16-wishlist-features.md) | Community-requested features, prioritized   |
