@@ -154,16 +154,36 @@ keybinds = {
 - CI tests on all three platforms for every PR
 - Same release cadence for all platforms
 
+## Headless Linux (Servers, Containers, CI)
+
+`phantom --headless` runs the daemon without a display server, GPU, or window manager.
+
+Works on:
+- Ubuntu Server, Debian, Alpine, RHEL (no desktop environment)
+- Docker containers
+- Proxmox LXCs and VMs
+- CI/CD runners (GitHub Actions, GitLab CI)
+- Any Linux with a recent kernel
+
+Uses Null implementations for all platform traits:
+- `NullBackend` (no GPU rendering)
+- `HeadlessShell` (no window management)
+- `NullShaper` / `NullRasterizer` (no font rendering — clients handle it)
+
+Everything else runs identically — multiplexer, plugins, VT parser, scroll buffers, agent management. Connect from your desktop terminal or web client.
+
+See [Remote Access & Headless Mode](29-remote-access.md) for the full spec.
+
 ## What the Abstraction Layer Enables
 
-From `ideas/13-abstraction.md`, these traits make cross-platform work:
+From [Abstraction Layer](13-abstraction.md), these traits make cross-platform work:
 
 ```
-trait PlatformShell    → AppKit / GTK4 / WinUI 3
-trait TextShaper       → Core Text / HarfBuzz / DirectWrite
-trait FontRasterizer   → Core Text / FreeType / DirectWrite
+trait PlatformShell    → AppKit / GTK4 / WinUI 3 / HeadlessShell
+trait TextShaper       → Core Text / HarfBuzz / DirectWrite / NullShaper
+trait FontRasterizer   → Core Text / FreeType / DirectWrite / NullRasterizer
 trait ClipboardProvider → NSPasteboard / Wayland+X11 / Win32
-trait GpuBackend       → Metal / Vulkan / DX12 (all via wgpu)
+trait GpuBackend       → Metal / Vulkan / DX12 (all via wgpu) / NullBackend
 ```
 
 Everything above these traits is shared code. The platform layer is thin — window creation, input events, clipboard, notifications. The renderer, multiplexer, plugin host, and config system are 100% cross-platform.

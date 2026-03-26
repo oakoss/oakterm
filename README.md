@@ -72,11 +72,11 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 | [License](ideas/26-license.md) | MPL 2.0 — core stays open, registry requires open source |
 | [Conventions](ideas/30-conventions.md) | Naming, config syntax, keybinds, file structure |
 
-### Community Plugins (designed for, not built by us)
+### Remote & Headless
 
 | Doc | Topic |
 |-----|-------|
-| [Remote Access](ideas/29-remote-access.md) | WebSocket API, web client, tunnel-agnostic (Tailscale, Cloudflare, etc.) |
+| [Remote Access & Headless Mode](ideas/29-remote-access.md) | Headless daemon on servers, native client connection, web client, tunnel-agnostic |
 
 ### Research
 

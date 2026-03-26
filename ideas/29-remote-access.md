@@ -1,159 +1,219 @@
 ---
-title: "Remote Access"
+title: "Remote Access & Headless Mode"
 status: draft
-category: community-plugin
-description: "WebSocket API, web client, tunnel-agnostic"
-tags: ["remote", "websocket", "mobile", "tailscale", "tunnel"]
+category: cross-cutting
+description: "Headless daemon, native client connection, web client, tunnel-agnostic"
+tags: ["remote", "headless", "websocket", "mobile", "tailscale", "tunnel", "server", "daemon"]
 ---
-# Remote Access
+# Remote Access & Headless Mode
 
+Run the terminal daemon on a server. Connect to it from your desktop terminal like it's local.
 
-Monitor and interact with your terminal from anywhere — phone, tablet, another machine. Built as a plugin, using the tunnel/proxy of your choice.
-
-## Why Plugin, Not Core
-
-Remote access is a networking feature with many possible transport layers. The core shouldn't pick one — it should provide the primitives and let plugins handle the connection.
-
-## How It Works
-
-The terminal's server/client architecture (from Foot) already has a daemon process. The remote access plugin exposes a WebSocket API on that daemon, protected by authentication. A lightweight web client connects and renders the terminal.
+## The Model
 
 ```
-Your Terminal (daemon)
-  │
-  ├── Local windows (AppKit/GTK/WinUI) ← normal usage
-  │
-  └── Remote Access Plugin
-      ├── WebSocket API (localhost:PORT)
-      │   ├── Auth: token / mTLS
-      │   ├── Read: pane list, pane output, sidebar state
-      │   └── Write: pane input, focus, commands
-      │
-      └── Tunnel (your choice)
-          ├── Tailscale    ← zero-config, private network
-          ├── Pangolin     ← self-hosted tunnel
-          ├── Cloudflare Tunnel ← public edge proxy
-          ├── ngrok        ← quick public URL
-          ├── Plain SSH    ← ssh -L port forwarding
-          └── Direct LAN   ← local network, no tunnel
+┌─────────────────────────────────┐     ┌─────────────────────────────┐
+│  Your Mac (client)              │     │  Proxmox Server (daemon)    │
+│                                 │     │                             │
+│  Phantom Terminal               │     │  phantom --headless         │
+│  ├── Local panes (shells, etc.) │     │  ├── 3 agents running       │
+│  │                              │     │  ├── docker compose         │
+│  └── Remote tab: homelab ───────┼────→│  ├── test watcher           │
+│      Looks and feels local      │     │  └── dev server :3000       │
+│      Sidebar shows remote panes │     │                             │
+│      Harpoon works across both  │     │  Listening on :7890         │
+└─────────────────────────────────┘     └─────────────────────────────┘
 ```
 
-## Plugin API Usage
+The remote panes appear in your sidebar alongside local panes. You can split a remote pane next to a local one. Harpoon bookmarks can mix local and remote. It's all panes.
 
-The remote access plugin uses existing primitives:
+## Two Modes
 
-| Primitive | Usage |
-|-----------|-------|
-| `pane.list()` | Enumerate all panes for the web client |
-| `pane.output(id)` | Stream pane content to the client |
-| `pane.input(id)` | Forward keystrokes from the client |
-| `pane.focus(id)` | Switch active pane from the client |
-| `pane.metadata(id)` | Show sidebar info (status, branch, memory) |
-| `sidebar.list()` | Render the sidebar in the web client |
-| `notify.list()` | Show pending notifications |
-| `network` | Serve the WebSocket API |
-| `storage` | Persist auth tokens and client sessions |
+### 1. Headless Daemon (server-side)
 
-## Web Client
+```bash
+phantom --headless
+```
 
-A lightweight, bundled web UI — not a full terminal emulator in the browser, but enough to:
+Runs the full daemon without a window — no GPU, no display server, no GTK/AppKit/WinUI. Just the multiplexer, plugin host, scroll buffers, and network API.
 
-- See all panes and their status (sidebar view)
-- See live output from any pane (read-only by default)
-- Send input to a pane (interactive mode, opt-in)
-- See notifications (agent needs approval, build failed)
-- Approve/deny agent actions with one tap
-- Run palette commands (`:merge`, `:diff`, etc.)
+Works on:
+- Ubuntu Server (no desktop environment)
+- Any headless Linux (Alpine, Debian, RHEL)
+- Docker containers
+- VMs, cloud instances, Proxmox LXCs
+- CI/CD runners
 
-The web client is a static HTML/JS bundle served by the plugin. No external dependencies. Works on any mobile browser.
+The abstraction layer makes this possible:
+- `trait GpuBackend` → `NullBackend` (no rendering)
+- `trait PlatformShell` → `HeadlessShell` (no windows)
+- `trait TextShaper` → `NullShaper` (no font rendering — clients handle it)
+- `trait AccessibilityBridge` → `NullBridge` (no screen reader on a server)
 
-## Access Modes
+Everything else — multiplexer, plugins, config, VT parser, scroll buffer — runs identically.
 
-| Mode | What you can do |
-|------|----------------|
-| **Monitor** (default) | See all panes, output, sidebar, notifications. Read-only. |
-| **Interactive** | Monitor + send input to panes. Requires explicit enable per-session. |
-| **Full** | Interactive + run palette commands, create/close panes. Requires separate auth. |
+```bash
+# On your server
+phantom --headless --port 7890 --auth-token "$PHANTOM_TOKEN"
 
-Users choose the mode when connecting. Monitor is safe to leave on — it can't change anything.
+# Or daemonize it
+phantom --headless --port 7890 --auth-token "$PHANTOM_TOKEN" --daemon
+# Writes PID to ~/.local/state/phantom/daemon.pid
+```
+
+### 2. Client Connection (desktop-side)
+
+From your Mac/Linux/Windows terminal, connect to the remote daemon:
+
+```
+:connect homelab
+```
+
+Or in config:
+
+```
+remote-domain.homelab.host = proxmox.local
+remote-domain.homelab.port = 7890
+remote-domain.homelab.auth = token
+remote-domain.homelab.token = ${PHANTOM_HOMELAB_TOKEN}
+```
+
+```lua
+remote_domains = {
+  {
+    name = "homelab",
+    host = "proxmox.local",
+    port = 7890,
+    auth = "token",
+    -- token read from env var, never in config
+  },
+  {
+    name = "prod",
+    host = "prod.example.com",
+    port = 7890,
+    auth = "mtls",
+    cert = "~/.config/phantom/certs/prod-client.pem",
+  },
+}
+```
+
+### What connecting looks like
+
+```
+:connect homelab
+
+┌──────────────────┬─────────────────────────────┐
+│ LOCAL            │                             │
+│ ● scratch        │  ~/project $ _              │
+│──────────────────│                             │
+│ HOMELAB 🔗       │                             │
+│ ◉ feat/auth  ❓  │                             │
+│ ◉ add-tests  ⟳  │                             │
+│ ▶ docker compose │                             │
+│ 👁 vitest  14/14  │                             │
+│ ● server-shell   │                             │
+└──────────────────┴─────────────────────────────┘
+```
+
+Remote panes show under their domain name with a connection indicator. Click one, it fills the main view. Split it next to a local pane. Everything works — harpoon, notifications, memory display, `:debug`.
+
+### What the protocol handles
+
+| Capability | How |
+|-----------|-----|
+| Pane output streaming | VT byte stream over WebSocket — the client renders it locally with its own GPU |
+| Pane input | Keystrokes sent over WebSocket to the daemon |
+| Sidebar state | Structured data (JSON) — sections, entries, badges |
+| Notifications | Push events from daemon to client |
+| Plugin state | Remote plugins run on the daemon, their sidebar/palette entries sync to client |
+| Scroll buffer | Client requests scroll regions on demand, daemon sends from its buffer |
+| File operations | Plugins on the daemon access the server filesystem, not the client's |
+
+The client does its own rendering — the server doesn't need a GPU. The protocol sends VT output (same bytes a PTY would produce) and the client's local renderer handles fonts, ligatures, images, everything.
+
+## Difference from SSH Domains
+
+SSH domains (in the multiplexer) open an SSH connection and run a remote shell. The remote machine runs your shell, not the daemon. There's no plugin host, no sidebar, no agent management on the remote side.
+
+Remote domains connect to a full Phantom daemon. The remote side has its own plugins, sidebar state, agent management, scroll buffers. The client synchronizes with that state.
+
+| Feature | SSH Domain | Remote Domain |
+|---------|-----------|---------------|
+| Remote side runs | Your shell (bash/zsh) | Full Phantom daemon |
+| Plugins | Local only | Both local and remote |
+| Sidebar | Local state only | Merged local + remote |
+| Agent management | Not available remotely | Full remote agent lifecycle |
+| Session persistence | Reconnects SSH | Daemon keeps running, client reconnects |
+| Requires on remote | SSH server | Phantom binary |
+
+You'll use both. SSH domains for quick shell access to machines where you don't have Phantom installed. Remote domains for your homelab, dev servers, and CI machines where you want the full experience.
+
+## Web Client (for mobile/lightweight access)
+
+The daemon also serves a web client for when you don't have the desktop terminal:
+
+```
+https://proxmox.local:7890  (via Tailscale, Cloudflare Tunnel, etc.)
+```
+
+The web client is lighter than the native client — monitor mode by default, interactive on opt-in. Good for checking on agents from your phone.
+
+| Client | Rendering | Full features | Offline |
+|--------|-----------|--------------|---------|
+| Desktop terminal | Local GPU | Yes — full sidebar, harpoon, splits | Yes (local panes) |
+| Web client | Browser | Monitor + basic interaction | No |
+
+## Tunneling
+
+The daemon listens on localhost by default. You bring your own tunnel:
+
+| Tunnel | Best for |
+|--------|----------|
+| **Tailscale** | Personal use — zero config, private network, already on your devices |
+| **Pangolin** | Self-hosted — your own tunnel infrastructure |
+| **Cloudflare Tunnel** | Public edge — fast, no port forwarding |
+| **SSH port forward** | Simple — `ssh -L 7890:localhost:7890 server` |
+| **WireGuard** | Direct VPN — low latency |
+| **Direct LAN** | Home network — `--listen 0.0.0.0` |
 
 ## Authentication
 
-```lua
-plugins = {
-  ["remote-access"] = {
-    enabled = true,
-    port = 7890,
-    auth = "token",                    -- or "mtls"
-    token = "${PHANTOM_REMOTE_TOKEN}", -- env var, never in config file
-    allowed_modes = { "monitor", "interactive" },
-    -- listen = "127.0.0.1",          -- localhost only by default
-    -- listen = "0.0.0.0",            -- all interfaces (for tunnel use)
-  },
-}
-```
+| Method | Best for |
+|--------|----------|
+| **Token** | Personal use — generate with `phantom remote token`, pass via env var |
+| **mTLS** | Team/production — mutual TLS with client certificates |
 
-- **Token auth** — simple shared secret. Generate with `phantom remote token`. Pass via URL parameter or header.
-- **mTLS** — mutual TLS with client certificates. For high-security setups.
-- Tokens stored in keychain/credential manager, not in config files.
-- Rate limiting on auth failures.
+Tokens are never stored in config files — always via environment variable or credential manager.
 
-## Tunnel Setup
+## Implementation
 
-The plugin doesn't manage tunnels — you use whatever tunnel you already have. Examples:
+### What's core
 
-**Tailscale (recommended for personal use):**
-```bash
-# Terminal is already on your Tailnet
-# Access from phone: http://your-machine:7890
-# Zero config, private by default
-```
+- Headless mode (`--headless`) — NullBackend implementations for all platform traits
+- Daemon mode (`--daemon`) — background process management, PID file
+- Remote domain configuration (`remote_domains` in config)
+- Client-side remote pane rendering (VT stream from WebSocket, rendered locally)
+- Protocol definition (WebSocket + message format for pane I/O, sidebar sync, notifications)
 
-**Cloudflare Tunnel:**
-```bash
-cloudflared tunnel --url http://localhost:7890
-# Get a public URL like https://phantom-xyz.trycloudflare.com
-```
+### What's a plugin
 
-**Pangolin (self-hosted):**
-```bash
-# Configure in your Pangolin dashboard
-# Route phantom.yourdomain.com → localhost:7890
-```
+- Web client serving (the HTML/JS bundle that runs in a browser)
+- Advanced tunnel management (auto-start Tailscale, configure Cloudflare)
+- Multi-daemon dashboard (managing connections to many servers)
 
-**SSH port forwarding:**
-```bash
-ssh -L 7890:localhost:7890 your-server
-# Access at http://localhost:7890 on any machine
-```
+## Security
 
-**Local network:**
-```lua
--- config: listen on all interfaces
-plugins = {
-  ["remote-access"] = {
-    listen = "0.0.0.0",
-    -- access via http://192.168.1.x:7890 from any device on LAN
-  },
-}
-```
+- All connections encrypted (TLS)
+- Auth required on every connection
+- Rate limiting on auth failures
+- Daemon logs all connections with timestamps and client info
+- `:debug security` shows active remote connections
+- Configurable: `remote-allow-interactive = false` for monitor-only access
 
-## Mobile Use Case: Agent Babysitting
+## Related Docs
 
-The primary use case: you have 3 agents running on your desktop, you step away.
-
-On your phone:
-1. Open browser → your-machine:7890 (via Tailscale)
-2. See sidebar: 2 agents working, 1 needs approval
-3. Tap the agent that needs approval → see its output
-4. Tap "Approve" → agent continues
-5. Get push notification when it finishes (if browser notifications are enabled)
-
-You didn't need to ssh in, install tmux, or set up anything. The terminal's plugin served a web page, your tunnel made it reachable.
-
-## What This Is Not
-
-- Not a web-based terminal emulator (like ttyd or Wetty) — it's a remote control for your existing terminal
-- Not a screen sharing tool — it renders a lightweight UI, not a pixel-perfect copy of your screen
-- Not always-on — the plugin only listens when enabled
-- Not a cloud service — everything runs on your machine, you pick the tunnel
+- [Architecture](01-architecture.md) — server/client daemon model
+- [Abstraction Layer](13-abstraction.md) — Null implementations for headless traits
+- [Multiplexer](03-multiplexer.md) — SSH domains (different from remote domains)
+- [Security](21-security.md) — auth and encryption
+- [Platform Support](20-platform-support.md) — headless Linux support
