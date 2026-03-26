@@ -8,7 +8,7 @@ tags: ['updates', 'rollback', 'release-channels', 'package-manager']
 
 # Updates
 
-> **Note:** [ADR 0003](../docs/adrs/0003-update-check-policy.md) decided the update check policy: install-source-aware checks where package-manager installs defer to the package manager and standalone installs check a static version manifest. Update checks are opt-out, contain no telemetry, and respect the install source.
+> **Note:** [ADR 0003](../adrs/0003-update-check-policy.md) decided the update check policy: install-source-aware checks where package-manager installs defer to the package manager and standalone installs check a static version manifest. Update checks are opt-out, contain no telemetry, and respect the install source.
 
 Updates should be frictionless. When you're told there's an update, every path to installing it should work.
 

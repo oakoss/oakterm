@@ -32,4 +32,4 @@ Performance budgets, memory limits, security requirements.
 ## References
 
 - [ADR](../adrs/NNNN-title.md) — decision that led to this spec
-- [Idea Doc](../../ideas/NN-topic.md) — original exploration
+- [Idea Doc](../ideas/NN-topic.md) — original exploration

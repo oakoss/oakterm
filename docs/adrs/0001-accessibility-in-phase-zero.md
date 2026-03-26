@@ -12,7 +12,7 @@ tags: [a11y, renderer]
 
 The idea docs list accessibility as a Phase 5 (polish) concern, but the core principles state "accessible from day one." Retrofitting a semantic accessibility layer onto a GPU-rendered texture-based terminal is architecturally painful — the screen is a texture, not a DOM. Windows Terminal built UIA support into the core from the start. No GPU-accelerated terminal currently ships with cross-platform screen reader support.
 
-See [17-accessibility.md](../../ideas/17-accessibility.md), [02-renderer.md](../../ideas/02-renderer.md), [12-performance.md](../../ideas/12-performance.md).
+See [17-accessibility.md](../ideas/17-accessibility.md), [02-renderer.md](../ideas/02-renderer.md), [12-performance.md](../ideas/12-performance.md).
 
 The review audit ([2026-03-26-140000-idea-docs-audit.md](../reviews/2026-03-26-140000-idea-docs-audit.md)) flagged this as an architectural risk: moving accessibility to Phase 5 means every subsequent phase (multiplexer, plugins, shell intelligence) would be built without an accessible foundation.
 
@@ -77,14 +77,14 @@ The architectural cost of building it in from the start is low (the screen buffe
 - Screen reader support ships on Windows and macOS from the first release. Linux support follows as `accesskit_unix` matures.
 - The AccessKit tree must be updated incrementally on screen buffer changes (not full rebuilds).
 - Performance target: <0.5ms/frame when a screen reader is active, ~0ms when inactive.
-- Update [17-accessibility.md](../../ideas/17-accessibility.md) to reflect Phase 0 placement.
-- Update [33-roadmap.md](../../ideas/33-roadmap.md) to move accessibility from Phase 5 to Phase 0.
+- Update [17-accessibility.md](../ideas/17-accessibility.md) to reflect Phase 0 placement.
+- Update [33-roadmap.md](../ideas/33-roadmap.md) to move accessibility from Phase 5 to Phase 0.
 
 ## References
 
-- [17-accessibility.md](../../ideas/17-accessibility.md)
-- [02-renderer.md](../../ideas/02-renderer.md)
-- [33-roadmap.md](../../ideas/33-roadmap.md)
+- [17-accessibility.md](../ideas/17-accessibility.md)
+- [02-renderer.md](../ideas/02-renderer.md)
+- [33-roadmap.md](../ideas/33-roadmap.md)
 - [AccessKit GitHub](https://github.com/AccessKit/accesskit)
 - [AccessKit: Role::Terminal](https://docs.rs/accesskit/latest/accesskit/enum.Role.html)
 - [Windows Terminal UIA architecture (PR #1691)](https://github.com/microsoft/terminal/pull/1691)
