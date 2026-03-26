@@ -217,3 +217,55 @@ Like tmux's status line or Neovim's lualine. Core renders the bar, plugins regis
 - Can be hidden completely: `status-bar = none`
 - Should respect `prefers-reduced-motion` for any animated widgets
 - Accessible — screen reader can read status bar content
+
+## Error Handling Philosophy
+
+What happens when things go wrong? The terminal should degrade gracefully, never crash.
+
+- **GPU driver fails** → fall back to software renderer (wgpu supports this). Show a warning in `:health`.
+- **Font not found** → fall back through the chain. If all fallbacks fail, use the platform default monospace. Never show blank squares silently.
+- **Plugin crashes** → kill the plugin, show notification, offer restart/disable. Terminal keeps running. No pane is lost.
+- **Config parse error** → boot with defaults, show a clear error banner: "Config error on line 42. Using defaults. [Fix] [Ignore]"
+- **Scroll buffer full (disk archive)** → oldest lines evicted. Never OOM. Show `:health` warning if archive is >80% of budget.
+- **SSH domain unreachable** → retry with backoff. Show status in sidebar. Don't block startup.
+- **Remote daemon disconnected** → show "reconnecting..." in sidebar. Buffer local input. Replay on reconnect if possible.
+- **Theme missing colors** → fill missing values from the default theme. Show warning in `phantom theme validate`.
+
+Principle: **every failure mode has a fallback, every fallback has a notification.**
+
+## Data Model
+
+Formal relationships between core entities. Not specced yet but should be before implementation.
+
+```
+Daemon (singleton)
+├── Window[] (1 or more, platform-native)
+├── Workspace[] (1 or more, named)
+│   └── Tab[] (1 or more per workspace)
+│       └── Pane[] (1 or more per tab)
+│           ├── type: tiled | floating | drawer | popup | modal | sidebar-pane
+│           ├── process: PTY + child process (or surface for non-terminal)
+│           ├── scroll_buffer: ring buffer + disk archive
+│           ├── metadata: key-value pairs (title, status, color, branch, etc.)
+│           ├── permissions: agent control API permissions
+│           └── plugin_attachments: which plugins are watching this pane
+├── Plugin[] (loaded WASM modules)
+├── SidebarState (sections, entries, badges)
+├── HarpoonList (per-workspace bookmarks)
+├── NotificationHistory[]
+├── Config (merged: defaults + flat file + lua + project overrides)
+└── RemoteDomain[] (connections to remote daemons)
+```
+
+IDs: every pane, tab, workspace gets a stable UUID. Used by harpoon, agent control API, remote sync, session persistence.
+
+## Contributing Guide (future)
+
+Not needed for idea phase but worth thinking about early:
+
+- **Decision process** — how do we decide what gets in? RFC-style proposals? Benevolent dictator? Consensus?
+- **Plugin vs core** — clear criteria for what belongs in core vs plugins. The litmus test in [Plugin System](06-plugins.md) is the guide.
+- **Code review** — who reviews? What standards? Rust clippy/fmt enforced in CI?
+- **Release process** — who cuts releases? What's the cadence? Semver for core, independent versioning for plugins?
+- **Code of conduct** — standard Contributor Covenant or similar
+- **Architecture decision records (ADRs)** — document significant decisions with context, alternatives considered, and rationale
