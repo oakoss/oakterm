@@ -1,0 +1,14 @@
+branch_whitelist = ["main"]
+
+[changelog]
+path = "CHANGELOG.md"
+
+[commit_types]
+docs = { changelog_title = "Documentation" }
+chore = { changelog_title = "Chores" }
+feat = { changelog_title = "Features" }
+fix = { changelog_title = "Bug Fixes" }
+refactor = { changelog_title = "Refactoring" }
+test = { changelog_title = "Tests" }
+perf = { changelog_title = "Performance" }
+ci = { changelog_title = "CI/CD" }

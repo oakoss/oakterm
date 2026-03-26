@@ -70,6 +70,19 @@ explore    decide       formalize     build (trekker)
 - **Keybinds**: borrow from OS/VS Code/tmux/vim/browser conventions, never invent new muscle memory
 - **Markdown**: fenced code blocks always have a language tag
 
+## Tooling
+
+Managed by [mise](https://mise.jdx.dev/). Run `mise install` to get all tools.
+
+| Tool                  | Purpose                                            | Command                                     |
+| --------------------- | -------------------------------------------------- | ------------------------------------------- |
+| **prettier**          | Format non-Rust files (markdown, TOML, JSON, YAML) | `mise run fmt` / `mise run fmt:check`       |
+| **markdownlint-cli2** | Markdown linting                                   | `mise run lint:md` / `mise run lint:md:fix` |
+| **lefthook**          | Git hooks (pre-commit, commit-msg)                 | `lefthook install` (once after clone)       |
+| **cocogitto**         | Conventional commit validation                     | `cog verify`                                |
+| **cargo fmt**         | Rust formatting (when code exists)                 | `cargo fmt`                                 |
+| **cargo clippy**      | Rust linting (when code exists)                    | `cargo clippy`                              |
+
 ## Architecture Context
 
 - **Roadmap phases**: 0 (renderer) → 1 (multiplexer) → 2 (plugins) → 3 (shell intelligence) → 4 (networking) → 5 (polish)
@@ -137,12 +150,13 @@ For substantial design work, align on scope and approach first. Use `/grill-me` 
 - Include constraints (performance budgets, memory limits, security).
 - Link to the ADR(s) that led here.
 
-#### D5. Polish
+#### D5. Checks
 
+- `mise run fmt` — format all files.
+- `mise run lint` — lint markdown.
 - `/de-slopify` on all prose.
 - Verify frontmatter is complete and status is correct.
 - Check all cross-references resolve to real docs.
-- Ensure fenced code blocks have language tags.
 - For specs: verify all types are defined, no hand-waving ("TBD", "details later").
 
 #### D6. Review
