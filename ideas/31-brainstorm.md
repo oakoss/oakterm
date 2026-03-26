@@ -459,6 +459,51 @@ Agent crashes or terminal restarts — the agent's context is lost. Beyond sessi
 - Offer: [Resume Agent] [View Diff] [Discard]
 - The agent-manager plugin stores this in its `storage` (persistent per-plugin data)
 
+### Dynamic Status Bar for Agent Metrics
+
+Projects like [ccstatusline](https://github.com/sirmalloc/ccstatusline) and [ccusage](https://github.com/ryoppippi/ccusage) show there's real demand for terminal-level visibility into agent metrics — token counts, costs, session duration, model info.
+
+Instead of running a separate tool, the status bar should have agent-aware widgets:
+
+```
+│ claude │ opus-4 │ 42k tokens │ ~$0.38 │ 62% ctx │ 8m │
+```
+
+How it works:
+- The agent-manager plugin parses known agent output formats (Claude Code prints token counts, model info)
+- Or agents report metrics via `phantom ctl self set-meta tokens=42000 cost=0.38 model=opus-4`
+- Status bar widgets read from pane metadata: `{agent_model}`, `{agent_tokens}`, `{agent_cost}`, `{agent_duration}`, `{agent_context}`
+- Only shows when an agent pane is focused — shell panes show different widgets
+
+This is exactly where the configurable status bar pays off. You compose the widgets you want:
+
+```lua
+status_bar = {
+  right = {
+    "{agent_model}",
+    "{agent_tokens}",
+    "{agent_cost}",
+    "{agent_context}",
+    "{agent_duration}",
+    "{time:%H:%M}",
+  },
+}
+```
+
+The data flows: agent process → agent-manager plugin (parses output or reads `phantom ctl` metadata) → pane metadata → status bar widget reads metadata → renders.
+
+### Instant Replay (from iTerm2)
+
+iTerm2 lets you scrub back through terminal output like a video timeline — recovering content that was overwritten by TUI apps or screen clears. No other terminal has this.
+
+Could work by:
+- Periodically snapshotting the visible screen state (not just scrollback, but the actual rendered frame)
+- `:replay` opens a timeline slider
+- Scrub left/right to move through time
+- Useful when a TUI app (vim, htop) exits and you want to see what was on screen before it
+
+This is a stretch goal — significant memory cost (one snapshot = terminal width × height × cell size). Could be opt-in per pane with a configurable snapshot interval and max history.
+
 ### Agent Output Parsing
 Agents output structured information (file paths, diffs, tool calls, status updates) as plain text. The terminal could parse known agent output formats and render them richer:
 - File paths in Claude Code output become clickable (already in smart URL/path detection)
