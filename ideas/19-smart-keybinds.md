@@ -1,4 +1,12 @@
+---
+title: "Smart Keybinds"
+status: draft
+category: core
+description: "Context-aware Ctrl+C/V, hints mode, input broadcast, env coloring"
+tags: ["keybinds", "hints-mode", "broadcast", "quake-mode", "environment-coloring"]
+---
 # Smart Keybinds
+
 
 Context-aware keybindings that do the right thing based on terminal state.
 

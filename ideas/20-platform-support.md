@@ -1,4 +1,12 @@
+---
+title: "Platform Support"
+status: draft
+category: cross-cutting
+description: "macOS, Linux, Windows — all first-class"
+tags: ["macos", "linux", "windows", "wayland", "wsl", "cross-platform"]
+---
 # Platform Support
+
 
 All three platforms are first-class. Not "macOS first, others eventually" — all three ship together.
 

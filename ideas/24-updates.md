@@ -1,4 +1,12 @@
+---
+title: "Updates"
+status: draft
+category: cross-cutting
+description: "Every update path works, staged updates, rollback"
+tags: ["updates", "rollback", "release-channels", "package-manager"]
+---
 # Updates
+
 
 Updates should be frictionless. When you're told there's an update, every path to installing it should work.
 

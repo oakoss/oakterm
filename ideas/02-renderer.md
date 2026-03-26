@@ -1,4 +1,12 @@
+---
+title: "Renderer"
+status: draft
+category: core
+description: "GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images"
+tags: ["gpu", "wgpu", "fonts", "ligatures", "images", "opacity", "color"]
+---
 # Renderer
+
 
 ## Goals
 

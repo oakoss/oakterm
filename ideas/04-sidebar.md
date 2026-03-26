@@ -1,4 +1,12 @@
+---
+title: "Sidebar"
+status: draft
+category: plugin
+description: "Collapsible process dashboard — agents, services, watchers, shells"
+tags: ["ui", "process-dashboard", "notifications", "agents", "services"]
+---
 # Sidebar
+
 
 A collapsible process dashboard on the left. `Ctrl+B` to toggle.
 

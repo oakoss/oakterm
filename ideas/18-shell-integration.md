@@ -1,4 +1,12 @@
+---
+title: "Shell Integration"
+status: draft
+category: core
+description: "Prompt markers, semantic zones, scroll-to-prompt, notifications"
+tags: ["shell", "osc-133", "prompt-markers", "scroll-to-prompt"]
+---
 # Shell Integration
+
 
 The layer between the terminal and the shell that makes smart features possible. Without this, the terminal is blind — it can't tell prompts from output, doesn't know when commands start or finish, and can't resolve relative paths.
 

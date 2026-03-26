@@ -1,4 +1,12 @@
+---
+title: "Agent Management"
+status: draft
+category: plugin
+description: "Worktree lifecycle, notifications, merge/diff"
+tags: ["agents", "git-worktree", "claude-code", "codex", "notifications"]
+---
 # Agent Management
+
 
 A bundled plugin, not a core feature. When enabled, the terminal becomes agent-aware without becoming an agent dashboard.
 

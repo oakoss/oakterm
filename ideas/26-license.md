@@ -1,6 +1,14 @@
+---
+title: "License"
+status: decided
+category: cross-cutting
+description: "MPL 2.0 — core stays open, registry requires open source"
+tags: ["mpl-2.0", "open-source", "plugin-licensing"]
+---
 # License
 
-## Recommendation: MPL 2.0 (Mozilla Public License 2.0)
+
+## MPL 2.0 (Mozilla Public License 2.0)
 
 ### Why MPL 2.0
 

@@ -1,4 +1,12 @@
+---
+title: "Multiplexer"
+status: draft
+category: core
+description: "Workspaces, splits, floating panes, SSH domains, session persistence"
+tags: ["splits", "tabs", "workspaces", "ssh", "session-persistence", "floating-panes"]
+---
 # Multiplexer
+
 
 Built-in. Replaces tmux, Zellij, and screen.
 

@@ -1,4 +1,12 @@
+---
+title: "Theming"
+status: draft
+category: cross-cutting
+description: "Deep customization, TOML format, inheritance, live preview"
+tags: ["themes", "toml", "colors", "ui-chrome", "live-preview", "wcag"]
+---
 # Theming
+
 
 Users should be able to change anything they want. The theming system is deep — not just 16 ANSI colors, but every visual element the terminal renders.
 

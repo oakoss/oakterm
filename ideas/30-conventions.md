@@ -1,4 +1,12 @@
+---
+title: "Conventions"
+status: draft
+category: cross-cutting
+description: "Naming, config syntax, keybinds, file structure"
+tags: ["naming", "config-syntax", "style-guide"]
+---
 # Conventions
+
 
 Naming and formatting standards across the project. When in doubt, check here.
 
@@ -92,17 +100,40 @@ When referencing another idea doc, use relative path: `See [Memory Management](1
 
 When referencing a specific section, describe it: "the tiered scroll buffer (see [Memory Management](15-memory-management.md), Scroll Buffer Strategy section)".
 
-## Status Labels
+## Frontmatter
 
-As docs mature, they should get a status line after the title:
+Every idea doc has YAML frontmatter:
 
-```markdown
-# Feature Name
-
-> Status: **Draft** | **Reviewing** | **Decided** | **Implementing**
+```yaml
+---
+title: "Feature Name"
+status: draft
+category: core
+description: "One-line summary for the index"
+tags: ["relevant", "keywords"]
+---
 ```
 
-- **Draft** — still collecting ideas, details may change
-- **Reviewing** — design is mostly complete, looking for feedback
-- **Decided** — design is locked, ready for implementation
-- **Implementing** — actively being built
+### Status values
+
+- **draft** — still collecting ideas, details may change
+- **reviewing** — design is mostly complete, looking for feedback
+- **decided** — design is locked, ready for implementation
+- **implementing** — actively being built
+- **reference** — research material, not a design spec
+
+### Category values
+
+- **core** — ships in the binary, not a plugin
+- **plugin** — bundled plugin, can be disabled
+- **community-plugin** — designed for community to build
+- **cross-cutting** — applies across core and plugins
+- **research** — background research, not a design spec
+
+### Tags
+
+Lowercase, kebab-case. Used for finding related docs. Common tags:
+- Platform: `macos`, `linux`, `windows`, `cross-platform`, `wayland`, `wsl`
+- Tech: `rust`, `wgpu`, `wasm`, `wasmtime`, `lua`, `toml`
+- Feature area: `ui`, `keybinds`, `fonts`, `themes`, `shell`, `agents`, `notifications`
+- Concern: `a11y`, `security`, `memory`, `latency`, `testing`, `ci`
