@@ -22,6 +22,34 @@ Naming and formatting standards across the project. When in doubt, check here.
 
 Flat and Lua map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles translation.
 
+## Keybind Philosophy
+
+**Use familiar conventions. Don't invent new muscle memory.**
+
+Users come from tmux, vim, VS Code, browsers, and their OS. Default keybinds should feel like second nature, not a new system to learn.
+
+### Borrow from what people already know
+
+| Source | What we take |
+|--------|-------------|
+| **Their OS** | Cmd+C/V (macOS), Ctrl+C/V (smart on Linux/Windows), Cmd+T/W for tabs |
+| **VS Code** | Cmd+Shift+P for command palette, Cmd+, for settings, Ctrl+` for terminal toggle |
+| **tmux** | Ctrl+B prefix concept for multiplexer actions (but optional, not required) |
+| **Vim** | j/k/h/l, gg/G, /, v/V/y in copy mode |
+| **Browsers** | Ctrl+F for search, Ctrl+Tab for tab switching, Ctrl+Shift+T for reopen tab |
+| **Ghostty/Kitty** | Common terminal keybinds users already have in muscle memory |
+
+### Never do this
+
+- Don't bind critical actions to keys that conflict with common shell usage
+- Don't require a prefix key for frequent actions (tmux's `Ctrl+B` before every command is the #1 complaint)
+- Don't use obscure modifier combos (`Ctrl+Shift+Alt+F5`) for things you do 50 times a day
+- Don't change the meaning of keys people already know (`Ctrl+C` must always be able to interrupt)
+
+### Every keybind is remappable
+
+Nothing is hardcoded. If our default conflicts with your workflow, change it.
+
 ## Keybind Actions
 
 All keybind action names use kebab-case:
