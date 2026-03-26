@@ -228,14 +228,17 @@ Cmd+Shift+P → :plugins
 
 ### The Registry
 
-A lightweight, public index — not an app store.
+A lightweight, public index — not an app store. **All registry plugins must be open source.**
 
 - Static API or git repo mapping plugin names to WASM binary URLs
 - Each entry: name, version, description, declared capabilities, source repo URL, checksum
+- **Open source required** — any OSI-approved license (MIT, Apache, MPL, GPL, etc.)
+- Source repo URL is verified and linked — users can always inspect the code
 - Community submits plugins via PR
-- No approval gate beyond "valid WASM binary with a manifest"
+- No approval gate beyond "valid WASM binary with manifest + open source license"
 - No reviews, no ratings — stars on the plugin's source repo are enough
 - No install count telemetry
+- Sideloading bypasses the registry — install any WASM binary from URL or local path (unreviewed, user accepts risk)
 
 ### Plugin Manifest
 
@@ -263,7 +266,7 @@ pane-surface = false
 
 ### What It's Not
 
-- Not a paid marketplace — all plugins are free and open source
+- Not a paid marketplace — all registry plugins are open source
 - Not a walled garden — sideload any WASM binary from a URL or local path
 - No auto-update by default — `phantom plugin update` is explicit
 - No telemetry on installs, usage, or anything else

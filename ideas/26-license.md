@@ -41,12 +41,34 @@ MPL 2.0 is the best compromise:
 
 MPL 2.0 is used by Firefox, Thunderbird, and LibreOffice. It's well-understood, battle-tested, and designed specifically for this balance of openness + freedom.
 
-### Plugin License Freedom
+### Plugin License Policy
 
-The MPL 2.0 choice is critical for the plugin ecosystem:
-- Bundled plugins: MPL 2.0 (same as core)
-- Community plugins: author's choice — MIT, Apache, GPL, proprietary, anything
-- Locale packs: author's choice
-- Themes: author's choice (most will be MIT or public domain)
+**Official registry: open source required.**
 
-No license contamination between the core and the plugin ecosystem.
+Any plugin listed in the official registry (`phantom plugin install <name>`) must be open source — MIT, Apache, MPL, GPL, or any OSI-approved license. This ensures:
+- The ecosystem is transparent and auditable (critical — plugins run in your terminal)
+- Users can inspect what a plugin does before trusting it with capabilities like `pane.output` or `network`
+- Plugin authors can build on each other's work
+- Security researchers can review plugins for malicious behavior
+
+**Sideloading: unrestricted.**
+
+Users can install any WASM binary from a URL or local path:
+```
+phantom plugin install --from ./my-plugin.wasm
+phantom plugin install --from https://example.com/plugin.wasm
+```
+
+Sideloaded plugins show a clear warning: "This plugin is not from the official registry and has not been reviewed." The user accepts the risk. No license restriction on sideloads.
+
+**Summary:**
+
+| Source | License requirement | Review status |
+|--------|-------------------|---------------|
+| Bundled plugins | MPL 2.0 (same as core) | Maintained by us |
+| Official registry | Any OSI-approved open source license | Source link verified |
+| Sideloaded | No restriction | Unreviewed, user accepts risk |
+| Locale packs (registry) | Any OSI-approved open source license | Source link verified |
+| Themes (registry) | Any OSI-approved open source license | Source link verified |
+
+This keeps the official ecosystem open and trustworthy while not preventing anyone from running whatever they want on their own machine.
