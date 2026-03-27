@@ -102,7 +102,7 @@ The daemon is the terminal. The GUI is a viewport. This separation enables crash
 ### Daemon Lifecycle
 
 - **Default:** Daemon exits when the last window closes. Session state is saved to disk for layout restoration on next launch.
-- **Opt-in persistence:** `daemon-persist` (Lua: `config.daemon_persist = true`). Daemon survives window close. Opening a new window reconnects to existing sessions. Explicit quit (`oakterm quit` or platform app quit) terminates the daemon.
+- **Opt-in persistence:** `config.daemon_persist = true`. Daemon survives window close. Opening a new window reconnects to existing sessions. Explicit quit (`oakterm quit` or platform app quit) terminates the daemon.
 - Layout restoration (save/restore tabs, splits, working directories on exit/launch) always works regardless of persistence mode.
 
 ### Protocol Design

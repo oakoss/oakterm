@@ -94,19 +94,8 @@ Archive region (on disk)
 └── Transparent — scrolling back into archived region loads seamlessly
 ```
 
-Flat config:
-
-```ini
-scrollback-memory-lines = 10000
-scrollback-archive = true
-scrollback-archive-path = ~/.local/state/oakterm/scrollback/
-scrollback-archive-max = 1GB
-scrollback-compress = true
-```
-
-Lua config:
-
 ```lua
+-- In config.lua
 scrollback = {
   memory_lines = 10000,         -- kept in RAM (ring buffer)
   archive = true,               -- overflow goes to disk

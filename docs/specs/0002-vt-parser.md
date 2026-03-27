@@ -517,7 +517,7 @@ Characters with East Asian Width property W (wide) or F (fullwidth) occupy two c
 
 ### Alternate Screen Buffer
 
-DECSET 1049 saves the cursor, switches to a fresh screen buffer, and clears it. DECRST 1049 restores the cursor and switches back to the primary buffer. The primary buffer's content is preserved. Per ADR-0006, lines that scroll off the top of the alternate screen are captured to the primary scrollback if `save-alternate-scrollback` is enabled.
+DECSET 1049 saves the cursor, switches to a fresh screen buffer, and clears it. DECRST 1049 restores the cursor and switches back to the primary buffer. The primary buffer's content is preserved. Per ADR-0006, lines that scroll off the top of the alternate screen are captured to the primary scrollback if `save_alternate_scrollback` is enabled.
 
 ### Synchronized Output (DEC 2026)
 

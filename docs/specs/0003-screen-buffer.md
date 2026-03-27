@@ -276,7 +276,7 @@ struct ScreenSet {
 enum ScreenId { Primary, Alternate }
 ```
 
-**Alternate screen behavior:** DECSET 1049 saves the primary cursor, switches `active` to `Alternate`, and clears the alternate grid. DECRST 1049 switches back to `Primary` and restores the saved cursor. The primary grid's content is preserved during alternate screen use. The alternate grid has no scrollback. Per ADR-0006, lines that scroll off the top of the alternate grid are captured to the primary screen's scrollback if `save-alternate-scrollback` is enabled.
+**Alternate screen behavior:** DECSET 1049 saves the primary cursor, switches `active` to `Alternate`, and clears the alternate grid. DECRST 1049 switches back to `Primary` and restores the saved cursor. The primary grid's content is preserved during alternate screen use. The alternate grid has no scrollback. Per ADR-0006, lines that scroll off the top of the alternate grid are captured to the primary screen's scrollback if `save_alternate_scrollback` is enabled.
 
 **Alternate screen lazy allocation:** The alternate grid is not allocated until first used (DECSET 1049). Once allocated, it persists for the lifetime of the terminal session to avoid repeated allocation/deallocation when applications enter and leave the alternate screen frequently.
 
@@ -397,7 +397,7 @@ When the VT handler scrolls (SU, SD, LF at bottom of scroll region):
 
 1. Rows within the scroll region shift up (SU) or down (SD).
 2. New blank rows are inserted at the bottom (SU) or top (SD) of the scroll region.
-3. Rows shifted out of the scroll region are sent to scrollback (SU) or discarded (SD). On the alternate grid, scroll-up rows are discarded unless `save-alternate-scrollback` is enabled, in which case they are appended to the primary grid's scrollback (per ADR-0006).
+3. Rows shifted out of the scroll region are sent to scrollback (SU) or discarded (SD). On the alternate grid, scroll-up rows are discarded unless `save_alternate_scrollback` is enabled, in which case they are appended to the primary grid's scrollback (per ADR-0006).
 4. All rows in the scroll region have their `seqno` updated.
 
 ## Constraints

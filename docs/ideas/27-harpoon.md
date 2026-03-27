@@ -30,7 +30,7 @@ All of these require visual confirmation — you look, find, click. Harpoon repl
 
 Direct-jump by index, no prefix key needed:
 
-```ini
+```text
 Ctrl+1 → slot 1
 Ctrl+2 → slot 2
 Ctrl+3 → slot 3
@@ -85,24 +85,8 @@ Harpoon lists persist across sessions — part of the session serialization.
 
 ## Configuration
 
-Flat config:
-
-```ini
-harpoon.slots = 6
-harpoon.per-workspace = true
-harpoon.auto-remove-closed = true
-harpoon.preserve-scroll-position = true
-keybind = ctrl+shift+m = harpoon-mark
-keybind = ctrl+shift+h = harpoon-menu
-keybind = ctrl+1 = harpoon-jump-1
-keybind = ctrl+2 = harpoon-jump-2
-keybind = ctrl+3 = harpoon-jump-3
-keybind = ctrl+4 = harpoon-jump-4
-```
-
-Lua config:
-
 ```lua
+-- In config.lua
 plugins["harpoon"] = {
   slots = 6,
   per_workspace = true,

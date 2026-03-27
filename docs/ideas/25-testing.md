@@ -17,7 +17,7 @@ Extensive testing across every layer. A regression in any area — rendering, pe
 - VT parser: every escape sequence against the xterm/VT220 spec
 - Scroll buffer: ring buffer operations, archival, compression
 - Unicode: grapheme cluster width, BiDi, combining marks, ZWJ emoji sequences
-- Config parser: flat file, Lua, migration, validation
+- Config parser: Lua loading, validation, hot-reload, migration
 - Plugin host: capability checking, message routing, lifecycle
 
 ### Integration Tests

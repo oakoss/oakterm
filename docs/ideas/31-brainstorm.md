@@ -47,10 +47,11 @@ Automatic pane tiling that arranges panes without manual splitting. Like a tilin
 - **Spiral** — fibonacci-style splitting (like bspwm)
 - **Grid** — auto-arrange into a grid based on pane count
 
-```ini
-tiling-mode = auto
-tiling-algorithm = main-stack
-tiling-main-ratio = 0.6
+```lua
+-- In config.lua
+tiling_mode = "auto"
+tiling_algorithm = "main-stack"
+tiling_main_ratio = 0.6
 ```
 
 **Interaction with pane types:** Auto-tiling only affects tiled panes. Floating, drawer, popup, modal, and sidebar panes are unaffected.
@@ -82,12 +83,15 @@ Cmd+Shift+P → :layout
 
 Keybinds for quick switching:
 
-```ini
-keybind = alt+1 = layout-main-stack
-keybind = alt+2 = layout-columns
-keybind = alt+3 = layout-grid
-keybind = alt+4 = layout-focused
-keybind = alt+5 = layout-side-by-side
+```lua
+-- In config.lua
+keybinds = {
+  { key = "alt+1", action = "layout-main-stack" },
+  { key = "alt+2", action = "layout-columns" },
+  { key = "alt+3", action = "layout-grid" },
+  { key = "alt+4", action = "layout-focused" },
+  { key = "alt+5", action = "layout-side-by-side" },
+}
 ```
 
 Presets rearrange the current tab's panes instantly. Your pane processes keep running — only the layout changes.
@@ -153,13 +157,14 @@ sidebars = {
 }
 ```
 
-Flat config:
+Config (also shown in the Lua block above):
 
-```ini
-sidebar-left-enabled = true
-sidebar-left-width = 220
-sidebar-left-default = collapsed
-sidebar-right-enabled = false
+```lua
+-- In config.lua
+sidebar_left_enabled = true
+sidebar_left_width = 220
+sidebar_left_default = "collapsed"
+sidebar_right_enabled = false
 ```
 
 **Tabs within sidebars:**
@@ -261,7 +266,7 @@ Daemon (singleton)
 ├── SidebarState (sections, entries, badges)
 ├── HarpoonList (per-workspace bookmarks)
 ├── NotificationHistory[]
-├── Config (merged: defaults + flat file + lua + project overrides)
+├── Config (merged: defaults + lua + project overrides)
 └── RemoteDomain[] (connections to remote daemons)
 ```
 
@@ -305,10 +310,11 @@ Text selection in terminals is stuck in the 1980s.
 - **Smart trim** — auto-strip trailing whitespace and leading indentation when copying. Configurable.
 - **Multi-select** — hold `Cmd/Ctrl` and click to add multiple selections. Yank copies all selections joined by newlines. (Stretch goal)
 
-```ini
-smart-selection = true                    # default
-smart-selection-trim-whitespace = true    # strip trailing spaces
-smart-selection-trim-indent = false       # strip common leading indent
+```lua
+-- In config.lua
+smart_selection = true                    -- default
+smart_selection_trim_whitespace = true    -- strip trailing spaces
+smart_selection_trim_indent = false       -- strip common leading indent
 ```
 
 ### Paste Safety
@@ -347,11 +353,12 @@ Pasting into a terminal is the most dangerous operation most developers do daily
 - **Bracketed paste enforced** — always use bracketed paste mode. If the program doesn't support it, fall back gracefully.
 - **Paste-as-single-line** — option to join multi-line paste into one line (useful for pasting paths with line breaks)
 
-```ini
-paste-warning-lines = 5          # warn on pastes > 5 lines (0 = never warn)
-paste-dangerous-patterns = true  # warn on rm -rf, sudo, etc.
-paste-strip-trailing-newline = false  # don't auto-strip (safety over convenience)
-paste-bracketed = true           # always use bracketed paste
+```lua
+-- In config.lua
+paste_warning_lines = 5              -- warn on pastes > 5 lines (0 = never warn)
+paste_dangerous_patterns = true      -- warn on rm -rf, sudo, etc.
+paste_strip_trailing_newline = false  -- don't auto-strip (safety over convenience)
+paste_bracketed = true               -- always use bracketed paste
 ```
 
 ### Smart URL/Path Detection
@@ -410,10 +417,9 @@ Closing a tab should be smart about what's running.
   - **Agent pane** → warn: "Agent feat/auth is working. Close will abandon changes. [Close] [Cancel]"
   - **Background process only** (like a completed command, cursor at prompt) → close immediately
 
-```ini
-tab-close-confirm = smart    # default: ask only when a process is running
-tab-close-confirm = always   # always ask
-tab-close-confirm = never    # never ask (dangerous)
+```lua
+-- In config.lua
+tab_close_confirm = "smart"    -- "smart" (default), "always", or "never"
 ```
 
 ### Predictive Local Echo for SSH
@@ -435,9 +441,10 @@ Every keystroke on an SSH connection round-trips to the server. On high-latency 
 
 This is inspired by Mosh's approach but implemented in the terminal itself, not as a separate protocol. It works over standard SSH — no server-side component needed.
 
-```ini
-ssh-predictive-echo = true       # default for SSH domains
-ssh-predictive-echo-style = dim  # how predicted characters look: dim, italic, underline
+```lua
+-- In config.lua
+ssh_predictive_echo = true       -- default for SSH domains
+ssh_predictive_echo_style = "dim"  -- "dim", "italic", or "underline"
 ```
 
 ### Large Output Handling
@@ -573,7 +580,7 @@ Should support a configurable prefix mode for people who want tmux-style `Ctrl+B
 
 Temporarily maximize one pane to fill the entire tab area. Toggle back to restore the previous layout. The process keeps running — nothing changes except the visual size.
 
-```ini
+```text
 Ctrl+Shift+Z  — toggle zoom on current pane
 ```
 
@@ -706,16 +713,6 @@ profiles = {
     env = { GIT_AUTHOR_EMAIL = "jace@personal.com" },
   },
 }
-```
-
-Flat config:
-
-```text
-profile.work.font-size = 13
-profile.work.theme-dark = github-dark
-profile.production.paste-warning-lines = 1
-profile.production.border-color = #f38ba8
-profile.production.tab-label = PROD
 ```
 
 **How to use profiles:**

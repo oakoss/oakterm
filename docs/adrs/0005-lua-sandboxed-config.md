@@ -138,7 +138,7 @@ Example structure:
 ### Autocomplete
 
 - **LLS type stubs** (`---@meta` definition files) shipped with OakTerm for Lua Language Server autocomplete. Covers all registered APIs, config fields, action enums, and event types. Installed to `~/.config/oakterm/types/` on first run and referenced via a `.luarc.json` in the config directory.
-- **JSON Schema** for any flat config values exposed via a TOML-compatible surface (future consideration).
+- ~~**JSON Schema** for any flat config values exposed via a TOML-compatible surface~~ — no longer applicable; all config is Lua-only.
 - Type stubs are generated from the same Rust config struct definitions that the runtime uses, keeping them in sync. Updated on OakTerm upgrade.
 
 ### Sandboxing

@@ -105,34 +105,36 @@ Disabling ligatures entirely is one setting: `ligatures = false`. No recompilati
 
 ## Window Opacity & Blur
 
-```ini
-background-opacity = 0.9
-background-blur = true
+```lua
+-- In config.lua
+background_opacity = 0.9
+background_blur = true
 ```
 
-- `background-opacity` — 0.0 (fully transparent) to 1.0 (fully opaque, default)
-- `background-blur` — platform-native blur behind the transparent window
+- `background_opacity` — 0.0 (fully transparent) to 1.0 (fully opaque, default)
+- `background_blur` — platform-native blur behind the transparent window
   - macOS: NSVisualEffectView (vibrancy/blur)
   - Linux/GTK: compositor-dependent (KDE/Sway support blur, GNOME does not)
 - Text stays fully opaque regardless of background opacity — only the background is affected
 - Works with both dark and light themes
 - Can be set per-theme so your dark theme is slightly transparent and your light theme is opaque:
 
-```ini
-theme-dark = catppuccin-mocha
-theme-light = catppuccin-latte
-theme-dark.background-opacity = 0.85
-theme-dark.background-blur = true
-theme-light.background-opacity = 1.0
+```lua
+-- In config.lua
+theme_dark = "catppuccin-mocha"
+theme_light = "catppuccin-latte"
+theme_dark_background_opacity = 0.85
+theme_dark_background_blur = true
+theme_light_background_opacity = 1.0
 ```
 
-In Lua for more control:
+Or with more structure:
 
 ```lua
+-- In config.lua
 window = {
   opacity = 0.9,
   blur = true,
-  -- or dynamic based on focus:
   opacity_unfocused = 0.7,  -- dim when not focused
 }
 ```

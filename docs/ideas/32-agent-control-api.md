@@ -130,14 +130,18 @@ agent_permissions = {
 }
 ```
 
-Flat config:
-
-```text
-agent.permissions.self = true
-agent.permissions.notify = true
-agent.permissions.pane-create = false
-agent.permissions.pane-read = false
-agent.permissions.pane-input = false
+```lua
+-- In config.lua
+agent_permissions = {
+  self = true,          -- can set own title, status, color (always allowed)
+  notify = true,        -- can send notifications (default: true)
+  prompt = true,        -- can prompt user for input (default: true)
+  pane_create = false,  -- can open new panes (default: false)
+  pane_read = false,    -- can read other panes' output (default: false)
+  pane_input = false,   -- can send input to other panes (default: false)
+  pane_close = false,   -- can close panes (default: false)
+  sidebar = false,      -- can modify sidebar (default: false)
+}
 ```
 
 ### Default permissions

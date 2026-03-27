@@ -23,7 +23,7 @@ Core
 ├── trait VtParser           → Built-in (default), custom/third-party
 ├── trait ScrollBuffer       → Ring buffer (default), memory-mapped, disk-backed
 ├── trait SshTransport       → russh (default), libssh2, custom
-├── trait ConfigLoader       → Flat file, Lua, both
+├── trait ConfigLoader       → Lua (sandboxed, per ADR-0005)
 ├── trait ClipboardProvider  → NSPasteboard (macOS), Wayland/X11 (Linux), Win32 (Windows), OSC-52
 └── trait NotificationProvider → NSUserNotification (macOS), libnotify (Linux), Windows Toast
 ```

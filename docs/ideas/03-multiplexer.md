@@ -296,10 +296,11 @@ Modal navigation in scrollback. Enter with `Ctrl+Shift+[`, exit with `Esc` or `y
 
 Three keybind presets:
 
-```ini
-copy-mode-keybinds = vim     # default
-copy-mode-keybinds = emacs   # for emacs users
-copy-mode-keybinds = basic   # arrow keys only, no modal
+```lua
+-- In config.lua
+copy_mode_keybinds = "vim"     -- default
+-- copy_mode_keybinds = "emacs"   -- for emacs users
+-- copy_mode_keybinds = "basic"   -- arrow keys only, no modal
 ```
 
 ### Vim preset (default)

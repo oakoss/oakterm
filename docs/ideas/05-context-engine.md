@@ -88,19 +88,8 @@ These are deterministic rules — no AI needed.
 - Shown as ghost text for review. Tab to accept. Never auto-executes.
 - Requires an AI backend (Ollama, Anthropic, OpenAI) or disable entirely.
 
-Flat config:
-
-```ini
-context-engine.enabled = true
-context-engine.ai-backend = ollama
-context-engine.ai-model = codellama:7b
-context-engine.natural-language-prefix = ?
-context-engine.learn-per-project = true
-```
-
-Lua config:
-
 ```lua
+-- In config.lua
 plugins["context-engine"] = {
   enabled = true,
   ai = {

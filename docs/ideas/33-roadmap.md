@@ -26,7 +26,7 @@ A terminal that boots, renders text, and runs a shell. Nothing else.
 - Font loading with fallback chain
 - Ligature support
 - Single pane, single window
-- Basic config (flat file — font, size, theme, colors)
+- Basic config (Lua — font, size, theme, colors)
 - Keyboard input, mouse input
 - Scrollback (ring buffer)
 - Copy/paste (platform clipboard)
@@ -83,7 +83,7 @@ The extension runtime and core plugin API.
 **What ships:**
 
 - WASM plugin host (Wasmtime)
-- Lua config engine (full — beyond flat file)
+- Lua config engine (full — event handlers, plugin config, advanced scripting)
 - Plugin API primitives: pane, sidebar data model, palette, notify, lifecycle hooks, process, filesystem
 - Capability-based permissions
 - Plugin manager CLI (`oakterm plugin install/remove/list`)

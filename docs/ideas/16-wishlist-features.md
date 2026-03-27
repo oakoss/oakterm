@@ -64,7 +64,7 @@ Drop files from Finder onto the terminal to insert the quoted path at cursor. Al
 
 Switch between themes based on system appearance. Ghostty, WezTerm, and Kitty support variants.
 
-**Status:** Specced in [Configuration](09-config.md). `appearance = system` with separate `theme-dark` / `theme-light`.
+**Status:** Specced in [Configuration](09-config.md). `appearance = "system"` with separate `theme_dark` / `theme_light`.
 
 ### Process Completion Notifications
 
