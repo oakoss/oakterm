@@ -81,7 +81,7 @@ Phase 0 includes setting up a benchmark framework (criterion) for end-to-end inp
 
 - Remove the scattered "0.5ms per feature" and fixed frame budget claims from idea docs. Replace with "performance is measured, not budgeted."
 - Phase 0 deliverables include a criterion benchmark suite covering input latency, VT parse throughput, and frame time.
-- CI runs benchmarks on every PR. Regressions beyond noise threshold are blocking.
+- CI benchmark strategy is tiered: unit tests + lint on every PR and push to main; smoke benchmarks on PRs and pushes to main that touch hot paths (renderer, VT parser, buffer); full benchmark suite on weekly schedule and release tags. Regressions beyond noise threshold are blocking.
 - The wgpu overhead question is answered by Phase 0 prototyping, not assumption.
 - When performance and features conflict, performance wins — but "performance" means measured regression on the benchmark suite, not theoretical concern.
 - Update [12-performance.md](../ideas/12-performance.md) to reflect this philosophy.
