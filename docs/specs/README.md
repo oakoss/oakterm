@@ -28,4 +28,6 @@ Copy [0000-template.md](0000-template.md) and renumber.
 
 ## Index
 
-(none yet)
+| Spec                                 | Title                | Status | ADRs | Tags |
+| ------------------------------------ | -------------------- | ------ | ---- | ---- |
+| [0001](0001-daemon-wire-protocol.md) | Daemon Wire Protocol | draft  | 0007 | core |
