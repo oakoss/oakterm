@@ -309,7 +309,7 @@ Running processes and scroll history survive GUI disconnection because the daemo
 - **Max outstanding requests:** Practical limit is the u32 serial space. Clients should not have more than ~1000 outstanding requests.
 - **Handshake timeout:** Server closes the connection if `ClientHello` is not received within 5 seconds.
 - **Ping interval:** Either side may send `Ping` at any time. If no `Pong` is received within 10 seconds, the connection is considered dead.
-- **Socket path:** `$XDG_RUNTIME_DIR/oakterm/socket` on Linux, `$TMPDIR/oakterm-<uid>/socket` on macOS. Parent directory created with `0700` permissions. Socket file permissions `0700`.
+- **Socket path:** `$XDG_RUNTIME_DIR/oakterm/socket` on Linux, `$TMPDIR/oakterm-<uid>/socket` on macOS, `\\.\pipe\oakterm-<sid>` on Windows (named pipe). Parent directory created with `0700` permissions on Unix. Socket file permissions `0700`.
 
 ## References
 
