@@ -35,3 +35,5 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0004](0004-kitty-graphics-in-core.md)      | Kitty Graphics in Core     | accepted | renderer, plugins |
 | [0005](0005-lua-sandboxed-config.md)        | Lua 5.4 Sandboxed Config   | accepted | config, core      |
 | [0006](0006-scroll-buffer-architecture.md)  | Scroll Buffer Architecture | accepted | renderer, core    |
+| [0007](0007-daemon-architecture.md)         | Daemon Architecture        | accepted | core, renderer    |
+| [0008](0008-shell-integration-timing.md)    | Shell Integration Timing   | accepted | core              |
