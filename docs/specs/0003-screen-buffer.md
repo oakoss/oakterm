@@ -3,7 +3,7 @@ spec: '0003'
 title: Screen Buffer
 status: draft
 date: 2026-03-26
-adrs: ['0006', '0001']
+adrs: ['0006', '0001', '0009']
 tags: [core]
 ---
 
@@ -105,11 +105,16 @@ A horizontal sequence of cells with metadata.
 
 ```rust
 struct Row {
-    /// Cells in this row. Length equals the grid's column count.
+    /// Cells in this row, stored in **logical order** (the order received from the PTY).
+    /// This is critical for future BiDi support — see ADR-0009.
     cells: [Cell],
 
     /// Row metadata.
     flags: RowFlags,
+
+    /// Base text direction for this row. Defaults to LTR.
+    /// Reserved for BiDi support (ADR-0009). Phase 0 always uses LTR.
+    direction: Direction,
 
     /// Shell integration mark on this row (from OSC 133). See Spec-0002.
     semantic_mark: SemanticMark,
@@ -152,6 +157,13 @@ enum MarkMetadata {
     ExitCode(i32),       // For OutputEnd
     WorkingDirectory(String),  // For PromptStart (from OSC 7)
 }
+
+/// Per-row base text direction. Reserved for BiDi support (ADR-0009).
+enum Direction {
+    Ltr,   // Left-to-right (default)
+    Rtl,   // Right-to-left
+    Auto,  // Auto-detect from first strong character (UBA)
+}
 ```
 
 **Row-flag optimization hints:** The `has_styles`, `has_hyperlinks`, and `has_graphemes` flags are set when a cell gains the property but never cleared (clearing would require scanning all cells). Consumers must handle false positives. These flags enable fast-path skipping: a row with `has_styles: false` is guaranteed to have all-default styles, so style-related processing can be skipped entirely.
@@ -188,6 +200,10 @@ struct Grid {
     /// Active DEC private modes. See Spec-0002 for the mode table.
     modes: ModeFlags,
 
+    /// BiDi processing mode. Reserved for BiDi support (ADR-0009).
+    /// Phase 0: always Off. Terminal-side BiDi reordering deferred.
+    bidi_mode: BidiMode,
+
     /// Scroll region (DECSTBM). None = full screen.
     scroll_region: Option<ScrollRegion>,
 
@@ -211,6 +227,13 @@ struct Grid {
 /// See Spec-0002 for PrivateMode and AnsiMode enums.
 /// Stored as a fixed-size bitfield indexed by mode number.
 struct ModeFlags { /* bitfield indexed by mode number */ }
+
+/// Terminal-side BiDi processing mode. Reserved for future BiDi support (ADR-0009).
+enum BidiMode {
+    Off,       // No terminal-side reordering (Phase 0 default)
+    Implicit,  // Terminal applies UBA per line (auto-detect direction)
+    Explicit,  // Application handles BiDi; terminal displays as-is
+}
 
 struct Cursor {
     row: u16,
@@ -390,6 +413,7 @@ When the VT handler scrolls (SU, SD, LF at bottom of scroll region):
 
 - [ADR 0006: Scroll Buffer Architecture](../adrs/0006-scroll-buffer-architecture.md)
 - [ADR 0001: Accessibility in Phase 0](../adrs/0001-accessibility-in-phase-zero.md)
+- [ADR 0009: BiDi and Ligature Preparedness](../adrs/0009-bidi-ligature-preparedness.md)
 - [Spec 0001: Daemon Wire Protocol](0001-daemon-wire-protocol.md) — RenderUpdate and DirtyRow wire formats
 - [Spec 0002: VT Parser & Terminal Handler](0002-vt-parser.md) — handler methods that mutate this model
 - [02-renderer.md](../ideas/02-renderer.md)
