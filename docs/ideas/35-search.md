@@ -94,15 +94,6 @@ highlights = {
 }
 ```
 
-Flat config:
-
-```ini
-highlight = error red bold
-highlight = warn yellow
-highlight = PASS green
-highlight = FAIL red bold
-```
-
 These apply to all pane output in real-time. Different from search — highlights are always on, search is on-demand.
 
 Persistent highlights could also be a plugin (uses `pane.output` for pattern matching) but basic support in core makes sense since it's tied to the renderer.
@@ -111,11 +102,12 @@ Persistent highlights could also be a plugin (uses `pane.output` for pattern mat
 
 Themed via [Theming](22-theming.md):
 
-```toml
-search-match-bg           = "#f9e2af"
-search-match-fg           = "#1e1e2e"
-search-selected-bg        = "#fab387"
-search-selected-fg        = "#1e1e2e"
+```lua
+-- In theme file (e.g., themes/catppuccin-mocha.lua)
+search_match_bg           = "#f9e2af"
+search_match_fg           = "#1e1e2e"
+search_selected_bg        = "#fab387"
+search_selected_fg        = "#1e1e2e"
 ```
 
 ## Keyboard Summary

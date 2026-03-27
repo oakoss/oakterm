@@ -118,7 +118,7 @@ Two compile-time constants set by packaging pipelines via `build.rs`:
 - Use `vergen` or `shadow-rs` crate for git hash, build timestamp, and target triple.
 - Cargo feature `disable-auto-update` available for distro packagers as a hard kill switch.
 - Runtime fallback detects Homebrew prefix (`/opt/homebrew/Cellar/`), `.app` bundle structure, and system package paths for source builds that didn't set the env var.
-- Config option `check-for-updates` (`off` / `check`) overrides all detection. Always wins.
+- Config option `check_for_updates` (`"off"` / `"check"`) overrides all detection. Always wins.
 
 ### Update Check Mechanics
 

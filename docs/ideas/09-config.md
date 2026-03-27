@@ -2,7 +2,7 @@
 title: 'Configuration'
 status: reviewing
 category: cross-cutting
-description: 'First launch setup, settings palette, flat + Lua, dark/light themes'
+description: 'First launch setup, settings palette, Lua config, dark/light themes'
 tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']
 ---
 
@@ -10,7 +10,7 @@ tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']
 
 Configuration should be dead simple to start and powerful when you need it. You shouldn't need to read docs to change your font.
 
-> **ADR 0005:** Configuration uses sandboxed Lua 5.4 with a single entry point (`config.lua`) and `require()` for multi-file organization. No `io`, `os`, `package`, or `debug` standard library access. The Lua/WASM boundary is defined by capabilities: Lua handles config values and event reactions with no side effects beyond the terminal; WASM plugins handle anything requiring I/O, network, or persistent storage. See [ADR 0005](../adrs/0005-lua-sandboxed-config.md).
+> **Note:** [ADR 0005](../adrs/0005-lua-sandboxed-config.md) resolved configuration as Lua-only with snake_case keys. Configuration uses sandboxed Lua 5.4 with a single entry point (`config.lua`) and `require()` for multi-file organization. No `io`, `os`, `package`, or `debug` standard library access. The Lua/WASM boundary is defined by capabilities: Lua handles config values and event reactions with no side effects beyond the terminal; WASM plugins handle anything requiring I/O, network, or persistent storage.
 
 ## First Launch Experience
 
@@ -73,33 +73,11 @@ Cmd+Shift+P → :settings
 
 **Font preview in the palette** — same idea. Arrow through installed monospace fonts, see the change live, pick one.
 
-## Two Tiers of Config Files
+## Config File
 
-### Flat Config (basics)
+`~/.config/oakterm/config.lua` — Lua-only configuration, from simple values to logic and conditionals.
 
-`~/.config/oakterm/config` — key-value pairs, no ceremony:
-
-```ini
-font-family = JetBrains Mono
-font-size = 14
-font-ligatures = true
-font-fallbacks = Symbols Nerd Font, Apple Color Emoji
-appearance = system
-theme-dark = catppuccin-mocha
-theme-light = catppuccin-latte
-cursor-style = block
-scrollback-lines = 10000
-```
-
-`appearance` accepts: `system` (follows OS), `dark`, or `light`. When set to `system`, the terminal listens for OS appearance changes and switches between `theme-dark` and `theme-light` instantly. No restart, no flicker.
-
-Single `theme` still works as a shorthand — it sets both dark and light to the same value and locks appearance to that theme regardless of OS setting.
-
-Familiar to Ghostty users. The settings palette reads and writes this file.
-
-### Lua Config (programmable)
-
-`~/.config/oakterm/config.lua` — for when you need logic, conditionals, or dynamic behavior:
+`appearance` accepts: `"system"` (follows OS), `"dark"`, or `"light"`. When set to `"system"`, the terminal listens for OS appearance changes and switches between `theme_dark` and `theme_light` instantly. No restart, no flicker. A single `theme` value works as a shorthand — it sets both dark and light to the same value and locks appearance to that theme regardless of OS setting.
 
 ```lua
 -- Dynamic font size based on display
@@ -146,18 +124,14 @@ workspace.on_create = function(ws)
 end
 ```
 
-### Precedence
-
-Lua config takes priority if both exist. The flat config is syntactic sugar — it maps 1:1 to Lua settings.
-
 ### Project-Level Config
 
-`<project>/.oakterm/config` or `<project>/.oakterm/config.lua` — project-specific overrides:
+`<project>/.oakterm/config.lua` — project-specific overrides:
 
-```ini
-# .oakterm/config in a monorepo
-font-size = 13
-theme = github-dark
+```lua
+-- .oakterm/config.lua in a monorepo
+font_size = 13
+theme = "github-dark"
 ```
 
 This lets teams share terminal config per-repo without touching personal settings.
@@ -180,14 +154,19 @@ Cmd+Shift+P → :settings agent
 └──────────────────────────────────────────────────┘
 ```
 
-Plugin settings live in the same config file, namespaced:
+Plugin settings live in the same config file, namespaced as Lua tables:
 
-```ini
-# In flat config
-agent.default-provider = claude
-agent.auto-worktree = true
-context-engine.ai-backend = ollama
-context-engine.ai-model = codellama:7b
+```lua
+plugins = {
+  ["agent-manager"] = {
+    default_provider = "claude",
+    auto_worktree = true,
+  },
+  ["context-engine"] = {
+    ai_backend = "ollama",
+    ai_model = "codellama:7b",
+  },
+}
 ```
 
 ## Keybind Configuration
@@ -209,23 +188,15 @@ Cmd+Shift+P → :keybinds
 
 Click Edit → press your desired key combo → done. Written to config.
 
-In the flat config file:
-
-```ini
-keybind = ctrl+\ = split-right
-keybind = ctrl+- = split-down
-keybind = ctrl+f = split-float
-keybind = ctrl+b = toggle-sidebar
-keybind = ctrl+g = grid-view
-```
-
-In Lua (for conditionals):
+In `config.lua`:
 
 ```lua
 keybinds = {
   { key = "ctrl+\\", action = "split-right" },
   { key = "ctrl+-", action = "split-down" },
   { key = "ctrl+f", action = "split-float", when = "not_floating" },
+  { key = "ctrl+b", action = "toggle-sidebar" },
+  { key = "ctrl+g", action = "grid-view" },
 }
 ```
 
@@ -240,16 +211,14 @@ keybinds = {
 
 Consistency across all config surfaces:
 
-| Context                      | Convention        | Example                                               |
-| ---------------------------- | ----------------- | ----------------------------------------------------- |
-| Flat config keys             | kebab-case        | `font-family`, `theme-dark`, `scrollback-lines`       |
-| Flat config plugin namespace | `plugin-name.key` | `agent.default-provider`, `context-engine.ai-backend` |
-| Lua config keys              | snake_case        | `font_size`, `ssh_domains`, `shell_integration`       |
-| Lua config plugin namespace  | table             | `plugins["agent-manager"].default_provider`           |
-| Keybind actions              | kebab-case        | `split-right`, `toggle-sidebar`, `copy-or-interrupt`  |
-| CLI flags                    | kebab-case        | `--log-level`, `--log-filter`                         |
+| Context                 | Convention | Example                                              |
+| ----------------------- | ---------- | ---------------------------------------------------- |
+| Config keys             | snake_case | `font_size`, `ssh_domains`, `shell_integration`      |
+| Config plugin namespace | table      | `plugins["agent-manager"].default_provider`          |
+| Keybind actions         | kebab-case | `split-right`, `toggle-sidebar`, `copy-or-interrupt` |
+| CLI flags               | kebab-case | `--log-level`, `--log-filter`                        |
 
-The flat config and Lua config map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles the translation.
+All configuration uses Lua with snake_case keys. See [ADR 0005](../adrs/0005-lua-sandboxed-config.md).
 
 ## Design Principles
 
@@ -257,7 +226,7 @@ The flat config and Lua config map 1:1. `font-family` in flat = `font_family` in
 2. **The palette is the settings UI.** No separate preferences window, no JSON editing required.
 3. **Live preview everything.** Themes, fonts, colors — see the change before committing.
 4. **Write to file, not magic state.** Every change the palette makes is written to the config file. `cat config` always shows the truth.
-5. **Progressive complexity.** Flat file → Lua → project overrides. You only reach for the next level when you need it.
+5. **Progressive complexity.** Simple values → conditionals → event handlers → project overrides. You only reach for the next level when you need it.
 
 ## Related Docs
 

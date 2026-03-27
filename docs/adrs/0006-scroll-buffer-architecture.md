@@ -95,12 +95,12 @@ Limits are byte-based, not line-count-based. A line at 200 columns costs 2.5x wh
 
 ### User-Facing Configuration
 
-| Option                      | Default | Description                                           |
-| --------------------------- | ------- | ----------------------------------------------------- |
-| `scrollback-limit`          | `50MB`  | Hot buffer size per surface. Byte-based.              |
-| `scrollback-archive`        | `true`  | Enable disk-backed cold archive.                      |
-| `scrollback-archive-limit`  | `1GB`   | Per-surface disk archive limit.                       |
-| `save-alternate-scrollback` | `true`  | Capture alternate screen lines to primary scrollback. |
+| Option                      | Default  | Description                                           |
+| --------------------------- | -------- | ----------------------------------------------------- |
+| `scrollback_limit`          | `"50MB"` | Hot buffer size per surface. Byte-based.              |
+| `scrollback_archive`        | `true`   | Enable disk-backed cold archive.                      |
+| `scrollback_archive_limit`  | `"1GB"`  | Per-surface disk archive limit.                       |
+| `save_alternate_scrollback` | `true`   | Capture alternate screen lines to primary scrollback. |
 
 ### Internal Defaults (Not User-Configurable)
 
@@ -121,7 +121,7 @@ Memory impact at default 50 MB hot buffer:
 | 10 panes | 500 MB |
 | 20 panes | 1 GB   |
 
-Safe on 8 GB machines with 10 panes. Power users on 16-32 GB machines can increase `scrollback-limit` up to 512 MB per surface.
+Safe on 8 GB machines with 10 panes. Power users on 16-32 GB machines can increase `scrollback_limit` up to 512 MB per surface.
 
 Disk archive at default 1 GB per surface with 5:1 compression:
 

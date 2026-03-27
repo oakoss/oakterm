@@ -63,9 +63,10 @@ explore    decide       formalize     build (trekker)
 
 ### General
 
-- **Config naming**: kebab-case (flat), snake_case (Lua), 1:1 mapping
+- **Config naming**: snake_case in Lua (config and themes are Lua, per ADR-0005)
+- **Plugin manifest naming**: kebab-case in TOML (`oakterm-plugin.toml` — static metadata, not executable)
 - **Plugin naming**: lowercase kebab-case registry name, title case display name
-- **Theme naming**: lowercase kebab-case file name, title case display name
+- **Theme naming**: lowercase kebab-case file name (`catppuccin-mocha.lua`), title case display name
 - **Cross-references**: relative paths — `See [Memory Management](15-memory-management.md)`
 - **Keybinds**: borrow from OS/VS Code/tmux/vim/browser conventions, never invent new muscle memory
 - **Markdown**: fenced code blocks always have a language tag

@@ -36,7 +36,7 @@ struct HotBuffer {
     /// Number of active rows (may be less than capacity during startup).
     len: usize,
 
-    /// Maximum capacity in bytes. Corresponds to `scrollback-limit` config.
+    /// Maximum capacity in bytes. Corresponds to `scrollback_limit` config.
     max_bytes: usize,
 
     /// Current memory usage in bytes.
@@ -74,7 +74,7 @@ struct ColdArchive {
     /// Current archive size on disk.
     disk_bytes: u64,
 
-    /// Maximum archive size. Corresponds to `scrollback-archive-limit` config.
+    /// Maximum archive size. Corresponds to `scrollback_archive_limit` config.
     max_disk_bytes: u64,
 
     /// Total row count in the archive.
@@ -147,7 +147,7 @@ Per ADR-0006, lines that scroll off the top of the alternate screen viewport are
 
 **Mechanism:**
 
-1. When the alternate grid (Spec-0003 ScreenSet) scrolls up and a row exits the top of the scroll region, the daemon checks the `save-alternate-scrollback` config option.
+1. When the alternate grid (Spec-0003 ScreenSet) scrolls up and a row exits the top of the scroll region, the daemon checks the `save_alternate_scrollback` config option.
 2. If enabled (default: true), the row is appended to the primary screen's hot ring buffer as if it were a normal scrollback line.
 3. If the hot buffer is full, normal pruning applies (row may be archived to disk).
 4. If disabled, the row is discarded.
@@ -171,13 +171,6 @@ config.scrollback_archive_limit = "1GB"
 -- Capture alternate screen lines to primary scrollback. Default: true.
 config.save_alternate_scrollback = true
 ```
-
-**Flat config equivalents (kebab-case):**
-
-- `scrollback-limit` = `50MB`
-- `scrollback-archive` = `true`
-- `scrollback-archive-limit` = `1GB`
-- `save-alternate-scrollback` = `true`
 
 **Size parsing:** Values like `50MB`, `1GB` are parsed as byte counts. Accepted suffixes: `KB` (1024), `MB` (1024²), `GB` (1024³). No suffix = raw bytes.
 

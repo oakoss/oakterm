@@ -75,10 +75,11 @@ Reverts to the previous version. Keeps the last 2 versions on disk.
 
 ### Release Channels
 
-```ini
-update-channel = stable    # default — tested releases
-update-channel = nightly   # latest builds, may be unstable
-update-channel = none      # disable update checks entirely
+```lua
+-- In config.lua
+update_channel = "stable"    -- default, tested releases
+-- update_channel = "nightly" -- latest builds, may be unstable
+-- update_channel = "none"    -- disable update checks entirely
 ```
 
 ### Package Manager Awareness

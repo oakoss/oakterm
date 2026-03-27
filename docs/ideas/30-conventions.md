@@ -12,15 +12,13 @@ Naming and formatting standards across the project. When in doubt, check here.
 
 ## Config Naming
 
-| Context                      | Convention                  | Example                                               |
-| ---------------------------- | --------------------------- | ----------------------------------------------------- |
-| Flat config keys             | kebab-case                  | `font-family`, `theme-dark`, `scrollback-lines`       |
-| Flat config plugin namespace | `plugin-name.key`           | `agent.default-provider`, `context-engine.ai-backend` |
-| Lua config keys              | snake_case                  | `font_size`, `ssh_domains`, `shell_integration`       |
-| Lua config plugin namespace  | table                       | `plugins["agent-manager"].default_provider`           |
-| CLI flags                    | kebab-case with `--` prefix | `--log-level`, `--log-filter`                         |
+| Context                 | Convention                  | Example                                         |
+| ----------------------- | --------------------------- | ----------------------------------------------- |
+| Config keys (Lua)       | snake_case                  | `font_size`, `ssh_domains`, `shell_integration` |
+| Config plugin namespace | table                       | `plugins["agent-manager"].default_provider`     |
+| CLI flags               | kebab-case with `--` prefix | `--log-level`, `--log-filter`                   |
 
-Flat and Lua map 1:1. `font-family` in flat = `font_family` in Lua. The settings palette handles translation.
+All configuration uses Lua with snake_case keys. See [ADR 0005](../adrs/0005-lua-sandboxed-config.md).
 
 ## Keybind Philosophy
 
@@ -83,7 +81,7 @@ All palette commands use `:` prefix + kebab-case:
 
 ## Theme Naming
 
-- File name: lowercase kebab-case (`catppuccin-mocha.toml`, `high-contrast-dark.toml`)
+- File name: lowercase kebab-case (`catppuccin-mocha.lua`, `high-contrast-dark.lua`)
 - Display name: title case for UI (`Catppuccin Mocha`, `High Contrast Dark`)
 - Variant field: `"dark"` or `"light"` (lowercase)
 
@@ -106,7 +104,7 @@ The core design. Diagrams, ASCII mockups, examples.
 
 ## [Configuration]
 
-Config examples in both flat and Lua format.
+Config examples in Lua format.
 
 ## [Plugin API / Primitives Used]
 
@@ -126,9 +124,9 @@ Not every doc needs every section. Research docs (`10`, `11`, `16`) have their o
 - Reviews: `YYYY-MM-DD-HHMMSS-short-title.md` in `docs/reviews/` — timestamped for ordering
 - ADRs: `NNNN-short-title.md` in `docs/adrs/` — numbered sequentially, never renumber
 - Specs: `NNNN-short-title.md` in `docs/specs/` — numbered sequentially
-- Theme files: `name.toml` — in `~/.config/oakterm/themes/`
-- Plugin manifests: `oakterm-plugin.toml`
-- Config: `config` (flat) or `config.lua` (Lua) — in `~/.config/oakterm/`
+- Theme files: `name.lua` — in `~/.config/oakterm/themes/`
+- Plugin manifests: `oakterm-plugin.toml` (static metadata, TOML — not Lua)
+- Config: `config.lua` — in `~/.config/oakterm/`
 
 ## Cross-References
 

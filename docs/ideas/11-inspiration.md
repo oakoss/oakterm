@@ -31,7 +31,7 @@ What we took from each terminal and tool — and what we deliberately left out.
 
 ### Ghostty
 
-**Took:** Platform-native chrome (AppKit/GTK), Zig-level performance as the latency target, simple flat config as baseline
+**Took:** Platform-native chrome (AppKit/GTK), Zig-level performance as the latency target, simple config-file approach as baseline
 **Left:** Zig as implementation language (Rust ecosystem is better for our plugin/networking needs)
 
 ### Alacritty

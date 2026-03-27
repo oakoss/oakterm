@@ -124,25 +124,19 @@ When DND is active:
 - `Cmd+Shift+U` still works (you can still check on demand)
 - A small 🔕 indicator in the status bar shows DND is active
 
-```ini
-dnd = false                     # default
-dnd-suppress-banners = true     # suppress in-terminal banners during DND
-dnd-suppress-os = true          # suppress OS notifications during DND
+```lua
+-- In config.lua
+dnd = {
+  enabled = false,              -- default
+  suppress_banners = true,      -- suppress in-terminal banners during DND
+  suppress_os = true,           -- suppress OS notifications during DND
+}
 ```
 
 ## Configuration
 
-```ini
-# Flat config
-notification-banners = true
-notification-os = true
-notification-os-min-duration = 10       # only OS-notify for commands > 10s
-notification-sound = false              # no sound (use a11y sound cues plugin for this)
-notification-banner-duration = 5        # auto-dismiss after 5 seconds
-notification-banner-position = top      # "top" or "bottom"
-```
-
 ```lua
+-- In config.lua
 notifications = {
   banners = true,
   os = true,

@@ -307,7 +307,7 @@ A lightweight, public index — not an app store. **All registry plugins must be
 
 ### Plugin Manifest
 
-Every plugin ships a `oakterm-plugin.toml`:
+Every plugin ships a `oakterm-plugin.toml` (static metadata, not executable):
 
 ```toml
 [plugin]
@@ -328,6 +328,8 @@ network = false
 fs-read = true
 pane-surface = false
 ```
+
+Plugin manifests use TOML (not Lua) because they are static package metadata that the registry and package manager must parse safely without executing code. Capabilities use kebab-case to match the capability names in the WASM API.
 
 ### What It's Not
 

@@ -145,15 +145,8 @@ The palette is fully keyboard-navigable and screen reader accessible:
 
 Palette behavior is configurable:
 
-```ini
-# Flat config
-palette-show-recent = true
-palette-max-results = 20
-palette-position = center
-```
-
 ```lua
--- Lua config
+-- In config.lua
 palette = {
   show_recent = true,
   max_results = 20,
