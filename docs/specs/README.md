@@ -28,6 +28,7 @@ Copy [0000-template.md](0000-template.md) and renumber.
 
 ## Index
 
-| Spec                                 | Title                | Status | ADRs | Tags |
-| ------------------------------------ | -------------------- | ------ | ---- | ---- |
-| [0001](0001-daemon-wire-protocol.md) | Daemon Wire Protocol | draft  | 0007 | core |
+| Spec                                 | Title                        | Status | ADRs      | Tags |
+| ------------------------------------ | ---------------------------- | ------ | --------- | ---- |
+| [0001](0001-daemon-wire-protocol.md) | Daemon Wire Protocol         | draft  | 0007      | core |
+| [0002](0002-vt-parser.md)            | VT Parser & Terminal Handler | draft  | 0004,0008 | core |
