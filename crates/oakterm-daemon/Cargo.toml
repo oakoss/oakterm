@@ -7,6 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+oakterm-protocol = { path = "../oakterm-protocol" }
+oakterm-pty = { path = "../oakterm-pty" }
+oakterm-terminal = { path = "../oakterm-terminal" }
+rustix = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+
 [build-dependencies]
 vergen = { workspace = true }
 vergen-gitcl = { workspace = true }

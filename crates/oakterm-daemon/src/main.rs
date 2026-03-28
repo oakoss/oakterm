@@ -1,10 +1,22 @@
+use oakterm_daemon::server;
+
 fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("{}", version_string());
         return;
     }
 
-    println!("oakterm-daemon");
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(async {
+        let daemon = server::Daemon::new(80, 24).expect("failed to create daemon");
+        eprintln!(
+            "oakterm-daemon listening on {}",
+            daemon.socket_path().display()
+        );
+        if let Err(e) = daemon.run().await {
+            eprintln!("daemon error: {e}");
+        }
+    });
 }
 
 fn version_string() -> String {
