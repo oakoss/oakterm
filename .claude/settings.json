@@ -16,5 +16,36 @@
     "autoAllowBashIfSandboxed": false,
     "enabled": false
   },
-  "spinnerTipsEnabled": false
+  "spinnerTipsEnabled": false,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Edit(**.rs)|Write(**.rs)",
+            "command": ".claude/hooks/cargo-fmt.sh"
+          },
+          {
+            "type": "command",
+            "if": "Edit(**.md)|Write(**.md)|Edit(**.toml)|Write(**.toml)|Edit(**.yml)|Write(**.yml)|Edit(**.yaml)|Write(**.yaml)|Edit(**.json)|Write(**.json)",
+            "command": ".claude/hooks/prettier-fmt.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git push -f *)|Bash(git push --force*)|Bash(git reset --hard*)|Bash(git checkout -- .)|Bash(git restore .)|Bash(git clean -f*)|Bash(git commit --amend*)",
+            "command": ".claude/hooks/block-destructive-git.sh"
+          }
+        ]
+      }
+    ]
+  }
 }
