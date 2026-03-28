@@ -6,12 +6,16 @@ fn main() {
         return;
     }
 
+    let persist = std::env::args().any(|a| a == "--persist");
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let daemon = server::Daemon::new(80, 24).expect("failed to create daemon");
+        let mut daemon = server::Daemon::new(80, 24).expect("failed to create daemon");
+        daemon.set_persist(persist);
         eprintln!(
-            "oakterm-daemon listening on {}",
-            daemon.socket_path().display()
+            "oakterm-daemon listening on {}{}",
+            daemon.socket_path().display(),
+            if persist { " (persist mode)" } else { "" }
         );
         if let Err(e) = daemon.run().await {
             eprintln!("daemon error: {e}");
