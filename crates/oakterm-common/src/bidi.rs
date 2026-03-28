@@ -1,3 +1,13 @@
+/// Per-row base text direction. Reserved for `BiDi` (ADR-0009).
+/// Phase 0 always uses `Ltr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Direction {
+    #[default]
+    Ltr,
+    Rtl,
+    Auto,
+}
+
 /// Maps between logical (PTY order) and visual (display order) column positions.
 ///
 /// Phase 0: identity implementation. `BiDi` implementation replaces this with

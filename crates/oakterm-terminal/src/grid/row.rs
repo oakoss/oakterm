@@ -1,14 +1,5 @@
 use super::cell::Cell;
-
-/// Per-row base text direction. Reserved for `BiDi` (ADR-0009).
-/// Phase 0 always uses `Ltr`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Direction {
-    #[default]
-    Ltr,
-    Rtl,
-    Auto,
-}
+pub use oakterm_common::bidi::Direction;
 
 /// Shell integration semantic mark from OSC 133.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
