@@ -100,6 +100,8 @@ struct App {
     #[allow(dead_code)] // Must stay alive for the window's lifetime.
     accesskit: Option<accesskit_winit::Adapter>,
     last_sent_dims: (u16, u16),
+    /// Set after initial Resize is sent. Gates on first `RedrawRequested`.
+    initial_resize_sent: bool,
 }
 
 impl App {
@@ -114,6 +116,7 @@ impl App {
             daemon_process: None,
             accesskit: None,
             last_sent_dims: (0, 0),
+            initial_resize_sent: false,
         }
     }
 }
@@ -207,10 +210,9 @@ impl ApplicationHandler<UserEvent> for App {
                             let (cols, rows) = window_to_grid_dims(size, &font.metrics);
                             grid.resize(cols, rows);
 
-                            // Skip if dimensions haven't changed (avoids redundant SIGWINCH).
-                            if (cols, rows) != self.last_sent_dims {
+                            // Defer until RedrawRequested; startup fires multiple Resized events.
+                            if self.initial_resize_sent && (cols, rows) != self.last_sent_dims {
                                 self.last_sent_dims = (cols, rows);
-
                                 if let Some(daemon) = &mut self.daemon {
                                     let msg = Resize {
                                         pane_id: 0,
@@ -270,6 +272,44 @@ impl ApplicationHandler<UserEvent> for App {
             #[allow(clippy::cast_precision_loss)] // viewport dimensions fit in f32
             WindowEvent::RedrawRequested => {
                 let Some(gpu) = &mut self.gpu else { return };
+
+                // First RedrawRequested: window dimensions have settled. Send the
+                // initial Resize that triggers PTY spawn on the daemon side.
+                if !self.initial_resize_sent {
+                    #[allow(clippy::cast_possible_truncation)]
+                    if let (Some(font), Some(_), Some(daemon)) =
+                        (&self.font, &self.grid, &mut self.daemon)
+                    {
+                        let size =
+                            winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
+                        let (cols, rows) = window_to_grid_dims(size, &font.metrics);
+                        self.last_sent_dims = (cols, rows);
+                        let msg = Resize {
+                            pane_id: 0,
+                            cols,
+                            rows,
+                            pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+                            pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+                        };
+                        match msg.to_frame() {
+                            Ok(frame) => {
+                                if let Err(e) = daemon.send_frame(&frame) {
+                                    eprintln!("daemon write failed: {e}");
+                                    self.daemon = None;
+                                    event_loop.exit();
+                                    return;
+                                }
+                                self.initial_resize_sent = true;
+                            }
+                            Err(e) => {
+                                eprintln!("fatal: failed to encode initial resize: {e}");
+                                event_loop.exit();
+                                return;
+                            }
+                        }
+                    }
+                    // If font/grid/daemon not ready, retry on next RedrawRequested.
+                }
                 let frame = match gpu.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(frame)
                     | CurrentSurfaceTexture::Suboptimal(frame) => frame,
