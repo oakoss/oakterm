@@ -1,15 +1,133 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
+use oakterm_renderer::pipeline::{BgUniforms, GlyphVertex, TextUniforms};
 
-fn frame_render_time(c: &mut Criterion) {
-    let mut group = c.benchmark_group("frame_render");
-    group.bench_function("placeholder", |b| {
+fn prepopulated_atlas() -> AtlasPlane {
+    let mut atlas = AtlasPlane::new();
+    for i in 0..100u32 {
+        let key = GlyphCacheKey {
+            font_id: 0,
+            glyph_id: i,
+            size_tenths: 140,
+        };
+        atlas.insert(key, 8, 14);
+    }
+    atlas
+}
+
+fn atlas_lookup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("atlas");
+
+    group.bench_function("cache_hit", |b| {
+        let mut atlas = prepopulated_atlas();
+        let key = GlyphCacheKey {
+            font_id: 0,
+            glyph_id: 50,
+            size_tenths: 140,
+        };
         b.iter(|| {
-            // TODO: measure time to GPU submit
-            std::hint::black_box(42)
+            std::hint::black_box(atlas.get(&key));
         });
     });
+
+    group.bench_function("cache_miss_insert", |b| {
+        b.iter_batched(
+            prepopulated_atlas,
+            |mut atlas| {
+                let key = GlyphCacheKey {
+                    font_id: 0,
+                    glyph_id: 999,
+                    size_tenths: 140,
+                };
+                std::hint::black_box(atlas.insert(key, 8, 14));
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
     group.finish();
 }
 
-criterion_group!(benches, frame_render_time);
+fn build_bg_colors(c: &mut Criterion) {
+    let cols = 120u32;
+    let rows = 40u32;
+    let count = (cols * rows) as usize;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let cells: Vec<[u8; 3]> = (0..count).map(|i| [(i % 256) as u8, 0, 0]).collect();
+
+    c.bench_function("build_bg_colors_120x40", |b| {
+        b.iter(|| {
+            let colors: Vec<u32> = cells
+                .iter()
+                .map(|c| {
+                    0xFF_00_00_00
+                        | (u32::from(c[2]) << 16)
+                        | (u32::from(c[1]) << 8)
+                        | u32::from(c[0])
+                })
+                .collect();
+            std::hint::black_box(colors);
+        });
+    });
+}
+
+fn build_uniforms(c: &mut Criterion) {
+    c.bench_function("build_uniforms", |b| {
+        b.iter(|| {
+            let bg = BgUniforms {
+                cols: 120,
+                rows: 40,
+                cell_width: 8.0,
+                cell_height: 16.0,
+                viewport_width: 960.0,
+                viewport_height: 640.0,
+                pad: [0.0; 2],
+            };
+            let text = TextUniforms {
+                cell_width: 8.0,
+                cell_height: 16.0,
+                viewport_width: 960.0,
+                viewport_height: 640.0,
+                atlas_width: 256.0,
+                atlas_height: 256.0,
+                text_contrast: 1.2,
+                pad: 0.0,
+            };
+            std::hint::black_box((bg, text));
+        });
+    });
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn build_glyph_vertices(c: &mut Criterion) {
+    let count = 2000;
+    c.bench_function("build_glyph_vertices_2000", |b| {
+        b.iter(|| {
+            let glyphs: Vec<GlyphVertex> = (0..count)
+                .map(|i| {
+                    let col = i % 120;
+                    let row = i / 120;
+                    GlyphVertex {
+                        pos: [col as f32 * 8.0, row as f32 * 16.0],
+                        size: [8.0, 14.0],
+                        uv_origin: [0.0, 0.0],
+                        fg_color: [1.0, 1.0, 1.0, 1.0],
+                        bg_luminance: 0.0,
+                        pad: [0.0; 3],
+                    }
+                })
+                .collect();
+            std::hint::black_box(glyphs);
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    atlas_lookup,
+    build_bg_colors,
+    build_uniforms,
+    build_glyph_vertices
+);
 criterion_main!(benches);
