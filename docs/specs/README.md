@@ -35,3 +35,4 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0003](0003-screen-buffer.md)        | Screen Buffer                | draft  | 0006,0001,0009 | core   |
 | [0004](0004-scroll-buffer.md)        | Scroll Buffer & Archive      | draft  | 0006           | core   |
 | [0005](0005-lua-config-runtime.md)   | Lua Config Runtime           | draft  | 0005           | config |
+| [0006](0006-accessibility-bridge.md) | Accessibility Bridge         | draft  | 0001           | a11y   |
