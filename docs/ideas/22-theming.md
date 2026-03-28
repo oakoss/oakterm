@@ -1,12 +1,14 @@
 ---
 title: 'Theming'
-status: draft
+status: reviewing
 category: cross-cutting
 description: 'Deep customization, Lua format, inheritance, live preview'
 tags: ['themes', 'lua', 'colors', 'ui-chrome', 'live-preview', 'wcag']
 ---
 
 # Theming
+
+> **Note:** Theme files use Lua format (`.lua`), consistent with the Lua-only config decision in [ADR 0005](../adrs/0005-lua-sandboxed-config.md). Theme keys use snake_case.
 
 Users should be able to change anything they want. The theming system is deep — not just 16 ANSI colors, but every visual element the terminal renders.
 
