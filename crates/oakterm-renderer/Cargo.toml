@@ -15,6 +15,9 @@ swash = { workspace = true }
 etagere = { workspace = true }
 bytemuck = { workspace = true }
 
+[features]
+gpu-tests = []
+
 [dev-dependencies]
 criterion = { workspace = true }
 pollster = "0.4"
