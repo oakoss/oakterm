@@ -32,7 +32,7 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
 **I3. Plan** — for non-trivial work, align on approach. Use `/tracer-bullets`, `/grill-me`, or `/improve-codebase-architecture`.
 
-**I4. TDD** — `/tdd` for core functions. Red-green-refactor with adversarial tests and clippy inline.
+**I4. TDD** — `/tdd` for core functions. Red-green-refactor with adversarial tests and clippy inline. The bigger the task, the more TDD matters — decompose into vertical slices (e.g., "binds socket" → "accepts connection" → "completes handshake"), not horizontal layers.
 
 **I5. Implement** — code until tests pass and clippy is clean.
 

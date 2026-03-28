@@ -31,4 +31,4 @@ let len: u16 = data.len().try_into().map_err(|_| {
 
 ## Workspace Lints
 
-`unsafe_code = "deny"` workspace-wide. Only `oakterm-pty` has `#![allow(unsafe_code)]` for PTY `pre_exec`. Minimize unsafe blocks; prefer safe abstractions (rustix over raw libc).
+`unsafe_code = "deny"` workspace-wide. `oakterm-pty` allows unsafe for PTY `pre_exec`, `oakterm-daemon` for `BorrowedFd::borrow_raw` on the PTY async read. Minimize unsafe blocks; prefer safe abstractions (rustix over raw libc). Future: oakterm-pty should expose a safe async-ready API to eliminate daemon unsafe.
