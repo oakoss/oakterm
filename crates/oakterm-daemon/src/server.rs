@@ -27,21 +27,28 @@ use tokio_util::codec::{Decoder, Encoder};
 /// Handshake timeout per Spec-0001.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// PTY lifecycle: `NotSpawned` until the first client Resize triggers spawn.
+enum PtyState {
+    /// Waiting for first client Resize to determine dimensions.
+    NotSpawned,
+    /// Master fd for writes and resizes. The `Pty` struct is owned by the read loop.
+    Running(RawFd),
+}
+
 /// Daemon state shared across tasks.
 pub struct Daemon {
     grid: Arc<Mutex<Grid>>,
     dirty_tx: watch::Sender<u64>,
     dirty_rx: watch::Receiver<u64>,
     socket_path: std::path::PathBuf,
-    cols: u16,
-    rows: u16,
     /// When false (default), the daemon exits after the last client disconnects.
     /// When true, the daemon stays running with zero clients (headless/persist mode).
     persist: bool,
 }
 
 impl Daemon {
-    /// Create a new daemon with the given terminal dimensions.
+    /// Create a new daemon. `cols` and `rows` set the initial grid size;
+    /// actual PTY dimensions come from the first client Resize.
     ///
     /// # Errors
     /// Returns an error if the socket path cannot be resolved.
@@ -53,8 +60,6 @@ impl Daemon {
             dirty_tx,
             dirty_rx,
             socket_path: path,
-            cols,
-            rows,
             persist: false,
         })
     }
@@ -64,10 +69,11 @@ impl Daemon {
         self.persist = persist;
     }
 
-    /// Run the daemon: start PTY, listen for connections.
+    /// Listen for connections. The PTY spawns on the first client Resize
+    /// so the shell starts at the correct dimensions.
     ///
     /// # Errors
-    /// Returns an error if the listener or PTY fails to start.
+    /// Returns an error if the listener fails to start.
     pub async fn run(&self) -> io::Result<()> {
         if self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path)?;
@@ -81,14 +87,7 @@ impl Daemon {
             std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o700))?;
         }
 
-        let pty = oakterm_pty::spawn_shell(oakterm_pty::WinSize {
-            cols: self.cols,
-            rows: self.rows,
-        })?;
-        let master_fd = pty.master_raw_fd();
-        let grid = Arc::clone(&self.grid);
-        let dirty_tx = self.dirty_tx.clone();
-        tokio::spawn(pty_read_loop(pty, grid, dirty_tx));
+        let pty_state = Arc::new(Mutex::new(PtyState::NotSpawned));
 
         // Phase 0: counts all clients. ADR-0007 says "last window closes" —
         // when control clients exist, filter by ClientType::Gui.
@@ -102,13 +101,15 @@ impl Daemon {
                     let (stream, _) = result?;
                     let grid = Arc::clone(&self.grid);
                     let dirty_rx = self.dirty_rx.clone();
+                    let dirty_tx = self.dirty_tx.clone();
+                    let pty = Arc::clone(&pty_state);
                     let count = Arc::clone(&client_count);
                     let tx = shutdown_tx.clone();
 
                     count.fetch_add(1, Ordering::AcqRel);
 
                     tokio::spawn(async move {
-                        handle_client(stream, grid, dirty_rx, master_fd).await;
+                        handle_client(stream, grid, dirty_rx, dirty_tx, pty).await;
                         let remaining = count.fetch_sub(1, Ordering::AcqRel) - 1;
                         if remaining == 0 && !persist {
                             let _ = tx.send(true);
@@ -190,7 +191,8 @@ async fn handle_client(
     mut stream: UnixStream,
     grid: Arc<Mutex<Grid>>,
     mut dirty_rx: watch::Receiver<u64>,
-    master_fd: RawFd,
+    dirty_tx: watch::Sender<u64>,
+    pty_state: Arc<Mutex<PtyState>>,
 ) {
     let mut codec = FrameCodec;
     let mut read_buf = BytesMut::with_capacity(4096);
@@ -261,7 +263,7 @@ async fn handle_client(
                     break;
                 }
                 while let Ok(Some(frame)) = codec.decode(&mut read_buf) {
-                    match handle_request(&frame, &grid, master_fd).await {
+                    match handle_request(&frame, &grid, &pty_state, &dirty_tx).await {
                         RequestResult::Response(response) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
                                 break 'outer;
@@ -285,31 +287,74 @@ enum RequestResult {
 
 /// Handle a single client request frame.
 #[allow(clippy::too_many_lines)]
-async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>, master_fd: RawFd) -> RequestResult {
+async fn handle_request(
+    frame: &Frame,
+    grid: &Arc<Mutex<Grid>>,
+    pty_state: &Mutex<PtyState>,
+    dirty_tx: &watch::Sender<u64>,
+) -> RequestResult {
     match frame.msg_type {
         MSG_KEY_INPUT => {
-            if let Ok(msg) = KeyInput::decode(&frame.payload) {
-                if !msg.key_data.is_empty() {
-                    let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(master_fd) };
-                    let _ = rustix::io::write(borrowed, &msg.key_data);
+            let state = pty_state.lock().await;
+            if let PtyState::Running(fd) = *state {
+                drop(state);
+                if let Ok(msg) = KeyInput::decode(&frame.payload) {
+                    if !msg.key_data.is_empty() {
+                        let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
+                        let _ = rustix::io::write(borrowed, &msg.key_data);
+                    }
                 }
             }
             RequestResult::NoResponse
         }
         MSG_RESIZE => {
             if let Ok(msg) = Resize::decode(&frame.payload) {
-                let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(master_fd) };
-                if oakterm_pty::resize_fd(
-                    borrowed,
-                    msg.cols,
-                    msg.rows,
-                    msg.pixel_width,
-                    msg.pixel_height,
-                )
-                .is_ok()
-                {
-                    let mut g = grid.lock().await;
-                    g.resize(msg.cols, msg.rows);
+                let mut state = pty_state.lock().await;
+                match *state {
+                    PtyState::NotSpawned => {
+                        // First Resize from any client: spawn PTY at these dimensions.
+                        // WinSize omits pixel dimensions (set_winsize uses 0); fine
+                        // until sixel/kitty graphics need them (Phase 0.4).
+                        // Note: spawn_shell blocks briefly (~1-5ms for fork/exec)
+                        // while holding the async Mutex. Acceptable for Phase 0;
+                        // use spawn_blocking if this becomes a contention issue.
+                        match oakterm_pty::spawn_shell(oakterm_pty::WinSize {
+                            cols: msg.cols,
+                            rows: msg.rows,
+                        }) {
+                            Ok(pty) => {
+                                let fd = pty.master_raw_fd();
+                                *state = PtyState::Running(fd);
+                                drop(state);
+
+                                grid.lock().await.resize(msg.cols, msg.rows);
+
+                                let grid_clone = Arc::clone(grid);
+                                let dtx = dirty_tx.clone();
+                                tokio::spawn(pty_read_loop(pty, grid_clone, dtx));
+                            }
+                            Err(e) => {
+                                // State stays NotSpawned; next Resize retries.
+                                // TREK-21: add Failed variant and MSG_ERROR response.
+                                eprintln!("failed to spawn PTY: {e}");
+                            }
+                        }
+                    }
+                    PtyState::Running(fd) => {
+                        drop(state);
+                        let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
+                        if oakterm_pty::resize_fd(
+                            borrowed,
+                            msg.cols,
+                            msg.rows,
+                            msg.pixel_width,
+                            msg.pixel_height,
+                        )
+                        .is_ok()
+                        {
+                            grid.lock().await.resize(msg.cols, msg.rows);
+                        }
+                    }
                 }
             }
             RequestResult::NoResponse
