@@ -118,12 +118,14 @@ fn load_face(
     let data = font_data?;
 
     let face = ttf_parser::Face::parse(&data, index).ok()?;
-    let metrics = compute_metrics(&face, font_size);
+    let metrics = compute_metrics_from_face(&face, font_size);
 
     Some((data, metrics))
 }
 
-fn compute_metrics(face: &ttf_parser::Face<'_>, font_size: f32) -> FontMetrics {
+/// Compute cell metrics from a parsed font face. Public for use by shapers.
+#[must_use]
+pub fn compute_metrics_from_face(face: &ttf_parser::Face<'_>, font_size: f32) -> FontMetrics {
     let units_per_em = f32::from(face.units_per_em());
     let scale = font_size / units_per_em;
 

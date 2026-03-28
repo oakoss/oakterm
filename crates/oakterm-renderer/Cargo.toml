@@ -8,11 +8,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+wgpu = { workspace = true }
 ttf-parser = { workspace = true }
 fontdb = { workspace = true }
+swash = { workspace = true }
+etagere = { workspace = true }
+bytemuck = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+pollster = "0.4"
+tokio = { workspace = true }
 
 [[bench]]
 name = "frame_render"
