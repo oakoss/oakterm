@@ -18,20 +18,28 @@ Ship a usable terminal as fast as possible. Then add layers. Every phase produce
 
 A terminal that boots, renders text, and runs a shell. Nothing else.
 
+> **Specs:** [0001 Daemon Wire Protocol](../specs/0001-daemon-wire-protocol.md), [0002 VT Parser](../specs/0002-vt-parser.md), [0003 Screen Buffer](../specs/0003-screen-buffer.md), [0004 Scroll Buffer](../specs/0004-scroll-buffer.md), [0005 Lua Config](../specs/0005-lua-config-runtime.md), [0006 Accessibility](../specs/0006-accessibility-bridge.md)
+
 **What ships:**
 
-- VT parser (xterm-256color compatible)
-- GPU renderer (wgpu) with glyph atlas
-- Platform-native text shaping (Core Text / HarfBuzz / DirectWrite)
+- Daemon/GUI process split with Unix socket wire protocol ([Spec-0001](../specs/0001-daemon-wire-protocol.md), [ADR-0007](../adrs/0007-daemon-architecture.md))
+- VT parser (xterm-256color compatible) with OSC 133/7 parsing ([Spec-0002](../specs/0002-vt-parser.md), [ADR-0008](../adrs/0008-shell-integration-timing.md))
+- Kitty graphics protocol in core ([ADR-0004](../adrs/0004-kitty-graphics-in-core.md))
+- GPU renderer (wgpu) with glyph atlas and run-based pipeline ([ADR-0009](../adrs/0009-bidi-ligature-preparedness.md))
+- Platform-native text shaping behind TextShaper trait (Core Text / HarfBuzz / DirectWrite)
 - Font loading with fallback chain
-- Ligature support
+- Ligature-ready architecture (shaper trait, Phase 0 uses simple glyph lookup)
 - Single pane, single window
-- Basic config (Lua — font, size, theme, colors)
+- Sandboxed Lua config with hot-reload and LLS type stubs ([Spec-0005](../specs/0005-lua-config-runtime.md), [ADR-0005](../adrs/0005-lua-sandboxed-config.md))
 - Keyboard input, mouse input
-- Scrollback (ring buffer)
-- Copy/paste (platform clipboard)
-- Bundled default themes (dark + light)
-- True color support
+- Two-tier scrollback: ring buffer + encrypted disk archive ([Spec-0004](../specs/0004-scroll-buffer.md), [ADR-0006](../adrs/0006-scroll-buffer-architecture.md))
+- Alternate screen scrollback capture (iTerm2 model)
+- Copy/paste (platform clipboard, OSC 52)
+- AccessKit accessibility with Role::Terminal, lazy activation ([Spec-0006](../specs/0006-accessibility-bridge.md), [ADR-0001](../adrs/0001-accessibility-in-phase-zero.md))
+- Bundled default themes (dark + light, Lua format)
+- True color support, styled underlines, hyperlinks
+- BiDi-ready data model (logical order, Direction enum) ([ADR-0009](../adrs/0009-bidi-ligature-preparedness.md))
+- Criterion benchmark suite with tiered CI ([ADR-0002](../adrs/0002-performance-philosophy.md))
 - macOS + Linux (Windows can follow closely)
 
 **What does NOT ship:**
@@ -90,12 +98,12 @@ The extension runtime and core plugin API.
 - Plugin registry (initial, lightweight)
 - Bundled plugins (first batch):
   - `sidebar-ui` — the sidebar renderer
-  - `kitty-graphics` — inline image rendering
+  - `sixel-graphics` — Sixel image protocol (Kitty graphics is core per [ADR-0004](../adrs/0004-kitty-graphics-in-core.md))
   - `service-monitor` — services in sidebar
   - `watcher` — test/build watchers in sidebar
 - Drawer panes, popup panes, modal panes
 - Settings palette (`:settings`, `:keybinds`, `:theme` with live preview)
-- Theme system (TOML, inheritance, import, validation)
+- Theme system (Lua, inheritance, import, validation)
 - Health check (`:health` / `oakterm doctor`)
 
 **What does NOT ship:**

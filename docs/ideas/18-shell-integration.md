@@ -1,12 +1,14 @@
 ---
 title: 'Shell Integration'
-status: draft
+status: reviewing
 category: core
 description: 'Prompt markers, semantic zones, scroll-to-prompt, notifications'
 tags: ['shell', 'osc-133', 'prompt-markers', 'scroll-to-prompt']
 ---
 
 # Shell Integration
+
+> **Note:** [ADR 0008](../adrs/0008-shell-integration-timing.md) split shell integration into two phases: OSC 133/7 parsing in Phase 0 (data layer in the VT parser), UI features (scroll-to-prompt, command selection, notifications) in Phase 1. See also [Spec 0002](../specs/0002-vt-parser.md) for the parser contract.
 
 The layer between the terminal and the shell that makes smart features possible. Without this, the terminal is blind — it can't tell prompts from output, doesn't know when commands start or finish, and can't resolve relative paths.
 
