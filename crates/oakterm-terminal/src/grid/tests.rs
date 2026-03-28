@@ -277,3 +277,90 @@ fn grapheme_data_operations() {
     g.clear();
     assert!(g.is_empty());
 }
+
+// --- Grid resize tests ---
+
+#[test]
+fn resize_grow_cols() {
+    let mut grid = Grid::new(80, 24);
+    grid.resize(120, 24);
+    assert_eq!(grid.cols, 120);
+    assert_eq!(grid.rows, 24);
+    assert_eq!(grid.lines.len(), 24);
+    assert_eq!(grid.lines[0].cells.len(), 120);
+}
+
+#[test]
+fn resize_shrink_cols() {
+    let mut grid = Grid::new(80, 24);
+    grid.cursor.col = 79;
+    grid.resize(40, 24);
+    assert_eq!(grid.cols, 40);
+    assert_eq!(grid.lines[0].cells.len(), 40);
+    assert_eq!(grid.cursor.col, 39, "cursor should clamp to new width");
+}
+
+#[test]
+fn resize_grow_rows() {
+    let mut grid = Grid::new(80, 24);
+    grid.resize(80, 40);
+    assert_eq!(grid.rows, 40);
+    assert_eq!(grid.lines.len(), 40);
+}
+
+#[test]
+fn resize_shrink_rows() {
+    let mut grid = Grid::new(80, 24);
+    grid.cursor.row = 23;
+    grid.resize(80, 10);
+    assert_eq!(grid.rows, 10);
+    assert_eq!(grid.lines.len(), 10);
+    assert_eq!(grid.cursor.row, 9, "cursor should clamp to new height");
+}
+
+#[test]
+fn resize_marks_all_dirty() {
+    let mut grid = Grid::new(80, 24);
+    let before = grid.seqno;
+    grid.resize(100, 30);
+    assert!(grid.seqno > before);
+    let dirty = grid.dirty_rows(before);
+    assert_eq!(dirty.len(), 30, "all rows should be dirty after resize");
+}
+
+#[test]
+fn resize_clears_scroll_region() {
+    let mut grid = Grid::new(80, 24);
+    grid.scroll_region = Some(ScrollRegion { top: 5, bottom: 20 });
+    grid.resize(80, 30);
+    assert!(
+        grid.scroll_region.is_none(),
+        "scroll region should be cleared on resize"
+    );
+}
+
+#[test]
+fn resize_zero_dimensions_is_noop() {
+    let mut grid = Grid::new(80, 24);
+    let before_seqno = grid.seqno;
+    grid.resize(0, 24);
+    assert_eq!(grid.cols, 80, "zero cols should be rejected");
+    assert_eq!(grid.seqno, before_seqno);
+
+    grid.resize(80, 0);
+    assert_eq!(grid.rows, 24, "zero rows should be rejected");
+
+    grid.resize(0, 0);
+    assert_eq!(grid.cols, 80);
+    assert_eq!(grid.rows, 24);
+}
+
+#[test]
+fn resize_clamps_saved_cursor() {
+    let mut grid = Grid::new(80, 24);
+    grid.saved_cursor.col = 79;
+    grid.saved_cursor.row = 23;
+    grid.resize(40, 10);
+    assert_eq!(grid.saved_cursor.col, 39);
+    assert_eq!(grid.saved_cursor.row, 9);
+}

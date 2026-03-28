@@ -45,6 +45,16 @@ impl Pty {
         self.master.as_raw_fd()
     }
 
+    /// Write data to the PTY master (sends input to the child process).
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
+    pub fn write(&self, data: &[u8]) -> io::Result<usize> {
+        let borrowed = self.master.as_fd();
+        rustix::io::write(borrowed, data)
+            .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
+    }
+
     /// Update the PTY window size.
     ///
     /// # Errors
