@@ -1,5 +1,7 @@
 //! Headless GPU tests for the render pipeline.
-//! Requires a GPU (or software adapter) to run.
+//! Only compiled with `--features gpu-tests`.
+//! Run: `cargo test -p oakterm-renderer --features gpu-tests`
+#![cfg(feature = "gpu-tests")]
 
 use oakterm_renderer::pipeline::{BgUniforms, RenderPipeline, TextUniforms};
 
@@ -66,10 +68,7 @@ fn create_test_atlas(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView
 
 #[test]
 fn pipeline_creation_succeeds() {
-    let Some((device, _queue)) = pollster::block_on(create_test_device()) else {
-        eprintln!("no GPU available — skipping");
-        return;
-    };
+    let (device, _queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
 
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let _pipeline = RenderPipeline::new(&device, format);
@@ -77,10 +76,7 @@ fn pipeline_creation_succeeds() {
 
 #[test]
 fn render_background_pass() {
-    let Some((device, queue)) = pollster::block_on(create_test_device()) else {
-        eprintln!("no GPU available — skipping");
-        return;
-    };
+    let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
 
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let pipeline = RenderPipeline::new(&device, format);
@@ -89,7 +85,6 @@ fn render_background_pass() {
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (_atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
 
-    // Red, green, blue, white backgrounds (ABGR packed).
     let bg_colors: Vec<u32> = vec![0xFF_00_00_FF, 0xFF_00_FF_00, 0xFF_FF_00_00, 0xFF_FF_FF_FF];
 
     let bg_uniforms = BgUniforms {
