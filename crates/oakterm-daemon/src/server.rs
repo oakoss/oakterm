@@ -3,14 +3,17 @@
 use crate::socket::socket_path;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
+use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE,
-    MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, ServerHello,
+    ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY,
+    MSG_GET_RENDER_UPDATE, MSG_KEY_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE,
+    ServerHello,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::Grid;
 use oakterm_terminal::handler;
 use std::io;
+use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -70,6 +73,7 @@ impl Daemon {
             cols: self.cols,
             rows: self.rows,
         })?;
+        let master_fd = pty.master_raw_fd();
         let grid = Arc::clone(&self.grid);
         let dirty_tx = self.dirty_tx.clone();
         tokio::spawn(pty_read_loop(pty, grid, dirty_tx));
@@ -78,7 +82,7 @@ impl Daemon {
             let (stream, _) = listener.accept().await?;
             let grid = Arc::clone(&self.grid);
             let dirty_rx = self.dirty_rx.clone();
-            tokio::spawn(handle_client(stream, grid, dirty_rx));
+            tokio::spawn(handle_client(stream, grid, dirty_rx, master_fd));
         }
     }
 
@@ -148,6 +152,7 @@ async fn handle_client(
     mut stream: UnixStream,
     grid: Arc<Mutex<Grid>>,
     mut dirty_rx: watch::Receiver<u64>,
+    master_fd: RawFd,
 ) {
     let mut codec = FrameCodec;
     let mut read_buf = BytesMut::with_capacity(4096);
@@ -217,10 +222,14 @@ async fn handle_client(
                     break;
                 }
                 while let Ok(Some(frame)) = codec.decode(&mut read_buf) {
-                    if let Some(response) = handle_request(&frame, &grid).await {
-                        if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
-                            break 'outer;
+                    match handle_request(&frame, &grid, master_fd).await {
+                        RequestResult::Response(response) => {
+                            if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
+                                break 'outer;
+                            }
                         }
+                        RequestResult::Detach => break 'outer,
+                        RequestResult::NoResponse => {}
                     }
                 }
             }
@@ -228,11 +237,49 @@ async fn handle_client(
     }
 }
 
+/// Result of processing a client request.
+enum RequestResult {
+    Response(Frame),
+    Detach,
+    NoResponse,
+}
+
 /// Handle a single client request frame.
-async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>) -> Option<Frame> {
+#[allow(clippy::too_many_lines)]
+async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>, master_fd: RawFd) -> RequestResult {
     match frame.msg_type {
+        MSG_KEY_INPUT => {
+            if let Ok(msg) = KeyInput::decode(&frame.payload) {
+                if !msg.key_data.is_empty() {
+                    let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(master_fd) };
+                    let _ = rustix::io::write(borrowed, &msg.key_data);
+                }
+            }
+            RequestResult::NoResponse
+        }
+        MSG_RESIZE => {
+            if let Ok(msg) = Resize::decode(&frame.payload) {
+                let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(master_fd) };
+                if oakterm_pty::resize_fd(
+                    borrowed,
+                    msg.cols,
+                    msg.rows,
+                    msg.pixel_width,
+                    msg.pixel_height,
+                )
+                .is_ok()
+                {
+                    let mut g = grid.lock().await;
+                    g.resize(msg.cols, msg.rows);
+                }
+            }
+            RequestResult::NoResponse
+        }
+        MSG_DETACH => RequestResult::Detach,
         MSG_GET_RENDER_UPDATE => {
-            let req = GetRenderUpdate::decode(&frame.payload).ok()?;
+            let Ok(req) = GetRenderUpdate::decode(&frame.payload) else {
+                return RequestResult::NoResponse;
+            };
             let g = grid.lock().await;
             let dirty_indices = g.dirty_rows(req.since_seqno);
 
@@ -276,11 +323,19 @@ async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>) -> Option<Frame>
                 dirty_rows,
             };
 
-            let payload = update.encode().ok()?;
-            Frame::new(MSG_RENDER_UPDATE, frame.serial, payload).ok()
+            match update.encode() {
+                Ok(payload) => match Frame::new(MSG_RENDER_UPDATE, frame.serial, payload) {
+                    Ok(f) => RequestResult::Response(f),
+                    Err(_) => RequestResult::NoResponse,
+                },
+                Err(_) => RequestResult::NoResponse,
+            }
         }
-        MSG_PING => Frame::new(MSG_PONG, frame.serial, vec![]).ok(),
-        _ => None,
+        MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
+            Ok(f) => RequestResult::Response(f),
+            Err(_) => RequestResult::NoResponse,
+        },
+        _ => RequestResult::NoResponse,
     }
 }
 

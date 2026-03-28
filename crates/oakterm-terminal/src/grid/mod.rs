@@ -160,6 +160,46 @@ impl Grid {
         }
     }
 
+    /// Resize the grid to new dimensions.
+    /// Rejects zero-dimension resizes (no-op).
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            return;
+        }
+
+        self.cols = cols;
+        self.rows = rows;
+
+        self.lines
+            .resize_with(rows as usize, || Row::new(cols as usize));
+        for line in &mut self.lines {
+            line.resize(cols as usize);
+        }
+
+        // Reset tab stops to match Grid::new behavior.
+        self.tab_stops = vec![false; cols as usize];
+        for i in (8..cols as usize).step_by(8) {
+            self.tab_stops[i] = true;
+        }
+
+        // Clamp both cursors to new bounds.
+        if self.cursor.col >= cols {
+            self.cursor.col = cols - 1;
+        }
+        if self.cursor.row >= rows {
+            self.cursor.row = rows - 1;
+        }
+        if self.saved_cursor.col >= cols {
+            self.saved_cursor.col = cols - 1;
+        }
+        if self.saved_cursor.row >= rows {
+            self.saved_cursor.row = rows - 1;
+        }
+
+        self.scroll_region = None;
+        self.touch_all();
+    }
+
     /// Return indices of rows changed since `since_seqno`.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // rows is u16, so index always fits

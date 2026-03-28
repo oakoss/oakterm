@@ -34,3 +34,26 @@ pub fn spawn_shell(size: WinSize) -> io::Result<Pty> {
     };
     Pty::spawn(&shell, &["-l"], size)
 }
+
+/// Resize a PTY via a borrowed file descriptor.
+///
+/// # Errors
+/// Returns an error if the ioctl fails.
+#[cfg(unix)]
+pub fn resize_fd(
+    fd: impl std::os::unix::io::AsFd,
+    cols: u16,
+    rows: u16,
+    xpixel: u16,
+    ypixel: u16,
+) -> io::Result<()> {
+    use rustix::termios::{Winsize, tcsetwinsize};
+    let ws = Winsize {
+        ws_col: cols,
+        ws_row: rows,
+        ws_xpixel: xpixel,
+        ws_ypixel: ypixel,
+    };
+    tcsetwinsize(fd, ws)?;
+    Ok(())
+}

@@ -1,4 +1,5 @@
 pub mod frame;
+pub mod input;
 pub mod message;
 pub mod render;
 
@@ -307,5 +308,130 @@ mod tests {
         assert_eq!(frame.serial, 0); // Push — serial 0.
         let decoded = DirtyNotify::decode(&frame.payload).unwrap();
         assert_eq!(decoded.pane_id, 7);
+    }
+
+    // --- Input protocol tests ---
+
+    use crate::input::{Detach, KeyInput, Resize};
+
+    #[test]
+    fn key_input_roundtrip() {
+        let msg = KeyInput {
+            pane_id: 1,
+            key_data: b"hello".to_vec(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = KeyInput::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn key_input_empty_data() {
+        let msg = KeyInput {
+            pane_id: 0,
+            key_data: vec![],
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = KeyInput::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+        assert!(decoded.key_data.is_empty());
+    }
+
+    #[test]
+    fn key_input_single_byte() {
+        let msg = KeyInput {
+            pane_id: 42,
+            key_data: vec![0x1B], // ESC
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = KeyInput::decode(&encoded).unwrap();
+        assert_eq!(decoded.key_data, vec![0x1B]);
+    }
+
+    #[test]
+    fn key_input_too_short() {
+        assert!(KeyInput::decode(&[0, 0]).is_err());
+    }
+
+    #[test]
+    fn key_input_as_frame() {
+        let msg = KeyInput {
+            pane_id: 3,
+            key_data: b"x".to_vec(),
+        };
+        let frame = Frame::new(MSG_KEY_INPUT, 0, msg.encode().unwrap()).unwrap();
+        assert_eq!(frame.msg_type, MSG_KEY_INPUT);
+        assert_eq!(frame.serial, 0); // Push.
+        let decoded = KeyInput::decode(&frame.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn resize_roundtrip() {
+        let msg = Resize {
+            pane_id: 1,
+            cols: 120,
+            rows: 40,
+            pixel_width: 960,
+            pixel_height: 640,
+        };
+        let encoded = msg.encode();
+        let decoded = Resize::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn resize_too_short() {
+        assert!(Resize::decode(&[0; 4]).is_err());
+    }
+
+    #[test]
+    fn resize_as_frame() {
+        let msg = Resize {
+            pane_id: 0,
+            cols: 80,
+            rows: 24,
+            pixel_width: 640,
+            pixel_height: 480,
+        };
+        let frame = Frame::new(MSG_RESIZE, 0, msg.encode()).unwrap();
+        assert_eq!(frame.msg_type, MSG_RESIZE);
+        let decoded = Resize::decode(&frame.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn detach_roundtrip() {
+        let msg = Detach;
+        let encoded = msg.encode();
+        assert!(encoded.is_empty());
+        Detach::decode(&encoded).unwrap();
+    }
+
+    #[test]
+    fn detach_as_frame() {
+        let frame = Frame::new(MSG_DETACH, 0, Detach.encode()).unwrap();
+        assert_eq!(frame.msg_type, MSG_DETACH);
+        assert!(frame.payload.is_empty());
+    }
+
+    #[test]
+    fn key_input_oversized_data_rejected() {
+        let msg = KeyInput {
+            pane_id: 0,
+            key_data: vec![0u8; u16::MAX as usize + 1],
+        };
+        assert!(msg.encode().is_err());
+    }
+
+    #[test]
+    fn key_input_truncated_key_data() {
+        let msg = KeyInput {
+            pane_id: 1,
+            key_data: b"abcd".to_vec(),
+        };
+        let mut encoded = msg.encode().unwrap();
+        encoded.truncate(encoded.len() - 2); // chop off 2 bytes of key_data
+        assert!(KeyInput::decode(&encoded).is_err());
     }
 }
