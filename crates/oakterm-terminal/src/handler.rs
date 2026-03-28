@@ -1,44 +1,34 @@
 //! Terminal handler — translates parsed VT sequences into Grid mutations.
 //!
-//! Implements `vte::Perform` to receive callbacks from the VT parser state
-//! machine. Phase 0.1: ground state (print) and C0 controls (BS, CR, LF, HT).
-//! CSI/OSC/DCS/APC dispatch to no-ops.
+//! Implements `vte::ansi::Handler` to receive semantic callbacks from the
+//! VT parser. Grid is the abstraction boundary: it uses our own types and
+//! has no vte dependency. This handler is the only layer that knows about vte.
 
 use crate::grid::Grid;
 use crate::grid::cell::WideState;
 
-/// C0 control codes.
-const BS: u8 = 0x08;
-const HT: u8 = 0x09;
-const LF: u8 = 0x0A;
-const VT: u8 = 0x0B;
-const FF: u8 = 0x0C;
-const CR: u8 = 0x0D;
-
-/// Terminal handler that mutates a Grid based on parsed VT sequences.
-pub struct Handler<'a> {
+/// Terminal state wrapper that implements `vte::ansi::Handler`.
+/// Grid is the vte-free contract; Terminal bridges vte's types to Grid's API.
+pub struct Terminal<'a> {
     grid: &'a mut Grid,
 }
 
-impl<'a> Handler<'a> {
+impl<'a> Terminal<'a> {
     pub fn new(grid: &'a mut Grid) -> Self {
         Self { grid }
     }
 
-    /// Write a character at the cursor position and advance.
     fn write_char(&mut self, c: char) {
         let cols = self.grid.cols;
 
-        // Auto-wrap: cursor past last column wraps to next line.
         if self.grid.cursor.col >= cols {
             let row = self.grid.cursor.row as usize;
             if let Some(line) = self.grid.lines.get_mut(row) {
                 line.flags.set_wrapped(true);
             }
             self.grid.cursor.col = 0;
-            self.linefeed();
+            self.do_linefeed();
 
-            // Mark the continuation line.
             let new_row = self.grid.cursor.row as usize;
             if let Some(line) = self.grid.lines.get_mut(new_row) {
                 line.flags.set_wrap_continuation(true);
@@ -72,31 +62,28 @@ impl<'a> Handler<'a> {
         self.grid.cursor.col += 1;
     }
 
-    /// Move cursor down one line, scrolling if at the bottom of the scroll region.
-    fn linefeed(&mut self) {
+    fn do_linefeed(&mut self) {
         let bottom = self
             .grid
             .scroll_region
             .map_or(self.grid.rows - 1, |r| r.bottom);
 
         if self.grid.cursor.row >= bottom {
-            self.scroll_up(1);
+            self.do_scroll_up(1);
         } else {
             self.grid.cursor.row += 1;
         }
     }
 
-    /// Scroll the scroll region up by `count` lines.
-    fn scroll_up(&mut self, count: u16) {
+    fn do_scroll_up(&mut self, count: usize) {
         let top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
         let bottom = self
             .grid
             .scroll_region
             .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
 
-        let count = (count as usize).min(bottom - top + 1);
+        let count = count.min(bottom - top + 1);
 
-        // Rotate the scroll region and reinitialize the vacated rows.
         self.grid.lines[top..=bottom].rotate_left(count);
         let cols = self.grid.cols as usize;
         for row in &mut self.grid.lines[(bottom + 1 - count)..=bottom] {
@@ -109,9 +96,8 @@ impl<'a> Handler<'a> {
         }
     }
 
-    /// Move to the next tab stop (every 8 columns by default).
-    #[allow(clippy::cast_possible_truncation)] // cols is u16, so indices fit
-    fn horizontal_tab(&mut self) {
+    #[allow(clippy::cast_possible_truncation)] // cols is u16, indices fit
+    fn do_tab(&mut self) {
         let col = self.grid.cursor.col as usize;
         let cols = self.grid.cols as usize;
 
@@ -125,44 +111,41 @@ impl<'a> Handler<'a> {
     }
 }
 
-impl vte::Perform for Handler<'_> {
-    fn print(&mut self, c: char) {
+impl vte::ansi::Handler for Terminal<'_> {
+    fn input(&mut self, c: char) {
         self.write_char(c);
     }
 
-    fn execute(&mut self, byte: u8) {
-        match byte {
-            BS => {
-                if self.grid.cursor.col > 0 {
-                    self.grid.cursor.col -= 1;
-                }
-            }
-            HT => self.horizontal_tab(),
-            LF | VT | FF => self.linefeed(),
-            CR => self.grid.cursor.col = 0,
-            _ => {}
+    fn backspace(&mut self) {
+        if self.grid.cursor.col > 0 {
+            self.grid.cursor.col -= 1;
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        _params: &vte::Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        _action: char,
-    ) {
+    fn carriage_return(&mut self) {
+        self.grid.cursor.col = 0;
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
-
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
-
-    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
+    fn linefeed(&mut self) {
+        self.do_linefeed();
     }
 
-    fn put(&mut self, _byte: u8) {}
+    fn put_tab(&mut self, count: u16) {
+        for _ in 0..count {
+            self.do_tab();
+        }
+    }
 
-    fn unhook(&mut self) {}
+    fn scroll_up(&mut self, count: usize) {
+        self.do_scroll_up(count);
+    }
+}
+
+/// Feed bytes through the vte parser into a Terminal handler.
+pub fn process_bytes(grid: &mut Grid, input: &[u8]) {
+    let mut processor = vte::ansi::Processor::<vte::ansi::StdSyncHandler>::new();
+    let mut terminal = Terminal::new(grid);
+    processor.advance(&mut terminal, input);
 }
 
 #[cfg(test)]
@@ -173,9 +156,7 @@ mod tests {
     use crate::testing::{assert_cursor_at, assert_row_text, test_grid};
 
     fn parse(grid: &mut Grid, input: &[u8]) {
-        let mut parser = vte::Parser::new();
-        let mut handler = Handler::new(grid);
-        parser.advance(&mut handler, input);
+        process_bytes(grid, input);
     }
 
     #[test]
