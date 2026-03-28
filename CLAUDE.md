@@ -207,7 +207,7 @@ For non-trivial work, align on approach first. Use `/tracer-bullets` for multi-l
 
 `/tdd` for core functions and business logic. Red-green-refactor cycle:
 
-1. **Red**: Write failing tests for expected behavior.
+1. **Red**: Write failing tests for expected behavior. Include at least one adversarial test (oversized input, malformed data, boundary conditions) — these catch silent truncation and overflow that happy-path tests miss.
 2. **Green**: Write minimal code to pass tests. Run `cargo clippy` immediately — fix lint issues inline, not in a later pass.
 3. **Refactor**: Clean up while keeping tests green.
 
