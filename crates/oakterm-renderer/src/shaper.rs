@@ -25,13 +25,15 @@ pub struct ShapedGlyph {
     pub x_advance: f32,
 }
 
-/// Font metrics for cell sizing.
+/// Font metrics for cell sizing. All values in pixels at the requested point size.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct FontMetrics {
     pub cell_width: f32,
     pub cell_height: f32,
+    /// Distance from top of cell to baseline (positive).
     pub baseline: f32,
+    /// Signed offset from baseline (negative = below baseline).
     pub underline_position: f32,
 }
 
