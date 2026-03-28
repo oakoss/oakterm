@@ -10,6 +10,9 @@
     ":semanticCommitTypeAll(chore)"
   ],
   "labels": ["dependencies"],
+  "cargo": {
+    "enabled": true
+  },
   "rangeStrategy": "bump",
   "automerge": true,
   "platformAutomerge": true,

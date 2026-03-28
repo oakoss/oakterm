@@ -10,19 +10,19 @@ runs:
         install: true
         cache: true
 
-    # TODO: Add Rust toolchain setup when code exists
-    # - name: Setup Rust
-    #   uses: dtolnay/rust-toolchain@stable
-    #   with:
-    #     components: clippy, rustfmt
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      with:
+        components: clippy, rustfmt
 
-    # TODO: Add cargo caching when code exists
-    # - name: Cache cargo
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: |
-    #       ~/.cargo/bin/
-    #       ~/.cargo/registry/
-    #       ~/.cargo/git/
-    #       target/
-    #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Cache cargo
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/
+          ~/.cargo/git/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
