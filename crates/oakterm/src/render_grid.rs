@@ -86,10 +86,32 @@ impl ClientGrid {
         self.cells = vec![RenderCell::default(); usize::from(cols) * usize::from(rows)];
     }
 
+    /// Linear cell index of the cursor, if visible and in-bounds.
+    fn cursor_cell_index(&self) -> Option<usize> {
+        if self.cursor_visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
+            Some(usize::from(self.cursor_y) * usize::from(self.cols) + usize::from(self.cursor_x))
+        } else {
+            None
+        }
+    }
+
     /// Build the packed ABGR background color array for the GPU pipeline.
+    /// The cursor cell uses reverse video (fg color as bg) when visible.
     #[must_use]
     pub fn bg_colors(&self) -> Vec<u32> {
-        self.cells.iter().map(|c| pack_bg_color(c.bg)).collect()
+        let cursor_idx = self.cursor_cell_index();
+
+        self.cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                if Some(i) == cursor_idx {
+                    pack_bg_color(c.fg)
+                } else {
+                    pack_bg_color(c.bg)
+                }
+            })
+            .collect()
     }
 
     /// Build glyph instances and any new bitmap uploads needed.
@@ -106,9 +128,12 @@ impl ClientGrid {
         let mut uploads = Vec::new();
         let mut dropped = 0u32;
 
+        let cursor_idx = self.cursor_cell_index();
+
         for row in 0..usize::from(self.rows) {
             for col in 0..usize::from(self.cols) {
-                let cell = &self.cells[row * usize::from(self.cols) + col];
+                let idx = row * usize::from(self.cols) + col;
+                let cell = &self.cells[idx];
                 if cell.codepoint == 0 || cell.codepoint == u32::from(b' ') {
                     continue;
                 }
@@ -161,16 +186,23 @@ impl ClientGrid {
                 let x = col as f32 * metrics.cell_width;
                 let y = row as f32 * metrics.cell_height;
 
+                let is_cursor = Some(idx) == cursor_idx;
+                let (fg_rgb, bg_rgb) = if is_cursor {
+                    (cell.bg, cell.fg)
+                } else {
+                    (cell.fg, cell.bg)
+                };
+
                 let fg = [
-                    f32::from(cell.fg[0]) / 255.0,
-                    f32::from(cell.fg[1]) / 255.0,
-                    f32::from(cell.fg[2]) / 255.0,
+                    f32::from(fg_rgb[0]) / 255.0,
+                    f32::from(fg_rgb[1]) / 255.0,
+                    f32::from(fg_rgb[2]) / 255.0,
                     1.0,
                 ];
 
-                let bg_lum = 0.2126 * f32::from(cell.bg[0]) / 255.0
-                    + 0.7152 * f32::from(cell.bg[1]) / 255.0
-                    + 0.0722 * f32::from(cell.bg[2]) / 255.0;
+                let bg_lum = 0.2126 * f32::from(bg_rgb[0]) / 255.0
+                    + 0.7152 * f32::from(bg_rgb[1]) / 255.0
+                    + 0.0722 * f32::from(bg_rgb[2]) / 255.0;
 
                 glyphs.push(GlyphVertex {
                     pos: [
@@ -234,12 +266,12 @@ mod tests {
     fn client_grid_new_has_correct_size() {
         let grid = ClientGrid::new(80, 24);
         assert_eq!(grid.cells.len(), 80 * 24);
-        assert_eq!(grid.bg_colors().len(), 80 * 24);
     }
 
     #[test]
     fn client_grid_default_bg_is_black() {
-        let grid = ClientGrid::new(2, 2);
+        let mut grid = ClientGrid::new(2, 2);
+        grid.cursor_visible = false;
         let colors = grid.bg_colors();
         assert!(colors.iter().all(|&c| c == 0xFF_00_00_00));
     }
@@ -251,8 +283,8 @@ mod tests {
         let update = RenderUpdate {
             pane_id: 0,
             seqno: 1,
-            cursor_x: 0,
-            cursor_y: 0,
+            cursor_x: 3,
+            cursor_y: 1,
             cursor_style: 0,
             cursor_visible: true,
             dirty_rows: vec![DirtyRow {
@@ -361,5 +393,52 @@ mod tests {
         assert_eq!(grid.rows, 5);
         assert_eq!(grid.cells.len(), 50);
         assert!(grid.cells.iter().all(|c| c.codepoint == 0));
+    }
+
+    #[test]
+    fn cursor_visible_reverses_bg_color() {
+        let mut grid = ClientGrid::new(4, 2);
+        // Set cell at (1, 0) with white fg, black bg.
+        grid.cells[1] = RenderCell {
+            codepoint: u32::from(b'A'),
+            fg: [255, 255, 255],
+            bg: [0, 0, 0],
+        };
+        grid.cursor_x = 1;
+        grid.cursor_y = 0;
+        grid.cursor_visible = true;
+
+        let colors = grid.bg_colors();
+        // Cursor cell bg should be the fg color (reverse video).
+        assert_eq!(colors[1], pack_bg_color([255, 255, 255]));
+        // Non-cursor cells stay black.
+        assert_eq!(colors[0], pack_bg_color([0, 0, 0]));
+    }
+
+    #[test]
+    fn cursor_hidden_no_reverse() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cells[1] = RenderCell {
+            codepoint: u32::from(b'A'),
+            fg: [255, 255, 255],
+            bg: [0, 0, 0],
+        };
+        grid.cursor_x = 1;
+        grid.cursor_y = 0;
+        grid.cursor_visible = false;
+
+        let colors = grid.bg_colors();
+        // Cursor hidden — bg stays black.
+        assert_eq!(colors[1], pack_bg_color([0, 0, 0]));
+    }
+
+    #[test]
+    fn cursor_out_of_bounds_no_panic() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cursor_x = 99;
+        grid.cursor_y = 99;
+        grid.cursor_visible = true;
+        let colors = grid.bg_colors();
+        assert_eq!(colors.len(), 8);
     }
 }
