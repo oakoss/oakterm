@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+vte = { workspace = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 
