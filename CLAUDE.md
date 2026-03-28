@@ -205,11 +205,17 @@ For non-trivial work, align on approach first. Use `/tracer-bullets` for multi-l
 
 #### I4. TDD
 
-`/tdd` for core functions and business logic. Write failing tests first, then implement. Skip for config changes, docs-only, or pure refactors with existing test coverage.
+`/tdd` for core functions and business logic. Red-green-refactor cycle:
+
+1. **Red**: Write failing tests for expected behavior.
+2. **Green**: Write minimal code to pass tests. Run `cargo clippy` immediately — fix lint issues inline, not in a later pass.
+3. **Refactor**: Clean up while keeping tests green.
+
+Skip for config changes, docs-only, or pure refactors with existing test coverage.
 
 #### I5. Implement
 
-Write code until tests pass. Follow the architecture layer boundaries. Keep abstractions at seams (traits/interfaces, not concrete types).
+Write code until tests pass and `cargo clippy` is clean. Follow the architecture layer boundaries. Keep abstractions at seams (traits/interfaces, not concrete types).
 
 #### I6. Update Tracking
 
