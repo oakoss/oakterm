@@ -84,6 +84,8 @@ Managed by [mise](https://mise.jdx.dev/). Run `mise install` to get all tools.
 | **cocogitto**         | Conventional commit validation                     | `cog verify`                                |
 | **cargo fmt**         | Rust formatting                                    | `cargo fmt`                                 |
 | **cargo clippy**      | Rust linting                                       | `cargo clippy`                              |
+| **mise run test**     | Run all tests                                      | `mise run test`                             |
+| **mise run bench**    | Run all benchmarks                                 | `mise run bench`                            |
 
 ## Architecture Context
 

@@ -50,6 +50,14 @@ run = "cargo test --workspace"
 description = "Run Rust benchmarks"
 run = "cargo bench --workspace"
 
+[tasks.test]
+description = "Run all tests"
+depends = ["cargo:test"]
+
+[tasks.bench]
+description = "Run all benchmarks"
+depends = ["cargo:bench"]
+
 [tasks.check]
 description = "Run all checks (format + lint + Rust)"
 depends = ["fmt:check", "lint", "cargo:fmt:check", "cargo:clippy", "cargo:check"]
