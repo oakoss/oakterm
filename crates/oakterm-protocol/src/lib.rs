@@ -1,5 +1,6 @@
 pub mod frame;
 pub mod message;
+pub mod render;
 
 #[cfg(test)]
 mod tests {
@@ -180,5 +181,131 @@ mod tests {
     #[test]
     fn client_hello_empty_payload_rejected() {
         assert!(ClientHello::decode(&[]).is_err());
+    }
+
+    // --- Render protocol tests ---
+
+    use crate::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
+
+    #[test]
+    fn dirty_notify_roundtrip() {
+        let msg = DirtyNotify { pane_id: 42 };
+        let encoded = msg.encode();
+        let decoded = DirtyNotify::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn get_render_update_roundtrip() {
+        let msg = GetRenderUpdate {
+            pane_id: 1,
+            since_seqno: 12345,
+        };
+        let encoded = msg.encode();
+        let decoded = GetRenderUpdate::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn wire_cell_roundtrip() {
+        let cell = WireCell {
+            codepoint: 'A' as u32,
+            fg_r: 255,
+            fg_g: 0,
+            fg_b: 0,
+            fg_type: 1,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            bg_type: 0,
+            flags: 0x0001, // bold
+            extra: vec![],
+        };
+        let encoded = cell.encode().unwrap();
+        assert_eq!(encoded.len(), WireCell::FIXED_SIZE);
+        let (decoded, consumed) = WireCell::decode(&encoded).unwrap();
+        assert_eq!(consumed, WireCell::FIXED_SIZE);
+        assert_eq!(decoded, cell);
+    }
+
+    #[test]
+    fn wire_cell_with_extra_data() {
+        let cell = WireCell {
+            codepoint: 'X' as u32,
+            fg_r: 0,
+            fg_g: 0,
+            fg_b: 0,
+            fg_type: 0,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            bg_type: 0,
+            flags: 0,
+            extra: vec![0x68, 0x69], // some extra data
+        };
+        let encoded = cell.encode().unwrap();
+        assert_eq!(encoded.len(), WireCell::FIXED_SIZE + 2);
+        let (decoded, consumed) = WireCell::decode(&encoded).unwrap();
+        assert_eq!(consumed, WireCell::FIXED_SIZE + 2);
+        assert_eq!(decoded, cell);
+    }
+
+    #[test]
+    fn render_update_roundtrip() {
+        let update = RenderUpdate {
+            pane_id: 1,
+            seqno: 99,
+            cursor_x: 5,
+            cursor_y: 10,
+            cursor_style: 0,
+            cursor_visible: true,
+            dirty_rows: vec![DirtyRow {
+                row_index: 0,
+                cells: vec![WireCell {
+                    codepoint: 'H' as u32,
+                    fg_r: 0,
+                    fg_g: 0,
+                    fg_b: 0,
+                    fg_type: 0,
+                    bg_r: 0,
+                    bg_g: 0,
+                    bg_b: 0,
+                    bg_type: 0,
+                    flags: 0,
+                    extra: vec![],
+                }],
+                semantic_mark: 0,
+                mark_metadata: vec![],
+            }],
+        };
+        let encoded = update.encode().unwrap();
+        let decoded = RenderUpdate::decode(&encoded).unwrap();
+        assert_eq!(decoded, update);
+    }
+
+    #[test]
+    fn render_update_empty_rows() {
+        let update = RenderUpdate {
+            pane_id: 5,
+            seqno: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_style: 0,
+            cursor_visible: false,
+            dirty_rows: vec![],
+        };
+        let encoded = update.encode().unwrap();
+        let decoded = RenderUpdate::decode(&encoded).unwrap();
+        assert_eq!(decoded, update);
+    }
+
+    #[test]
+    fn dirty_notify_as_frame() {
+        let msg = DirtyNotify { pane_id: 7 };
+        let frame = Frame::new(MSG_DIRTY_NOTIFY, 0, msg.encode()).unwrap();
+        assert_eq!(frame.msg_type, MSG_DIRTY_NOTIFY);
+        assert_eq!(frame.serial, 0); // Push — serial 0.
+        let decoded = DirtyNotify::decode(&frame.payload).unwrap();
+        assert_eq!(decoded.pane_id, 7);
     }
 }
