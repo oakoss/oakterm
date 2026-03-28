@@ -547,6 +547,13 @@ version = "0.1.0"
 name = "oakterm-daemon"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "oakterm-protocol",
+ "oakterm-pty",
+ "oakterm-terminal",
+ "rustix",
+ "tokio",
+ "tokio-util",
  "vergen",
  "vergen-gitcl",
 ]
