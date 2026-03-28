@@ -1,6 +1,8 @@
+mod render_grid;
+
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -13,15 +15,23 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, HandshakeStatus, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_SERVER_HELLO,
+    ClientHello, ClientType, HandshakeStatus, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE,
+    MSG_RENDER_UPDATE, MSG_SERVER_HELLO,
 };
+use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
+use oakterm_renderer::atlas::AtlasPlane;
+use oakterm_renderer::font;
 use oakterm_renderer::pipeline::{BgUniforms, RenderPipeline, TextUniforms};
+use oakterm_renderer::shaper::FontKey;
+use oakterm_renderer::swash_shaper::SwashShaper;
+
+use render_grid::ClientGrid;
 
 /// Events sent from the daemon reader thread to the winit event loop.
 #[derive(Debug)]
 enum UserEvent {
-    DirtyNotify,
+    RenderUpdate(Box<RenderUpdate>),
     Disconnected,
 }
 
@@ -32,23 +42,39 @@ struct GpuState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: RenderPipeline,
+    atlas_texture: wgpu::Texture,
+    atlas_view: wgpu::TextureView,
+    atlas_sampler: wgpu::Sampler,
 }
 
-/// Connection to the daemon for writing messages.
+/// Font and glyph state for text rendering.
+struct FontState {
+    shaper: SwashShaper,
+    font_key: FontKey,
+    atlas: AtlasPlane,
+    font_size: f32,
+    metrics: oakterm_renderer::shaper::FontMetrics,
+}
+
+/// Thread-safe handle for writing frames to the daemon socket.
+#[derive(Clone)]
 struct DaemonWriter {
-    stream: UnixStream,
+    stream: Arc<Mutex<UnixStream>>,
 }
 
 impl DaemonWriter {
-    fn send_frame(&mut self, frame: &Frame) -> std::io::Result<()> {
+    fn send_frame(&self, frame: &Frame) -> std::io::Result<()> {
         let data = frame.encode_to_vec();
-        self.stream.write_all(&data)
+        let mut stream = self.stream.lock().expect("daemon writer lock poisoned");
+        stream.write_all(&data)
     }
 }
 
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
+    font: Option<FontState>,
+    grid: Option<ClientGrid>,
     daemon: Option<DaemonWriter>,
     proxy: EventLoopProxy<UserEvent>,
     daemon_process: Option<std::process::Child>,
@@ -59,6 +85,8 @@ impl App {
         Self {
             window: None,
             gpu: None,
+            font: None,
+            grid: None,
             daemon: None,
             proxy,
             daemon_process: None,
@@ -84,6 +112,14 @@ impl ApplicationHandler<UserEvent> for App {
 
         let gpu = pollster::block_on(init_gpu(window.clone()));
 
+        // Load font.
+        let font_size = 14.0;
+        let font_state = init_font(font_size);
+
+        let size = window.inner_size();
+        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics);
+        let grid = ClientGrid::new(cols.max(1), rows.max(1));
+
         match connect_to_daemon(&self.proxy) {
             Ok((writer, child)) => {
                 self.daemon = Some(writer);
@@ -98,6 +134,8 @@ impl ApplicationHandler<UserEvent> for App {
 
         self.window = Some(window);
         self.gpu = Some(gpu);
+        self.font = Some(font_state);
+        self.grid = Some(grid);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -123,20 +161,28 @@ impl ApplicationHandler<UserEvent> for App {
                         gpu.config.height = size.height;
                         gpu.surface.configure(&gpu.device, &gpu.config);
 
-                        #[allow(clippy::cast_possible_truncation)] // cols/rows fit in u16
-                        if let Some(daemon) = &mut self.daemon {
-                            let msg = Resize {
-                                pane_id: 0,
-                                cols: (size.width / 8) as u16,
-                                rows: (size.height / 16) as u16,
-                                pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                                pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                            };
-                            if let Ok(frame) = msg.to_frame() {
-                                if let Err(e) = daemon.send_frame(&frame) {
-                                    eprintln!("daemon write failed: {e}");
-                                    self.daemon = None;
-                                    event_loop.exit();
+                        #[allow(clippy::cast_possible_truncation)]
+                        if let (Some(font), Some(grid)) = (&self.font, &mut self.grid) {
+                            let (cols, rows) = window_to_grid_dims(size, &font.metrics);
+                            grid.resize(cols, rows);
+
+                            if let Some(daemon) = &mut self.daemon {
+                                let msg = Resize {
+                                    pane_id: 0,
+                                    cols,
+                                    rows,
+                                    pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+                                    pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+                                };
+                                match msg.to_frame() {
+                                    Ok(frame) => {
+                                        if let Err(e) = daemon.send_frame(&frame) {
+                                            eprintln!("daemon write failed: {e}");
+                                            self.daemon = None;
+                                            event_loop.exit();
+                                        }
+                                    }
+                                    Err(e) => eprintln!("failed to encode resize: {e}"),
                                 }
                             }
                         }
@@ -163,18 +209,21 @@ impl ApplicationHandler<UserEvent> for App {
                         pane_id: 0,
                         key_data: bytes,
                     };
-                    if let Ok(frame) = msg.to_frame() {
-                        if let Err(e) = daemon.send_frame(&frame) {
-                            eprintln!("daemon write failed: {e}");
-                            self.daemon = None;
-                            event_loop.exit();
+                    match msg.to_frame() {
+                        Ok(frame) => {
+                            if let Err(e) = daemon.send_frame(&frame) {
+                                eprintln!("daemon write failed: {e}");
+                                self.daemon = None;
+                                event_loop.exit();
+                            }
                         }
+                        Err(e) => eprintln!("failed to encode key input: {e}"),
                     }
                 }
             }
             #[allow(clippy::cast_precision_loss)] // viewport dimensions fit in f32
             WindowEvent::RedrawRequested => {
-                let Some(gpu) = &self.gpu else { return };
+                let Some(gpu) = &mut self.gpu else { return };
                 let frame = match gpu.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(frame)
                     | CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -197,59 +246,71 @@ impl ApplicationHandler<UserEvent> for App {
                     ..Default::default()
                 });
 
-                // TODO: replace with render_grid in Slice 3.
+                let (bg_colors, glyph_instances) =
+                    if let (Some(grid), Some(font)) = (&self.grid, &mut self.font) {
+                        let bg = grid.bg_colors();
+                        let (glyphs, uploads) = grid.glyph_instances(
+                            &font.metrics,
+                            font.font_key,
+                            font.font_size,
+                            &font.shaper,
+                            &mut font.atlas,
+                        );
+
+                        upload_glyphs_to_atlas(
+                            &gpu.device,
+                            &gpu.queue,
+                            &mut gpu.atlas_texture,
+                            &mut gpu.atlas_view,
+                            &font.atlas,
+                            &uploads,
+                        );
+
+                        (bg, glyphs)
+                    } else {
+                        (vec![], vec![])
+                    };
+
+                let (cols, rows) = self
+                    .grid
+                    .as_ref()
+                    .map_or((0u32, 0u32), |g| (u32::from(g.cols), u32::from(g.rows)));
+
+                let (atlas_w, atlas_h) = self
+                    .font
+                    .as_ref()
+                    .map_or((256u32, 256u32), |f| f.atlas.size());
+
                 let bg_uniforms = BgUniforms {
-                    cols: 0,
-                    rows: 0,
-                    cell_width: 8.0,
-                    cell_height: 16.0,
+                    cols,
+                    rows,
+                    cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics.cell_width),
+                    cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics.cell_height),
                     viewport_width: gpu.config.width as f32,
                     viewport_height: gpu.config.height as f32,
                     pad: [0.0; 2],
                 };
                 let text_uniforms = TextUniforms {
-                    cell_width: 8.0,
-                    cell_height: 16.0,
+                    cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics.cell_width),
+                    cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics.cell_height),
                     viewport_width: gpu.config.width as f32,
                     viewport_height: gpu.config.height as f32,
-                    atlas_width: 256.0,
-                    atlas_height: 256.0,
+                    atlas_width: atlas_w as f32,
+                    atlas_height: atlas_h as f32,
                     text_contrast: 1.2,
                     pad: 0.0,
                 };
-
-                // Temporary placeholder atlas.
-                let atlas_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("empty_atlas"),
-                    size: wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::R8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                let atlas_view = atlas_tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let atlas_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-                    mag_filter: wgpu::FilterMode::Nearest,
-                    min_filter: wgpu::FilterMode::Nearest,
-                    ..Default::default()
-                });
 
                 gpu.pipeline.render(
                     &gpu.device,
                     &gpu.queue,
                     &view,
                     &bg_uniforms,
-                    &[],
+                    &bg_colors,
                     &text_uniforms,
-                    &[],
-                    &atlas_view,
-                    &atlas_sampler,
+                    &glyph_instances,
+                    &gpu.atlas_view,
+                    &gpu.atlas_sampler,
                 );
 
                 if let Some(w) = &self.window {
@@ -263,7 +324,10 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::DirtyNotify => {
+            UserEvent::RenderUpdate(update) => {
+                if let Some(grid) = &mut self.grid {
+                    grid.apply_update(&update);
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -320,15 +384,103 @@ fn key_to_bytes(key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
     None
 }
 
-/// Connect to the daemon, spawning it if needed. Returns the write handle
-/// and optionally the child process.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn window_to_grid_dims(
+    size: winit::dpi::PhysicalSize<u32>,
+    metrics: &oakterm_renderer::shaper::FontMetrics,
+) -> (u16, u16) {
+    let cols = ((size.width as f32 / metrics.cell_width) as u16).max(1);
+    let rows = ((size.height as f32 / metrics.cell_height) as u16).max(1);
+    (cols, rows)
+}
+
+fn init_font(font_size: f32) -> FontState {
+    let db = font::system_font_db();
+    let (metrics, data) =
+        font::load_default_metrics(&db, font_size).expect("no system monospace font found");
+
+    let mut shaper = SwashShaper::new();
+    let font_key = shaper
+        .load_font(data, font_size)
+        .expect("failed to load font into shaper");
+
+    FontState {
+        shaper,
+        font_key,
+        atlas: AtlasPlane::new(),
+        font_size,
+        metrics,
+    }
+}
+
+/// Upload new glyph bitmaps to the GPU atlas texture.
+fn upload_glyphs_to_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas_texture: &mut wgpu::Texture,
+    atlas_view: &mut wgpu::TextureView,
+    atlas: &AtlasPlane,
+    uploads: &[render_grid::GlyphUpload],
+) {
+    let (atlas_w, atlas_h) = atlas.size();
+    let tex_size = atlas_texture.size();
+
+    if tex_size.width != atlas_w || tex_size.height != atlas_h {
+        *atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph_atlas"),
+            size: wgpu::Extent3d {
+                width: atlas_w,
+                height: atlas_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        *atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    }
+
+    for upload in uploads {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: upload.x,
+                    y: upload.y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &upload.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(upload.width),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: upload.width,
+                height: upload.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
+/// Connect to the daemon, spawning it if needed.
 fn connect_to_daemon(
     proxy: &EventLoopProxy<UserEvent>,
 ) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
     let socket_path = oakterm_daemon::socket::socket_path()?;
     let mut child = None;
 
-    // Spawn daemon if socket doesn't exist.
     if !socket_path.exists() {
         let daemon_bin = std::env::current_exe()?
             .parent()
@@ -346,7 +498,6 @@ fn connect_to_daemon(
                 })?,
         );
 
-        // Wait for socket to appear.
         for _ in 0..50 {
             if socket_path.exists() {
                 break;
@@ -372,19 +523,24 @@ fn connect_to_daemon(
 
     let stream = UnixStream::connect(&socket_path)?;
     let mut read_stream = stream.try_clone()?;
+    let write_stream = Arc::new(Mutex::new(stream));
 
-    let mut writer = DaemonWriter { stream };
-    handshake(&mut writer, &mut read_stream)?;
+    let writer = DaemonWriter {
+        stream: Arc::clone(&write_stream),
+    };
+    handshake(&writer, &mut read_stream)?;
 
-    // Spawn reader thread.
+    let reader_writer = writer.clone();
     let proxy = proxy.clone();
-    std::thread::spawn(move || daemon_reader(read_stream, &proxy));
+    std::thread::spawn(move || {
+        daemon_reader(read_stream, &reader_writer, &proxy);
+    });
 
     Ok((writer, child))
 }
 
 /// Perform the protocol handshake per Spec-0001.
-fn handshake(writer: &mut DaemonWriter, read_stream: &mut UnixStream) -> std::io::Result<()> {
+fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Result<()> {
     let hello = ClientHello {
         protocol_version_major: ClientHello::VERSION_MAJOR,
         protocol_version_minor: ClientHello::VERSION_MINOR,
@@ -413,14 +569,45 @@ fn handshake(writer: &mut DaemonWriter, read_stream: &mut UnixStream) -> std::io
     Ok(())
 }
 
-/// Background thread: read frames from daemon, dispatch events via proxy.
-fn daemon_reader(mut stream: UnixStream, proxy: &EventLoopProxy<UserEvent>) {
+/// Background thread: read frames, request render updates on `DirtyNotify`.
+fn daemon_reader(
+    mut read_stream: UnixStream,
+    writer: &DaemonWriter,
+    proxy: &EventLoopProxy<UserEvent>,
+) {
+    let mut seqno: u64 = 0;
+
     loop {
-        match read_frame(&mut stream) {
+        match read_frame(&mut read_stream) {
             Ok(frame) => match frame.msg_type {
                 MSG_DIRTY_NOTIFY => {
-                    let _ = proxy.send_event(UserEvent::DirtyNotify);
+                    let req = GetRenderUpdate {
+                        pane_id: 0,
+                        since_seqno: seqno,
+                    };
+                    let payload = req.encode();
+                    let req_frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, payload)
+                        .expect("GetRenderUpdate payload fits in frame");
+                    if let Err(e) = writer.send_frame(&req_frame) {
+                        eprintln!("daemon write error: {e}");
+                        let _ = proxy.send_event(UserEvent::Disconnected);
+                        break;
+                    }
                 }
+                MSG_RENDER_UPDATE => match RenderUpdate::decode(&frame.payload) {
+                    Ok(update) => {
+                        seqno = update.seqno;
+                        let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "failed to decode RenderUpdate ({} bytes), disconnecting: {e}",
+                            frame.payload.len()
+                        );
+                        let _ = proxy.send_event(UserEvent::Disconnected);
+                        break;
+                    }
+                },
                 other => {
                     eprintln!("unhandled daemon message: 0x{other:04x}");
                 }
@@ -467,6 +654,34 @@ fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Frame> {
     Frame::new(msg_type, serial, payload)
 }
 
+fn create_atlas_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("glyph_atlas"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    (texture, view, sampler)
+}
+
 async fn init_gpu(window: Arc<Window>) -> GpuState {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance
@@ -510,6 +725,10 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
     surface.configure(&device, &config);
 
     let pipeline = RenderPipeline::new(&device, format);
+    // AtlasPlane::new() creates a 256x256 atlas — match the GPU texture.
+    let (atlas_w, atlas_h) = AtlasPlane::new().size();
+    let (atlas_texture, atlas_view, atlas_sampler) =
+        create_atlas_texture(&device, atlas_w, atlas_h);
 
     GpuState {
         surface,
@@ -517,6 +736,9 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
         queue,
         config,
         pipeline,
+        atlas_texture,
+        atlas_view,
+        atlas_sampler,
     }
 }
 

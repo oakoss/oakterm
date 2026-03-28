@@ -11,6 +11,7 @@ use oakterm_protocol::message::{
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::Grid;
+use oakterm_terminal::grid::cell::{Color, Rgb};
 use oakterm_terminal::handler;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -211,6 +212,7 @@ async fn handle_client(
                 }
                 let notify = DirtyNotify { pane_id: 0 };
                 let Ok(frame) = Frame::new(MSG_DIRTY_NOTIFY, 0, notify.encode()) else {
+                    eprintln!("failed to create DirtyNotify frame");
                     continue;
                 };
                 if write_frame(&mut stream, &mut codec, &mut write_buf, frame).await.is_err() {
@@ -290,18 +292,24 @@ async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>, master_fd: RawFd
                     let cells: Vec<WireCell> = row
                         .cells
                         .iter()
-                        .map(|c| WireCell {
-                            codepoint: c.codepoint as u32,
-                            fg_r: 0,
-                            fg_g: 0,
-                            fg_b: 0,
-                            fg_type: 0,
-                            bg_r: 0,
-                            bg_g: 0,
-                            bg_b: 0,
-                            bg_type: 0,
-                            flags: 0,
-                            extra: vec![],
+                        .map(|c| {
+                            let (fg_r, fg_g, fg_b, fg_type) =
+                                resolve_color(c.fg, &g.palette, 255, 255, 255);
+                            let (bg_r, bg_g, bg_b, bg_type) =
+                                resolve_color(c.bg, &g.palette, 0, 0, 0);
+                            WireCell {
+                                codepoint: c.codepoint as u32,
+                                fg_r,
+                                fg_g,
+                                fg_b,
+                                fg_type,
+                                bg_r,
+                                bg_g,
+                                bg_b,
+                                bg_type,
+                                flags: c.flags.bits(),
+                                extra: vec![],
+                            }
                         })
                         .collect();
                     Some(DirtyRow {
@@ -326,9 +334,15 @@ async fn handle_request(frame: &Frame, grid: &Arc<Mutex<Grid>>, master_fd: RawFd
             match update.encode() {
                 Ok(payload) => match Frame::new(MSG_RENDER_UPDATE, frame.serial, payload) {
                     Ok(f) => RequestResult::Response(f),
-                    Err(_) => RequestResult::NoResponse,
+                    Err(e) => {
+                        eprintln!("failed to create RenderUpdate frame: {e}");
+                        RequestResult::NoResponse
+                    }
                 },
-                Err(_) => RequestResult::NoResponse,
+                Err(e) => {
+                    eprintln!("failed to encode RenderUpdate: {e}");
+                    RequestResult::NoResponse
+                }
             }
         }
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
@@ -360,4 +374,26 @@ async fn write_frame(
     codec.encode(frame, buf)?;
     stream.write_all(buf).await?;
     Ok(())
+}
+
+/// Resolve a terminal `Color` to RGB bytes using the palette.
+fn resolve_color(
+    color: Color,
+    palette: &[Rgb; 256],
+    def_r: u8,
+    def_g: u8,
+    def_b: u8,
+) -> (u8, u8, u8, u8) {
+    match color {
+        Color::Default => (def_r, def_g, def_b, 0),
+        Color::Named(n) => {
+            let rgb = palette[n as u8 as usize];
+            (rgb.r, rgb.g, rgb.b, 1)
+        }
+        Color::Indexed(i) => {
+            let rgb = palette[usize::from(i)];
+            (rgb.r, rgb.g, rgb.b, 2)
+        }
+        Color::Rgb(r, g, b) => (r, g, b, 3),
+    }
 }
