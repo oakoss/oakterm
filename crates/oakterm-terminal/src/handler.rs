@@ -5,7 +5,7 @@
 //! has no vte dependency. This handler is the only layer that knows about vte.
 
 use crate::grid::Grid;
-use crate::grid::cell::WideState;
+use crate::grid::cell::{self, CellFlags, WideState};
 
 /// Terminal state wrapper that implements `vte::ansi::Handler`.
 /// Grid is the vte-free contract; Terminal bridges vte's types to Grid's API.
@@ -111,9 +111,101 @@ impl<'a> Terminal<'a> {
     }
 }
 
+/// Convert a vte color to our internal color representation.
+fn convert_color(c: vte::ansi::Color) -> cell::Color {
+    match c {
+        vte::ansi::Color::Named(n) => convert_named_color(n),
+        vte::ansi::Color::Spec(rgb) => cell::Color::Rgb(rgb.r, rgb.g, rgb.b),
+        vte::ansi::Color::Indexed(i) => cell::Color::Indexed(i),
+    }
+}
+
+/// Map vte's `NamedColor` to `cell::Color`. Standard palette entries (0-15)
+/// become `Color::Named`; semantic entries (Foreground, Cursor, Dim*, etc.)
+/// map to `Color::Default`.
+fn convert_named_color(n: vte::ansi::NamedColor) -> cell::Color {
+    use vte::ansi::NamedColor as N;
+    match n {
+        N::Black => cell::Color::Named(cell::NamedColor::Black),
+        N::Red => cell::Color::Named(cell::NamedColor::Red),
+        N::Green => cell::Color::Named(cell::NamedColor::Green),
+        N::Yellow => cell::Color::Named(cell::NamedColor::Yellow),
+        N::Blue => cell::Color::Named(cell::NamedColor::Blue),
+        N::Magenta => cell::Color::Named(cell::NamedColor::Magenta),
+        N::Cyan => cell::Color::Named(cell::NamedColor::Cyan),
+        N::White => cell::Color::Named(cell::NamedColor::White),
+        N::BrightBlack => cell::Color::Named(cell::NamedColor::BrightBlack),
+        N::BrightRed => cell::Color::Named(cell::NamedColor::BrightRed),
+        N::BrightGreen => cell::Color::Named(cell::NamedColor::BrightGreen),
+        N::BrightYellow => cell::Color::Named(cell::NamedColor::BrightYellow),
+        N::BrightBlue => cell::Color::Named(cell::NamedColor::BrightBlue),
+        N::BrightMagenta => cell::Color::Named(cell::NamedColor::BrightMagenta),
+        N::BrightCyan => cell::Color::Named(cell::NamedColor::BrightCyan),
+        N::BrightWhite => cell::Color::Named(cell::NamedColor::BrightWhite),
+        // Foreground, Background, BrightForeground, DimForeground, Cursor,
+        // and Dim* are vte semantic values, not SGR palette indices.
+        _ => cell::Color::Default,
+    }
+}
+
 impl vte::ansi::Handler for Terminal<'_> {
     fn input(&mut self, c: char) {
         self.write_char(c);
+    }
+
+    fn terminal_attribute(&mut self, attr: vte::ansi::Attr) {
+        use vte::ansi::Attr;
+        match attr {
+            Attr::Reset => {
+                self.grid.current_attr = CellFlags::empty();
+                self.grid.current_fg = cell::Color::Default;
+                self.grid.current_bg = cell::Color::Default;
+                self.grid.current_underline_style = cell::UnderlineStyle::None;
+                self.grid.current_underline_color = None;
+            }
+            Attr::Bold => self.grid.current_attr.insert(CellFlags::BOLD),
+            Attr::Dim => self.grid.current_attr.insert(CellFlags::DIM),
+            Attr::Italic => self.grid.current_attr.insert(CellFlags::ITALIC),
+            Attr::Underline => {
+                self.grid.current_underline_style = cell::UnderlineStyle::Single;
+            }
+            Attr::DoubleUnderline => {
+                self.grid.current_underline_style = cell::UnderlineStyle::Double;
+            }
+            Attr::Undercurl => {
+                self.grid.current_underline_style = cell::UnderlineStyle::Curly;
+            }
+            Attr::DottedUnderline => {
+                self.grid.current_underline_style = cell::UnderlineStyle::Dotted;
+            }
+            Attr::DashedUnderline => {
+                self.grid.current_underline_style = cell::UnderlineStyle::Dashed;
+            }
+            Attr::BlinkSlow | Attr::BlinkFast => {
+                self.grid.current_attr.insert(CellFlags::BLINK);
+            }
+            Attr::Reverse => self.grid.current_attr.insert(CellFlags::INVERSE),
+            Attr::Hidden => self.grid.current_attr.insert(CellFlags::HIDDEN),
+            Attr::Strike => self.grid.current_attr.insert(CellFlags::STRIKETHROUGH),
+            Attr::CancelBold => self.grid.current_attr.remove(CellFlags::BOLD),
+            Attr::CancelBoldDim => {
+                self.grid.current_attr.remove(CellFlags::BOLD);
+                self.grid.current_attr.remove(CellFlags::DIM);
+            }
+            Attr::CancelItalic => self.grid.current_attr.remove(CellFlags::ITALIC),
+            Attr::CancelUnderline => {
+                self.grid.current_underline_style = cell::UnderlineStyle::None;
+            }
+            Attr::CancelBlink => self.grid.current_attr.remove(CellFlags::BLINK),
+            Attr::CancelReverse => self.grid.current_attr.remove(CellFlags::INVERSE),
+            Attr::CancelHidden => self.grid.current_attr.remove(CellFlags::HIDDEN),
+            Attr::CancelStrike => self.grid.current_attr.remove(CellFlags::STRIKETHROUGH),
+            Attr::Foreground(c) => self.grid.current_fg = convert_color(c),
+            Attr::Background(c) => self.grid.current_bg = convert_color(c),
+            Attr::UnderlineColor(c) => {
+                self.grid.current_underline_color = c.map(convert_color);
+            }
+        }
     }
 
     fn backspace(&mut self) {
@@ -152,8 +244,10 @@ pub fn process_bytes(grid: &mut Grid, input: &[u8]) {
 mod tests {
     use super::*;
     use crate::grid::Grid;
-    use crate::grid::cell::{CellFlags, Color, NamedColor};
-    use crate::testing::{assert_cursor_at, assert_row_text, test_grid};
+    use crate::grid::cell::{CellFlags, Color, NamedColor, UnderlineStyle};
+    use crate::testing::{
+        assert_cell_fg, assert_cell_flags, assert_cursor_at, assert_row_text, test_grid,
+    };
 
     fn parse(grid: &mut Grid, input: &[u8]) {
         process_bytes(grid, input);
@@ -261,4 +355,200 @@ mod tests {
         assert_eq!(grid.lines[0].cells[0].fg, Color::Named(NamedColor::Red));
         assert!(grid.lines[0].cells[0].flags.contains(CellFlags::BOLD));
     }
+
+    // --- SGR attribute dispatch tests ---
+
+    #[test]
+    fn sgr_bold() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[1mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::BOLD);
+    }
+
+    #[test]
+    fn sgr_dim() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[2mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::DIM);
+    }
+
+    #[test]
+    fn sgr_italic() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[3mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::ITALIC);
+    }
+
+    #[test]
+    fn sgr_underline() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[4mX");
+        assert_eq!(
+            grid.lines[0].cells[0].underline_style,
+            UnderlineStyle::Single
+        );
+    }
+
+    #[test]
+    fn sgr_blink() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[5mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::BLINK);
+    }
+
+    #[test]
+    fn sgr_inverse() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[7mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::INVERSE);
+    }
+
+    #[test]
+    fn sgr_hidden() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[8mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::HIDDEN);
+    }
+
+    #[test]
+    fn sgr_strikethrough() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[9mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::STRIKETHROUGH);
+    }
+
+    #[test]
+    fn sgr_named_fg_red() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[31mX");
+        assert_cell_fg(&grid, 0, 0, Color::Named(NamedColor::Red));
+    }
+
+    #[test]
+    fn sgr_named_fg_bright_cyan() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[96mX");
+        assert_cell_fg(&grid, 0, 0, Color::Named(NamedColor::BrightCyan));
+    }
+
+    #[test]
+    fn sgr_named_bg_green() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[42mX");
+        assert_eq!(grid.lines[0].cells[0].bg, Color::Named(NamedColor::Green));
+    }
+
+    #[test]
+    fn sgr_indexed_fg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[38;5;208mX");
+        assert_cell_fg(&grid, 0, 0, Color::Indexed(208));
+    }
+
+    #[test]
+    fn sgr_indexed_bg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[48;5;100mX");
+        assert_eq!(grid.lines[0].cells[0].bg, Color::Indexed(100));
+    }
+
+    #[test]
+    fn sgr_rgb_fg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[38;2;255;128;0mX");
+        assert_cell_fg(&grid, 0, 0, Color::Rgb(255, 128, 0));
+    }
+
+    #[test]
+    fn sgr_rgb_bg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[48;2;10;20;30mX");
+        assert_eq!(grid.lines[0].cells[0].bg, Color::Rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn sgr_reset_clears_all() {
+        let mut grid = test_grid(10, 1);
+        // Set bold, red fg, green bg, underline, then reset.
+        parse(&mut grid, b"\x1b[1;4;31;42m\x1b[0mX");
+        let cell = &grid.lines[0].cells[0];
+        assert_eq!(cell.flags, CellFlags::empty());
+        assert_eq!(cell.fg, Color::Default);
+        assert_eq!(cell.bg, Color::Default);
+        assert_eq!(cell.underline_style, UnderlineStyle::None);
+        assert_eq!(cell.underline_color, None);
+    }
+
+    #[test]
+    fn sgr_cancel_bold_dim() {
+        let mut grid = test_grid(10, 1);
+        // SGR 22 cancels both bold and dim.
+        parse(&mut grid, b"\x1b[1;2mA\x1b[22mB");
+        assert_cell_flags(&grid, 0, 0, CellFlags::BOLD);
+        assert_cell_flags(&grid, 0, 0, CellFlags::DIM);
+        let cell_b = &grid.lines[0].cells[1];
+        assert!(!cell_b.flags.contains(CellFlags::BOLD));
+        assert!(!cell_b.flags.contains(CellFlags::DIM));
+    }
+
+    #[test]
+    fn sgr_cancel_underline() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[4m\x1b[24mX");
+        assert_eq!(grid.lines[0].cells[0].underline_style, UnderlineStyle::None);
+    }
+
+    #[test]
+    fn sgr_double_underline() {
+        let mut grid = test_grid(10, 1);
+        // SGR 4:2 (colon sub-parameter, not semicolon).
+        parse(&mut grid, b"\x1b[4:2mX");
+        assert_eq!(
+            grid.lines[0].cells[0].underline_style,
+            UnderlineStyle::Double
+        );
+    }
+
+    #[test]
+    fn sgr_default_fg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[31m\x1b[39mX");
+        assert_cell_fg(&grid, 0, 0, Color::Default);
+    }
+
+    #[test]
+    fn sgr_default_bg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[42m\x1b[49mX");
+        assert_eq!(grid.lines[0].cells[0].bg, Color::Default);
+    }
+
+    #[test]
+    fn sgr_multiple_in_one_sequence() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[1;3;31mX");
+        assert_cell_flags(&grid, 0, 0, CellFlags::BOLD);
+        assert_cell_flags(&grid, 0, 0, CellFlags::ITALIC);
+        assert_cell_fg(&grid, 0, 0, Color::Named(NamedColor::Red));
+    }
+
+    #[test]
+    fn sgr_underline_color_rgb() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[58;2;255;0;128mX");
+        assert_eq!(
+            grid.lines[0].cells[0].underline_color,
+            Some(Color::Rgb(255, 0, 128))
+        );
+    }
+
+    #[test]
+    fn sgr_underline_color_reset() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[58;2;255;0;128m\x1b[59mX");
+        assert_eq!(grid.lines[0].cells[0].underline_color, None);
+    }
+
+    // SGR 53 (overline): vte's Attr enum lacks an Overline variant.
+    // Needs custom csi_dispatch (TREK-33). Re-check when upgrading vte.
 }
