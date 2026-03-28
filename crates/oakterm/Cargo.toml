@@ -7,5 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[build-dependencies]
+vergen = { workspace = true }
+vergen-gitcl = { workspace = true }
+
 [lints]
 workspace = true

@@ -51,7 +51,8 @@ notify-debouncer-full = "0.7.0"
 criterion = "0.8.2"
 
 # Build metadata
-vergen = "9.1.0"
+vergen = { version = "9.1.0", features = ["build", "cargo"] }
+vergen-gitcl = { version = "9.1.0", features = ["build", "cargo"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
