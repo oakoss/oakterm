@@ -28,31 +28,33 @@ jobs:
       - name: Lint markdown
         run: mise run lint:md
 
-      # TODO: Add when Rust code exists
-      # - run: cargo fmt --check
-      # - run: cargo clippy -- -D warnings
-      # - run: cargo check
+      - name: Check Rust formatting
+        run: mise run cargo:fmt:check
 
-  # TODO: Add when tests exist
-  # tests:
-  #   name: Tests
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-  #
-  #     - name: Setup
-  #       uses: ./.github/actions/setup
-  #
-  #     - run: cargo test
+      - name: Clippy
+        run: mise run cargo:clippy
+
+      - name: Type check
+        run: mise run cargo:check
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Run tests
+        run: mise run cargo:test
 
   ci-summary:
     name: CI Summary
     runs-on: ubuntu-latest
     if: always()
-    needs: [static-analysis]
-    # TODO: Add tests to needs when tests job is enabled
-    # needs: [static-analysis, tests]
+    needs: [static-analysis, tests]
     steps:
       - name: Summarize results
         run: |
@@ -61,6 +63,7 @@ jobs:
           echo "| Job | Status | Required |" >> "$GITHUB_STEP_SUMMARY"
           echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Static analysis | \`${{ needs.static-analysis.result }}\` | Yes |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | \`${{ needs.tests.result }}\` | Yes |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           fail_if_bad() {
@@ -71,3 +74,4 @@ jobs:
           }
 
           fail_if_bad "static-analysis" "${{ needs.static-analysis.result }}"
+          fail_if_bad "tests" "${{ needs.tests.result }}"
