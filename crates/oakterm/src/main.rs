@@ -28,6 +28,25 @@ use oakterm_renderer::swash_shaper::SwashShaper;
 
 use render_grid::ClientGrid;
 
+// AccessKit no-op handlers per Spec-0006 lazy activation.
+
+struct NoOpActivationHandler;
+impl accesskit::ActivationHandler for NoOpActivationHandler {
+    fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
+        None
+    }
+}
+
+struct NoOpActionHandler;
+impl accesskit::ActionHandler for NoOpActionHandler {
+    fn do_action(&mut self, _request: accesskit::ActionRequest) {}
+}
+
+struct NoOpDeactivationHandler;
+impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
+    fn deactivate_accessibility(&mut self) {}
+}
+
 /// Events sent from the daemon reader thread to the winit event loop.
 #[derive(Debug)]
 enum UserEvent {
@@ -78,6 +97,9 @@ struct App {
     daemon: Option<DaemonWriter>,
     proxy: EventLoopProxy<UserEvent>,
     daemon_process: Option<std::process::Child>,
+    #[allow(dead_code)] // Must stay alive for the window's lifetime.
+    accesskit: Option<accesskit_winit::Adapter>,
+    last_sent_dims: (u16, u16),
 }
 
 impl App {
@@ -90,6 +112,8 @@ impl App {
             daemon: None,
             proxy,
             daemon_process: None,
+            accesskit: None,
+            last_sent_dims: (0, 0),
         }
     }
 }
@@ -102,6 +126,7 @@ impl ApplicationHandler<UserEvent> for App {
 
         let attrs = WindowAttributes::default()
             .with_title("oakterm")
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800, 600));
 
         let window = Arc::new(
@@ -109,6 +134,18 @@ impl ApplicationHandler<UserEvent> for App {
                 .create_window(attrs)
                 .expect("failed to create window"),
         );
+
+        // AccessKit adapter must be created before the window is shown (Spec-0006).
+        let accesskit = accesskit_winit::Adapter::with_direct_handlers(
+            event_loop,
+            &window,
+            NoOpActivationHandler,
+            NoOpActionHandler,
+            NoOpDeactivationHandler,
+        );
+        self.accesskit = Some(accesskit);
+
+        window.set_visible(true);
 
         let gpu = pollster::block_on(init_gpu(window.clone()));
 
@@ -145,6 +182,10 @@ impl ApplicationHandler<UserEvent> for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let (Some(adapter), Some(window)) = (&mut self.accesskit, &self.window) {
+            adapter.process_event(window, &event);
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(daemon) = &mut self.daemon {
@@ -166,23 +207,28 @@ impl ApplicationHandler<UserEvent> for App {
                             let (cols, rows) = window_to_grid_dims(size, &font.metrics);
                             grid.resize(cols, rows);
 
-                            if let Some(daemon) = &mut self.daemon {
-                                let msg = Resize {
-                                    pane_id: 0,
-                                    cols,
-                                    rows,
-                                    pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                                    pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                                };
-                                match msg.to_frame() {
-                                    Ok(frame) => {
-                                        if let Err(e) = daemon.send_frame(&frame) {
-                                            eprintln!("daemon write failed: {e}");
-                                            self.daemon = None;
-                                            event_loop.exit();
+                            // Skip if dimensions haven't changed (avoids redundant SIGWINCH).
+                            if (cols, rows) != self.last_sent_dims {
+                                self.last_sent_dims = (cols, rows);
+
+                                if let Some(daemon) = &mut self.daemon {
+                                    let msg = Resize {
+                                        pane_id: 0,
+                                        cols,
+                                        rows,
+                                        pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+                                        pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+                                    };
+                                    match msg.to_frame() {
+                                        Ok(frame) => {
+                                            if let Err(e) = daemon.send_frame(&frame) {
+                                                eprintln!("daemon write failed: {e}");
+                                                self.daemon = None;
+                                                event_loop.exit();
+                                            }
                                         }
+                                        Err(e) => eprintln!("failed to encode resize: {e}"),
                                     }
-                                    Err(e) => eprintln!("failed to encode resize: {e}"),
                                 }
                             }
                         }

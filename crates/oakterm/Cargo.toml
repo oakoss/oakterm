@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 winit = { workspace = true }
 wgpu = { workspace = true }
+accesskit = { workspace = true }
+accesskit_winit = { workspace = true }
 oakterm-renderer = { path = "../oakterm-renderer" }
 oakterm-protocol = { path = "../oakterm-protocol" }
 oakterm-daemon = { path = "../oakterm-daemon" }

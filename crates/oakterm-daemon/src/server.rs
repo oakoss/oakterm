@@ -16,7 +16,9 @@ use oakterm_terminal::handler;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, watch};
@@ -33,6 +35,9 @@ pub struct Daemon {
     socket_path: std::path::PathBuf,
     cols: u16,
     rows: u16,
+    /// When false (default), the daemon exits after the last client disconnects.
+    /// When true, the daemon stays running with zero clients (headless/persist mode).
+    persist: bool,
 }
 
 impl Daemon {
@@ -50,7 +55,13 @@ impl Daemon {
             socket_path: path,
             cols,
             rows,
+            persist: false,
         })
+    }
+
+    /// Enable persist mode: daemon stays running with zero clients.
+    pub fn set_persist(&mut self, persist: bool) {
+        self.persist = persist;
     }
 
     /// Run the daemon: start PTY, listen for connections.
@@ -79,12 +90,38 @@ impl Daemon {
         let dirty_tx = self.dirty_tx.clone();
         tokio::spawn(pty_read_loop(pty, grid, dirty_tx));
 
+        // Phase 0: counts all clients. ADR-0007 says "last window closes" —
+        // when control clients exist, filter by ClientType::Gui.
+        let client_count = Arc::new(AtomicUsize::new(0));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let persist = self.persist;
+
         loop {
-            let (stream, _) = listener.accept().await?;
-            let grid = Arc::clone(&self.grid);
-            let dirty_rx = self.dirty_rx.clone();
-            tokio::spawn(handle_client(stream, grid, dirty_rx, master_fd));
+            tokio::select! {
+                result = listener.accept() => {
+                    let (stream, _) = result?;
+                    let grid = Arc::clone(&self.grid);
+                    let dirty_rx = self.dirty_rx.clone();
+                    let count = Arc::clone(&client_count);
+                    let tx = shutdown_tx.clone();
+
+                    count.fetch_add(1, Ordering::AcqRel);
+
+                    tokio::spawn(async move {
+                        handle_client(stream, grid, dirty_rx, master_fd).await;
+                        let remaining = count.fetch_sub(1, Ordering::AcqRel) - 1;
+                        if remaining == 0 && !persist {
+                            let _ = tx.send(true);
+                        }
+                    });
+                }
+                _ = shutdown_rx.wait_for(|&v| v) => {
+                    break;
+                }
+            }
         }
+
+        Ok(())
     }
 
     /// Get the socket path.
