@@ -7,5 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "vt_parser"
+harness = false
+
+[[bench]]
+name = "screen_buffer"
+harness = false
+
 [lints]
 workspace = true
