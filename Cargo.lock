@@ -1249,6 +1249,8 @@ dependencies = [
 name = "oakterm"
 version = "0.1.0"
 dependencies = [
+ "oakterm-daemon",
+ "oakterm-protocol",
  "oakterm-renderer",
  "pollster",
  "vergen",
