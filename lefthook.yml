@@ -3,15 +3,18 @@ output:
   - execution_out
 
 pre-commit:
-  parallel: true
   commands:
-    format:
-      glob: '*.{md,json,yaml,yml}'
-      run: prettier --write {staged_files}
+    cargo-fmt:
+      glob: '**/*.rs'
+      run: cargo fmt --all
       stage_fixed: true
     lint-md:
-      glob: '*.md'
+      glob: '**/*.md'
       run: markdownlint-cli2 --fix {staged_files}
+      stage_fixed: true
+    format:
+      glob: '**/*.{md,json,yaml,yml}'
+      run: prettier --write {staged_files}
       stage_fixed: true
 
 commit-msg:

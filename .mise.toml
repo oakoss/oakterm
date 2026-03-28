@@ -1,4 +1,5 @@
 [tools]
+rust = "stable"
 node = "25"
 "npm:prettier" = "3"
 "npm:markdownlint-cli2" = "0"
@@ -25,6 +26,30 @@ run = "markdownlint-cli2 '**/*.md' '#node_modules'"
 description = "Lint and fix markdown files"
 run = "markdownlint-cli2 --fix '**/*.md' '#node_modules'"
 
+[tasks."cargo:fmt"]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks."cargo:fmt:check"]
+description = "Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks."cargo:clippy"]
+description = "Run clippy lints"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks."cargo:check"]
+description = "Type-check Rust code"
+run = "cargo check --workspace --all-targets"
+
+[tasks."cargo:test"]
+description = "Run Rust tests"
+run = "cargo test --workspace"
+
+[tasks."cargo:bench"]
+description = "Run Rust benchmarks"
+run = "cargo bench --workspace"
+
 [tasks.check]
-description = "Run all checks (format + lint)"
-depends = ["fmt:check", "lint"]
+description = "Run all checks (format + lint + Rust)"
+depends = ["fmt:check", "lint", "cargo:fmt:check", "cargo:clippy", "cargo:check"]
