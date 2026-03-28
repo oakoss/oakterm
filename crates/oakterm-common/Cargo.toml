@@ -1,0 +1,11 @@
+[package]
+name = "oakterm-common"
+version = "0.1.0"
+description = "Shared types and utilities"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
