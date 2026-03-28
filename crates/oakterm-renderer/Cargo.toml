@@ -20,7 +20,7 @@ gpu-tests = []
 
 [dev-dependencies]
 criterion = { workspace = true }
-pollster = "0.4"
+pollster = { workspace = true }
 tokio = { workspace = true }
 
 [[bench]]
