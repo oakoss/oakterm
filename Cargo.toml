@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oakterm",
+    "crates/oakterm-a11y",
+    "crates/oakterm-common",
+    "crates/oakterm-config",
+    "crates/oakterm-ctl",
+    "crates/oakterm-daemon",
+    "crates/oakterm-protocol",
+    "crates/oakterm-pty",
+    "crates/oakterm-renderer",
+    "crates/oakterm-terminal",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "BSL-1.1"
+repository = "https://github.com/oakoss/oakterm"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

@@ -1,0 +1,11 @@
+[package]
+name = "oakterm-renderer"
+version = "0.1.0"
+description = "GPU renderer with wgpu and glyph atlas"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

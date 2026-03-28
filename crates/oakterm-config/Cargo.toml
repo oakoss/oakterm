@@ -1,0 +1,11 @@
+[package]
+name = "oakterm-config"
+version = "0.1.0"
+description = "Sandboxed Lua configuration runtime"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
