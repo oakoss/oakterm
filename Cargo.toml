@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/oakterm",
-    "crates/oakterm-a11y",
-    "crates/oakterm-common",
-    "crates/oakterm-config",
-    "crates/oakterm-ctl",
-    "crates/oakterm-daemon",
-    "crates/oakterm-protocol",
-    "crates/oakterm-pty",
-    "crates/oakterm-renderer",
-    "crates/oakterm-terminal",
+  "crates/oakterm",
+  "crates/oakterm-a11y",
+  "crates/oakterm-common",
+  "crates/oakterm-config",
+  "crates/oakterm-ctl",
+  "crates/oakterm-daemon",
+  "crates/oakterm-protocol",
+  "crates/oakterm-pty",
+  "crates/oakterm-renderer",
+  "crates/oakterm-terminal",
 ]
 
 [workspace.package]
@@ -18,6 +18,40 @@ edition = "2024"
 rust-version = "1.85"
 license = "BSL-1.1"
 repository = "https://github.com/oakoss/oakterm"
+
+[workspace.dependencies]
+# GPU rendering
+wgpu = "29.0.1"
+
+# Windowing
+winit = "0.30.13"
+
+# Accessibility
+accesskit = "0.24.0"
+accesskit_winit = "0.32.2"
+
+# Lua config
+mlua = { version = "0.11.6", features = ["lua54", "vendored", "send"] }
+
+# Async runtime
+tokio = { version = "1.50.0", features = ["full"] }
+
+# Wire protocol
+prost = "0.14.3"
+
+# Scroll buffer archive
+zstd = "0.13.3"
+ring = "0.17.14"
+
+# Config hot-reload
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+
+# Benchmarks
+criterion = "0.8.2"
+
+# Build metadata
+vergen = "9.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
