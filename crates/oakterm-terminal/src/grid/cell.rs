@@ -72,6 +72,11 @@ impl CellFlags {
     }
 
     #[must_use]
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
