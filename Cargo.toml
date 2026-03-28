@@ -45,9 +45,12 @@ prost = "0.14.3"
 zstd = "0.13.3"
 ring = "0.17.14"
 
-# Font loading
+# Font loading and rasterization
 ttf-parser = "0.25.1"
 fontdb = "0.23.0"
+swash = "0.2.7"
+etagere = "0.3.0"
+bytemuck = { version = "1.25.0", features = ["derive"] }
 
 # Config hot-reload
 notify = "8.2.0"

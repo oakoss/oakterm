@@ -3,7 +3,6 @@
 pub struct FontKey(u32);
 
 impl FontKey {
-    #[expect(dead_code, reason = "used when renderer creates font handles")]
     pub(crate) fn new(id: u32) -> Self {
         Self(id)
     }
