@@ -2,11 +2,12 @@
 
 GPU-accelerated, extensible terminal emulator with a plugin-driven process dashboard and context-aware shell.
 
-**Status: Idea Phase** — collecting and refining design docs before implementation.
+**Status: Phase 0 Implementation** — core terminal foundation (renderer, VT parser, screen buffer).
 
 ## Project Structure
 
 ```text
+crates/         # Rust workspace — 10 crates (oakterm, oakterm-daemon, oakterm-terminal, etc.)
 docs/ideas/     # Exploration — brainstorming, research, design sketches
 docs/reviews/   # Audits — point-in-time reviews that surface work (YYYY-MM-DD-title.md)
 docs/adrs/      # Decisions — resolve open questions from ideas (NNNN-title.md)
@@ -81,8 +82,8 @@ Managed by [mise](https://mise.jdx.dev/). Run `mise install` to get all tools.
 | **markdownlint-cli2** | Markdown linting                                   | `mise run lint:md` / `mise run lint:md:fix` |
 | **lefthook**          | Git hooks (pre-commit, commit-msg)                 | `lefthook install` (once after clone)       |
 | **cocogitto**         | Conventional commit validation                     | `cog verify`                                |
-| **cargo fmt**         | Rust formatting (when code exists)                 | `cargo fmt`                                 |
-| **cargo clippy**      | Rust linting (when code exists)                    | `cargo clippy`                              |
+| **cargo fmt**         | Rust formatting                                    | `cargo fmt`                                 |
+| **cargo clippy**      | Rust linting                                       | `cargo clippy`                              |
 
 ## Architecture Context
 
@@ -260,8 +261,8 @@ Conventional commits. Allowed types:
 
 - `docs` — idea docs, README, design writing
 - `chore` — tooling, config, trekker setup
-- `feat` — new functionality (when code exists)
-- `fix` — bug fixes (when code exists)
+- `feat` — new functionality
+- `fix` — bug fixes
 - `refactor` — restructuring without behavior change
 - `test` — test additions/changes
 - `perf` — performance improvements
