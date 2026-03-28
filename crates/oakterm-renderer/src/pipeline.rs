@@ -248,7 +248,10 @@ impl RenderPipeline {
     }
 
     /// Render a frame to the given texture view.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Panics
+    /// Panics if `glyph_instances` exceeds `u32::MAX` elements.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn render(
         &self,
         device: &wgpu::Device,
@@ -261,38 +264,13 @@ impl RenderPipeline {
         atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
     ) {
-        let bg_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("bg_uniforms"),
-            contents: bytemuck::bytes_of(bg_uniforms),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        let bg_colors_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("bg_colors"),
-            contents: bytemuck::cast_slice(bg_colors),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let bg_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bg_bind_group"),
-            layout: &self.bg_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: bg_uniform_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: bg_colors_buf.as_entire_binding(),
-                },
-            ],
-        });
-
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render_encoder"),
         });
 
         // Pass 1: backgrounds.
+        // Skip buffer creation when grid is empty — wgpu rejects zero-size
+        // storage buffers. The render pass still runs to clear the target.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bg_pass"),
@@ -307,10 +285,47 @@ impl RenderPipeline {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&self.bg_pipeline);
-            pass.set_bind_group(0, &bg_bind_group, &[]);
+
             let cell_count = bg_uniforms.cols * bg_uniforms.rows;
-            pass.draw(0..4, 0..cell_count);
+            debug_assert_eq!(
+                bg_colors.len(),
+                cell_count as usize,
+                "bg_colors length ({}) must match cols * rows ({})",
+                bg_colors.len(),
+                cell_count,
+            );
+            if cell_count > 0 {
+                let bg_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bg_uniforms"),
+                    contents: bytemuck::bytes_of(bg_uniforms),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+                let bg_colors_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bg_colors"),
+                    contents: bytemuck::cast_slice(bg_colors),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+
+                let bg_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bg_bind_group"),
+                    layout: &self.bg_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: bg_uniform_buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: bg_colors_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                pass.set_pipeline(&self.bg_pipeline);
+                pass.set_bind_group(0, &bg_bind_group, &[]);
+                pass.draw(0..4, 0..cell_count);
+            }
         }
 
         // Pass 2: text glyphs (skip if nothing to draw).
@@ -362,7 +377,10 @@ impl RenderPipeline {
             pass.set_pipeline(&self.text_pipeline);
             pass.set_bind_group(0, &text_bind_group, &[]);
             pass.set_vertex_buffer(0, instance_buf.slice(..));
-            let count: u32 = glyph_instances.len().try_into().unwrap_or(u32::MAX);
+            let count: u32 = glyph_instances
+                .len()
+                .try_into()
+                .expect("glyph instance count exceeds u32::MAX");
             pass.draw(0..4, 0..count);
         }
 

@@ -60,7 +60,13 @@ notify-debouncer-full = "0.7.0"
 criterion = "0.8.2"
 
 # PTY
-rustix = { version = "1.1.4", features = ["pty", "termios", "process", "fs", "stdio"] }
+rustix = { version = "1.1.4", features = [
+  "pty",
+  "termios",
+  "process",
+  "fs",
+  "stdio",
+] }
 
 # VT parser
 vte = { version = "0.15.0", features = ["ansi"] }

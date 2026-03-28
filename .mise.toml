@@ -46,6 +46,10 @@ run = "cargo check --workspace --all-targets"
 description = "Run Rust tests"
 run = "cargo test --workspace"
 
+[tasks."cargo:test:gpu"]
+description = "Run GPU tests (requires GPU adapter)"
+run = "cargo test -p oakterm-renderer --features gpu-tests"
+
 [tasks."cargo:bench"]
 description = "Run Rust benchmarks"
 run = "cargo bench --workspace"
