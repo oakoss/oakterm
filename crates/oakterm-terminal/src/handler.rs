@@ -70,6 +70,7 @@ impl<'a, T: TermTarget, W: std::io::Write> Terminal<'a, T, W> {
 // --- Free functions for grid manipulation (avoids borrow checker conflicts) ---
 
 fn write_char(g: &mut Grid, c: char) {
+    let c = map_charset(g, c);
     let cols = g.cols;
 
     if g.cursor.col >= cols {
@@ -227,6 +228,20 @@ fn clear_grid(g: &mut Grid) {
 }
 
 // --- Utility functions ---
+
+/// Map a character through the active charset, delegating to vte's table.
+/// Extension point: when Lua config lands (Spec-0005), check user
+/// overrides before falling back to vte.
+fn map_charset(g: &Grid, c: char) -> char {
+    use crate::grid::cursor::StandardCharset;
+    let vte_cs = match g.charsets[g.active_charset as usize] {
+        StandardCharset::Ascii => vte::ansi::StandardCharset::Ascii,
+        StandardCharset::SpecialGraphics => {
+            vte::ansi::StandardCharset::SpecialCharacterAndLineDrawing
+        }
+    };
+    vte_cs.map(c)
+}
 
 /// Saturating cast from usize to u16 (clamps at `u16::MAX` instead of truncating).
 fn sat_u16(v: usize) -> u16 {
@@ -670,6 +685,111 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
     fn unset_mode(&mut self, mode: vte::ansi::Mode) {
         self.target.active_grid_mut().modes.set(mode.raw(), false);
+    }
+
+    fn set_active_charset(&mut self, index: vte::ansi::CharsetIndex) {
+        let g = self.target.active_grid_mut();
+        g.active_charset = match index {
+            vte::ansi::CharsetIndex::G0 => crate::grid::cursor::CharsetIndex::G0,
+            vte::ansi::CharsetIndex::G1 => crate::grid::cursor::CharsetIndex::G1,
+            vte::ansi::CharsetIndex::G2 => crate::grid::cursor::CharsetIndex::G2,
+            vte::ansi::CharsetIndex::G3 => crate::grid::cursor::CharsetIndex::G3,
+        };
+    }
+
+    fn configure_charset(
+        &mut self,
+        index: vte::ansi::CharsetIndex,
+        charset: vte::ansi::StandardCharset,
+    ) {
+        let idx = match index {
+            vte::ansi::CharsetIndex::G0 => 0,
+            vte::ansi::CharsetIndex::G1 => 1,
+            vte::ansi::CharsetIndex::G2 => 2,
+            vte::ansi::CharsetIndex::G3 => 3,
+        };
+        let cs = match charset {
+            vte::ansi::StandardCharset::Ascii => crate::grid::cursor::StandardCharset::Ascii,
+            vte::ansi::StandardCharset::SpecialCharacterAndLineDrawing => {
+                crate::grid::cursor::StandardCharset::SpecialGraphics
+            }
+        };
+        self.target.active_grid_mut().charsets[idx] = cs;
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // tab stop index fits in u16
+    fn move_backward_tabs(&mut self, count: u16) {
+        let g = self.target.active_grid_mut();
+        for _ in 0..count {
+            let col = g.cursor.col as usize;
+            if col == 0 {
+                break;
+            }
+            for i in (0..col).rev() {
+                if g.tab_stops[i] {
+                    g.cursor.col = i as u16;
+                    break;
+                }
+                if i == 0 {
+                    g.cursor.col = 0;
+                }
+            }
+        }
+    }
+
+    fn set_horizontal_tabstop(&mut self) {
+        let g = self.target.active_grid_mut();
+        let col = g.cursor.col as usize;
+        if col < g.tab_stops.len() {
+            g.tab_stops[col] = true;
+        }
+    }
+
+    fn clear_tabs(&mut self, mode: vte::ansi::TabulationClearMode) {
+        let g = self.target.active_grid_mut();
+        match mode {
+            vte::ansi::TabulationClearMode::Current => {
+                let col = g.cursor.col as usize;
+                if col < g.tab_stops.len() {
+                    g.tab_stops[col] = false;
+                }
+            }
+            vte::ansi::TabulationClearMode::All => {
+                for stop in &mut g.tab_stops {
+                    *stop = false;
+                }
+            }
+        }
+    }
+
+    // newline() not overridden: vte dispatches ESC E (NEL) as
+    // linefeed() + carriage_return(), never as newline().
+
+    fn substitute(&mut self) {
+        write_char(self.target.active_grid_mut(), '\u{FFFD}');
+    }
+
+    fn decaln(&mut self) {
+        let g = self.target.active_grid_mut();
+        let cols = g.cols as usize;
+        for line in &mut g.lines {
+            for cell in &mut line.cells[..cols] {
+                cell.reset();
+                cell.codepoint = 'E';
+            }
+        }
+        g.cursor.row = 0;
+        g.cursor.col = 0;
+        g.scroll_region = None;
+        g.touch_all();
+    }
+
+    fn push_title(&mut self) {
+        // Title stack not implemented in Phase 0. No-op.
+    }
+
+    fn pop_title(&mut self) {
+        // Title stack not implemented in Phase 0. No-op.
     }
 
     fn identify_terminal(&mut self, intermediate: Option<char>) {
@@ -1704,5 +1824,78 @@ mod tests {
         assert!(grid.modes.get(66));
         parse(&mut grid, b"\x1b>");
         assert!(!grid.modes.get(66));
+    }
+
+    // --- Charset, tab, and misc tests ---
+
+    #[test]
+    fn line_drawing_charset() {
+        let mut grid = test_grid(10, 1);
+        // ESC ( 0 = configure G0 as line drawing, then print box chars.
+        parse(&mut grid, b"\x1b(0lqqk");
+        assert_eq!(grid.lines[0].cells[0].codepoint, '┌');
+        assert_eq!(grid.lines[0].cells[1].codepoint, '─');
+        assert_eq!(grid.lines[0].cells[2].codepoint, '─');
+        assert_eq!(grid.lines[0].cells[3].codepoint, '┐');
+    }
+
+    #[test]
+    fn charset_switch_back_to_ascii() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b(0q\x1b(Bq");
+        assert_eq!(grid.lines[0].cells[0].codepoint, '─');
+        assert_eq!(grid.lines[0].cells[1].codepoint, 'q');
+    }
+
+    #[test]
+    fn backward_tab() {
+        let mut grid = test_grid(80, 1);
+        // Move to col 16 (past two tab stops), backward tab once.
+        parse(&mut grid, b"\x1b[17G\x1b[Z");
+        assert_cursor_at(&grid, 0, 8);
+    }
+
+    #[test]
+    fn set_and_clear_tabstop() {
+        let mut grid = test_grid(80, 1);
+        // Move to col 5, set a tab stop, move to col 0, tab to it.
+        parse(&mut grid, b"\x1b[6G\x1bH\x1b[1G\t");
+        assert_cursor_at(&grid, 0, 5);
+        // Clear the tab stop at col 5.
+        parse(&mut grid, b"\x1b[6G\x1b[0g\x1b[1G\t");
+        // Should skip to next default stop at col 8.
+        assert_cursor_at(&grid, 0, 8);
+    }
+
+    #[test]
+    fn clear_all_tabstops() {
+        let mut grid = test_grid(80, 1);
+        parse(&mut grid, b"\x1b[3g\t");
+        // With all stops cleared, tab goes to last column.
+        assert_cursor_at(&grid, 0, 79);
+    }
+
+    #[test]
+    fn nel_cr_plus_lf() {
+        let mut grid = test_grid(10, 2);
+        parse(&mut grid, b"\x1b[5Gabc\x1bEdef");
+        assert_row_text(&grid, 0, "    abc");
+        // NEL = CR + LF, so "def" starts at col 0.
+        assert_row_text(&grid, 1, "def");
+    }
+
+    #[test]
+    fn substitute_prints_replacement() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"ab\x1acd");
+        assert_eq!(grid.lines[0].cells[2].codepoint, '\u{FFFD}');
+    }
+
+    #[test]
+    fn decaln_fills_with_e() {
+        let mut grid = test_grid(5, 2);
+        parse(&mut grid, b"\x1b#8");
+        assert_row_text(&grid, 0, "EEEEE");
+        assert_row_text(&grid, 1, "EEEEE");
     }
 }
