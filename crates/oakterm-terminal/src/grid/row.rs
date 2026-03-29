@@ -109,6 +109,23 @@ impl Row {
         }
     }
 
+    /// Create a new row with all cells using the given background (BCE).
+    #[must_use]
+    pub fn new_with_bg(cols: usize, bg: super::cell::Color) -> Self {
+        let cell = Cell {
+            bg,
+            ..Cell::default()
+        };
+        Self {
+            cells: vec![cell; cols],
+            flags: RowFlags::default(),
+            direction: Direction::Ltr,
+            semantic_mark: SemanticMark::None,
+            mark_metadata: None,
+            seqno: 0,
+        }
+    }
+
     pub fn reset(&mut self, seqno: u64) {
         for cell in &mut self.cells {
             cell.reset();

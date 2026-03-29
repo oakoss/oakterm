@@ -145,8 +145,9 @@ fn do_scroll_up(g: &mut Grid, count: usize) {
 
     g.lines[top..=bottom].rotate_left(count);
     let cols = g.cols as usize;
+    let bg = g.current_bg;
     for row in &mut g.lines[(bottom + 1 - count)..=bottom] {
-        *row = crate::grid::row::Row::new(cols);
+        *row = crate::grid::row::Row::new_with_bg(cols, bg);
     }
 
     let seqno = g.next_seqno();
@@ -160,10 +161,11 @@ fn do_scroll_down(g: &mut Grid, count: usize) {
     let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
     let count = count.min(bottom - top + 1);
     let cols = g.cols as usize;
+    let bg = g.current_bg;
 
     g.lines[top..=bottom].rotate_right(count);
     for row in &mut g.lines[top..top + count] {
-        *row = crate::grid::row::Row::new(cols);
+        *row = crate::grid::row::Row::new_with_bg(cols, bg);
     }
 
     let seqno = g.next_seqno();
@@ -176,6 +178,7 @@ fn do_insert_blank(g: &mut Grid, count: usize) {
     let row = g.cursor.row as usize;
     let col = g.cursor.col as usize;
     let cols = g.cols as usize;
+    let bg = g.current_bg;
     if col >= cols {
         return;
     }
@@ -183,7 +186,7 @@ fn do_insert_blank(g: &mut Grid, count: usize) {
     if let Some(line) = g.lines.get_mut(row) {
         line.cells[col..].rotate_right(count);
         for cell in &mut line.cells[col..col + count] {
-            cell.reset();
+            cell.erase_with_bg(bg);
         }
     }
 }
@@ -221,8 +224,9 @@ fn restore_cursor(g: &mut Grid) {
 
 fn clear_grid(g: &mut Grid) {
     let cols = g.cols as usize;
+    let bg = g.current_bg;
     for line in &mut g.lines {
-        *line = crate::grid::row::Row::new(cols);
+        *line = crate::grid::row::Row::new_with_bg(cols, bg);
     }
     g.touch_all();
 }
@@ -433,30 +437,31 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         let cols = g.cols as usize;
         let rows = g.rows as usize;
 
+        let bg = g.current_bg; // BCE: erased cells inherit current bg.
         match mode {
             vte::ansi::ClearMode::Below => {
                 if let Some(line) = g.lines.get_mut(row) {
                     for cell in &mut line.cells[col..] {
-                        cell.reset();
+                        cell.erase_with_bg(bg);
                     }
                 }
                 for line in &mut g.lines[row + 1..rows] {
-                    *line = crate::grid::row::Row::new(cols);
+                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
                 }
             }
             vte::ansi::ClearMode::Above => {
                 for line in &mut g.lines[..row] {
-                    *line = crate::grid::row::Row::new(cols);
+                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
                 }
                 if let Some(line) = g.lines.get_mut(row) {
                     for cell in &mut line.cells[..=col.min(cols - 1)] {
-                        cell.reset();
+                        cell.erase_with_bg(bg);
                     }
                 }
             }
             vte::ansi::ClearMode::All => {
                 for line in &mut g.lines {
-                    *line = crate::grid::row::Row::new(cols);
+                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
                 }
             }
             vte::ansi::ClearMode::Saved => {}
@@ -469,6 +474,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         let row = g.cursor.row as usize;
         let col = g.cursor.col as usize;
         let cols = g.cols as usize;
+        let bg = g.current_bg;
 
         let Some(line) = g.lines.get_mut(row) else {
             return;
@@ -476,17 +482,17 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         match mode {
             vte::ansi::LineClearMode::Right => {
                 for cell in &mut line.cells[col..] {
-                    cell.reset();
+                    cell.erase_with_bg(bg);
                 }
             }
             vte::ansi::LineClearMode::Left => {
                 for cell in &mut line.cells[..=col.min(cols - 1)] {
-                    cell.reset();
+                    cell.erase_with_bg(bg);
                 }
             }
             vte::ansi::LineClearMode::All => {
                 for cell in &mut line.cells {
-                    cell.reset();
+                    cell.erase_with_bg(bg);
                 }
             }
         }
@@ -498,11 +504,12 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         let row = g.cursor.row as usize;
         let col = g.cursor.col as usize;
         let cols = g.cols as usize;
+        let bg = g.current_bg;
         let end = (col + count).min(cols);
 
         if let Some(line) = g.lines.get_mut(row) {
             for cell in &mut line.cells[col..end] {
-                cell.reset();
+                cell.erase_with_bg(bg);
             }
         }
         g.touch_row(g.cursor.row);
@@ -519,12 +526,13 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         let row = g.cursor.row as usize;
         let col = g.cursor.col as usize;
         let cols = g.cols as usize;
+        let bg = g.current_bg;
         let count = count.min(cols - col);
 
         if let Some(line) = g.lines.get_mut(row) {
             line.cells[col..].rotate_left(count);
             for cell in &mut line.cells[cols - count..] {
-                cell.reset();
+                cell.erase_with_bg(bg);
             }
         }
         g.touch_row(g.cursor.row);
@@ -541,10 +549,11 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         }
         let count = count.min(bottom - top + 1);
         let cols = g.cols as usize;
+        let bg = g.current_bg;
 
         g.lines[top..=bottom].rotate_right(count);
         for line in &mut g.lines[top..top + count] {
-            *line = crate::grid::row::Row::new(cols);
+            *line = crate::grid::row::Row::new_with_bg(cols, bg);
         }
 
         let seqno = g.next_seqno();
@@ -564,10 +573,11 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         }
         let count = count.min(bottom - top + 1);
         let cols = g.cols as usize;
+        let bg = g.current_bg;
 
         g.lines[top..=bottom].rotate_left(count);
         for line in &mut g.lines[(bottom + 1 - count)..=bottom] {
-            *line = crate::grid::row::Row::new(cols);
+            *line = crate::grid::row::Row::new_with_bg(cols, bg);
         }
 
         let seqno = g.next_seqno();
@@ -790,6 +800,85 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
     fn pop_title(&mut self) {
         // Title stack not implemented in Phase 0. No-op.
+    }
+
+    fn set_color(&mut self, index: usize, color: vte::ansi::Rgb) {
+        let g = self.target.active_grid_mut();
+        let rgb = crate::grid::cell::Rgb {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+        };
+        match index {
+            0..=255 => {
+                g.palette[index] = rgb;
+                g.touch_all();
+            }
+            256 => {
+                g.dynamic_fg = Some(rgb);
+                g.touch_all();
+            }
+            257 => {
+                g.dynamic_bg = Some(rgb);
+                g.touch_all();
+            }
+            258 => g.dynamic_cursor = Some(rgb),
+            _ => {}
+        }
+    }
+
+    fn reset_color(&mut self, index: usize) {
+        let g = self.target.active_grid_mut();
+        match index {
+            0..=255 => {
+                g.palette[index] = g.default_palette[index];
+                g.touch_all();
+            }
+            256 => {
+                g.dynamic_fg = None;
+                g.touch_all();
+            }
+            257 => {
+                g.dynamic_bg = None;
+                g.touch_all();
+            }
+            258 => g.dynamic_cursor = None,
+            _ => {}
+        }
+    }
+
+    fn dynamic_color_sequence(&mut self, prefix: String, index: usize, terminator: &str) {
+        let g = self.target.active_grid_mut();
+        let color = match index {
+            0..=255 => g.palette[index],
+            256 => g.dynamic_fg.unwrap_or(crate::grid::cell::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            }),
+            257 => g
+                .dynamic_bg
+                .unwrap_or(crate::grid::cell::Rgb { r: 0, g: 0, b: 0 }),
+            258 => g.dynamic_cursor.unwrap_or(crate::grid::cell::Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            }),
+            _ => return,
+        };
+        // X11 rgb: format uses 16-bit per channel (8-bit value doubled).
+        let r = u16::from(color.r) * 257;
+        let green = u16::from(color.g) * 257;
+        let b = u16::from(color.b) * 257;
+        let _ = write!(
+            self.writer,
+            "\x1b]{prefix};rgb:{r:04x}/{green:04x}/{b:04x}{terminator}"
+        );
+    }
+
+    fn set_title(&mut self, title: Option<String>) {
+        let g = self.target.active_grid_mut();
+        g.title = title;
     }
 
     fn identify_terminal(&mut self, intermediate: Option<char>) {
@@ -1897,5 +1986,58 @@ mod tests {
         parse(&mut grid, b"\x1b#8");
         assert_row_text(&grid, 0, "EEEEE");
         assert_row_text(&grid, 1, "EEEEE");
+    }
+
+    // --- Palette and dynamic color tests ---
+
+    #[test]
+    fn set_palette_color() {
+        let mut grid = test_grid(10, 1);
+        // OSC 4;1;rgb:ff/00/00 ST — set palette index 1 to red.
+        parse(&mut grid, b"\x1b]4;1;rgb:ff/00/00\x1b\\");
+        assert_eq!(grid.palette[1].r, 255);
+        assert_eq!(grid.palette[1].g, 0);
+        assert_eq!(grid.palette[1].b, 0);
+    }
+
+    #[test]
+    fn reset_palette_color() {
+        let mut grid = test_grid(10, 1);
+        let original = grid.palette[1];
+        parse(&mut grid, b"\x1b]4;1;rgb:ff/00/00\x1b\\");
+        assert_ne!(grid.palette[1], original);
+        parse(&mut grid, b"\x1b]104;1\x1b\\");
+        assert_eq!(grid.palette[1], original);
+    }
+
+    #[test]
+    fn set_title_osc_2() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]2;hello world\x1b\\");
+        assert_eq!(grid.title.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn dynamic_bg_color() {
+        let mut grid = test_grid(10, 1);
+        // OSC 11;rgb:20/30/40 — set dynamic background.
+        parse(&mut grid, b"\x1b]11;rgb:20/30/40\x1b\\");
+        assert_eq!(
+            grid.dynamic_bg,
+            Some(crate::grid::cell::Rgb {
+                r: 0x20,
+                g: 0x30,
+                b: 0x40,
+            })
+        );
+    }
+
+    #[test]
+    fn reset_dynamic_bg() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]11;rgb:20/30/40\x1b\\");
+        assert!(grid.dynamic_bg.is_some());
+        parse(&mut grid, b"\x1b]111\x1b\\");
+        assert!(grid.dynamic_bg.is_none());
     }
 }

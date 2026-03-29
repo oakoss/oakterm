@@ -92,6 +92,91 @@ The `TermTarget` trait approach is the right adaptation of wezterm's pattern for
 - `TermTarget` trait implemented by both `Grid` (tests) and `ScreenSet` (daemon)
 - Handle modes 47, 1047, and 1049 with correct cursor semantics per Ghostty's PR #7471
 
+### Charset Mapping (addendum, 2026-03-29)
+
+Research into DEC Special Character and Line Drawing charset mapping across four emulators:
+
+- **Alacritty**: delegates directly to `vte::ansi::StandardCharset::map()`. No custom table.
+- **wezterm**: own `remap_grapheme()` table (uses its own parser, not vte). Maps 0x60-0x7E only, does not map 0x5F.
+- **Ghostty**: own comptime-initialized `[256]u16` lookup table. Maps 0x60-0x7E, does not map 0x5F. Also supports British charset.
+- **vte**: maps 0x5F-0x7E (32 characters). Most complete table. Only supports Ascii and SpecialCharacterAndLineDrawing.
+
+All four emulators agree on the 0x60-0x7E codepoint mappings (byte-identical). The 0x5F→space mapping is vte/xterm convention; wezterm and Ghostty skip it.
+
+Decision: oakterm delegates to vte's `StandardCharset::map()` via `map_charset()` in handler.rs (same pattern as Alacritty). The function is documented as an extension point for user config overrides when Lua config lands.
+
+### OSC Colors and Shell Integration (addendum, 2026-03-29)
+
+Research into how emulators handle palette colors, dynamic colors, and shell integration marks.
+
+**OSC 4 palette colors (0-255):**
+
+- **Alacritty**: `Option<Rgb>` overlay array (269 slots, all `None`). `set_color` sets the slot; `reset_color` sets it back to `None`. Renderer resolves: check overlay first, fall back to config palette. Cleanest pattern.
+- **wezterm**: copy-on-write fork of the config palette. `palette_mut()` clones the config palette on first write, then mutates in-place. Reset restores individual indices from config; if result matches config, drops the fork.
+- **Kitty**: dual arrays (`color_table[256]` + `orig_color_table[256]`). Reset copies from orig back to current. Also has a color stack for push/pop.
+
+**OSC 10/11/12 dynamic colors (foreground/background/cursor):**
+
+- **Alacritty**: same overlay array, indices 256-258. OSC 11 background change affects both cell defaults AND the window clear color. `renderer.clear()` uses the resolved bg every frame.
+- **wezterm**: named fields on `ColorPalette`. Changing background via OSC 11 changes window clear, padding, and default cell background simultaneously.
+- **Kitty**: `DynamicColors` struct with `configured` + `overridden` layers. Also updates macOS titlebar color on bg change.
+
+**Key insight for oakterm:** OSC 11 (background) must change both the Grid's default bg AND the renderer's window clear color. Our current architecture sends colors per-cell via RenderUpdate. For default-bg cells, the GUI renderer needs to know the terminal's dynamic background color. Options: (a) include dynamic_bg in RenderUpdate, (b) resolve at the daemon before serialization.
+
+**OSC 133 shell integration:**
+
+- **vte 0.15 does NOT handle OSC 133.** Must parse manually or ignore.
+- **Alacritty**: not supported.
+- **wezterm**: per-cell `SemanticType` (2-bit field in cell attributes). All cells inherit the current semantic type. Zones reconstructed by scanning.
+- **Kitty**: per-line `prompt_kind` (2-bit field in line attributes). Simpler than per-cell.
+
+Our Spec-0003 uses per-row `SemanticMark` (kitty's approach). Since vte doesn't dispatch OSC 133, we'd need to implement `osc_dispatch` on the Handler to catch it. For Phase 0.2, storing marks on rows is sufficient; per-cell semantics can come later if needed.
+
+**OSC 7 working directory:**
+
+- **vte does NOT handle OSC 7.**
+- **Alacritty**: not stored; reads child CWD from `/proc`.
+- **wezterm**: `current_dir: Option<Url>` on terminal state.
+- **Kitty**: raw bytes on Screen object.
+
+Decision for oakterm: store as `Option<String>` on Grid, like wezterm. Useful for tab titles and prompt navigation.
+
+### Ghostty Background Rendering Pipeline (addendum, 2026-03-29)
+
+Ghostty does NOT use the dynamic background as the Metal clear color. The clear color is hardcoded to transparent black `{0,0,0,0}`. Instead, the background is a full-screen triangle pass using a dedicated `bg_color_fragment` shader. This avoids CPU-side color space conversion.
+
+**Rendering order:** (1) clear to transparent black, (2) full-screen bg_color pass, (3) per-cell backgrounds (default-bg cells are transparent, showing the bg_color through), (4) text glyphs.
+
+**Color state:** `DynamicRGB` has `.default` (config) and `.override` (OSC 11). `.get()` returns override if set, else default. On OSC 11 change, the terminal sends a `color_change` message to the Surface, which on macOS propagates through Combine to update `NSWindow.backgroundColor` (titlebar reacts).
+
+**Per-cell bg:** Default-bg cells get `{0,0,0,0}` in the bg_cells buffer. Only cells with explicit SGR colors get non-zero entries. The shader blends cell bg over global bg for text contrast calculation.
+
+**Color space:** Ghostty stores colors as raw sRGB bytes in uniforms. All conversion (sRGB→Display P3, linearization) happens in GPU shaders. This avoids the gamma/color-space bugs that Ghostty #2125 documents (still open as of 2026).
+
+**Implication for oakterm:** Our bg_colors buffer already uses packed ABGR per cell. We need to add a similar "global background" uniform to the GPU pipeline, set it from the daemon's `dynamic_bg` field (sent via RenderUpdate), and make default-bg cells transparent so the global bg shows through. The renderer changes are in the shader + uniform setup, not the cell data.
+
+### Community Color/Theme Wishlist (addendum, 2026-03-29)
+
+**Priority-ranked findings from across the ecosystem:**
+
+1. **OS dark/light mode auto-switching** — the #1 request. 161 downvotes on Alacritty's refusal (issue #5999). Ghostty solved it with `theme = light:X,dark:Y` config. Kitty added OS appearance detection. The full cascade requires: OS detection → terminal theme switch → OSC 11 response update → app notification.
+
+2. **Correct gamma/color space (sRGB, Display P3)** — Ghostty #2125 still open. Kitty fixed sRGB in #2249 via shader gamma correction. Modern Macs use Display P3 (25% wider gamut). GPU terminals rendering in sRGB on P3 displays show desaturated colors.
+
+3. **OSC 10/11 query support** — critical for vim, neovim (auto-background since v0.10), bat, delta, starship. tmux #1919 historically broke passthrough. We now support this.
+
+4. **Minimum contrast auto-adjustment** — accessibility feature. Adopted by iTerm2, Ghostty, kitty, wezterm, VS Code. Ghostty's shader blends cell bg + global bg for contrast calculation.
+
+5. **Background images** — 246 reactions in Ghostty #3645. Ghostty ships `bg_image_fragment` shader that composites over bg_color.
+
+6. **Toggle transparency keybind** — 110 reactions in Ghostty #5047. Screen-sharing use case.
+
+7. **Per-tab/pane color coding** — 76 reactions in Ghostty #2509. iTerm2 parity.
+
+8. **Live theme hot-reload** — wezterm's differentiator. Expected baseline.
+
+**Key pain points:** Blue on black is the most common unreadable-color complaint. 256-color indices bypass themes. Theme switching doesn't update already-rendered content. Vim background mismatch creates ugly borders (fixable with our OSC 11 support).
+
 ## References
 
 - [Ghostty alt screen PR #7471](https://github.com/ghostty-org/ghostty/pull/7471)

@@ -387,6 +387,16 @@ impl ApplicationHandler<UserEvent> for App {
                     pad: 0.0,
                 };
 
+                let clear_color = self.grid.as_ref().map_or(wgpu::Color::BLACK, |g| {
+                    let [r, g, b] = g.bg_color;
+                    wgpu::Color {
+                        r: f64::from(r) / 255.0,
+                        g: f64::from(g) / 255.0,
+                        b: f64::from(b) / 255.0,
+                        a: 1.0,
+                    }
+                });
+
                 gpu.pipeline.render(
                     &gpu.device,
                     &gpu.queue,
@@ -397,6 +407,7 @@ impl ApplicationHandler<UserEvent> for App {
                     &glyph_instances,
                     &gpu.atlas_view,
                     &gpu.atlas_sampler,
+                    clear_color,
                 );
 
                 if let Some(w) = &self.window {

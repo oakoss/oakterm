@@ -41,6 +41,8 @@ pub struct ClientGrid {
     pub cursor_y: u16,
     pub cursor_visible: bool,
     pub seqno: u64,
+    /// Dynamic background color from daemon (OSC 11 or default).
+    pub bg_color: [u8; 3],
 }
 
 impl ClientGrid {
@@ -54,6 +56,7 @@ impl ClientGrid {
             cursor_y: 0,
             cursor_visible: true,
             seqno: 0,
+            bg_color: [0, 0, 0],
         }
     }
 
@@ -62,6 +65,7 @@ impl ClientGrid {
         self.cursor_x = update.cursor_x;
         self.cursor_y = update.cursor_y;
         self.cursor_visible = update.cursor_visible;
+        self.bg_color = [update.bg_r, update.bg_g, update.bg_b];
         self.seqno = update.seqno;
 
         for row in &update.dirty_rows {
@@ -287,6 +291,9 @@ mod tests {
             cursor_y: 1,
             cursor_style: 0,
             cursor_visible: true,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![
@@ -341,6 +348,9 @@ mod tests {
             cursor_y: 3,
             cursor_style: 0,
             cursor_visible: false,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
             dirty_rows: vec![],
         };
         grid.apply_update(&update);
@@ -360,6 +370,9 @@ mod tests {
             cursor_y: 0,
             cursor_style: 0,
             cursor_visible: true,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
             dirty_rows: vec![DirtyRow {
                 row_index: 99,
                 cells: vec![WireCell {

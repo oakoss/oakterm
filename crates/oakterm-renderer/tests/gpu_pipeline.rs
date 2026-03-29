@@ -201,6 +201,7 @@ fn render_empty_grid() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        wgpu::Color::BLACK,
     );
 }
 
@@ -227,6 +228,7 @@ fn render_partial_zero_grid() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        wgpu::Color::BLACK,
     );
 }
 
@@ -254,6 +256,7 @@ fn render_background_produces_correct_colors() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        wgpu::Color::BLACK,
     );
 
     let pixels = read_pixels(&device, &queue, &target, 160, 48);
@@ -307,6 +310,7 @@ fn render_single_glyph() {
         &glyphs,
         &atlas_view,
         &atlas_sampler,
+        wgpu::Color::BLACK,
     );
 }
 
@@ -374,6 +378,7 @@ fn render_text_produces_visible_pixels() {
         &glyphs,
         &atlas_view,
         &atlas_sampler,
+        wgpu::Color::BLACK,
     );
 
     let pixels = read_pixels(&device, &queue, &target, 160, 48);
