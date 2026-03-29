@@ -11,16 +11,16 @@ use cursor::{CharsetIndex, Cursor, ScrollRegion, StandardCharset};
 use row::Row;
 
 /// Active DEC private modes and ANSI modes as a bitfield.
-/// Indexed by mode number. Supports modes 0-255.
+/// Indexed by mode number. Supports modes 0-2047.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeFlags {
-    bits: [u8; 32],
+    bits: [u8; 256],
 }
 
 impl ModeFlags {
     #[must_use]
     pub fn new() -> Self {
-        Self { bits: [0; 32] }
+        Self { bits: [0; 256] }
     }
 
     pub fn set(&mut self, mode: u16, enabled: bool) {
@@ -43,7 +43,7 @@ impl ModeFlags {
     }
 
     fn index(mode: u16) -> Option<(usize, u8)> {
-        if mode < 256 {
+        if mode < 2048 {
             Some((mode as usize / 8, (mode % 8) as u8))
         } else {
             None
@@ -136,7 +136,11 @@ impl Grid {
             current_bg: Color::Default,
             current_underline_style: cell::UnderlineStyle::None,
             current_underline_color: None,
-            modes: ModeFlags::new(),
+            modes: {
+                let mut m = ModeFlags::new();
+                m.set(7, true); // DECAWM: auto-wrap on by default.
+                m
+            },
             bidi_mode: BidiMode::Off,
             scroll_region: None,
             tab_stops,
