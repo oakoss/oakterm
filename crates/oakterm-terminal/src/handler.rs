@@ -96,6 +96,27 @@ impl<'a> Terminal<'a> {
         }
     }
 
+    fn do_scroll_down(&mut self, count: usize) {
+        let top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
+        let bottom = self
+            .grid
+            .scroll_region
+            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
+
+        let count = count.min(bottom - top + 1);
+        let cols = self.grid.cols as usize;
+
+        self.grid.lines[top..=bottom].rotate_right(count);
+        for row in &mut self.grid.lines[top..top + count] {
+            *row = crate::grid::row::Row::new(cols);
+        }
+
+        let seqno = self.grid.next_seqno();
+        for row in &mut self.grid.lines[top..=bottom] {
+            row.seqno = seqno;
+        }
+    }
+
     #[allow(clippy::cast_possible_truncation)] // cols is u16, indices fit
     fn do_tab(&mut self) {
         let col = self.grid.cursor.col as usize;
@@ -318,6 +339,207 @@ impl vte::ansi::Handler for Terminal<'_> {
 
     fn scroll_up(&mut self, count: usize) {
         self.do_scroll_up(count);
+    }
+
+    fn scroll_down(&mut self, count: usize) {
+        self.do_scroll_down(count);
+    }
+
+    fn clear_screen(&mut self, mode: vte::ansi::ClearMode) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+        let rows = self.grid.rows as usize;
+
+        match mode {
+            vte::ansi::ClearMode::Below => {
+                // Clear from cursor to end of current row.
+                if let Some(line) = self.grid.lines.get_mut(row) {
+                    for cell in &mut line.cells[col..] {
+                        cell.reset();
+                    }
+                }
+                // Clear all rows below.
+                for line in &mut self.grid.lines[row + 1..rows] {
+                    *line = crate::grid::row::Row::new(cols);
+                }
+            }
+            vte::ansi::ClearMode::Above => {
+                // Clear all rows above.
+                for line in &mut self.grid.lines[..row] {
+                    *line = crate::grid::row::Row::new(cols);
+                }
+                // Clear from start of current row to cursor (inclusive).
+                if let Some(line) = self.grid.lines.get_mut(row) {
+                    for cell in &mut line.cells[..=col.min(cols - 1)] {
+                        cell.reset();
+                    }
+                }
+            }
+            vte::ansi::ClearMode::All => {
+                for line in &mut self.grid.lines {
+                    *line = crate::grid::row::Row::new(cols);
+                }
+            }
+            vte::ansi::ClearMode::Saved => {
+                // Clear scrollback. Phase 0 has no scrollback; no-op.
+            }
+        }
+        self.grid.touch_all();
+    }
+
+    fn clear_line(&mut self, mode: vte::ansi::LineClearMode) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+
+        let Some(line) = self.grid.lines.get_mut(row) else {
+            return;
+        };
+        match mode {
+            vte::ansi::LineClearMode::Right => {
+                for cell in &mut line.cells[col..] {
+                    cell.reset();
+                }
+            }
+            vte::ansi::LineClearMode::Left => {
+                for cell in &mut line.cells[..=col.min(cols - 1)] {
+                    cell.reset();
+                }
+            }
+            vte::ansi::LineClearMode::All => {
+                for cell in &mut line.cells {
+                    cell.reset();
+                }
+            }
+        }
+        self.grid.touch_row(self.grid.cursor.row);
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+        let end = (col + count).min(cols);
+
+        if let Some(line) = self.grid.lines.get_mut(row) {
+            for cell in &mut line.cells[col..end] {
+                cell.reset();
+            }
+        }
+        self.grid.touch_row(self.grid.cursor.row);
+    }
+
+    fn insert_blank(&mut self, count: usize) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+        let count = count.min(cols - col);
+
+        if let Some(line) = self.grid.lines.get_mut(row) {
+            // Shift cells right, dropping those that fall off the end.
+            line.cells[col..].rotate_right(count);
+            for cell in &mut line.cells[col..col + count] {
+                cell.reset();
+            }
+        }
+        self.grid.touch_row(self.grid.cursor.row);
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+        let count = count.min(cols - col);
+
+        if let Some(line) = self.grid.lines.get_mut(row) {
+            // Shift cells left, filling vacated positions at the end.
+            line.cells[col..].rotate_left(count);
+            for cell in &mut line.cells[cols - count..] {
+                cell.reset();
+            }
+        }
+        self.grid.touch_row(self.grid.cursor.row);
+    }
+
+    fn insert_blank_lines(&mut self, count: usize) {
+        let region_top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
+        let top = self.grid.cursor.row as usize;
+        let bottom = self
+            .grid
+            .scroll_region
+            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
+
+        if top < region_top || top > bottom {
+            return;
+        }
+        let count = count.min(bottom - top + 1);
+        let cols = self.grid.cols as usize;
+
+        self.grid.lines[top..=bottom].rotate_right(count);
+        for line in &mut self.grid.lines[top..top + count] {
+            *line = crate::grid::row::Row::new(cols);
+        }
+
+        let seqno = self.grid.next_seqno();
+        for line in &mut self.grid.lines[top..=bottom] {
+            line.seqno = seqno;
+        }
+    }
+
+    fn delete_lines(&mut self, count: usize) {
+        let region_top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
+        let top = self.grid.cursor.row as usize;
+        let bottom = self
+            .grid
+            .scroll_region
+            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
+
+        if top < region_top || top > bottom {
+            return;
+        }
+        let count = count.min(bottom - top + 1);
+        let cols = self.grid.cols as usize;
+
+        self.grid.lines[top..=bottom].rotate_left(count);
+        for line in &mut self.grid.lines[(bottom + 1 - count)..=bottom] {
+            *line = crate::grid::row::Row::new(cols);
+        }
+
+        let seqno = self.grid.next_seqno();
+        for line in &mut self.grid.lines[top..=bottom] {
+            line.seqno = seqno;
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
+        // vte passes 1-based params; convert to 0-based.
+        let max_row = self.grid.rows.saturating_sub(1) as usize;
+        let top = top.saturating_sub(1).min(max_row);
+        let bottom = bottom.map_or(max_row, |b| b.saturating_sub(1).min(max_row));
+
+        if top < bottom && (top > 0 || bottom < max_row) {
+            self.grid.scroll_region = Some(crate::grid::cursor::ScrollRegion {
+                top: top as u16,
+                bottom: bottom as u16,
+            });
+        } else {
+            self.grid.scroll_region = None;
+        }
+        // DECSTBM homes the cursor. Under DECOM (origin mode, TREK-27),
+        // home means scroll_region.top; for now always (0,0).
+        self.grid.cursor.row = 0;
+        self.grid.cursor.col = 0;
+    }
+
+    fn reverse_index(&mut self) {
+        let top = self.grid.scroll_region.map_or(0, |r| r.top);
+        if self.grid.cursor.row <= top {
+            self.do_scroll_down(1);
+        } else {
+            self.grid.cursor.row -= 1;
+        }
     }
 }
 
@@ -821,5 +1043,227 @@ mod tests {
         assert_eq!(grid.current_bg, Color::Default);
         parse(&mut grid, b"\x1b8");
         assert_eq!(grid.current_bg, Color::Named(NamedColor::Green));
+    }
+
+    // --- Grid editing tests ---
+
+    #[test]
+    fn ed_clear_below() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc");
+        parse(&mut grid, b"\x1b[2;1H\x1b[0J");
+        assert_row_text(&grid, 0, "aaaaaaaaaa");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "");
+    }
+
+    #[test]
+    fn ed_clear_above() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc");
+        // Cursor at row 2, col 4 (0-indexed). Clears rows 0-1 and row 2 cols 0-4.
+        parse(&mut grid, b"\x1b[3;5H\x1b[1J");
+        assert_row_text(&grid, 0, "");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "     ccccc");
+    }
+
+    #[test]
+    fn ed_clear_all() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc");
+        parse(&mut grid, b"\x1b[2J");
+        assert_row_text(&grid, 0, "");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "");
+    }
+
+    #[test]
+    fn el_clear_right() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[5G\x1b[0K");
+        assert_row_text(&grid, 0, "abcd");
+    }
+
+    #[test]
+    fn el_clear_left() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[5G\x1b[1K");
+        assert_row_text(&grid, 0, "     fghij");
+    }
+
+    #[test]
+    fn el_clear_all() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[5G\x1b[2K");
+        assert_row_text(&grid, 0, "");
+    }
+
+    #[test]
+    fn ech_erase_chars() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[3G\x1b[4X");
+        assert_row_text(&grid, 0, "ab    ghij");
+    }
+
+    #[test]
+    fn ich_insert_blank_chars() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[3G\x1b[2@");
+        assert_row_text(&grid, 0, "ab  cdefgh");
+    }
+
+    #[test]
+    fn dch_delete_chars() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[3G\x1b[2P");
+        assert_row_text(&grid, 0, "abefghij");
+    }
+
+    #[test]
+    fn il_insert_blank_lines() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[2;1H\x1b[1L");
+        assert_row_text(&grid, 0, "aaa");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "bbb");
+    }
+
+    #[test]
+    fn dl_delete_lines() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[2;1H\x1b[1M");
+        assert_row_text(&grid, 0, "aaa");
+        assert_row_text(&grid, 1, "ccc");
+        assert_row_text(&grid, 2, "");
+    }
+
+    #[test]
+    fn decstbm_set_scrolling_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"11111\r\n22222\r\n33333\r\n44444\r\n55555");
+        // Set scroll region to rows 2-4 (1-based).
+        parse(&mut grid, b"\x1b[2;4r");
+        // Move to bottom of region and linefeed to scroll within region.
+        parse(&mut grid, b"\x1b[4;1H\r\n");
+        assert_row_text(&grid, 0, "11111");
+        assert_row_text(&grid, 1, "33333");
+        assert_row_text(&grid, 2, "44444");
+        assert_row_text(&grid, 3, "");
+        assert_row_text(&grid, 4, "55555");
+    }
+
+    #[test]
+    fn scroll_down_inserts_at_top() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[1T");
+        assert_row_text(&grid, 0, "");
+        assert_row_text(&grid, 1, "aaa");
+        assert_row_text(&grid, 2, "bbb");
+    }
+
+    #[test]
+    fn reverse_index_scrolls_down_at_top() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[1;1H\x1bM");
+        assert_row_text(&grid, 0, "");
+        assert_row_text(&grid, 1, "aaa");
+        assert_row_text(&grid, 2, "bbb");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn reverse_index_moves_up_without_scroll() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[2;1H\x1bM");
+        assert_cursor_at(&grid, 0, 0);
+        assert_row_text(&grid, 0, "aaa");
+    }
+
+    #[test]
+    fn il_within_scroll_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"11111\r\n22222\r\n33333\r\n44444\r\n55555");
+        parse(&mut grid, b"\x1b[2;4r\x1b[2;1H\x1b[1L");
+        assert_row_text(&grid, 0, "11111");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "22222");
+        assert_row_text(&grid, 3, "33333");
+        assert_row_text(&grid, 4, "55555");
+    }
+
+    #[test]
+    fn dl_within_scroll_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"11111\r\n22222\r\n33333\r\n44444\r\n55555");
+        parse(&mut grid, b"\x1b[2;4r\x1b[2;1H\x1b[1M");
+        assert_row_text(&grid, 0, "11111");
+        assert_row_text(&grid, 1, "33333");
+        assert_row_text(&grid, 2, "44444");
+        assert_row_text(&grid, 3, "");
+        assert_row_text(&grid, 4, "55555");
+    }
+
+    #[test]
+    fn scroll_down_within_scroll_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"11111\r\n22222\r\n33333\r\n44444\r\n55555");
+        parse(&mut grid, b"\x1b[2;4r\x1b[1T");
+        assert_row_text(&grid, 0, "11111");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "22222");
+        assert_row_text(&grid, 3, "33333");
+        assert_row_text(&grid, 4, "55555");
+    }
+
+    #[test]
+    fn reverse_index_within_scroll_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"11111\r\n22222\r\n33333\r\n44444\r\n55555");
+        parse(&mut grid, b"\x1b[2;4r\x1b[2;1H\x1bM");
+        assert_row_text(&grid, 0, "11111");
+        assert_row_text(&grid, 1, "");
+        assert_row_text(&grid, 2, "22222");
+        assert_row_text(&grid, 3, "33333");
+        assert_row_text(&grid, 4, "55555");
+    }
+
+    #[test]
+    fn scroll_up_explicit() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"aaa\r\nbbb\r\nccc");
+        parse(&mut grid, b"\x1b[1S");
+        assert_row_text(&grid, 0, "bbb");
+        assert_row_text(&grid, 1, "ccc");
+        assert_row_text(&grid, 2, "");
+    }
+
+    #[test]
+    fn ech_clamps_at_end_of_line() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdefghij");
+        parse(&mut grid, b"\x1b[9G\x1b[100X");
+        assert_row_text(&grid, 0, "abcdefgh");
+    }
+
+    #[test]
+    fn decstbm_reset_clears_region() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"\x1b[2;4r");
+        assert!(grid.scroll_region.is_some());
+        parse(&mut grid, b"\x1b[r");
+        assert!(grid.scroll_region.is_none());
+        assert_cursor_at(&grid, 0, 0);
     }
 }
