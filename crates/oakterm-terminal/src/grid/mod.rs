@@ -306,6 +306,15 @@ impl ScreenSet {
         self.active = ScreenId::Primary;
     }
 
+    /// Full terminal reset: switch to primary, drop alternate, reset primary.
+    pub fn reset(&mut self) {
+        let cols = self.primary.cols;
+        let rows = self.primary.rows;
+        self.active = ScreenId::Primary;
+        self.alternate = None;
+        self.primary = Grid::new(cols, rows);
+    }
+
     /// Resize both primary and alternate grids (if allocated).
     pub fn resize_all(&mut self, cols: u16, rows: u16) {
         self.primary.resize(cols, rows);
