@@ -157,8 +157,10 @@ impl ApplicationHandler<UserEvent> for App {
 
         let gpu = pollster::block_on(init_gpu(window.clone()));
 
-        // Load font.
-        let font_size = 14.0;
+        // Load font at display-native pixel size.
+        let font_size_pt = 14.0_f32;
+        #[allow(clippy::cast_possible_truncation)] // scale factor fits in f32
+        let font_size = font_size_pt * window.scale_factor() as f32;
         let font_state = init_font(font_size);
 
         let size = window.inner_size();
