@@ -101,6 +101,10 @@ struct App {
     daemon_process: Option<std::process::Child>,
     #[allow(dead_code)] // Must stay alive for the window's lifetime.
     accesskit: Option<accesskit_winit::Adapter>,
+    config: oakterm_config::ConfigValues,
+    /// Stored for future in-window error banner rendering.
+    #[allow(dead_code)]
+    config_error: Option<String>,
     last_sent_dims: (u16, u16),
     /// Set after initial Resize is sent. Gates on first `RedrawRequested`.
     initial_resize_sent: bool,
@@ -119,6 +123,8 @@ impl App {
             proxy,
             daemon_process: None,
             accesskit: None,
+            config: oakterm_config::ConfigValues::default(),
+            config_error: None,
             last_sent_dims: (0, 0),
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
@@ -157,11 +163,18 @@ impl ApplicationHandler<UserEvent> for App {
 
         let gpu = pollster::block_on(init_gpu(window.clone()));
 
+        // Load config.
+        let (config, config_error) = oakterm_config::load_config();
+        if let Some(err) = &config_error {
+            eprintln!("config error: {err}");
+        }
+
         // Load font at display-native pixel size.
-        let font_size_pt = 14.0_f32;
+        #[allow(clippy::cast_possible_truncation)] // f64 -> f32 for font size
+        let font_size_pt = config.font_size as f32;
         #[allow(clippy::cast_possible_truncation)] // scale factor fits in f32
         let font_size = font_size_pt * window.scale_factor() as f32;
-        let font_state = init_font(font_size);
+        let font_state = init_font_with_config(&config, font_size);
 
         let size = window.inner_size();
         let (cols, rows) = window_to_grid_dims(size, &font_state.metrics);
@@ -183,6 +196,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.gpu = Some(gpu);
         self.font = Some(font_state);
         self.grid = Some(grid);
+        self.config = config;
+        self.config_error = config_error;
     }
 
     #[allow(clippy::too_many_lines)]
@@ -580,10 +595,19 @@ fn window_to_grid_dims(
     (cols, rows)
 }
 
-fn init_font(font_size: f32) -> FontState {
+fn init_font_with_config(config: &oakterm_config::ConfigValues, font_size: f32) -> FontState {
     let db = font::system_font_db();
-    let (metrics, data) =
-        font::load_default_metrics(&db, font_size).expect("no system monospace font found");
+    let (metrics, data) = if config.font_family.is_empty() {
+        font::load_default_metrics(&db, font_size).expect("no system monospace font found")
+    } else {
+        font::load_font_by_name(&db, &config.font_family, font_size).unwrap_or_else(|e| {
+            eprintln!(
+                "font '{}' not found ({e}), using system default",
+                config.font_family
+            );
+            font::load_default_metrics(&db, font_size).expect("no system monospace font found")
+        })
+    };
 
     let mut shaper = SwashShaper::new();
     let font_key = shaper

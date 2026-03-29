@@ -1684,6 +1684,7 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
+ "oakterm-config",
  "oakterm-daemon",
  "oakterm-protocol",
  "oakterm-renderer",
@@ -1708,6 +1709,7 @@ version = "0.1.0"
 dependencies = [
  "mlua",
  "strsim",
+ "tempfile",
 ]
 
 [[package]]
