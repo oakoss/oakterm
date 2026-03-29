@@ -879,6 +879,11 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     fn set_title(&mut self, title: Option<String>) {
         let g = self.target.active_grid_mut();
         g.title = title;
+        g.title_dirty = true;
+    }
+
+    fn bell(&mut self) {
+        self.target.active_grid_mut().bell_pending = true;
     }
 
     fn identify_terminal(&mut self, intermediate: Option<char>) {

@@ -5,9 +5,9 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY,
+    Bell, ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY,
     MSG_GET_RENDER_UPDATE, MSG_KEY_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE,
-    ServerHello,
+    ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::ScreenSet;
@@ -189,6 +189,7 @@ async fn pty_read_loop(
 }
 
 /// Handle a single client connection.
+#[allow(clippy::too_many_lines)]
 async fn handle_client(
     mut stream: UnixStream,
     screens: Arc<Mutex<ScreenSet>>,
@@ -251,6 +252,47 @@ async fn handle_client(
                 if result.is_err() {
                     break;
                 }
+
+                // Collect title/bell notifications while holding the lock,
+                // then send after releasing. Both can fire in the same cycle.
+                // NOTE: Phase 0 single-client only. With multiple clients,
+                // the first to lock clears the flags; others miss the event.
+                // Phase 1 needs per-client notification queues.
+                let (title_msg, bell_msg) = {
+                    let mut s = screens.lock().await;
+                    let g = s.active_grid_mut();
+                    let t = if g.title_dirty {
+                        g.title_dirty = false;
+                        Some(TitleChanged {
+                            pane_id: 0,
+                            title: g.title.clone().unwrap_or_default(),
+                        })
+                    } else {
+                        None
+                    };
+                    let b = if g.bell_pending {
+                        g.bell_pending = false;
+                        Some(Bell { pane_id: 0 })
+                    } else {
+                        None
+                    };
+                    (t, b)
+                };
+                if let Some(msg) = title_msg {
+                    if let Ok(f) = msg.to_frame() {
+                        if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                if let Some(msg) = bell_msg {
+                    if let Ok(f) = msg.to_frame() {
+                        if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+
                 let notify = DirtyNotify { pane_id: 0 };
                 let Ok(frame) = Frame::new(MSG_DIRTY_NOTIFY, 0, notify.encode()) else {
                     eprintln!("failed to create DirtyNotify frame");
