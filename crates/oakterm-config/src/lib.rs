@@ -4,6 +4,12 @@
 //! standard library functions are removed, memory and execution time
 //! are bounded, and `print` is redirected to stderr.
 
+mod proxy;
+mod schema;
+
+pub use proxy::{extract_config, register_config_table};
+pub use schema::{ConfigValues, CursorStyle, Padding};
+
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
