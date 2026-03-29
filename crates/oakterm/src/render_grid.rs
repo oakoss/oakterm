@@ -171,7 +171,9 @@ impl ClientGrid {
                     if bitmap.width == 0 || bitmap.height == 0 {
                         continue;
                     }
-                    let Some(r) = atlas.insert(cache_key, bitmap.width, bitmap.height) else {
+                    let Some(r) =
+                        atlas.insert(cache_key, bitmap.width, bitmap.height, bitmap.placement)
+                    else {
                         dropped += 1;
                         continue;
                     };
@@ -210,8 +212,8 @@ impl ClientGrid {
 
                 glyphs.push(GlyphVertex {
                     pos: [
-                        x + glyph.x_offset,
-                        y + metrics.baseline - region.height as f32,
+                        x + region.placement.left as f32,
+                        y + metrics.baseline - region.placement.top as f32,
                     ],
                     size: [region.width as f32, region.height as f32],
                     uv_origin: [region.x as f32, region.y as f32],

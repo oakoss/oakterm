@@ -15,7 +15,6 @@ pub fn test_grid(cols: u16, rows: u16) -> Grid {
 
 /// Create a `ScreenSet` with the given dimensions for testing.
 #[must_use]
-#[expect(dead_code, reason = "available for VT parser and screen set tests")]
 pub fn test_screen(cols: u16, rows: u16) -> ScreenSet {
     ScreenSet::new(cols, rows)
 }

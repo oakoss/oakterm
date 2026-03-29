@@ -6,7 +6,8 @@
 
 use crate::font;
 use crate::shaper::{
-    FontKey, FontMetrics, GlyphBitmap, PixelFormat, ShapedGlyph, TextRun, TextShaper,
+    FontKey, FontMetrics, GlyphBitmap, GlyphPlacement, PixelFormat, ShapedGlyph, TextRun,
+    TextShaper,
 };
 use std::collections::HashMap;
 use swash::FontRef;
@@ -125,12 +126,24 @@ impl TextShaper for SwashShaper {
         .render(&mut scaler, glyph_id as u16);
 
         match image {
-            Some(img) => GlyphBitmap {
-                width: img.placement.width,
-                height: img.placement.height,
-                format: PixelFormat::Alpha8,
-                data: img.data,
-            },
+            Some(img) => {
+                let bpp = 1; // Alpha8
+                debug_assert_eq!(
+                    img.data.len(),
+                    (img.placement.width * img.placement.height) as usize * bpp,
+                    "rasterized bitmap data length mismatch"
+                );
+                GlyphBitmap {
+                    width: img.placement.width,
+                    height: img.placement.height,
+                    placement: GlyphPlacement {
+                        top: img.placement.top,
+                        left: img.placement.left,
+                    },
+                    format: PixelFormat::Alpha8,
+                    data: img.data,
+                }
+            }
             None => empty_bitmap(),
         }
     }
@@ -140,6 +153,7 @@ fn empty_bitmap() -> GlyphBitmap {
     GlyphBitmap {
         width: 0,
         height: 0,
+        placement: GlyphPlacement::default(),
         format: PixelFormat::Alpha8,
         data: vec![],
     }

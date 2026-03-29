@@ -16,6 +16,8 @@ pub struct AtlasRegion {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+    /// Glyph bearing offsets, carried from the rasterizer for positioning.
+    pub placement: crate::shaper::GlyphPlacement,
     alloc_id: AllocId,
 }
 
@@ -76,7 +78,13 @@ impl AtlasPlane {
     /// Allocate space for a glyph and insert it into the cache.
     /// Returns `None` if the atlas is full and eviction couldn't free space.
     #[allow(clippy::cast_sign_loss)] // etagere coords are always non-negative
-    pub fn insert(&mut self, key: GlyphCacheKey, width: u32, height: u32) -> Option<AtlasRegion> {
+    pub fn insert(
+        &mut self,
+        key: GlyphCacheKey,
+        width: u32,
+        height: u32,
+        placement: crate::shaper::GlyphPlacement,
+    ) -> Option<AtlasRegion> {
         // Try direct allocation.
         if let Some(region) = self.try_allocate(width, height) {
             let atlas_region = AtlasRegion {
@@ -84,6 +92,7 @@ impl AtlasPlane {
                 y: region.rectangle.min.y as u32,
                 width,
                 height,
+                placement,
                 alloc_id: region.id,
             };
             self.cache.insert(key, atlas_region);
@@ -117,6 +126,7 @@ impl AtlasPlane {
                     y: region.rectangle.min.y as u32,
                     width,
                     height,
+                    placement,
                     alloc_id: region.id,
                 };
                 self.cache.insert(key, atlas_region);
@@ -184,6 +194,7 @@ impl Default for AtlasPlane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shaper::GlyphPlacement;
 
     fn key(glyph_id: u32) -> GlyphCacheKey {
         GlyphCacheKey {
@@ -193,16 +204,23 @@ mod tests {
         }
     }
 
+    const P_DEFAULT: GlyphPlacement = GlyphPlacement { top: 14, left: 0 };
+
     #[test]
     fn allocate_and_lookup() {
         let mut atlas = AtlasPlane::new();
-        let region = atlas.insert(key(65), 10, 20).expect("should allocate");
+        let p = GlyphPlacement { top: 18, left: 1 };
+        let region = atlas.insert(key(65), 10, 20, p).expect("should allocate");
         assert_eq!(region.width, 10);
         assert_eq!(region.height, 20);
+        assert_eq!(region.placement.top, 18);
+        assert_eq!(region.placement.left, 1);
 
         let cached = atlas.get(&key(65)).expect("should be cached");
         assert_eq!(cached.x, region.x);
         assert_eq!(cached.y, region.y);
+        assert_eq!(cached.placement.top, 18);
+        assert_eq!(cached.placement.left, 1);
     }
 
     #[test]
@@ -218,12 +236,12 @@ mod tests {
 
         // Fill the atlas.
         for i in 0..4 {
-            atlas.insert(key(i), 16, 16);
+            atlas.insert(key(i), 16, 16, P_DEFAULT);
         }
         assert_eq!(atlas.len(), 4);
 
         // Next allocation should evict the LRU entry.
-        let region = atlas.insert(key(100), 16, 16);
+        let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
         assert!(region.is_some(), "should evict and allocate");
         assert!(atlas.get(&key(0)).is_none(), "oldest should be evicted");
     }
@@ -233,7 +251,7 @@ mod tests {
         let mut atlas = AtlasPlane::with_size(32, 32);
 
         for i in 0..4 {
-            atlas.insert(key(i), 16, 16);
+            atlas.insert(key(i), 16, 16, P_DEFAULT);
         }
 
         // Mark all as in-use.
@@ -242,20 +260,20 @@ mod tests {
         }
 
         // Should fail — can't evict anything.
-        let region = atlas.insert(key(100), 16, 16);
+        let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
         assert!(region.is_none(), "all in-use, can't evict");
 
         // Clear in-use, now eviction works.
         atlas.clear_in_use();
-        let region = atlas.insert(key(100), 16, 16);
+        let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
         assert!(region.is_some(), "after clearing in-use, eviction works");
     }
 
     #[test]
     fn clear_resets_atlas() {
         let mut atlas = AtlasPlane::new();
-        atlas.insert(key(1), 10, 10);
-        atlas.insert(key(2), 10, 10);
+        atlas.insert(key(1), 10, 10, GlyphPlacement { top: 8, left: 0 });
+        atlas.insert(key(2), 10, 10, GlyphPlacement { top: 8, left: 0 });
         assert_eq!(atlas.len(), 2);
 
         atlas.clear();
@@ -267,7 +285,7 @@ mod tests {
     fn oversized_glyph_returns_none() {
         let mut atlas = AtlasPlane::with_size(32, 32);
         // Glyph larger than the atlas.
-        let region = atlas.insert(key(1), 64, 64);
+        let region = atlas.insert(key(1), 64, 64, GlyphPlacement { top: 60, left: 0 });
         assert!(region.is_none());
     }
 }
