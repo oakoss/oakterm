@@ -263,6 +263,7 @@ impl RenderPipeline {
         glyph_instances: &[GlyphVertex],
         atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
+        clear_color: wgpu::Color,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render_encoder"),
@@ -279,7 +280,7 @@ impl RenderPipeline {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

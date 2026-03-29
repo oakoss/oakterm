@@ -410,6 +410,10 @@ async fn handle_request(
                 })
                 .collect();
 
+            let (bg_r, bg_g, bg_b) = match g.dynamic_bg {
+                Some(rgb) => (rgb.r, rgb.g, rgb.b),
+                None => (0, 0, 0),
+            };
             let update = RenderUpdate {
                 pane_id: req.pane_id,
                 seqno: g.seqno,
@@ -417,6 +421,9 @@ async fn handle_request(
                 cursor_y: g.cursor.row,
                 cursor_style: 0,
                 cursor_visible: g.cursor.visible,
+                bg_r,
+                bg_g,
+                bg_b,
                 dirty_rows,
             };
 

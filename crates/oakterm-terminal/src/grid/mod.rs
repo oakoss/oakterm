@@ -99,9 +99,11 @@ pub struct Grid {
     pub tab_stops: Vec<bool>,
     pub seqno: u64,
     pub palette: [Rgb; 256],
+    pub default_palette: [Rgb; 256],
     pub dynamic_fg: Option<Rgb>,
     pub dynamic_bg: Option<Rgb>,
     pub dynamic_cursor: Option<Rgb>,
+    pub title: Option<String>,
 }
 
 impl Grid {
@@ -146,9 +148,11 @@ impl Grid {
             tab_stops,
             seqno: 0,
             palette: default_palette(),
+            default_palette: default_palette(),
             dynamic_fg: None,
             dynamic_bg: None,
             dynamic_cursor: None,
+            title: None,
         }
     }
 

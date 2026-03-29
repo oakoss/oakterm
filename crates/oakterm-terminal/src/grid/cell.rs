@@ -186,4 +186,13 @@ impl Cell {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Erase this cell using Background Color Erase (BCE).
+    /// Clears content but keeps the given background color.
+    pub fn erase_with_bg(&mut self, bg: Color) {
+        *self = Self {
+            bg,
+            ..Self::default()
+        };
+    }
 }

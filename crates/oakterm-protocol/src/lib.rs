@@ -260,6 +260,9 @@ mod tests {
             cursor_y: 10,
             cursor_style: 0,
             cursor_visible: true,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![WireCell {
@@ -293,6 +296,9 @@ mod tests {
             cursor_y: 0,
             cursor_style: 0,
             cursor_visible: false,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
             dirty_rows: vec![],
         };
         let encoded = update.encode().unwrap();

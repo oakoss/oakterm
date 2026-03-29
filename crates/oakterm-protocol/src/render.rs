@@ -241,6 +241,10 @@ pub struct RenderUpdate {
     pub cursor_y: u16,
     pub cursor_style: u8,
     pub cursor_visible: bool,
+    /// Dynamic background color (from OSC 11 or default).
+    pub bg_r: u8,
+    pub bg_g: u8,
+    pub bg_b: u8,
     pub dirty_rows: Vec<DirtyRow>,
 }
 
@@ -258,6 +262,9 @@ impl RenderUpdate {
         buf.extend_from_slice(&self.cursor_y.to_le_bytes());
         buf.push(self.cursor_style);
         buf.push(u8::from(self.cursor_visible));
+        buf.push(self.bg_r);
+        buf.push(self.bg_g);
+        buf.push(self.bg_b);
         buf.extend_from_slice(&row_count.to_le_bytes());
         for row in &self.dirty_rows {
             buf.extend_from_slice(&row.encode()?);
@@ -268,7 +275,7 @@ impl RenderUpdate {
     /// # Errors
     /// Returns an error if the payload is malformed.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 20 {
+        if data.len() < 23 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "RenderUpdate too short",
@@ -282,9 +289,12 @@ impl RenderUpdate {
         let cursor_y = u16::from_le_bytes([data[14], data[15]]);
         let cursor_style = data[16];
         let cursor_visible = data[17] != 0;
-        let dirty_row_count = u16::from_le_bytes([data[18], data[19]]) as usize;
+        let bg_r = data[18];
+        let bg_g = data[19];
+        let bg_b = data[20];
+        let dirty_row_count = u16::from_le_bytes([data[21], data[22]]) as usize;
 
-        let mut offset = 20;
+        let mut offset = 23;
         let mut dirty_rows = Vec::with_capacity(dirty_row_count);
         for _ in 0..dirty_row_count {
             let (row, consumed) = DirtyRow::decode(&data[offset..])?;
@@ -299,6 +309,9 @@ impl RenderUpdate {
             cursor_y,
             cursor_style,
             cursor_visible,
+            bg_r,
+            bg_g,
+            bg_b,
             dirty_rows,
         })
     }
