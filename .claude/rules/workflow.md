@@ -38,7 +38,7 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
 **I6. Update Tracking** — trekker comment + status. Update docs if implementation diverged from spec.
 
-**I7. Checks** — `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test`.
+**I7. Checks** — `mise run check` then `mise run test`.
 
 **I8. Polish** — `/de-slopify` on code. `/performance-optimizer` if touching hot paths.
 
