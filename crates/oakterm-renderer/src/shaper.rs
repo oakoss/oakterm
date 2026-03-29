@@ -43,11 +43,21 @@ pub enum PixelFormat {
     Rgba32,
 }
 
+/// Glyph bearing offsets from the rasterizer, used for positioning.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GlyphPlacement {
+    /// Distance from baseline to top edge of bitmap (positive = above baseline).
+    pub top: i32,
+    /// Offset from glyph origin to left edge of bitmap (positive = rightward).
+    pub left: i32,
+}
+
 /// Pixel buffer for a rasterized glyph.
 #[non_exhaustive]
 pub struct GlyphBitmap {
     pub width: u32,
     pub height: u32,
+    pub placement: GlyphPlacement,
     pub format: PixelFormat,
     pub data: Vec<u8>,
 }

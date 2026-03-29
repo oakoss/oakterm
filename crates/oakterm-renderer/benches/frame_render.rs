@@ -1,6 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::{BgUniforms, GlyphVertex, TextUniforms};
+use oakterm_renderer::shaper::GlyphPlacement;
 
 fn prepopulated_atlas() -> AtlasPlane {
     let mut atlas = AtlasPlane::new();
@@ -10,7 +11,7 @@ fn prepopulated_atlas() -> AtlasPlane {
             glyph_id: i,
             size_tenths: 140,
         };
-        atlas.insert(key, 8, 14);
+        atlas.insert(key, 8, 14, GlyphPlacement { top: 12, left: 0 });
     }
     atlas
 }
@@ -39,7 +40,7 @@ fn atlas_lookup(c: &mut Criterion) {
                     glyph_id: 999,
                     size_tenths: 140,
                 };
-                std::hint::black_box(atlas.insert(key, 8, 14));
+                std::hint::black_box(atlas.insert(key, 8, 14, GlyphPlacement { top: 12, left: 0 }));
             },
             criterion::BatchSize::SmallInput,
         );
