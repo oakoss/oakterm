@@ -3,11 +3,11 @@
 use crate::socket::socket_path;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
-use oakterm_protocol::input::{KeyInput, Resize};
+use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
     Bell, ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY,
-    MSG_GET_RENDER_UPDATE, MSG_KEY_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE,
-    ServerHello, TitleChanged,
+    MSG_GET_RENDER_UPDATE, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE,
+    MSG_RESIZE, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::ScreenSet;
@@ -351,6 +351,37 @@ async fn handle_request(
             }
             RequestResult::NoResponse
         }
+        MSG_MOUSE_INPUT => {
+            let state = pty_state.lock().await;
+            if let PtyState::Running(fd) = *state {
+                drop(state);
+                if let Ok(msg) = MouseInput::decode(&frame.payload) {
+                    let s = screens.lock().await;
+                    let g = s.active_grid();
+                    // Only encode mouse if a mouse mode is active.
+                    let sgr = g.modes.get(1006);
+                    let click = g.modes.get(1000);
+                    let cell_motion = g.modes.get(1002);
+                    let all_motion = g.modes.get(1003);
+                    drop(s);
+
+                    let should_send = match msg.event_type {
+                        0 | 1 | 3 | 4 => click || cell_motion || all_motion,
+                        2 => cell_motion || all_motion,
+                        _ => false,
+                    };
+
+                    if should_send {
+                        let seq = encode_mouse_sgr(&msg, sgr);
+                        if !seq.is_empty() {
+                            let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
+                            let _ = rustix::io::write(borrowed, seq.as_bytes());
+                        }
+                    }
+                }
+            }
+            RequestResult::NoResponse
+        }
         MSG_RESIZE => {
             if let Ok(msg) = Resize::decode(&frame.payload) {
                 let mut state = pty_state.lock().await;
@@ -512,6 +543,39 @@ async fn write_frame(
     codec.encode(frame, buf)?;
     stream.write_all(buf).await?;
     Ok(())
+}
+
+/// Encode a mouse event as an SGR escape sequence.
+#[allow(clippy::match_same_arms)] // press/release intentionally share button encoding
+fn encode_mouse_sgr(msg: &MouseInput, sgr: bool) -> String {
+    // SGR button encoding: 0=left, 1=middle, 2=right, 64+=scroll
+    let button = match msg.event_type {
+        0 => msg.button,      // press
+        1 => msg.button,      // release
+        2 => 32 + msg.button, // motion (add 32)
+        3 => 64,              // scroll up
+        4 => 65,              // scroll down
+        _ => return String::new(),
+    };
+    // Encode modifier bits: shift=4, alt=8, ctrl=16.
+    let button = button | (msg.modifiers & 0x1C);
+    // 1-based coordinates.
+    let x = msg.x.saturating_add(1);
+    let y = msg.y.saturating_add(1);
+
+    if sgr {
+        // SGR format: CSI < button ; x ; y M/m
+        let suffix = if msg.event_type == 1 { 'm' } else { 'M' };
+        format!("\x1b[<{button};{x};{y}{suffix}")
+    } else {
+        // Legacy X10 format (limited to 223 cols/rows).
+        // Release is signaled by button=3 (no M/m distinction in X10).
+        let legacy_button = if msg.event_type == 1 { 3 } else { button };
+        let cx = ((x + 32).min(255)) as u8;
+        let cy = ((y + 32).min(255)) as u8;
+        let cb = legacy_button.saturating_add(32);
+        format!("\x1b[M{}{}{}", cb as char, cx as char, cy as char)
+    }
 }
 
 /// Thin Write adapter for a borrowed file descriptor.

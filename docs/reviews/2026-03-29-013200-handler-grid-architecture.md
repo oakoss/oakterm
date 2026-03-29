@@ -177,6 +177,24 @@ Ghostty does NOT use the dynamic background as the Metal clear color. The clear 
 
 **Key pain points:** Blue on black is the most common unreadable-color complaint. 256-color indices bypass themes. Theme switching doesn't update already-rendered content. Vim background mismatch creates ugly borders (fixable with our OSC 11 support).
 
+### Mouse Input Handling (addendum, 2026-03-29)
+
+Research into mouse handling across alacritty, wezterm, and ghostty.
+
+**Mouse modes (xterm standard):** Event modes (9/1000/1002/1003) control which events are reported. Encoding formats (X10/1005/1006/1015/1016) control how coordinates are serialized. Button byte encodes: left=0, middle=1, right=2, wheel=64-67, shift=4, alt=8, ctrl=16, motion=32.
+
+**Shift bypass (the #1 pain point):** When an app enables mouse tracking, Shift lets users select text instead. All three terminals default to Shift as bypass. Ghostty adds XTSHIFTESCAPE support with four levels (false/true/never/always) — the app can request Shift events but the user can override. wezterm makes the bypass modifier configurable. Alacritty hardcodes Shift.
+
+**Alternate screen scroll (mode 1007):** All three convert wheel to cursor keys on alt screen when no mouse mode is active. wezterm makes scroll speed configurable. Default should be on.
+
+**Right-click:** No standard. Ghostty has configurable `right-click-action` (context-menu/paste/copy/copy-or-paste/ignore). wezterm uses Lua scripting. Alacritty has no right-click menu.
+
+**Copy-on-select:** Platform-dependent. Ghostty and wezterm make it configurable. Alacritty always copies to selection clipboard on release.
+
+**SGR-Pixels (1016):** Ghostty and wezterm support it. Alacritty does not. Growing adoption for sub-cell accuracy.
+
+**For Phase 0.2:** Our implementation covers modes 1000/1002/1003 with SGR (1006) and legacy X10 encoding. Missing: Shift bypass for selection, alternate scroll conversion (1007), motion deduplication, copy-on-select, right-click. These are config-dependent features for Phase 0.3+.
+
 ## References
 
 - [Ghostty alt screen PR #7471](https://github.com/ghostty-org/ghostty/pull/7471)

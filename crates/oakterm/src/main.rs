@@ -13,7 +13,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use wgpu::CurrentSurfaceTexture;
 
 use oakterm_protocol::frame::Frame;
-use oakterm_protocol::input::{KeyInput, Resize};
+use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
     ClientHello, ClientType, HandshakeStatus, MSG_BELL, MSG_DETACH, MSG_DIRTY_NOTIFY,
     MSG_GET_RENDER_UPDATE, MSG_RENDER_UPDATE, MSG_SERVER_HELLO, MSG_TITLE_CHANGED, TitleChanged,
@@ -104,6 +104,8 @@ struct App {
     last_sent_dims: (u16, u16),
     /// Set after initial Resize is sent. Gates on first `RedrawRequested`.
     initial_resize_sent: bool,
+    /// Last known mouse position in grid coordinates.
+    last_mouse_cell: (u16, u16),
 }
 
 impl App {
@@ -119,6 +121,7 @@ impl App {
             accesskit: None,
             last_sent_dims: (0, 0),
             initial_resize_sent: false,
+            last_mouse_cell: (0, 0),
         }
     }
 }
@@ -268,6 +271,75 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                         }
                         Err(e) => eprintln!("failed to encode key input: {e}"),
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } =>
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                if let Some(font) = &self.font {
+                    let col = (position.x as f32 / font.metrics.cell_width) as u16;
+                    let row = (position.y as f32 / font.metrics.cell_height) as u16;
+                    self.last_mouse_cell = (col, row);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(daemon) = &mut self.daemon {
+                    let (x, y) = self.last_mouse_cell;
+                    let btn = match button {
+                        winit::event::MouseButton::Middle => 1,
+                        winit::event::MouseButton::Right => 2,
+                        _ => 0,
+                    };
+                    let event_type = match state {
+                        ElementState::Pressed => 0,
+                        ElementState::Released => 1,
+                    };
+                    let msg = MouseInput {
+                        pane_id: 0,
+                        event_type,
+                        x,
+                        y,
+                        modifiers: 0,
+                        button: btn,
+                    };
+                    if let Ok(frame) = msg.to_frame() {
+                        let _ = daemon.send_frame(&frame);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(daemon) = &mut self.daemon {
+                    let (x, y) = self.last_mouse_cell;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let (event_type, count) = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, v) => {
+                            if v > 0.0 {
+                                (3u8, v as u32)
+                            } else {
+                                (4u8, (-v) as u32)
+                            }
+                        }
+                        winit::event::MouseScrollDelta::PixelDelta(p) => {
+                            if p.y > 0.0 {
+                                (3u8, 1u32)
+                            } else {
+                                (4u8, 1u32)
+                            }
+                        }
+                    };
+                    for _ in 0..count.min(5) {
+                        let msg = MouseInput {
+                            pane_id: 0,
+                            event_type,
+                            x,
+                            y,
+                            modifiers: 0,
+                            button: 0,
+                        };
+                        if let Ok(frame) = msg.to_frame() {
+                            let _ = daemon.send_frame(&frame);
+                        }
                     }
                 }
             }
