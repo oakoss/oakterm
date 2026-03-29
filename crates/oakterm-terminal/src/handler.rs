@@ -111,6 +111,11 @@ impl<'a> Terminal<'a> {
     }
 }
 
+/// Saturating cast from usize to u16 (clamps at `u16::MAX` instead of truncating).
+fn sat_u16(v: usize) -> u16 {
+    u16::try_from(v).unwrap_or(u16::MAX)
+}
+
 /// Convert a vte color to our internal color representation.
 fn convert_color(c: vte::ansi::Color) -> cell::Color {
     match c {
@@ -206,6 +211,89 @@ impl vte::ansi::Handler for Terminal<'_> {
                 self.grid.current_underline_color = c.map(convert_color);
             }
         }
+    }
+
+    #[allow(clippy::cast_sign_loss)] // clamped to >= 0
+    fn goto(&mut self, line: i32, col: usize) {
+        let max_row = self.grid.rows.saturating_sub(1);
+        let max_col = self.grid.cols.saturating_sub(1);
+        let row = sat_u16(line.max(0) as usize).min(max_row);
+        let col = sat_u16(col).min(max_col);
+        self.grid.cursor.row = row;
+        self.grid.cursor.col = col;
+    }
+
+    #[allow(clippy::cast_sign_loss)] // clamped to >= 0
+    fn goto_line(&mut self, line: i32) {
+        let max_row = self.grid.rows.saturating_sub(1);
+        self.grid.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+    }
+
+    fn goto_col(&mut self, col: usize) {
+        let max_col = self.grid.cols.saturating_sub(1);
+        self.grid.cursor.col = sat_u16(col).min(max_col);
+    }
+
+    fn move_up(&mut self, count: usize) {
+        self.grid.cursor.row = self.grid.cursor.row.saturating_sub(sat_u16(count));
+    }
+
+    fn move_down(&mut self, count: usize) {
+        let max_row = self.grid.rows.saturating_sub(1);
+        self.grid.cursor.row = self
+            .grid
+            .cursor
+            .row
+            .saturating_add(sat_u16(count))
+            .min(max_row);
+    }
+
+    fn move_forward(&mut self, col: usize) {
+        let max_col = self.grid.cols.saturating_sub(1);
+        self.grid.cursor.col = self
+            .grid
+            .cursor
+            .col
+            .saturating_add(sat_u16(col))
+            .min(max_col);
+    }
+
+    fn move_backward(&mut self, col: usize) {
+        self.grid.cursor.col = self.grid.cursor.col.saturating_sub(sat_u16(col));
+    }
+
+    fn move_down_and_cr(&mut self, count: usize) {
+        let max_row = self.grid.rows.saturating_sub(1);
+        self.grid.cursor.row = self
+            .grid
+            .cursor
+            .row
+            .saturating_add(sat_u16(count))
+            .min(max_row);
+        self.grid.cursor.col = 0;
+    }
+
+    fn move_up_and_cr(&mut self, count: usize) {
+        self.grid.cursor.row = self.grid.cursor.row.saturating_sub(sat_u16(count));
+        self.grid.cursor.col = 0;
+    }
+
+    fn save_cursor_position(&mut self) {
+        self.grid.saved_cursor = self.grid.cursor;
+        self.grid.saved_attr = self.grid.current_attr;
+        self.grid.saved_fg = self.grid.current_fg;
+        self.grid.saved_bg = self.grid.current_bg;
+        self.grid.saved_underline_style = self.grid.current_underline_style;
+        self.grid.saved_underline_color = self.grid.current_underline_color;
+    }
+
+    fn restore_cursor_position(&mut self) {
+        self.grid.cursor = self.grid.saved_cursor;
+        self.grid.current_attr = self.grid.saved_attr;
+        self.grid.current_fg = self.grid.saved_fg;
+        self.grid.current_bg = self.grid.saved_bg;
+        self.grid.current_underline_style = self.grid.saved_underline_style;
+        self.grid.current_underline_color = self.grid.saved_underline_color;
     }
 
     fn backspace(&mut self) {
@@ -551,4 +639,187 @@ mod tests {
 
     // SGR 53 (overline): vte's Attr enum lacks an Overline variant.
     // Needs custom csi_dispatch (TREK-33). Re-check when upgrading vte.
+
+    // --- Cursor movement tests ---
+
+    #[test]
+    fn cup_goto() {
+        let mut grid = test_grid(80, 24);
+        // CSI 5;10 H — move to row 5, col 10 (1-based in VT, 0-based internally).
+        parse(&mut grid, b"\x1b[5;10H");
+        assert_cursor_at(&grid, 4, 9);
+    }
+
+    #[test]
+    fn cup_goto_default_is_home() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"hello\x1b[H");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn cup_goto_clamps_to_grid() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"\x1b[100;100H");
+        assert_cursor_at(&grid, 4, 9);
+    }
+
+    #[test]
+    fn vpa_goto_line() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5G\x1b[10d");
+        // VPA moves to row 10 (1-based), col stays at 4 (from CHA).
+        assert_cursor_at(&grid, 9, 4);
+    }
+
+    #[test]
+    fn cha_goto_col() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[20G");
+        assert_cursor_at(&grid, 0, 19);
+    }
+
+    #[test]
+    fn cuu_move_up() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5;1H\x1b[2A");
+        assert_cursor_at(&grid, 2, 0);
+    }
+
+    #[test]
+    fn cuu_move_up_clamps_at_top() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[2;1H\x1b[10A");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn cud_move_down() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[2B");
+        assert_cursor_at(&grid, 2, 0);
+    }
+
+    #[test]
+    fn cud_move_down_clamps_at_bottom() {
+        let mut grid = test_grid(80, 5);
+        parse(&mut grid, b"\x1b[100B");
+        assert_cursor_at(&grid, 4, 0);
+    }
+
+    #[test]
+    fn cuf_move_forward() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5C");
+        assert_cursor_at(&grid, 0, 5);
+    }
+
+    #[test]
+    fn cub_move_backward() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[10G\x1b[3D");
+        assert_cursor_at(&grid, 0, 6);
+    }
+
+    #[test]
+    fn cub_move_backward_clamps_at_zero() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[3G\x1b[100D");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn cnl_move_down_and_cr() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[10G\x1b[3E");
+        assert_cursor_at(&grid, 3, 0);
+    }
+
+    #[test]
+    fn cpl_move_up_and_cr() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5;10H\x1b[2F");
+        assert_cursor_at(&grid, 2, 0);
+    }
+
+    #[test]
+    fn cuf_move_forward_clamps_at_right() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"\x1b[100C");
+        assert_cursor_at(&grid, 0, 9);
+    }
+
+    #[test]
+    fn vpa_goto_line_clamps_to_bottom() {
+        let mut grid = test_grid(80, 5);
+        parse(&mut grid, b"\x1b[100d");
+        assert_cursor_at(&grid, 4, 0);
+    }
+
+    #[test]
+    fn cha_goto_col_clamps_to_right() {
+        let mut grid = test_grid(10, 5);
+        parse(&mut grid, b"\x1b[100G");
+        assert_cursor_at(&grid, 0, 9);
+    }
+
+    #[test]
+    fn decsc_decrc_save_restore() {
+        let mut grid = test_grid(80, 24);
+        // Move to (3,7), set bold+red, save cursor.
+        parse(&mut grid, b"\x1b[4;8H\x1b[1;31m\x1b7");
+        // Move elsewhere, change attrs.
+        parse(&mut grid, b"\x1b[1;1H\x1b[0m");
+        assert_cursor_at(&grid, 0, 0);
+        // Restore cursor.
+        parse(&mut grid, b"\x1b8");
+        assert_cursor_at(&grid, 3, 7);
+        // Attrs should be restored too.
+        assert!(grid.current_attr.contains(CellFlags::BOLD));
+        assert_eq!(grid.current_fg, Color::Named(NamedColor::Red));
+    }
+
+    #[test]
+    fn cnl_clamps_at_bottom() {
+        let mut grid = test_grid(80, 5);
+        parse(&mut grid, b"\x1b[10G\x1b[100E");
+        assert_cursor_at(&grid, 4, 0);
+    }
+
+    #[test]
+    fn cpl_clamps_at_top() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[2;10H\x1b[100F");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn decrc_without_save_restores_defaults() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5;10H\x1b[1;31m");
+        parse(&mut grid, b"\x1b8");
+        assert_cursor_at(&grid, 0, 0);
+        assert_eq!(grid.current_attr, CellFlags::empty());
+        assert_eq!(grid.current_fg, Color::Default);
+    }
+
+    #[test]
+    fn decsc_decrc_restores_underline() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[4:3m\x1b7");
+        parse(&mut grid, b"\x1b[0m");
+        assert_eq!(grid.current_underline_style, UnderlineStyle::None);
+        parse(&mut grid, b"\x1b8");
+        assert_eq!(grid.current_underline_style, UnderlineStyle::Curly);
+    }
+
+    #[test]
+    fn decsc_decrc_restores_bg() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[42m\x1b7");
+        parse(&mut grid, b"\x1b[0m");
+        assert_eq!(grid.current_bg, Color::Default);
+        parse(&mut grid, b"\x1b8");
+        assert_eq!(grid.current_bg, Color::Named(NamedColor::Green));
+    }
 }
