@@ -561,53 +561,115 @@ fn upload_glyphs_to_atlas(
 }
 
 /// Connect to the daemon, spawning it if needed.
+///
+/// Uses tmux-style connect-and-check with a lock file to handle stale
+/// sockets and prevent two clients from racing to start the daemon.
 fn connect_to_daemon(
     proxy: &EventLoopProxy<UserEvent>,
 ) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
     let socket_path = oakterm_daemon::socket::socket_path()?;
-    let mut child = None;
 
-    if !socket_path.exists() {
-        let daemon_bin = std::env::current_exe()?
-            .parent()
-            .expect("exe has parent dir")
-            .join("oakterm-daemon");
-
-        child = Some(
-            std::process::Command::new(&daemon_bin)
-                .spawn()
-                .map_err(|e| {
-                    std::io::Error::new(
-                        e.kind(),
-                        format!("failed to spawn daemon at {}: {e}", daemon_bin.display()),
-                    )
-                })?,
-        );
-
-        for _ in 0..50 {
-            if socket_path.exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+    // Try connecting to an existing daemon first.
+    match UnixStream::connect(&socket_path) {
+        Ok(stream) => return finish_connect(stream, proxy, None),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::ConnectionRefused
+                || e.kind() == std::io::ErrorKind::NotFound =>
+        {
+            // Stale socket or no socket. Fall through to spawn.
         }
+        Err(e) => return Err(e),
+    }
 
-        if !socket_path.exists() {
-            let detail = match child.as_mut().and_then(|c| c.try_wait().ok()) {
-                Some(Some(status)) => format!("daemon exited with {status}"),
-                Some(None) => "daemon running but socket not created after 2.5s".into(),
-                None => "could not check daemon status".into(),
-            };
+    // Acquire exclusive lock to serialize daemon startup.
+    let _lock = oakterm_daemon::socket::acquire_startup_lock()?;
+
+    // After acquiring the lock, retry connect: another client may have
+    // started the daemon while we waited.
+    match UnixStream::connect(&socket_path) {
+        Ok(stream) => return finish_connect(stream, proxy, None),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::ConnectionRefused
+                || e.kind() == std::io::ErrorKind::NotFound =>
+        {
+            // Still no daemon. Proceed to spawn.
+        }
+        Err(e) => return Err(e),
+    }
+
+    // We hold the lock and no daemon is running. Clean up stale socket.
+    if let Err(e) = std::fs::remove_file(&socket_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
+                e.kind(),
                 format!(
-                    "daemon socket not available at {}: {detail}",
+                    "failed to remove stale socket at {}: {e}",
                     socket_path.display()
                 ),
             ));
         }
     }
 
-    let stream = UnixStream::connect(&socket_path)?;
+    let child = spawn_daemon(&socket_path)?;
+
+    // Brief retry: socket file appears at bind() but may not be listening yet.
+    let stream = match UnixStream::connect(&socket_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            UnixStream::connect(&socket_path)?
+        }
+        Err(e) => return Err(e),
+    };
+    finish_connect(stream, proxy, Some(child))
+}
+
+/// Spawn the daemon binary and poll until the socket appears.
+fn spawn_daemon(socket_path: &std::path::Path) -> std::io::Result<std::process::Child> {
+    let daemon_bin = std::env::current_exe()?
+        .parent()
+        .expect("exe has parent dir")
+        .join("oakterm-daemon");
+
+    let mut child = std::process::Command::new(&daemon_bin)
+        .spawn()
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("failed to spawn daemon at {}: {e}", daemon_bin.display()),
+            )
+        })?;
+
+    for _ in 0..50 {
+        if socket_path.exists() {
+            return Ok(child);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let detail = match child.try_wait() {
+        Ok(Some(status)) => format!("daemon exited with {status}"),
+        Ok(None) => "daemon running but socket not created after 2.5s".into(),
+        Err(e) => format!("could not check daemon status: {e}"),
+    };
+    // Clean up to avoid zombie/orphan processes.
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "daemon socket not available at {}: {detail}",
+            socket_path.display()
+        ),
+    ))
+}
+
+/// Complete connection setup: clone stream, create writer, handshake, spawn reader.
+fn finish_connect(
+    stream: UnixStream,
+    proxy: &EventLoopProxy<UserEvent>,
+    child: Option<std::process::Child>,
+) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
     let mut read_stream = stream.try_clone()?;
     let write_stream = Arc::new(Mutex::new(stream));
 
