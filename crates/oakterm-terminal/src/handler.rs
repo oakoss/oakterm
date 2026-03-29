@@ -3,172 +3,218 @@
 //! Implements `vte::ansi::Handler` to receive semantic callbacks from the
 //! VT parser. Grid is the abstraction boundary: it uses our own types and
 //! has no vte dependency. This handler is the only layer that knows about vte.
+//!
+//! The handler is generic over `TermTarget`: tests pass a bare `Grid`,
+//! while the daemon passes a `ScreenSet` for alternate screen support.
 
-use crate::grid::Grid;
 use crate::grid::cell::{self, CellFlags, WideState};
+use crate::grid::{Grid, ScreenSet};
+
+/// Abstraction over `Grid` and `ScreenSet` for the handler.
+///
+/// `enter_alternate` / `exit_alternate` may change which grid
+/// `active_grid_mut()` returns. Implementors supporting multiple screens
+/// must override both switch methods. Default no-ops exist for
+/// single-screen contexts (tests).
+pub trait TermTarget {
+    fn active_grid_mut(&mut self) -> &mut Grid;
+    fn enter_alternate(&mut self) {}
+    fn exit_alternate(&mut self) {}
+}
+
+/// No-op screen switching. Alt-screen sequences (47/1047/1049) save, clear,
+/// and restore all hit the same grid. Intentional for unit testing
+/// non-screen-switching VT sequences.
+impl TermTarget for Grid {
+    fn active_grid_mut(&mut self) -> &mut Grid {
+        self
+    }
+}
+
+impl TermTarget for ScreenSet {
+    fn active_grid_mut(&mut self) -> &mut Grid {
+        ScreenSet::active_grid_mut(self)
+    }
+    fn enter_alternate(&mut self) {
+        ScreenSet::enter_alternate(self);
+    }
+    fn exit_alternate(&mut self) {
+        ScreenSet::exit_alternate(self);
+    }
+}
 
 /// Terminal state wrapper that implements `vte::ansi::Handler`.
-/// Grid is the vte-free contract; Terminal bridges vte's types to Grid's API.
-pub struct Terminal<'a> {
-    grid: &'a mut Grid,
+/// Generic over `TermTarget` so tests use bare `Grid` and the daemon uses `ScreenSet`.
+pub struct Terminal<'a, T: TermTarget> {
+    target: &'a mut T,
 }
 
-impl<'a> Terminal<'a> {
-    pub fn new(grid: &'a mut Grid) -> Self {
-        Self { grid }
+impl<'a, T: TermTarget> Terminal<'a, T> {
+    pub fn new(target: &'a mut T) -> Self {
+        Self { target }
     }
+}
 
-    fn write_char(&mut self, c: char) {
-        let cols = self.grid.cols;
+// --- Free functions for grid manipulation (avoids borrow checker conflicts) ---
 
-        if self.grid.cursor.col >= cols {
-            if self.grid.modes.get(7) {
-                // DECAWM: auto-wrap to next line.
-                let row = self.grid.cursor.row as usize;
-                if let Some(line) = self.grid.lines.get_mut(row) {
-                    line.flags.set_wrapped(true);
-                }
-                self.grid.cursor.col = 0;
-                self.do_linefeed();
+fn write_char(g: &mut Grid, c: char) {
+    let cols = g.cols;
 
-                let new_row = self.grid.cursor.row as usize;
-                if let Some(line) = self.grid.lines.get_mut(new_row) {
-                    line.flags.set_wrap_continuation(true);
-                }
-            } else {
-                // No wrap: overwrite the last column.
-                self.grid.cursor.col = cols - 1;
+    if g.cursor.col >= cols {
+        if g.modes.get(7) {
+            // DECAWM: auto-wrap to next line.
+            let row = g.cursor.row as usize;
+            if let Some(line) = g.lines.get_mut(row) {
+                line.flags.set_wrapped(true);
             }
-        }
+            g.cursor.col = 0;
+            do_linefeed(g);
 
-        // IRM (insert mode): shift existing cells right before writing.
-        if self.grid.modes.get(4) {
-            self.do_insert_blank(1);
-        }
-
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-
-        if let Some(line) = self.grid.lines.get_mut(row) {
-            if let Some(cell) = line.cells.get_mut(col) {
-                cell.codepoint = c;
-                cell.fg = self.grid.current_fg;
-                cell.bg = self.grid.current_bg;
-                cell.flags = self.grid.current_attr;
-                cell.underline_style = self.grid.current_underline_style;
-                cell.underline_color = self.grid.current_underline_color;
-                cell.wide = WideState::Narrow;
-                cell.extra_codepoints.clear();
-                cell.hyperlink = None;
-
-                if cell.has_style() {
-                    line.flags.mark_has_styles();
-                }
+            let new_row = g.cursor.row as usize;
+            if let Some(line) = g.lines.get_mut(new_row) {
+                line.flags.set_wrap_continuation(true);
             }
-
-            let seqno = self.grid.next_seqno();
-            self.grid.lines[row].seqno = seqno;
-        }
-
-        self.grid.cursor.col += 1;
-    }
-
-    fn do_linefeed(&mut self) {
-        let bottom = self
-            .grid
-            .scroll_region
-            .map_or(self.grid.rows - 1, |r| r.bottom);
-
-        if self.grid.cursor.row >= bottom {
-            self.do_scroll_up(1);
         } else {
-            self.grid.cursor.row += 1;
-        }
-        // LNM (mode 20): LF implies CR.
-        if self.grid.modes.get(20) {
-            self.grid.cursor.col = 0;
+            // No wrap: overwrite the last column.
+            g.cursor.col = cols - 1;
         }
     }
 
-    fn do_scroll_up(&mut self, count: usize) {
-        let top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
-        let bottom = self
-            .grid
-            .scroll_region
-            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
-
-        let count = count.min(bottom - top + 1);
-
-        self.grid.lines[top..=bottom].rotate_left(count);
-        let cols = self.grid.cols as usize;
-        for row in &mut self.grid.lines[(bottom + 1 - count)..=bottom] {
-            *row = crate::grid::row::Row::new(cols);
-        }
-
-        let seqno = self.grid.next_seqno();
-        for row in &mut self.grid.lines[top..=bottom] {
-            row.seqno = seqno;
-        }
+    // IRM (insert mode): shift existing cells right before writing.
+    if g.modes.get(4) {
+        do_insert_blank(g, 1);
     }
 
-    fn do_insert_blank(&mut self, count: usize) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
-        if col >= cols {
+    let row = g.cursor.row as usize;
+    let col = g.cursor.col as usize;
+
+    if let Some(line) = g.lines.get_mut(row) {
+        if let Some(cell) = line.cells.get_mut(col) {
+            cell.codepoint = c;
+            cell.fg = g.current_fg;
+            cell.bg = g.current_bg;
+            cell.flags = g.current_attr;
+            cell.underline_style = g.current_underline_style;
+            cell.underline_color = g.current_underline_color;
+            cell.wide = WideState::Narrow;
+            cell.extra_codepoints.clear();
+            cell.hyperlink = None;
+
+            if cell.has_style() {
+                line.flags.mark_has_styles();
+            }
+        }
+
+        let seqno = g.next_seqno();
+        g.lines[row].seqno = seqno;
+    }
+
+    g.cursor.col += 1;
+}
+
+fn do_linefeed(g: &mut Grid) {
+    let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom);
+    if g.cursor.row >= bottom {
+        do_scroll_up(g, 1);
+    } else {
+        g.cursor.row += 1;
+    }
+    // LNM (mode 20): LF implies CR.
+    if g.modes.get(20) {
+        g.cursor.col = 0;
+    }
+}
+
+fn do_scroll_up(g: &mut Grid, count: usize) {
+    let top = g.scroll_region.map_or(0, |r| r.top) as usize;
+    let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
+    let count = count.min(bottom - top + 1);
+
+    g.lines[top..=bottom].rotate_left(count);
+    let cols = g.cols as usize;
+    for row in &mut g.lines[(bottom + 1 - count)..=bottom] {
+        *row = crate::grid::row::Row::new(cols);
+    }
+
+    let seqno = g.next_seqno();
+    for row in &mut g.lines[top..=bottom] {
+        row.seqno = seqno;
+    }
+}
+
+fn do_scroll_down(g: &mut Grid, count: usize) {
+    let top = g.scroll_region.map_or(0, |r| r.top) as usize;
+    let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
+    let count = count.min(bottom - top + 1);
+    let cols = g.cols as usize;
+
+    g.lines[top..=bottom].rotate_right(count);
+    for row in &mut g.lines[top..top + count] {
+        *row = crate::grid::row::Row::new(cols);
+    }
+
+    let seqno = g.next_seqno();
+    for row in &mut g.lines[top..=bottom] {
+        row.seqno = seqno;
+    }
+}
+
+fn do_insert_blank(g: &mut Grid, count: usize) {
+    let row = g.cursor.row as usize;
+    let col = g.cursor.col as usize;
+    let cols = g.cols as usize;
+    if col >= cols {
+        return;
+    }
+    let count = count.min(cols - col);
+    if let Some(line) = g.lines.get_mut(row) {
+        line.cells[col..].rotate_right(count);
+        for cell in &mut line.cells[col..col + count] {
+            cell.reset();
+        }
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)] // cols is u16, indices fit
+fn do_tab(g: &mut Grid) {
+    let col = g.cursor.col as usize;
+    let cols = g.cols as usize;
+    for i in (col + 1)..cols {
+        if g.tab_stops[i] {
+            g.cursor.col = i as u16;
             return;
         }
-        let count = count.min(cols - col);
-        if let Some(line) = self.grid.lines.get_mut(row) {
-            line.cells[col..].rotate_right(count);
-            for cell in &mut line.cells[col..col + count] {
-                cell.reset();
-            }
-        }
     }
-
-    /// Apply immediate side effects for private mode changes.
-    fn apply_private_mode(&mut self, mode: u16, enabled: bool) {
-        if mode == 25 {
-            self.grid.cursor.visible = enabled; // DECTCEM
-        }
-    }
-
-    fn do_scroll_down(&mut self, count: usize) {
-        let top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
-        let bottom = self
-            .grid
-            .scroll_region
-            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
-
-        let count = count.min(bottom - top + 1);
-        let cols = self.grid.cols as usize;
-
-        self.grid.lines[top..=bottom].rotate_right(count);
-        for row in &mut self.grid.lines[top..top + count] {
-            *row = crate::grid::row::Row::new(cols);
-        }
-
-        let seqno = self.grid.next_seqno();
-        for row in &mut self.grid.lines[top..=bottom] {
-            row.seqno = seqno;
-        }
-    }
-
-    #[allow(clippy::cast_possible_truncation)] // cols is u16, indices fit
-    fn do_tab(&mut self) {
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
-
-        for i in (col + 1)..cols {
-            if self.grid.tab_stops[i] {
-                self.grid.cursor.col = i as u16;
-                return;
-            }
-        }
-        self.grid.cursor.col = (cols - 1) as u16;
-    }
+    g.cursor.col = (cols - 1) as u16;
 }
+
+fn save_cursor(g: &mut Grid) {
+    g.saved_cursor = g.cursor;
+    g.saved_attr = g.current_attr;
+    g.saved_fg = g.current_fg;
+    g.saved_bg = g.current_bg;
+    g.saved_underline_style = g.current_underline_style;
+    g.saved_underline_color = g.current_underline_color;
+}
+
+fn restore_cursor(g: &mut Grid) {
+    g.cursor = g.saved_cursor;
+    g.current_attr = g.saved_attr;
+    g.current_fg = g.saved_fg;
+    g.current_bg = g.saved_bg;
+    g.current_underline_style = g.saved_underline_style;
+    g.current_underline_color = g.saved_underline_color;
+}
+
+fn clear_grid(g: &mut Grid) {
+    let cols = g.cols as usize;
+    for line in &mut g.lines {
+        *line = crate::grid::row::Row::new(cols);
+    }
+    g.touch_all();
+}
+
+// --- Utility functions ---
 
 /// Saturating cast from usize to u16 (clamps at `u16::MAX` instead of truncating).
 fn sat_u16(v: usize) -> u16 {
@@ -212,226 +258,192 @@ fn convert_named_color(n: vte::ansi::NamedColor) -> cell::Color {
     }
 }
 
-impl vte::ansi::Handler for Terminal<'_> {
+// --- vte Handler implementation ---
+
+impl<T: TermTarget> vte::ansi::Handler for Terminal<'_, T> {
     fn input(&mut self, c: char) {
-        self.write_char(c);
+        write_char(self.target.active_grid_mut(), c);
     }
 
     fn terminal_attribute(&mut self, attr: vte::ansi::Attr) {
         use vte::ansi::Attr;
+        let g = self.target.active_grid_mut();
         match attr {
             Attr::Reset => {
-                self.grid.current_attr = CellFlags::empty();
-                self.grid.current_fg = cell::Color::Default;
-                self.grid.current_bg = cell::Color::Default;
-                self.grid.current_underline_style = cell::UnderlineStyle::None;
-                self.grid.current_underline_color = None;
+                g.current_attr = CellFlags::empty();
+                g.current_fg = cell::Color::Default;
+                g.current_bg = cell::Color::Default;
+                g.current_underline_style = cell::UnderlineStyle::None;
+                g.current_underline_color = None;
             }
-            Attr::Bold => self.grid.current_attr.insert(CellFlags::BOLD),
-            Attr::Dim => self.grid.current_attr.insert(CellFlags::DIM),
-            Attr::Italic => self.grid.current_attr.insert(CellFlags::ITALIC),
-            Attr::Underline => {
-                self.grid.current_underline_style = cell::UnderlineStyle::Single;
-            }
-            Attr::DoubleUnderline => {
-                self.grid.current_underline_style = cell::UnderlineStyle::Double;
-            }
-            Attr::Undercurl => {
-                self.grid.current_underline_style = cell::UnderlineStyle::Curly;
-            }
-            Attr::DottedUnderline => {
-                self.grid.current_underline_style = cell::UnderlineStyle::Dotted;
-            }
-            Attr::DashedUnderline => {
-                self.grid.current_underline_style = cell::UnderlineStyle::Dashed;
-            }
-            Attr::BlinkSlow | Attr::BlinkFast => {
-                self.grid.current_attr.insert(CellFlags::BLINK);
-            }
-            Attr::Reverse => self.grid.current_attr.insert(CellFlags::INVERSE),
-            Attr::Hidden => self.grid.current_attr.insert(CellFlags::HIDDEN),
-            Attr::Strike => self.grid.current_attr.insert(CellFlags::STRIKETHROUGH),
-            Attr::CancelBold => self.grid.current_attr.remove(CellFlags::BOLD),
+            Attr::Bold => g.current_attr.insert(CellFlags::BOLD),
+            Attr::Dim => g.current_attr.insert(CellFlags::DIM),
+            Attr::Italic => g.current_attr.insert(CellFlags::ITALIC),
+            Attr::Underline => g.current_underline_style = cell::UnderlineStyle::Single,
+            Attr::DoubleUnderline => g.current_underline_style = cell::UnderlineStyle::Double,
+            Attr::Undercurl => g.current_underline_style = cell::UnderlineStyle::Curly,
+            Attr::DottedUnderline => g.current_underline_style = cell::UnderlineStyle::Dotted,
+            Attr::DashedUnderline => g.current_underline_style = cell::UnderlineStyle::Dashed,
+            Attr::BlinkSlow | Attr::BlinkFast => g.current_attr.insert(CellFlags::BLINK),
+            Attr::Reverse => g.current_attr.insert(CellFlags::INVERSE),
+            Attr::Hidden => g.current_attr.insert(CellFlags::HIDDEN),
+            Attr::Strike => g.current_attr.insert(CellFlags::STRIKETHROUGH),
+            Attr::CancelBold => g.current_attr.remove(CellFlags::BOLD),
             Attr::CancelBoldDim => {
-                self.grid.current_attr.remove(CellFlags::BOLD);
-                self.grid.current_attr.remove(CellFlags::DIM);
+                g.current_attr.remove(CellFlags::BOLD);
+                g.current_attr.remove(CellFlags::DIM);
             }
-            Attr::CancelItalic => self.grid.current_attr.remove(CellFlags::ITALIC),
-            Attr::CancelUnderline => {
-                self.grid.current_underline_style = cell::UnderlineStyle::None;
-            }
-            Attr::CancelBlink => self.grid.current_attr.remove(CellFlags::BLINK),
-            Attr::CancelReverse => self.grid.current_attr.remove(CellFlags::INVERSE),
-            Attr::CancelHidden => self.grid.current_attr.remove(CellFlags::HIDDEN),
-            Attr::CancelStrike => self.grid.current_attr.remove(CellFlags::STRIKETHROUGH),
-            Attr::Foreground(c) => self.grid.current_fg = convert_color(c),
-            Attr::Background(c) => self.grid.current_bg = convert_color(c),
-            Attr::UnderlineColor(c) => {
-                self.grid.current_underline_color = c.map(convert_color);
-            }
+            Attr::CancelItalic => g.current_attr.remove(CellFlags::ITALIC),
+            Attr::CancelUnderline => g.current_underline_style = cell::UnderlineStyle::None,
+            Attr::CancelBlink => g.current_attr.remove(CellFlags::BLINK),
+            Attr::CancelReverse => g.current_attr.remove(CellFlags::INVERSE),
+            Attr::CancelHidden => g.current_attr.remove(CellFlags::HIDDEN),
+            Attr::CancelStrike => g.current_attr.remove(CellFlags::STRIKETHROUGH),
+            Attr::Foreground(c) => g.current_fg = convert_color(c),
+            Attr::Background(c) => g.current_bg = convert_color(c),
+            Attr::UnderlineColor(c) => g.current_underline_color = c.map(convert_color),
         }
     }
 
     #[allow(clippy::cast_sign_loss)] // clamped to >= 0
     fn goto(&mut self, line: i32, col: usize) {
-        let max_row = self.grid.rows.saturating_sub(1);
-        let max_col = self.grid.cols.saturating_sub(1);
-        let row = sat_u16(line.max(0) as usize).min(max_row);
-        let col = sat_u16(col).min(max_col);
-        self.grid.cursor.row = row;
-        self.grid.cursor.col = col;
+        let g = self.target.active_grid_mut();
+        let max_row = g.rows.saturating_sub(1);
+        let max_col = g.cols.saturating_sub(1);
+        g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        g.cursor.col = sat_u16(col).min(max_col);
     }
 
     #[allow(clippy::cast_sign_loss)] // clamped to >= 0
     fn goto_line(&mut self, line: i32) {
-        let max_row = self.grid.rows.saturating_sub(1);
-        self.grid.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        let g = self.target.active_grid_mut();
+        let max_row = g.rows.saturating_sub(1);
+        g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
     }
 
     fn goto_col(&mut self, col: usize) {
-        let max_col = self.grid.cols.saturating_sub(1);
-        self.grid.cursor.col = sat_u16(col).min(max_col);
+        let g = self.target.active_grid_mut();
+        let max_col = g.cols.saturating_sub(1);
+        g.cursor.col = sat_u16(col).min(max_col);
     }
 
     fn move_up(&mut self, count: usize) {
-        self.grid.cursor.row = self.grid.cursor.row.saturating_sub(sat_u16(count));
+        let g = self.target.active_grid_mut();
+        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count));
     }
 
     fn move_down(&mut self, count: usize) {
-        let max_row = self.grid.rows.saturating_sub(1);
-        self.grid.cursor.row = self
-            .grid
-            .cursor
-            .row
-            .saturating_add(sat_u16(count))
-            .min(max_row);
+        let g = self.target.active_grid_mut();
+        let max_row = g.rows.saturating_sub(1);
+        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(max_row);
     }
 
     fn move_forward(&mut self, col: usize) {
-        let max_col = self.grid.cols.saturating_sub(1);
-        self.grid.cursor.col = self
-            .grid
-            .cursor
-            .col
-            .saturating_add(sat_u16(col))
-            .min(max_col);
+        let g = self.target.active_grid_mut();
+        let max_col = g.cols.saturating_sub(1);
+        g.cursor.col = g.cursor.col.saturating_add(sat_u16(col)).min(max_col);
     }
 
     fn move_backward(&mut self, col: usize) {
-        self.grid.cursor.col = self.grid.cursor.col.saturating_sub(sat_u16(col));
+        let g = self.target.active_grid_mut();
+        g.cursor.col = g.cursor.col.saturating_sub(sat_u16(col));
     }
 
     fn move_down_and_cr(&mut self, count: usize) {
-        let max_row = self.grid.rows.saturating_sub(1);
-        self.grid.cursor.row = self
-            .grid
-            .cursor
-            .row
-            .saturating_add(sat_u16(count))
-            .min(max_row);
-        self.grid.cursor.col = 0;
+        let g = self.target.active_grid_mut();
+        let max_row = g.rows.saturating_sub(1);
+        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(max_row);
+        g.cursor.col = 0;
     }
 
     fn move_up_and_cr(&mut self, count: usize) {
-        self.grid.cursor.row = self.grid.cursor.row.saturating_sub(sat_u16(count));
-        self.grid.cursor.col = 0;
+        let g = self.target.active_grid_mut();
+        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count));
+        g.cursor.col = 0;
     }
 
     fn save_cursor_position(&mut self) {
-        self.grid.saved_cursor = self.grid.cursor;
-        self.grid.saved_attr = self.grid.current_attr;
-        self.grid.saved_fg = self.grid.current_fg;
-        self.grid.saved_bg = self.grid.current_bg;
-        self.grid.saved_underline_style = self.grid.current_underline_style;
-        self.grid.saved_underline_color = self.grid.current_underline_color;
+        save_cursor(self.target.active_grid_mut());
     }
 
     fn restore_cursor_position(&mut self) {
-        self.grid.cursor = self.grid.saved_cursor;
-        self.grid.current_attr = self.grid.saved_attr;
-        self.grid.current_fg = self.grid.saved_fg;
-        self.grid.current_bg = self.grid.saved_bg;
-        self.grid.current_underline_style = self.grid.saved_underline_style;
-        self.grid.current_underline_color = self.grid.saved_underline_color;
+        restore_cursor(self.target.active_grid_mut());
     }
 
     fn backspace(&mut self) {
-        if self.grid.cursor.col > 0 {
-            self.grid.cursor.col -= 1;
+        let g = self.target.active_grid_mut();
+        if g.cursor.col > 0 {
+            g.cursor.col -= 1;
         }
     }
 
     fn carriage_return(&mut self) {
-        self.grid.cursor.col = 0;
+        self.target.active_grid_mut().cursor.col = 0;
     }
 
     fn linefeed(&mut self) {
-        self.do_linefeed();
+        do_linefeed(self.target.active_grid_mut());
     }
 
     fn put_tab(&mut self, count: u16) {
         for _ in 0..count {
-            self.do_tab();
+            do_tab(self.target.active_grid_mut());
         }
     }
 
     fn scroll_up(&mut self, count: usize) {
-        self.do_scroll_up(count);
+        do_scroll_up(self.target.active_grid_mut(), count);
     }
 
     fn scroll_down(&mut self, count: usize) {
-        self.do_scroll_down(count);
+        do_scroll_down(self.target.active_grid_mut(), count);
     }
 
     fn clear_screen(&mut self, mode: vte::ansi::ClearMode) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
-        let rows = self.grid.rows as usize;
+        let g = self.target.active_grid_mut();
+        let row = g.cursor.row as usize;
+        let col = g.cursor.col as usize;
+        let cols = g.cols as usize;
+        let rows = g.rows as usize;
 
         match mode {
             vte::ansi::ClearMode::Below => {
-                // Clear from cursor to end of current row.
-                if let Some(line) = self.grid.lines.get_mut(row) {
+                if let Some(line) = g.lines.get_mut(row) {
                     for cell in &mut line.cells[col..] {
                         cell.reset();
                     }
                 }
-                // Clear all rows below.
-                for line in &mut self.grid.lines[row + 1..rows] {
+                for line in &mut g.lines[row + 1..rows] {
                     *line = crate::grid::row::Row::new(cols);
                 }
             }
             vte::ansi::ClearMode::Above => {
-                // Clear all rows above.
-                for line in &mut self.grid.lines[..row] {
+                for line in &mut g.lines[..row] {
                     *line = crate::grid::row::Row::new(cols);
                 }
-                // Clear from start of current row to cursor (inclusive).
-                if let Some(line) = self.grid.lines.get_mut(row) {
+                if let Some(line) = g.lines.get_mut(row) {
                     for cell in &mut line.cells[..=col.min(cols - 1)] {
                         cell.reset();
                     }
                 }
             }
             vte::ansi::ClearMode::All => {
-                for line in &mut self.grid.lines {
+                for line in &mut g.lines {
                     *line = crate::grid::row::Row::new(cols);
                 }
             }
-            vte::ansi::ClearMode::Saved => {
-                // Clear scrollback. Phase 0 has no scrollback; no-op.
-            }
+            vte::ansi::ClearMode::Saved => {}
         }
-        self.grid.touch_all();
+        g.touch_all();
     }
 
     fn clear_line(&mut self, mode: vte::ansi::LineClearMode) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
+        let g = self.target.active_grid_mut();
+        let row = g.cursor.row as usize;
+        let col = g.cursor.col as usize;
+        let cols = g.cols as usize;
 
-        let Some(line) = self.grid.lines.get_mut(row) else {
+        let Some(line) = g.lines.get_mut(row) else {
             return;
         };
         match mode {
@@ -451,149 +463,208 @@ impl vte::ansi::Handler for Terminal<'_> {
                 }
             }
         }
-        self.grid.touch_row(self.grid.cursor.row);
+        g.touch_row(g.cursor.row);
     }
 
     fn erase_chars(&mut self, count: usize) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
+        let g = self.target.active_grid_mut();
+        let row = g.cursor.row as usize;
+        let col = g.cursor.col as usize;
+        let cols = g.cols as usize;
         let end = (col + count).min(cols);
 
-        if let Some(line) = self.grid.lines.get_mut(row) {
+        if let Some(line) = g.lines.get_mut(row) {
             for cell in &mut line.cells[col..end] {
                 cell.reset();
             }
         }
-        self.grid.touch_row(self.grid.cursor.row);
+        g.touch_row(g.cursor.row);
     }
 
     fn insert_blank(&mut self, count: usize) {
-        self.do_insert_blank(count);
-        self.grid.touch_row(self.grid.cursor.row);
+        let g = self.target.active_grid_mut();
+        do_insert_blank(g, count);
+        g.touch_row(g.cursor.row);
     }
 
     fn delete_chars(&mut self, count: usize) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
+        let g = self.target.active_grid_mut();
+        let row = g.cursor.row as usize;
+        let col = g.cursor.col as usize;
+        let cols = g.cols as usize;
         let count = count.min(cols - col);
 
-        if let Some(line) = self.grid.lines.get_mut(row) {
-            // Shift cells left, filling vacated positions at the end.
+        if let Some(line) = g.lines.get_mut(row) {
             line.cells[col..].rotate_left(count);
             for cell in &mut line.cells[cols - count..] {
                 cell.reset();
             }
         }
-        self.grid.touch_row(self.grid.cursor.row);
+        g.touch_row(g.cursor.row);
     }
 
     fn insert_blank_lines(&mut self, count: usize) {
-        let region_top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
-        let top = self.grid.cursor.row as usize;
-        let bottom = self
-            .grid
-            .scroll_region
-            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
+        let g = self.target.active_grid_mut();
+        let region_top = g.scroll_region.map_or(0, |r| r.top) as usize;
+        let top = g.cursor.row as usize;
+        let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
 
         if top < region_top || top > bottom {
             return;
         }
         let count = count.min(bottom - top + 1);
-        let cols = self.grid.cols as usize;
+        let cols = g.cols as usize;
 
-        self.grid.lines[top..=bottom].rotate_right(count);
-        for line in &mut self.grid.lines[top..top + count] {
+        g.lines[top..=bottom].rotate_right(count);
+        for line in &mut g.lines[top..top + count] {
             *line = crate::grid::row::Row::new(cols);
         }
 
-        let seqno = self.grid.next_seqno();
-        for line in &mut self.grid.lines[top..=bottom] {
+        let seqno = g.next_seqno();
+        for line in &mut g.lines[top..=bottom] {
             line.seqno = seqno;
         }
     }
 
     fn delete_lines(&mut self, count: usize) {
-        let region_top = self.grid.scroll_region.map_or(0, |r| r.top) as usize;
-        let top = self.grid.cursor.row as usize;
-        let bottom = self
-            .grid
-            .scroll_region
-            .map_or(self.grid.rows - 1, |r| r.bottom) as usize;
+        let g = self.target.active_grid_mut();
+        let region_top = g.scroll_region.map_or(0, |r| r.top) as usize;
+        let top = g.cursor.row as usize;
+        let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
 
         if top < region_top || top > bottom {
             return;
         }
         let count = count.min(bottom - top + 1);
-        let cols = self.grid.cols as usize;
+        let cols = g.cols as usize;
 
-        self.grid.lines[top..=bottom].rotate_left(count);
-        for line in &mut self.grid.lines[(bottom + 1 - count)..=bottom] {
+        g.lines[top..=bottom].rotate_left(count);
+        for line in &mut g.lines[(bottom + 1 - count)..=bottom] {
             *line = crate::grid::row::Row::new(cols);
         }
 
-        let seqno = self.grid.next_seqno();
-        for line in &mut self.grid.lines[top..=bottom] {
+        let seqno = g.next_seqno();
+        for line in &mut g.lines[top..=bottom] {
             line.seqno = seqno;
         }
     }
 
     #[allow(clippy::cast_possible_truncation)]
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
+        let g = self.target.active_grid_mut();
         // vte passes 1-based params; convert to 0-based.
-        let max_row = self.grid.rows.saturating_sub(1) as usize;
+        let max_row = g.rows.saturating_sub(1) as usize;
         let top = top.saturating_sub(1).min(max_row);
         let bottom = bottom.map_or(max_row, |b| b.saturating_sub(1).min(max_row));
 
         if top < bottom && (top > 0 || bottom < max_row) {
-            self.grid.scroll_region = Some(crate::grid::cursor::ScrollRegion {
+            g.scroll_region = Some(crate::grid::cursor::ScrollRegion {
                 top: top as u16,
                 bottom: bottom as u16,
             });
         } else {
-            self.grid.scroll_region = None;
+            g.scroll_region = None;
         }
         // DECSTBM homes the cursor. Under DECOM (origin mode, TREK-27),
         // home means scroll_region.top; for now always (0,0).
-        self.grid.cursor.row = 0;
-        self.grid.cursor.col = 0;
+        g.cursor.row = 0;
+        g.cursor.col = 0;
     }
 
     fn reverse_index(&mut self) {
-        let top = self.grid.scroll_region.map_or(0, |r| r.top);
-        if self.grid.cursor.row <= top {
-            self.do_scroll_down(1);
+        let g = self.target.active_grid_mut();
+        let top = g.scroll_region.map_or(0, |r| r.top);
+        if g.cursor.row <= top {
+            do_scroll_down(g, 1);
         } else {
-            self.grid.cursor.row -= 1;
+            g.cursor.row -= 1;
         }
     }
 
     fn set_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
         let num = mode.raw();
-        self.grid.modes.set(num, true);
-        self.apply_private_mode(num, true);
+        match num {
+            // Mode 47: switch to alternate (no cursor save, no clear).
+            // No-op if already on alternate.
+            47 if !self.target.active_grid_mut().modes.get(47) => {
+                self.target.active_grid_mut().modes.set(47, true);
+                self.target.enter_alternate();
+                self.target.active_grid_mut().touch_all();
+            }
+            // Mode 1047: switch to alternate, clear it.
+            // No-op if already on alternate.
+            1047 if !self.target.active_grid_mut().modes.get(1047) => {
+                self.target.active_grid_mut().modes.set(1047, true);
+                self.target.enter_alternate();
+                clear_grid(self.target.active_grid_mut());
+            }
+            // Mode 1049: save cursor on primary, switch, clear alternate.
+            // Unconditionally saves cursor and clears even if already on alternate.
+            1049 => {
+                save_cursor(self.target.active_grid_mut());
+                self.target.active_grid_mut().modes.set(1049, true);
+                self.target.enter_alternate();
+                clear_grid(self.target.active_grid_mut());
+            }
+            25 => {
+                let g = self.target.active_grid_mut();
+                g.modes.set(num, true);
+                g.cursor.visible = true;
+            }
+            _ => {
+                self.target.active_grid_mut().modes.set(num, true);
+            }
+        }
     }
 
     fn unset_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
         let num = mode.raw();
-        self.grid.modes.set(num, false);
-        self.apply_private_mode(num, false);
+        match num {
+            // Mode 47: switch back to primary.
+            47 => {
+                self.target.exit_alternate();
+                // Clear flag on primary (where it was set).
+                self.target.active_grid_mut().modes.set(47, false);
+                self.target.active_grid_mut().touch_all();
+            }
+            // Mode 1047: clear alternate, switch back.
+            1047 => {
+                clear_grid(self.target.active_grid_mut());
+                self.target.exit_alternate();
+                self.target.active_grid_mut().modes.set(1047, false);
+            }
+            // Mode 1049: switch back, restore cursor.
+            1049 => {
+                self.target.exit_alternate();
+                // Clear flag and restore cursor on primary (where they were saved).
+                self.target.active_grid_mut().modes.set(1049, false);
+                restore_cursor(self.target.active_grid_mut());
+                self.target.active_grid_mut().touch_all();
+            }
+            25 => {
+                let g = self.target.active_grid_mut();
+                g.modes.set(num, false);
+                g.cursor.visible = false;
+            }
+            _ => {
+                self.target.active_grid_mut().modes.set(num, false);
+            }
+        }
     }
 
     fn set_mode(&mut self, mode: vte::ansi::Mode) {
-        self.grid.modes.set(mode.raw(), true);
+        self.target.active_grid_mut().modes.set(mode.raw(), true);
     }
 
     fn unset_mode(&mut self, mode: vte::ansi::Mode) {
-        self.grid.modes.set(mode.raw(), false);
+        self.target.active_grid_mut().modes.set(mode.raw(), false);
     }
 }
 
 /// Feed bytes through the vte parser into a Terminal handler.
-pub fn process_bytes(grid: &mut Grid, input: &[u8]) {
+pub fn process_bytes(target: &mut impl TermTarget, input: &[u8]) {
     let mut processor = vte::ansi::Processor::<vte::ansi::StdSyncHandler>::new();
-    let mut terminal = Terminal::new(grid);
+    let mut terminal = Terminal::new(target);
     processor.advance(&mut terminal, input);
 }
 
@@ -604,6 +675,7 @@ mod tests {
     use crate::grid::cell::{CellFlags, Color, NamedColor, UnderlineStyle};
     use crate::testing::{
         assert_cell_fg, assert_cell_flags, assert_cursor_at, assert_row_text, test_grid,
+        test_screen,
     };
 
     fn parse(grid: &mut Grid, input: &[u8]) {
@@ -1352,25 +1424,6 @@ mod tests {
     }
 
     #[test]
-    fn mode_irm_insert() {
-        let mut grid = test_grid(10, 1);
-        parse(&mut grid, b"abcdef");
-        // Enable insert mode, move to col 2, type "XY".
-        parse(&mut grid, b"\x1b[4h\x1b[3GXY");
-        assert_row_text(&grid, 0, "abXYcdef");
-    }
-
-    #[test]
-    fn mode_lnm_auto_newline() {
-        let mut grid = test_grid(10, 2);
-        parse(&mut grid, b"\x1b[20h"); // LNM on: LF implies CR.
-        parse(&mut grid, b"\x1b[5Gabc\ndef");
-        assert_row_text(&grid, 0, "    abc");
-        // With LNM, the LF should also CR, so "def" starts at col 0.
-        assert_row_text(&grid, 1, "def");
-    }
-
-    #[test]
     fn decset_autowrap_toggle() {
         let mut grid = test_grid(5, 2);
         parse(&mut grid, b"\x1b[?7l");
@@ -1384,6 +1437,15 @@ mod tests {
     }
 
     #[test]
+    fn mode_irm_insert() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdef");
+        // Enable insert mode, move to col 2, type "XY".
+        parse(&mut grid, b"\x1b[4h\x1b[3GXY");
+        assert_row_text(&grid, 0, "abXYcdef");
+    }
+
+    #[test]
     fn mode_irm_toggle() {
         let mut grid = test_grid(10, 1);
         parse(&mut grid, b"abcdef");
@@ -1392,6 +1454,16 @@ mod tests {
         // Disable insert mode, overwrite.
         parse(&mut grid, b"\x1b[4l\x1b[3GZZ");
         assert_row_text(&grid, 0, "abZZcdef");
+    }
+
+    #[test]
+    fn mode_lnm_auto_newline() {
+        let mut grid = test_grid(10, 2);
+        parse(&mut grid, b"\x1b[20h"); // LNM on: LF implies CR.
+        parse(&mut grid, b"\x1b[5Gabc\ndef");
+        assert_row_text(&grid, 0, "    abc");
+        // With LNM, the LF should also CR, so "def" starts at col 0.
+        assert_row_text(&grid, 1, "def");
     }
 
     #[test]
@@ -1421,5 +1493,57 @@ mod tests {
         assert!(grid.modes.get(1049));
         parse(&mut grid, b"\x1b[?1049l");
         assert!(!grid.modes.get(1049));
+    }
+
+    // --- Alternate screen tests ---
+
+    #[test]
+    fn alt_screen_1049_preserves_primary() {
+        let mut screen = test_screen(10, 3);
+        process_bytes(&mut screen, b"primary");
+        process_bytes(&mut screen, b"\x1b[?1049h");
+        process_bytes(&mut screen, b"alternate");
+        assert_row_text(screen.active_grid(), 0, "alternate");
+        process_bytes(&mut screen, b"\x1b[?1049l");
+        assert_row_text(screen.active_grid(), 0, "primary");
+    }
+
+    #[test]
+    fn alt_screen_1049_saves_restores_cursor() {
+        let mut screen = test_screen(10, 3);
+        process_bytes(&mut screen, b"\x1b[2;5H");
+        assert_eq!(screen.active_grid().cursor.row, 1);
+        assert_eq!(screen.active_grid().cursor.col, 4);
+        process_bytes(&mut screen, b"\x1b[?1049h");
+        // Cursor on alternate starts at home after clear.
+        assert_eq!(screen.active_grid().cursor.row, 0);
+        assert_eq!(screen.active_grid().cursor.col, 0);
+        process_bytes(&mut screen, b"\x1b[?1049l");
+        // Cursor restored to primary position.
+        assert_eq!(screen.active_grid().cursor.row, 1);
+        assert_eq!(screen.active_grid().cursor.col, 4);
+    }
+
+    #[test]
+    fn alt_screen_47_no_clear() {
+        let mut screen = test_screen(10, 3);
+        process_bytes(&mut screen, b"primary");
+        process_bytes(&mut screen, b"\x1b[?47h");
+        // Mode 47: no clear on enter (alternate was lazily allocated empty).
+        process_bytes(&mut screen, b"alt");
+        assert_row_text(screen.active_grid(), 0, "alt");
+        process_bytes(&mut screen, b"\x1b[?47l");
+        assert_row_text(screen.active_grid(), 0, "primary");
+    }
+
+    #[test]
+    fn alt_screen_1047_clears_on_enter() {
+        let mut screen = test_screen(10, 3);
+        process_bytes(&mut screen, b"primary");
+        process_bytes(&mut screen, b"\x1b[?1047h");
+        // Mode 1047: cleared on enter.
+        assert_row_text(screen.active_grid(), 0, "");
+        process_bytes(&mut screen, b"\x1b[?1047l");
+        assert_row_text(screen.active_grid(), 0, "primary");
     }
 }

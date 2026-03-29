@@ -305,6 +305,14 @@ impl ScreenSet {
     pub fn exit_alternate(&mut self) {
         self.active = ScreenId::Primary;
     }
+
+    /// Resize both primary and alternate grids (if allocated).
+    pub fn resize_all(&mut self, cols: u16, rows: u16) {
+        self.primary.resize(cols, rows);
+        if let Some(alt) = &mut self.alternate {
+            alt.resize(cols, rows);
+        }
+    }
 }
 
 /// Build the default 256-color palette.
