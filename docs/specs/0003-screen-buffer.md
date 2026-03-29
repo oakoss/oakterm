@@ -276,9 +276,15 @@ struct ScreenSet {
 enum ScreenId { Primary, Alternate }
 ```
 
-**Alternate screen behavior:** DECSET 1049 saves the primary cursor, switches `active` to `Alternate`, and clears the alternate grid. DECRST 1049 switches back to `Primary` and restores the saved cursor. The primary grid's content is preserved during alternate screen use. The alternate grid has no scrollback. Per ADR-0006, lines that scroll off the top of the alternate grid are captured to the primary screen's scrollback if `save_alternate_scrollback` is enabled.
+**Alternate screen behavior:** Three DEC private modes trigger the alternate screen (see Spec-0002 for full semantics):
 
-**Alternate screen lazy allocation:** The alternate grid is not allocated until first used (DECSET 1049). Once allocated, it persists for the lifetime of the terminal session to avoid repeated allocation/deallocation when applications enter and leave the alternate screen frequently.
+- **Mode 47:** switch only. No cursor save/restore, no clear.
+- **Mode 1047:** switch and clear alternate on enter. Clear alternate on exit.
+- **Mode 1049:** save cursor (DECSC) on enter, switch, clear. Restore cursor (DECRC) on exit.
+
+The primary grid's content is preserved during alternate screen use. The alternate grid has no scrollback. Per ADR-0006, lines that scroll off the top of the alternate grid are captured to the primary screen's scrollback if `save_alternate_scrollback` is enabled.
+
+**Alternate screen lazy allocation:** The alternate grid is not allocated until first used (any of modes 47, 1047, 1049). Once allocated, it persists for the lifetime of the terminal session to avoid repeated allocation/deallocation when applications enter and leave the alternate screen frequently.
 
 ### Dirty Tracking
 
