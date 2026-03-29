@@ -104,6 +104,10 @@ pub struct Grid {
     pub dynamic_bg: Option<Rgb>,
     pub dynamic_cursor: Option<Rgb>,
     pub title: Option<String>,
+    /// Set by handler when BEL (0x07) is received. Cleared by daemon after sending.
+    pub bell_pending: bool,
+    /// Set by handler when title changes. Cleared by daemon after sending.
+    pub title_dirty: bool,
 }
 
 impl Grid {
@@ -153,6 +157,8 @@ impl Grid {
             dynamic_bg: None,
             dynamic_cursor: None,
             title: None,
+            bell_pending: false,
+            title_dirty: false,
         }
     }
 

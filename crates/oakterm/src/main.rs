@@ -15,8 +15,8 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, HandshakeStatus, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE,
-    MSG_RENDER_UPDATE, MSG_SERVER_HELLO,
+    ClientHello, ClientType, HandshakeStatus, MSG_BELL, MSG_DETACH, MSG_DIRTY_NOTIFY,
+    MSG_GET_RENDER_UPDATE, MSG_RENDER_UPDATE, MSG_SERVER_HELLO, MSG_TITLE_CHANGED, TitleChanged,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -51,6 +51,8 @@ impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
 #[derive(Debug)]
 enum UserEvent {
     RenderUpdate(Box<RenderUpdate>),
+    TitleChanged(String),
+    Bell,
     Disconnected,
 }
 
@@ -429,6 +431,15 @@ impl ApplicationHandler<UserEvent> for App {
                     w.request_redraw();
                 }
             }
+            UserEvent::TitleChanged(title) => {
+                if let Some(w) = &self.window {
+                    let display = if title.is_empty() { "oakterm" } else { &title };
+                    w.set_title(display);
+                }
+            }
+            UserEvent::Bell => {
+                // Visual bell or system beep. No-op for Phase 0.
+            }
             UserEvent::Disconnected => {
                 eprintln!("daemon disconnected");
                 event_loop.exit();
@@ -767,6 +778,14 @@ fn daemon_reader(
                         break;
                     }
                 },
+                MSG_TITLE_CHANGED => {
+                    if let Ok(msg) = TitleChanged::decode(&frame.payload) {
+                        let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
+                    }
+                }
+                MSG_BELL => {
+                    let _ = proxy.send_event(UserEvent::Bell);
+                }
                 other => {
                     eprintln!("unhandled daemon message: 0x{other:04x}");
                 }

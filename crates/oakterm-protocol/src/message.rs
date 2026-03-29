@@ -306,3 +306,78 @@ impl ErrorMessage {
         Frame::new(MSG_ERROR, serial, self.encode()?)
     }
 }
+
+/// `TitleChanged` (0x80): daemon notifies GUI of title change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleChanged {
+    pub pane_id: u32,
+    pub title: String,
+}
+
+impl TitleChanged {
+    /// # Errors
+    /// Returns an error if the title exceeds u16 max length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(6 + self.title.len());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        encode_str(&mut buf, &self.title)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TitleChanged too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let (title, _) = decode_str(data, 4, "title")?;
+        Ok(Self { pane_id, title })
+    }
+
+    /// Wrap as a push frame (serial 0).
+    ///
+    /// # Errors
+    /// Returns an error if encoding fails.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_TITLE_CHANGED, 0, self.encode()?)
+    }
+}
+
+/// Bell (0x82): daemon notifies GUI of bell event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bell {
+    pub pane_id: u32,
+}
+
+impl Bell {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Bell too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+
+    /// Wrap as a push frame (serial 0).
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_BELL, 0, self.encode())
+    }
+}
