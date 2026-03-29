@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 mlua.workspace = true
+strsim.workspace = true
 
 [lints]
 workspace = true
