@@ -17,6 +17,39 @@ pub fn socket_path() -> io::Result<PathBuf> {
     Ok(dir.join("socket"))
 }
 
+/// RAII guard holding an exclusive flock on the startup lock file.
+#[non_exhaustive]
+pub struct StartupLock {
+    _file: std::fs::File,
+}
+
+/// Acquire the exclusive startup lock. Blocks until available.
+/// Prevents two GUI clients from racing to spawn the daemon.
+///
+/// # Errors
+/// Returns an error if the lock file cannot be created or locked.
+pub fn acquire_startup_lock() -> io::Result<StartupLock> {
+    let dir = socket_dir()?;
+    let path = dir.join("lock");
+    let file = std::fs::File::create(&path)?;
+
+    // Try non-blocking first; if contended, log and block.
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => return Ok(StartupLock { _file: file }),
+        Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
+            eprintln!(
+                "waiting for another oakterm to finish starting (lock: {})",
+                path.display()
+            );
+        }
+        Err(e) => return Err(io::Error::from_raw_os_error(e.raw_os_error())),
+    }
+
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+        .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+    Ok(StartupLock { _file: file })
+}
+
 #[cfg(target_os = "linux")]
 fn socket_dir() -> io::Result<PathBuf> {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
