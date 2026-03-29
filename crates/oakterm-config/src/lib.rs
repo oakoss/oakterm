@@ -116,6 +116,109 @@ fn install_timeout_hook(lua: &Lua, timeout: Duration) -> mlua::Result<()> {
     )
 }
 
+// --- Config loading ---
+
+use std::path::{Path, PathBuf};
+
+/// Resolve the config directory path.
+///
+/// - Linux/macOS: `$XDG_CONFIG_HOME/oakterm/` or `~/.config/oakterm/`
+/// - Windows: `%APPDATA%\oakterm\`
+#[must_use]
+pub fn config_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("oakterm");
+    }
+    if cfg!(windows) {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("oakterm");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".config").join("oakterm");
+    }
+    // Last resort: relative path. Only reachable if HOME is unset
+    // (containers, cron). Config will likely not be found, returning defaults.
+    PathBuf::from(".config").join("oakterm")
+}
+
+/// Load config from `config.lua` in the config directory.
+///
+/// Returns parsed config values and an optional error message.
+/// Never fails — always returns valid `ConfigValues` (defaults on error).
+#[must_use]
+pub fn load_config() -> (ConfigValues, Option<String>) {
+    load_config_from(&config_dir().join("config.lua"))
+}
+
+/// Load config from a specific file path. Testable without touching the real config dir.
+#[must_use]
+pub fn load_config_from(path: &Path) -> (ConfigValues, Option<String>) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (ConfigValues::default(), None);
+        }
+        Err(e) => {
+            return (
+                ConfigValues::default(),
+                Some(format!("cannot read {}: {e}", path.display())),
+            );
+        }
+    };
+
+    if source.trim().is_empty() {
+        return (ConfigValues::default(), None);
+    }
+
+    let (lua, _print_log) = match create_lua_vm() {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                ConfigValues::default(),
+                Some(format!("failed to create Lua VM: {e}")),
+            );
+        }
+    };
+
+    if let Err(e) = register_config_table(&lua) {
+        return (
+            ConfigValues::default(),
+            Some(format!("failed to register config API: {e}")),
+        );
+    }
+
+    if let Err(e) = lua.load(&source).set_name(path.to_string_lossy()).exec() {
+        return (ConfigValues::default(), Some(format_config_error(path, &e)));
+    }
+
+    match extract_config(&lua) {
+        Ok(config) => (config, None),
+        Err(e) => (ConfigValues::default(), Some(format_config_error(path, &e))),
+    }
+}
+
+fn format_config_error(path: &Path, err: &mlua::Error) -> String {
+    match err {
+        mlua::Error::SyntaxError { message, .. } => {
+            format!("{}: {message}", path.display())
+        }
+        mlua::Error::RuntimeError(msg) => {
+            format!("{}: {msg}", path.display())
+        }
+        mlua::Error::CallbackError { traceback, cause } => {
+            format!("{}: {cause}\n{traceback}", path.display())
+        }
+        mlua::Error::MemoryError(_) => {
+            format!(
+                "{}: config evaluation exceeded memory limit",
+                path.display()
+            )
+        }
+        other => format!("{}: {other}", path.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +441,77 @@ mod tests {
             .expect("should be able to reset memory limit");
         let result: i64 = lua.load("return 1 + 1").eval().expect("VM should recover");
         assert_eq!(result, 2);
+    }
+
+    // --- load_config tests ---
+
+    fn temp_config(content: &str) -> (PathBuf, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lua");
+        std::fs::write(&path, content).unwrap();
+        (path, dir)
+    }
+
+    #[test]
+    fn load_config_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lua");
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_none());
+        assert_eq!(config, ConfigValues::default());
+    }
+
+    #[test]
+    fn load_config_valid_file() {
+        let (path, _dir) = temp_config("oakterm.config.font_size = 20.0");
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_none(), "unexpected error: {err:?}");
+        assert!((config.font_size - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn load_config_syntax_error() {
+        let (path, _dir) = temp_config("this is not valid lua }{");
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_some(), "should have error");
+        assert_eq!(config, ConfigValues::default());
+    }
+
+    #[test]
+    fn load_config_runtime_error() {
+        let (path, _dir) = temp_config(r#"error("intentional")"#);
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("intentional"));
+        assert_eq!(config, ConfigValues::default());
+    }
+
+    #[test]
+    fn load_config_unknown_key() {
+        let (path, _dir) = temp_config("oakterm.config.font_szie = 14");
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_some());
+        let msg = err.unwrap();
+        assert!(msg.contains("did you mean"), "got: {msg}");
+        assert_eq!(config, ConfigValues::default());
+    }
+
+    #[test]
+    fn load_config_empty_file() {
+        let (path, _dir) = temp_config("");
+        let (config, err) = load_config_from(&path);
+        assert!(err.is_none());
+        assert_eq!(config, ConfigValues::default());
+    }
+
+    #[test]
+    fn load_config_error_includes_path() {
+        let (path, _dir) = temp_config("bad syntax {{");
+        let (_, err) = load_config_from(&path);
+        let msg = err.unwrap();
+        assert!(
+            msg.contains(&path.to_string_lossy().to_string()),
+            "error should include path: {msg}"
+        );
     }
 }
