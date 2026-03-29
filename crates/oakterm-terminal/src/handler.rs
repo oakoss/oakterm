@@ -22,17 +22,28 @@ impl<'a> Terminal<'a> {
         let cols = self.grid.cols;
 
         if self.grid.cursor.col >= cols {
-            let row = self.grid.cursor.row as usize;
-            if let Some(line) = self.grid.lines.get_mut(row) {
-                line.flags.set_wrapped(true);
-            }
-            self.grid.cursor.col = 0;
-            self.do_linefeed();
+            if self.grid.modes.get(7) {
+                // DECAWM: auto-wrap to next line.
+                let row = self.grid.cursor.row as usize;
+                if let Some(line) = self.grid.lines.get_mut(row) {
+                    line.flags.set_wrapped(true);
+                }
+                self.grid.cursor.col = 0;
+                self.do_linefeed();
 
-            let new_row = self.grid.cursor.row as usize;
-            if let Some(line) = self.grid.lines.get_mut(new_row) {
-                line.flags.set_wrap_continuation(true);
+                let new_row = self.grid.cursor.row as usize;
+                if let Some(line) = self.grid.lines.get_mut(new_row) {
+                    line.flags.set_wrap_continuation(true);
+                }
+            } else {
+                // No wrap: overwrite the last column.
+                self.grid.cursor.col = cols - 1;
             }
+        }
+
+        // IRM (insert mode): shift existing cells right before writing.
+        if self.grid.modes.get(4) {
+            self.do_insert_blank(1);
         }
 
         let row = self.grid.cursor.row as usize;
@@ -73,6 +84,10 @@ impl<'a> Terminal<'a> {
         } else {
             self.grid.cursor.row += 1;
         }
+        // LNM (mode 20): LF implies CR.
+        if self.grid.modes.get(20) {
+            self.grid.cursor.col = 0;
+        }
     }
 
     fn do_scroll_up(&mut self, count: usize) {
@@ -93,6 +108,29 @@ impl<'a> Terminal<'a> {
         let seqno = self.grid.next_seqno();
         for row in &mut self.grid.lines[top..=bottom] {
             row.seqno = seqno;
+        }
+    }
+
+    fn do_insert_blank(&mut self, count: usize) {
+        let row = self.grid.cursor.row as usize;
+        let col = self.grid.cursor.col as usize;
+        let cols = self.grid.cols as usize;
+        if col >= cols {
+            return;
+        }
+        let count = count.min(cols - col);
+        if let Some(line) = self.grid.lines.get_mut(row) {
+            line.cells[col..].rotate_right(count);
+            for cell in &mut line.cells[col..col + count] {
+                cell.reset();
+            }
+        }
+    }
+
+    /// Apply immediate side effects for private mode changes.
+    fn apply_private_mode(&mut self, mode: u16, enabled: bool) {
+        if mode == 25 {
+            self.grid.cursor.visible = enabled; // DECTCEM
         }
     }
 
@@ -431,18 +469,7 @@ impl vte::ansi::Handler for Terminal<'_> {
     }
 
     fn insert_blank(&mut self, count: usize) {
-        let row = self.grid.cursor.row as usize;
-        let col = self.grid.cursor.col as usize;
-        let cols = self.grid.cols as usize;
-        let count = count.min(cols - col);
-
-        if let Some(line) = self.grid.lines.get_mut(row) {
-            // Shift cells right, dropping those that fall off the end.
-            line.cells[col..].rotate_right(count);
-            for cell in &mut line.cells[col..col + count] {
-                cell.reset();
-            }
-        }
+        self.do_insert_blank(count);
         self.grid.touch_row(self.grid.cursor.row);
     }
 
@@ -540,6 +567,26 @@ impl vte::ansi::Handler for Terminal<'_> {
         } else {
             self.grid.cursor.row -= 1;
         }
+    }
+
+    fn set_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
+        let num = mode.raw();
+        self.grid.modes.set(num, true);
+        self.apply_private_mode(num, true);
+    }
+
+    fn unset_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
+        let num = mode.raw();
+        self.grid.modes.set(num, false);
+        self.apply_private_mode(num, false);
+    }
+
+    fn set_mode(&mut self, mode: vte::ansi::Mode) {
+        self.grid.modes.set(mode.raw(), true);
+    }
+
+    fn unset_mode(&mut self, mode: vte::ansi::Mode) {
+        self.grid.modes.set(mode.raw(), false);
     }
 }
 
@@ -1265,5 +1312,114 @@ mod tests {
         parse(&mut grid, b"\x1b[r");
         assert!(grid.scroll_region.is_none());
         assert_cursor_at(&grid, 0, 0);
+    }
+
+    // --- Mode management tests ---
+
+    #[test]
+    fn decset_show_cursor() {
+        let mut grid = test_grid(10, 1);
+        // DECTCEM off then on.
+        parse(&mut grid, b"\x1b[?25l");
+        assert!(!grid.cursor.visible);
+        parse(&mut grid, b"\x1b[?25h");
+        assert!(grid.cursor.visible);
+    }
+
+    #[test]
+    fn decset_autowrap_default_on() {
+        let grid = test_grid(10, 1);
+        assert!(grid.modes.get(7));
+    }
+
+    #[test]
+    fn decset_autowrap_off_prevents_wrap() {
+        let mut grid = test_grid(5, 2);
+        parse(&mut grid, b"\x1b[?7l");
+        parse(&mut grid, b"abcdefgh");
+        // Without wrap, characters overwrite at the last column.
+        assert_row_text(&grid, 0, "abcdh");
+        assert_row_text(&grid, 1, "");
+    }
+
+    #[test]
+    fn decset_autowrap_on_wraps() {
+        let mut grid = test_grid(5, 2);
+        // DECAWM is on by default.
+        parse(&mut grid, b"abcdefgh");
+        assert_row_text(&grid, 0, "abcde");
+        assert_row_text(&grid, 1, "fgh");
+    }
+
+    #[test]
+    fn mode_irm_insert() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdef");
+        // Enable insert mode, move to col 2, type "XY".
+        parse(&mut grid, b"\x1b[4h\x1b[3GXY");
+        assert_row_text(&grid, 0, "abXYcdef");
+    }
+
+    #[test]
+    fn mode_lnm_auto_newline() {
+        let mut grid = test_grid(10, 2);
+        parse(&mut grid, b"\x1b[20h"); // LNM on: LF implies CR.
+        parse(&mut grid, b"\x1b[5Gabc\ndef");
+        assert_row_text(&grid, 0, "    abc");
+        // With LNM, the LF should also CR, so "def" starts at col 0.
+        assert_row_text(&grid, 1, "def");
+    }
+
+    #[test]
+    fn decset_autowrap_toggle() {
+        let mut grid = test_grid(5, 2);
+        parse(&mut grid, b"\x1b[?7l");
+        parse(&mut grid, b"abcdefg");
+        assert_row_text(&grid, 0, "abcdg");
+        // Re-enable wrap.
+        parse(&mut grid, b"\x1b[?7h\r");
+        parse(&mut grid, b"12345XY");
+        assert_row_text(&grid, 0, "12345");
+        assert_row_text(&grid, 1, "XY");
+    }
+
+    #[test]
+    fn mode_irm_toggle() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"abcdef");
+        parse(&mut grid, b"\x1b[4h\x1b[3GXY");
+        assert_row_text(&grid, 0, "abXYcdef");
+        // Disable insert mode, overwrite.
+        parse(&mut grid, b"\x1b[4l\x1b[3GZZ");
+        assert_row_text(&grid, 0, "abZZcdef");
+    }
+
+    #[test]
+    fn mode_lnm_toggle() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"\x1b[20h\x1b[5Gabc\ndef");
+        assert_row_text(&grid, 1, "def");
+        // Disable LNM: bare LF preserves column (col 7 after "ghi").
+        parse(&mut grid, b"\x1b[20l\x1b[5Gghi\njkl");
+        assert_row_text(&grid, 2, "       jkl");
+    }
+
+    #[test]
+    fn decset_stores_mode_flag() {
+        let mut grid = test_grid(10, 1);
+        assert!(!grid.modes.get(2004));
+        parse(&mut grid, b"\x1b[?2004h");
+        assert!(grid.modes.get(2004));
+        parse(&mut grid, b"\x1b[?2004l");
+        assert!(!grid.modes.get(2004));
+    }
+
+    #[test]
+    fn decset_1049_stores_flag() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[?1049h");
+        assert!(grid.modes.get(1049));
+        parse(&mut grid, b"\x1b[?1049l");
+        assert!(!grid.modes.get(1049));
     }
 }

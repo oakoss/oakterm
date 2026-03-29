@@ -243,8 +243,8 @@ fn mode_flags_set_and_get() {
 #[test]
 fn mode_flags_out_of_range() {
     let mut modes = ModeFlags::new();
-    modes.set(1000, true);
-    assert!(!modes.get(1000));
+    modes.set(5000, true);
+    assert!(!modes.get(5000));
 }
 
 #[test]
