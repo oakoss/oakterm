@@ -20,6 +20,13 @@ pub trait TermTarget {
     fn active_grid_mut(&mut self) -> &mut Grid;
     fn enter_alternate(&mut self) {}
     fn exit_alternate(&mut self) {}
+    /// Full terminal reset (RIS). Resets to primary screen, drops alternate.
+    fn reset(&mut self) {
+        let g = self.active_grid_mut();
+        let cols = g.cols;
+        let rows = g.rows;
+        *g = Grid::new(cols, rows);
+    }
 }
 
 /// No-op screen switching. Alt-screen sequences (47/1047/1049) save, clear,
@@ -41,17 +48,22 @@ impl TermTarget for ScreenSet {
     fn exit_alternate(&mut self) {
         ScreenSet::exit_alternate(self);
     }
+    fn reset(&mut self) {
+        ScreenSet::reset(self);
+    }
 }
 
 /// Terminal state wrapper that implements `vte::ansi::Handler`.
 /// Generic over `TermTarget` so tests use bare `Grid` and the daemon uses `ScreenSet`.
-pub struct Terminal<'a, T: TermTarget> {
+/// Holds a writer for sending responses back to the PTY (DA1, DSR, etc.).
+pub struct Terminal<'a, T: TermTarget, W: std::io::Write> {
     target: &'a mut T,
+    writer: &'a mut W,
 }
 
-impl<'a, T: TermTarget> Terminal<'a, T> {
-    pub fn new(target: &'a mut T) -> Self {
-        Self { target }
+impl<'a, T: TermTarget, W: std::io::Write> Terminal<'a, T, W> {
+    pub fn new(target: &'a mut T, writer: &'a mut W) -> Self {
+        Self { target, writer }
     }
 }
 
@@ -260,7 +272,7 @@ fn convert_named_color(n: vte::ansi::NamedColor) -> cell::Color {
 
 // --- vte Handler implementation ---
 
-impl<T: TermTarget> vte::ansi::Handler for Terminal<'_, T> {
+impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W> {
     fn input(&mut self, c: char) {
         write_char(self.target.active_grid_mut(), c);
     }
@@ -659,12 +671,68 @@ impl<T: TermTarget> vte::ansi::Handler for Terminal<'_, T> {
     fn unset_mode(&mut self, mode: vte::ansi::Mode) {
         self.target.active_grid_mut().modes.set(mode.raw(), false);
     }
+
+    fn identify_terminal(&mut self, intermediate: Option<char>) {
+        match intermediate {
+            // DA1 (CSI c): report VT220 with ANSI color.
+            None => {
+                let _ = self.writer.write_all(b"\x1b[?62;22c");
+            }
+            // DA2 (CSI > c): report version.
+            Some('>') => {
+                let _ = self.writer.write_all(b"\x1b[>0;0;0c");
+            }
+            _ => {}
+        }
+    }
+
+    fn device_status(&mut self, param: usize) {
+        if param == 6 {
+            // DSR: cursor position report (1-based).
+            let g = self.target.active_grid_mut();
+            let row = g.cursor.row + 1;
+            let col = g.cursor.col + 1;
+            let _ = write!(self.writer, "\x1b[{row};{col}R");
+        }
+    }
+
+    fn set_cursor_style(&mut self, style: Option<vte::ansi::CursorStyle>) {
+        use crate::grid::cursor::CursorStyle as CS;
+        let g = self.target.active_grid_mut();
+        match style {
+            Some(s) => {
+                g.cursor.style = match (s.shape, s.blinking) {
+                    (vte::ansi::CursorShape::Block, true) => CS::BlinkingBlock,
+                    (vte::ansi::CursorShape::Underline, true) => CS::BlinkingUnderline,
+                    (vte::ansi::CursorShape::Underline, false) => CS::SteadyUnderline,
+                    (vte::ansi::CursorShape::Beam, true) => CS::BlinkingBar,
+                    (vte::ansi::CursorShape::Beam, false) => CS::SteadyBar,
+                    _ => CS::SteadyBlock,
+                };
+            }
+            // DECSCUSR 0: reset to default.
+            None => g.cursor.style = CS::BlinkingBlock,
+        }
+    }
+
+    fn reset_state(&mut self) {
+        self.target.reset();
+    }
+
+    fn set_keypad_application_mode(&mut self) {
+        self.target.active_grid_mut().modes.set(66, true);
+    }
+
+    fn unset_keypad_application_mode(&mut self) {
+        self.target.active_grid_mut().modes.set(66, false);
+    }
 }
 
 /// Feed bytes through the vte parser into a Terminal handler.
-pub fn process_bytes(target: &mut impl TermTarget, input: &[u8]) {
+/// `writer` receives responses to device queries (DA1, DSR, etc.).
+pub fn process_bytes(target: &mut impl TermTarget, input: &[u8], writer: &mut impl std::io::Write) {
     let mut processor = vte::ansi::Processor::<vte::ansi::StdSyncHandler>::new();
-    let mut terminal = Terminal::new(target);
+    let mut terminal = Terminal::new(target, writer);
     processor.advance(&mut terminal, input);
 }
 
@@ -679,7 +747,7 @@ mod tests {
     };
 
     fn parse(grid: &mut Grid, input: &[u8]) {
-        process_bytes(grid, input);
+        process_bytes(grid, input, &mut std::io::sink());
     }
 
     #[test]
@@ -1500,25 +1568,25 @@ mod tests {
     #[test]
     fn alt_screen_1049_preserves_primary() {
         let mut screen = test_screen(10, 3);
-        process_bytes(&mut screen, b"primary");
-        process_bytes(&mut screen, b"\x1b[?1049h");
-        process_bytes(&mut screen, b"alternate");
+        process_bytes(&mut screen, b"primary", &mut std::io::sink());
+        process_bytes(&mut screen, b"\x1b[?1049h", &mut std::io::sink());
+        process_bytes(&mut screen, b"alternate", &mut std::io::sink());
         assert_row_text(screen.active_grid(), 0, "alternate");
-        process_bytes(&mut screen, b"\x1b[?1049l");
+        process_bytes(&mut screen, b"\x1b[?1049l", &mut std::io::sink());
         assert_row_text(screen.active_grid(), 0, "primary");
     }
 
     #[test]
     fn alt_screen_1049_saves_restores_cursor() {
         let mut screen = test_screen(10, 3);
-        process_bytes(&mut screen, b"\x1b[2;5H");
+        process_bytes(&mut screen, b"\x1b[2;5H", &mut std::io::sink());
         assert_eq!(screen.active_grid().cursor.row, 1);
         assert_eq!(screen.active_grid().cursor.col, 4);
-        process_bytes(&mut screen, b"\x1b[?1049h");
+        process_bytes(&mut screen, b"\x1b[?1049h", &mut std::io::sink());
         // Cursor on alternate starts at home after clear.
         assert_eq!(screen.active_grid().cursor.row, 0);
         assert_eq!(screen.active_grid().cursor.col, 0);
-        process_bytes(&mut screen, b"\x1b[?1049l");
+        process_bytes(&mut screen, b"\x1b[?1049l", &mut std::io::sink());
         // Cursor restored to primary position.
         assert_eq!(screen.active_grid().cursor.row, 1);
         assert_eq!(screen.active_grid().cursor.col, 4);
@@ -1527,23 +1595,114 @@ mod tests {
     #[test]
     fn alt_screen_47_no_clear() {
         let mut screen = test_screen(10, 3);
-        process_bytes(&mut screen, b"primary");
-        process_bytes(&mut screen, b"\x1b[?47h");
+        process_bytes(&mut screen, b"primary", &mut std::io::sink());
+        process_bytes(&mut screen, b"\x1b[?47h", &mut std::io::sink());
         // Mode 47: no clear on enter (alternate was lazily allocated empty).
-        process_bytes(&mut screen, b"alt");
+        process_bytes(&mut screen, b"alt", &mut std::io::sink());
         assert_row_text(screen.active_grid(), 0, "alt");
-        process_bytes(&mut screen, b"\x1b[?47l");
+        process_bytes(&mut screen, b"\x1b[?47l", &mut std::io::sink());
         assert_row_text(screen.active_grid(), 0, "primary");
     }
 
     #[test]
     fn alt_screen_1047_clears_on_enter() {
         let mut screen = test_screen(10, 3);
-        process_bytes(&mut screen, b"primary");
-        process_bytes(&mut screen, b"\x1b[?1047h");
+        process_bytes(&mut screen, b"primary", &mut std::io::sink());
+        process_bytes(&mut screen, b"\x1b[?1047h", &mut std::io::sink());
         // Mode 1047: cleared on enter.
         assert_row_text(screen.active_grid(), 0, "");
-        process_bytes(&mut screen, b"\x1b[?1047l");
+        process_bytes(&mut screen, b"\x1b[?1047l", &mut std::io::sink());
         assert_row_text(screen.active_grid(), 0, "primary");
+    }
+
+    // --- Device query and terminal state tests ---
+
+    #[test]
+    fn da1_response() {
+        let mut grid = test_grid(10, 3);
+        let mut response = Vec::new();
+        process_bytes(&mut grid, b"\x1b[c", &mut response);
+        assert_eq!(response, b"\x1b[?62;22c");
+    }
+
+    #[test]
+    fn da2_response() {
+        let mut grid = test_grid(10, 3);
+        let mut response = Vec::new();
+        process_bytes(&mut grid, b"\x1b[>c", &mut response);
+        assert_eq!(response, b"\x1b[>0;0;0c");
+    }
+
+    #[test]
+    fn dsr_cursor_position_report() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[5;10H");
+        let mut response = Vec::new();
+        process_bytes(&mut grid, b"\x1b[6n", &mut response);
+        // Cursor at (4,9) 0-based → (5,10) 1-based.
+        assert_eq!(response, b"\x1b[5;10R");
+    }
+
+    #[test]
+    fn set_cursor_style_bar() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[5 q");
+        assert_eq!(
+            grid.cursor.style,
+            crate::grid::cursor::CursorStyle::BlinkingBar
+        );
+    }
+
+    #[test]
+    fn set_cursor_style_steady_block() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[2 q");
+        assert_eq!(
+            grid.cursor.style,
+            crate::grid::cursor::CursorStyle::SteadyBlock
+        );
+    }
+
+    #[test]
+    fn set_cursor_style_reset() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b[5 q\x1b[0 q");
+        assert_eq!(
+            grid.cursor.style,
+            crate::grid::cursor::CursorStyle::BlinkingBlock
+        );
+    }
+
+    #[test]
+    fn dsr_at_home_position() {
+        let mut grid = test_grid(10, 3);
+        let mut response = Vec::new();
+        process_bytes(&mut grid, b"\x1b[6n", &mut response);
+        assert_eq!(response, b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn reset_state_clears_grid() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, b"hello\x1b[1;31m\x1b[?2004h");
+        parse(&mut grid, b"\x1bc");
+        assert_row_text(&grid, 0, "");
+        assert_eq!(grid.current_fg, Color::Default);
+        assert_eq!(grid.current_attr, CellFlags::empty());
+        assert_cursor_at(&grid, 0, 0);
+        // Modes reset (2004 cleared, DECAWM restored to default on).
+        assert!(!grid.modes.get(2004));
+        assert!(grid.modes.get(7));
+        assert_eq!(grid.cols, 10);
+        assert_eq!(grid.rows, 3);
+    }
+
+    #[test]
+    fn keypad_application_mode() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b=");
+        assert!(grid.modes.get(66));
+        parse(&mut grid, b"\x1b>");
+        assert!(!grid.modes.get(66));
     }
 }

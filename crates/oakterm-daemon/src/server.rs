@@ -174,7 +174,9 @@ async fn pty_read_loop(
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
                 let mut s = screens.lock().await;
-                handler::process_bytes(&mut *s, &buf[..n]);
+                let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
+                let mut pty_writer = FdWriter(borrowed_wr);
+                handler::process_bytes(&mut *s, &buf[..n], &mut pty_writer);
                 let seqno = s.active_grid().seqno;
                 drop(s);
                 let _ = dirty_tx.send(seqno);
@@ -461,6 +463,27 @@ async fn write_frame(
     codec.encode(frame, buf)?;
     stream.write_all(buf).await?;
     Ok(())
+}
+
+/// Thin Write adapter for a borrowed file descriptor.
+/// Retries on `WouldBlock` since the PTY fd is non-blocking for async reads.
+struct FdWriter<'a>(rustix::fd::BorrowedFd<'a>);
+
+impl std::io::Write for FdWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        loop {
+            match rustix::io::write(self.0, buf) {
+                Ok(n) => return Ok(n),
+                Err(e) if e == rustix::io::Errno::AGAIN => {
+                    std::thread::yield_now();
+                }
+                Err(e) => return Err(io::Error::from_raw_os_error(e.raw_os_error())),
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Resolve a terminal `Color` to RGB bytes using the palette.
