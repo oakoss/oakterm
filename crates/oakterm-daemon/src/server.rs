@@ -10,7 +10,7 @@ use oakterm_protocol::message::{
     ServerHello,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
-use oakterm_terminal::grid::Grid;
+use oakterm_terminal::grid::ScreenSet;
 use oakterm_terminal::grid::cell::{Color, Rgb};
 use oakterm_terminal::handler;
 use std::io;
@@ -37,7 +37,7 @@ enum PtyState {
 
 /// Daemon state shared across tasks.
 pub struct Daemon {
-    grid: Arc<Mutex<Grid>>,
+    screens: Arc<Mutex<ScreenSet>>,
     dirty_tx: watch::Sender<u64>,
     dirty_rx: watch::Receiver<u64>,
     socket_path: std::path::PathBuf,
@@ -56,7 +56,7 @@ impl Daemon {
         let path = socket_path()?;
         let (dirty_tx, dirty_rx) = watch::channel(0u64);
         Ok(Self {
-            grid: Arc::new(Mutex::new(Grid::new(cols, rows))),
+            screens: Arc::new(Mutex::new(ScreenSet::new(cols, rows))),
             dirty_tx,
             dirty_rx,
             socket_path: path,
@@ -99,7 +99,7 @@ impl Daemon {
             tokio::select! {
                 result = listener.accept() => {
                     let (stream, _) = result?;
-                    let grid = Arc::clone(&self.grid);
+                    let screens = Arc::clone(&self.screens);
                     let dirty_rx = self.dirty_rx.clone();
                     let dirty_tx = self.dirty_tx.clone();
                     let pty = Arc::clone(&pty_state);
@@ -109,7 +109,7 @@ impl Daemon {
                     count.fetch_add(1, Ordering::AcqRel);
 
                     tokio::spawn(async move {
-                        handle_client(stream, grid, dirty_rx, dirty_tx, pty).await;
+                        handle_client(stream, screens, dirty_rx, dirty_tx, pty).await;
                         let remaining = count.fetch_sub(1, Ordering::AcqRel) - 1;
                         if remaining == 0 && !persist {
                             let _ = tx.send(true);
@@ -141,7 +141,7 @@ impl Drop for Daemon {
 /// Read PTY output, feed to VT parser, update Grid.
 async fn pty_read_loop(
     pty: oakterm_pty::Pty,
-    grid: Arc<Mutex<Grid>>,
+    screens: Arc<Mutex<ScreenSet>>,
     dirty_tx: watch::Sender<u64>,
 ) {
     use tokio::io::unix::AsyncFd;
@@ -173,10 +173,10 @@ async fn pty_read_loop(
         }) {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
-                let mut g = grid.lock().await;
-                handler::process_bytes(&mut g, &buf[..n]);
-                let seqno = g.seqno;
-                drop(g);
+                let mut s = screens.lock().await;
+                handler::process_bytes(&mut *s, &buf[..n]);
+                let seqno = s.active_grid().seqno;
+                drop(s);
                 let _ = dirty_tx.send(seqno);
             }
             Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -189,7 +189,7 @@ async fn pty_read_loop(
 /// Handle a single client connection.
 async fn handle_client(
     mut stream: UnixStream,
-    grid: Arc<Mutex<Grid>>,
+    screens: Arc<Mutex<ScreenSet>>,
     mut dirty_rx: watch::Receiver<u64>,
     dirty_tx: watch::Sender<u64>,
     pty_state: Arc<Mutex<PtyState>>,
@@ -263,7 +263,7 @@ async fn handle_client(
                     break;
                 }
                 while let Ok(Some(frame)) = codec.decode(&mut read_buf) {
-                    match handle_request(&frame, &grid, &pty_state, &dirty_tx).await {
+                    match handle_request(&frame, &screens, &pty_state, &dirty_tx).await {
                         RequestResult::Response(response) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
                                 break 'outer;
@@ -289,7 +289,7 @@ enum RequestResult {
 #[allow(clippy::too_many_lines)]
 async fn handle_request(
     frame: &Frame,
-    grid: &Arc<Mutex<Grid>>,
+    screens: &Arc<Mutex<ScreenSet>>,
     pty_state: &Mutex<PtyState>,
     dirty_tx: &watch::Sender<u64>,
 ) -> RequestResult {
@@ -327,11 +327,14 @@ async fn handle_request(
                                 *state = PtyState::Running(fd);
                                 drop(state);
 
-                                grid.lock().await.resize(msg.cols, msg.rows);
+                                {
+                                    let mut s = screens.lock().await;
+                                    s.resize_all(msg.cols, msg.rows);
+                                }
 
-                                let grid_clone = Arc::clone(grid);
+                                let screens_clone = Arc::clone(screens);
                                 let dtx = dirty_tx.clone();
-                                tokio::spawn(pty_read_loop(pty, grid_clone, dtx));
+                                tokio::spawn(pty_read_loop(pty, screens_clone, dtx));
                             }
                             Err(e) => {
                                 // State stays NotSpawned; next Resize retries.
@@ -352,7 +355,8 @@ async fn handle_request(
                         )
                         .is_ok()
                         {
-                            grid.lock().await.resize(msg.cols, msg.rows);
+                            let mut s = screens.lock().await;
+                            s.resize_all(msg.cols, msg.rows);
                         }
                     }
                 }
@@ -364,7 +368,8 @@ async fn handle_request(
             let Ok(req) = GetRenderUpdate::decode(&frame.payload) else {
                 return RequestResult::NoResponse;
             };
-            let g = grid.lock().await;
+            let s = screens.lock().await;
+            let g = s.active_grid();
             let dirty_indices = g.dirty_rows(req.since_seqno);
 
             let dirty_rows: Vec<DirtyRow> = dirty_indices
