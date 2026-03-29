@@ -221,10 +221,15 @@ fn reset_mode(&mut self, mode: AnsiMode);
 #### Screen Buffer
 
 ```rust
-/// Switch to alternate screen buffer (DECSET 1049).
+/// Switch to alternate screen buffer.
+/// Three modes with different semantics:
+/// - Mode 47: switch only (no cursor save, no clear).
+/// - Mode 1047: switch and clear alternate on enter.
+/// - Mode 1049: save cursor on primary, switch, clear alternate on enter.
+///   On exit (DECRST 1049), restore cursor.
 fn enter_alternate_screen(&mut self);
 
-/// Return to primary screen buffer (DECRST 1049).
+/// Return to primary screen buffer.
 fn leave_alternate_screen(&mut self);
 
 /// DECALN: ESC # 8 (fill screen with 'E' for alignment test).
@@ -478,25 +483,26 @@ enum SemanticMark {
 
 ### Supported DEC Private Modes
 
-| Mode | Name                      | Phase 0 | Behavior                                                  |
-| ---- | ------------------------- | ------- | --------------------------------------------------------- |
-| 1    | DECCKM                    | Yes     | Application cursor keys (changes arrow key encoding)      |
-| 6    | DECOM                     | Yes     | Origin mode (cursor addressing relative to scroll region) |
-| 7    | DECAWM                    | Yes     | Auto-wrap mode (wrap at end of line)                      |
-| 12   | Cursor blink              | Yes     | Toggle cursor blink                                       |
-| 25   | DECTCEM                   | Yes     | Cursor visibility                                         |
-| 47   | Alternate screen (legacy) | Yes     | Switch to/from alternate screen buffer                    |
-| 66   | DECNKM                    | Yes     | Application keypad mode                                   |
-| 1000 | Mouse click tracking      | Yes     | Report mouse button press/release                         |
-| 1002 | Mouse cell motion         | Yes     | Report mouse motion while button held                     |
-| 1003 | Mouse all motion          | Yes     | Report all mouse motion                                   |
-| 1004 | Focus events              | Yes     | Report focus in/out                                       |
-| 1005 | UTF-8 mouse               | Yes     | UTF-8 encoded mouse coordinates (legacy)                  |
-| 1006 | SGR mouse                 | Yes     | SGR-encoded mouse coordinates (modern)                    |
-| 1007 | Alternate scroll          | Yes     | Mouse wheel scrolls alternate screen                      |
-| 1049 | Alt screen + save cursor  | Yes     | Composite: save cursor, switch to alt screen, clear       |
-| 2004 | Bracketed paste           | Yes     | Wrap pasted text in ESC [200~ / ESC [201~                 |
-| 2026 | Synchronized output       | Yes     | Buffer output until mode reset, then flush                |
+| Mode | Name                      | Phase 0 | Behavior                                                                |
+| ---- | ------------------------- | ------- | ----------------------------------------------------------------------- |
+| 1    | DECCKM                    | Yes     | Application cursor keys (changes arrow key encoding)                    |
+| 6    | DECOM                     | Yes     | Origin mode (cursor addressing relative to scroll region)               |
+| 7    | DECAWM                    | Yes     | Auto-wrap mode (wrap at end of line)                                    |
+| 12   | Cursor blink              | Yes     | Toggle cursor blink                                                     |
+| 25   | DECTCEM                   | Yes     | Cursor visibility                                                       |
+| 47   | Alternate screen (legacy) | Yes     | Switch to/from alternate screen buffer (no cursor save, no clear)       |
+| 66   | DECNKM                    | Yes     | Application keypad mode                                                 |
+| 1000 | Mouse click tracking      | Yes     | Report mouse button press/release                                       |
+| 1002 | Mouse cell motion         | Yes     | Report mouse motion while button held                                   |
+| 1003 | Mouse all motion          | Yes     | Report all mouse motion                                                 |
+| 1004 | Focus events              | Yes     | Report focus in/out                                                     |
+| 1005 | UTF-8 mouse               | Yes     | UTF-8 encoded mouse coordinates (legacy)                                |
+| 1006 | SGR mouse                 | Yes     | SGR-encoded mouse coordinates (modern)                                  |
+| 1007 | Alternate scroll          | Yes     | Mouse wheel scrolls alternate screen                                    |
+| 1047 | Alternate screen          | Yes     | Switch to/from alternate screen buffer (no cursor save, clear on enter) |
+| 1049 | Alt screen + save cursor  | Yes     | Composite: save cursor, switch to alt screen, clear on enter            |
+| 2004 | Bracketed paste           | Yes     | Wrap pasted text in ESC [200~ / ESC [201~                               |
+| 2026 | Synchronized output       | Yes     | Buffer output until mode reset, then flush                              |
 
 ### Supported ANSI Modes (SM/RM)
 
@@ -517,7 +523,15 @@ Characters with East Asian Width property W (wide) or F (fullwidth) occupy two c
 
 ### Alternate Screen Buffer
 
-DECSET 1049 saves the cursor, switches to a fresh screen buffer, and clears it. DECRST 1049 restores the cursor and switches back to the primary buffer. The primary buffer's content is preserved. Per ADR-0006, lines that scroll off the top of the alternate screen are captured to the primary scrollback if `save_alternate_scrollback` is enabled.
+Three modes control the alternate screen, differing in cursor save/restore and clear behavior:
+
+- **Mode 47 (legacy):** DECSET 47 switches to the alternate buffer. DECRST 47 switches back. No cursor save/restore, no clear on enter.
+- **Mode 1047:** DECSET 1047 switches to the alternate buffer and clears it. DECRST 1047 switches back and clears the alternate.
+- **Mode 1049:** DECSET 1049 saves the cursor (DECSC), switches to the alternate buffer, and clears it. DECRST 1049 switches back and restores the cursor (DECRC).
+
+All modes preserve the primary buffer's content. Per ADR-0006, lines that scroll off the top of the alternate screen are captured to the primary scrollback if `save_alternate_scrollback` is enabled.
+
+If the terminal is already on the alternate screen and receives a DECSET for the same or different alternate mode, the behavior depends on the mode: 1049 unconditionally saves the cursor and clears; 47 and 1047 are no-ops if already on the alternate screen.
 
 ### Synchronized Output (DEC 2026)
 
