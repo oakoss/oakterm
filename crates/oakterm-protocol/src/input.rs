@@ -1,8 +1,8 @@
-//! GUI input protocol messages: `KeyInput`, `Resize`, `Detach`.
+//! GUI input protocol messages: `KeyInput`, `MouseInput`, `Resize`, `Detach`.
 //! Wire formats per Spec-0001 section "GUI Protocol — Input (0x64-0x6F)".
 
 use crate::frame::Frame;
-use crate::message::{MSG_DETACH, MSG_KEY_INPUT, MSG_RESIZE};
+use crate::message::{MSG_DETACH, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_RESIZE};
 use std::io;
 
 /// `KeyInput` (0x64): client sends keyboard input to a pane.
@@ -116,6 +116,64 @@ impl Resize {
     /// Returns an error if frame construction fails.
     pub fn to_frame(&self) -> io::Result<Frame> {
         Frame::new(MSG_RESIZE, 0, self.encode())
+    }
+}
+
+/// `MouseInput` (0x65): client sends mouse event to a pane.
+/// Payload: `pane_id: u32`, `event_type: u8`, `x: u16`, `y: u16`,
+/// `modifiers: u8`, `button: u8`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseInput {
+    pub pane_id: u32,
+    /// 0=press, 1=release, 2=motion, 3=scroll up, 4=scroll down.
+    pub event_type: u8,
+    pub x: u16,
+    pub y: u16,
+    pub modifiers: u8,
+    pub button: u8,
+}
+
+impl MouseInput {
+    /// Encoded size is always 11 bytes.
+    pub const SIZE: usize = 11;
+
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(Self::SIZE);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.push(self.event_type);
+        buf.extend_from_slice(&self.x.to_le_bytes());
+        buf.extend_from_slice(&self.y.to_le_bytes());
+        buf.push(self.modifiers);
+        buf.push(self.button);
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < Self::SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "MouseInput too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            event_type: data[4],
+            x: u16::from_le_bytes([data[5], data[6]]),
+            y: u16::from_le_bytes([data[7], data[8]]),
+            modifiers: data[9],
+            button: data[10],
+        })
+    }
+
+    /// Wrap as a push frame (serial 0).
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_MOUSE_INPUT, 0, self.encode())
     }
 }
 
