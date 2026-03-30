@@ -25,29 +25,23 @@ fn cell_has_style_detects_flags() {
 
 #[test]
 fn cell_has_style_detects_color() {
-    let cell = Cell {
-        fg: Color::Named(NamedColor::Red),
-        ..Cell::default()
-    };
+    let mut cell = Cell::default();
+    cell.fg = Color::Named(NamedColor::Red);
     assert!(cell.has_style());
 }
 
 #[test]
 fn cell_has_style_detects_underline() {
-    let cell = Cell {
-        underline_style: UnderlineStyle::Curly,
-        ..Cell::default()
-    };
+    let mut cell = Cell::default();
+    cell.underline_style = UnderlineStyle::Curly;
     assert!(cell.has_style());
 }
 
 #[test]
 fn cell_reset_clears_all() {
-    let mut cell = Cell {
-        codepoint: 'A',
-        fg: Color::Rgb(255, 0, 0),
-        ..Cell::default()
-    };
+    let mut cell = Cell::default();
+    cell.codepoint = 'A';
+    cell.fg = Color::Rgb(255, 0, 0);
     cell.flags.insert(CellFlags::BOLD);
     cell.reset();
     assert_eq!(cell, Cell::default());
@@ -269,13 +263,13 @@ fn cursor_default() {
 
 #[test]
 fn grapheme_data_operations() {
-    let mut g = cell::GraphemeData::default();
-    assert!(g.is_empty());
-    g.push('\u{0301}');
-    assert!(!g.is_empty());
-    assert_eq!(g.chars(), &['\u{0301}']);
-    g.clear();
-    assert!(g.is_empty());
+    let mut cell = cell::Cell::default();
+    assert!(!cell.has_graphemes());
+    cell.push_grapheme('\u{0301}');
+    assert!(cell.has_graphemes());
+    assert_eq!(cell.graphemes(), &['\u{0301}']);
+    cell.clear_graphemes();
+    assert!(!cell.has_graphemes());
 }
 
 // --- Grid resize tests ---
