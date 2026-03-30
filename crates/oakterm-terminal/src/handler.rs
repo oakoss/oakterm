@@ -108,10 +108,10 @@ fn write_char(g: &mut Grid, c: char) {
             cell.bg = g.current_bg;
             cell.flags = g.current_attr;
             cell.underline_style = g.current_underline_style;
-            cell.underline_color = g.current_underline_color;
+            cell.set_underline_color(g.current_underline_color);
             cell.wide = WideState::Narrow;
-            cell.extra_codepoints.clear();
-            cell.hyperlink = None;
+            cell.clear_graphemes();
+            cell.set_hyperlink(None);
 
             if cell.has_style() {
                 line.flags.mark_has_styles();
@@ -1187,7 +1187,7 @@ mod tests {
         assert_eq!(cell.fg, Color::Default);
         assert_eq!(cell.bg, Color::Default);
         assert_eq!(cell.underline_style, UnderlineStyle::None);
-        assert_eq!(cell.underline_color, None);
+        assert_eq!(cell.underline_color(), None);
     }
 
     #[test]
@@ -1248,7 +1248,7 @@ mod tests {
         let mut grid = test_grid(10, 1);
         parse(&mut grid, b"\x1b[58;2;255;0;128mX");
         assert_eq!(
-            grid.lines[0].cells[0].underline_color,
+            grid.lines[0].cells[0].underline_color(),
             Some(Color::Rgb(255, 0, 128))
         );
     }
@@ -1257,7 +1257,7 @@ mod tests {
     fn sgr_underline_color_reset() {
         let mut grid = test_grid(10, 1);
         parse(&mut grid, b"\x1b[58;2;255;0;128m\x1b[59mX");
-        assert_eq!(grid.lines[0].cells[0].underline_color, None);
+        assert_eq!(grid.lines[0].cells[0].underline_color(), None);
     }
 
     // SGR 53 (overline): vte's Attr enum lacks an Overline variant.

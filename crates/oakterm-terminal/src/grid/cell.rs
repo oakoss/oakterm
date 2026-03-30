@@ -111,63 +111,45 @@ pub enum WideState {
     WideCont,
 }
 
-/// Grapheme cluster overflow data. Holds combining marks and ZWJ sequences
-/// beyond the base codepoint. Empty for most cells.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GraphemeData {
-    extra: Vec<char>,
-}
-
-impl GraphemeData {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.extra.is_empty()
-    }
-
-    pub fn push(&mut self, c: char) {
-        self.extra.push(c);
-    }
-
-    pub fn clear(&mut self) {
-        self.extra.clear();
-    }
-
-    #[must_use]
-    pub fn chars(&self) -> &[char] {
-        &self.extra
-    }
-}
-
 /// Opaque handle to a hyperlink URI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HyperlinkId(pub(crate) u32);
 
+/// Heap-allocated storage for rare cell attributes. Only allocated when a cell
+/// has grapheme clusters, underline color, or hyperlinks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellExtra {
+    pub(super) graphemes: Vec<char>,
+    pub(super) underline_color: Option<Color>,
+    pub(super) hyperlink: Option<HyperlinkId>,
+}
+
 /// The atomic unit of terminal content. One cell = one column.
+///
+/// Common fields (`codepoint`, `fg`, `bg`, `flags`, `underline_style`, `wide`) are inline.
+/// Rare fields (graphemes, `underline_color`, hyperlink) live in a heap-allocated
+/// [`CellExtra`] behind `Option<Box<CellExtra>>` — null (8 bytes) when unused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
     pub codepoint: char,
-    pub extra_codepoints: GraphemeData,
     pub fg: Color,
     pub bg: Color,
-    pub underline_color: Option<Color>,
-    pub underline_style: UnderlineStyle,
     pub flags: CellFlags,
+    pub underline_style: UnderlineStyle,
     pub wide: WideState,
-    pub hyperlink: Option<HyperlinkId>,
+    extra: Option<Box<CellExtra>>,
 }
 
 impl Default for Cell {
     fn default() -> Self {
         Self {
             codepoint: '\0',
-            extra_codepoints: GraphemeData::default(),
             fg: Color::Default,
             bg: Color::Default,
-            underline_color: None,
-            underline_style: UnderlineStyle::None,
             flags: CellFlags::empty(),
+            underline_style: UnderlineStyle::None,
             wide: WideState::Narrow,
-            hyperlink: None,
+            extra: None,
         }
     }
 }
@@ -179,7 +161,7 @@ impl Cell {
         !self.flags.is_empty()
             || self.fg != Color::Default
             || self.bg != Color::Default
-            || self.underline_color.is_some()
+            || self.underline_color().is_some()
             || self.underline_style != UnderlineStyle::None
     }
 
@@ -194,5 +176,140 @@ impl Cell {
             bg,
             ..Self::default()
         };
+    }
+
+    // --- Extra field accessors ---
+
+    #[must_use]
+    pub fn underline_color(&self) -> Option<Color> {
+        self.extra.as_ref().and_then(|e| e.underline_color)
+    }
+
+    pub fn set_underline_color(&mut self, color: Option<Color>) {
+        if color.is_some() {
+            self.ensure_extra().underline_color = color;
+        } else if let Some(e) = &mut self.extra {
+            e.underline_color = None;
+            self.drop_extra_if_empty();
+        }
+    }
+
+    #[must_use]
+    pub fn hyperlink(&self) -> Option<HyperlinkId> {
+        self.extra.as_ref().and_then(|e| e.hyperlink)
+    }
+
+    pub fn set_hyperlink(&mut self, id: Option<HyperlinkId>) {
+        if id.is_some() {
+            self.ensure_extra().hyperlink = id;
+        } else if let Some(e) = &mut self.extra {
+            e.hyperlink = None;
+            self.drop_extra_if_empty();
+        }
+    }
+
+    #[must_use]
+    pub fn graphemes(&self) -> &[char] {
+        match &self.extra {
+            Some(e) => &e.graphemes,
+            None => &[],
+        }
+    }
+
+    pub fn push_grapheme(&mut self, c: char) {
+        self.ensure_extra().graphemes.push(c);
+    }
+
+    pub fn clear_graphemes(&mut self) {
+        if let Some(e) = &mut self.extra {
+            if !e.graphemes.is_empty() {
+                e.graphemes.clear();
+                self.drop_extra_if_empty();
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn has_graphemes(&self) -> bool {
+        self.extra.as_ref().is_some_and(|e| !e.graphemes.is_empty())
+    }
+
+    fn ensure_extra(&mut self) -> &mut CellExtra {
+        self.extra.get_or_insert_with(|| {
+            Box::new(CellExtra {
+                graphemes: Vec::new(),
+                underline_color: None,
+                hyperlink: None,
+            })
+        })
+    }
+
+    fn drop_extra_if_empty(&mut self) {
+        if let Some(e) = &self.extra {
+            if e.graphemes.is_empty() && e.underline_color.is_none() && e.hyperlink.is_none() {
+                self.extra = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_size_within_target() {
+        let size = std::mem::size_of::<Cell>();
+        assert!(size <= 24, "Cell is {size} bytes, target is <= 24");
+    }
+
+    #[test]
+    fn cell_default_has_no_extra() {
+        let cell = Cell::default();
+        assert!(cell.extra.is_none());
+        assert!(cell.graphemes().is_empty());
+        assert!(cell.underline_color().is_none());
+        assert!(cell.hyperlink().is_none());
+    }
+
+    #[test]
+    fn cell_grapheme_allocates_extra() {
+        let mut cell = Cell::default();
+        cell.push_grapheme('\u{0301}'); // combining acute
+        assert!(cell.extra.is_some());
+        assert_eq!(cell.graphemes(), &['\u{0301}']);
+    }
+
+    #[test]
+    fn cell_underline_color_allocates_extra() {
+        let mut cell = Cell::default();
+        cell.set_underline_color(Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(cell.underline_color(), Some(Color::Rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn cell_clear_underline_color_drops_extra() {
+        let mut cell = Cell::default();
+        cell.set_underline_color(Some(Color::Rgb(255, 0, 0)));
+        cell.set_underline_color(None);
+        assert!(cell.extra.is_none());
+    }
+
+    #[test]
+    fn cell_reset_clears_extra() {
+        let mut cell = Cell::default();
+        cell.push_grapheme('x');
+        cell.set_underline_color(Some(Color::Indexed(1)));
+        cell.reset();
+        assert!(cell.extra.is_none());
+    }
+
+    #[test]
+    fn cell_erase_with_bg_clears_extra() {
+        let mut cell = Cell::default();
+        cell.push_grapheme('x');
+        cell.erase_with_bg(Color::Rgb(0, 0, 0));
+        assert!(cell.extra.is_none());
+        assert_eq!(cell.bg, Color::Rgb(0, 0, 0));
     }
 }

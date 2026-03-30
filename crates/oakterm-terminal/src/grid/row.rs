@@ -112,10 +112,8 @@ impl Row {
     /// Create a new row with all cells using the given background (BCE).
     #[must_use]
     pub fn new_with_bg(cols: usize, bg: super::cell::Color) -> Self {
-        let cell = Cell {
-            bg,
-            ..Cell::default()
-        };
+        let mut cell = Cell::default();
+        cell.bg = bg;
         Self {
             cells: vec![cell; cols],
             flags: RowFlags::default(),
