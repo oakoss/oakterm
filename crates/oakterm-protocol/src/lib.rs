@@ -145,6 +145,36 @@ mod tests {
     }
 
     #[test]
+    fn pane_exited_roundtrip() {
+        let msg = PaneExited {
+            pane_id: 1,
+            exit_code: 137,
+        };
+        let encoded = msg.encode();
+        assert_eq!(encoded.len(), 8);
+        let decoded = PaneExited::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn pane_exited_as_frame() {
+        let msg = PaneExited {
+            pane_id: 0,
+            exit_code: 0,
+        };
+        let frame = msg.to_frame().unwrap();
+        assert_eq!(frame.msg_type, MSG_PANE_EXITED);
+        assert_eq!(frame.serial, 0); // Push.
+        let decoded = PaneExited::decode(&frame.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn pane_exited_too_short() {
+        assert!(PaneExited::decode(&[0; 4]).is_err());
+    }
+
+    #[test]
     fn ping_pong_as_frames() {
         let request = Frame::new(MSG_PING, 5, vec![]).unwrap();
         let response = Frame::new(MSG_PONG, 5, vec![]).unwrap();

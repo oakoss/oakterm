@@ -106,6 +106,24 @@ pub enum ErrorCode {
     PermissionDenied = 6,
 }
 
+impl TryFrom<u32> for ErrorCode {
+    type Error = io::Error;
+    fn try_from(v: u32) -> io::Result<Self> {
+        match v {
+            1 => Ok(Self::UnknownPane),
+            2 => Ok(Self::InvalidMessage),
+            3 => Ok(Self::MalformedPayload),
+            4 => Ok(Self::InternalError),
+            5 => Ok(Self::PaneExited),
+            6 => Ok(Self::PermissionDenied),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown error code: {v}"),
+            )),
+        }
+    }
+}
+
 /// Shutdown reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -344,6 +362,46 @@ impl TitleChanged {
     /// Returns an error if encoding fails.
     pub fn to_frame(&self) -> io::Result<Frame> {
         Frame::new(MSG_TITLE_CHANGED, 0, self.encode()?)
+    }
+}
+
+/// `PaneExited` (0x83): daemon notifies GUI that a pane's process exited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneExited {
+    pub pane_id: u32,
+    pub exit_code: i32,
+}
+
+impl PaneExited {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.exit_code.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PaneExited too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            exit_code: i32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        })
+    }
+
+    /// Wrap as a push frame (serial 0).
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_PANE_EXITED, 0, self.encode())
     }
 }
 

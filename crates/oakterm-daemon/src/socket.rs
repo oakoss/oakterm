@@ -37,9 +37,9 @@ pub fn acquire_startup_lock() -> io::Result<StartupLock> {
     match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => return Ok(StartupLock { _file: file }),
         Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
-            eprintln!(
-                "waiting for another oakterm to finish starting (lock: {})",
-                path.display()
+            tracing::info!(
+                lock_path = %path.display(),
+                "waiting for another oakterm to finish starting",
             );
         }
         Err(e) => return Err(io::Error::from_raw_os_error(e.raw_os_error())),

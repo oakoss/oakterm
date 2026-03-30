@@ -15,6 +15,11 @@ rustix = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 vergen = { workspace = true }

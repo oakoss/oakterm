@@ -39,6 +39,10 @@ tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 bytes = "1.11.1"
 
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # Wire protocol
 prost = "0.14.3"
 
