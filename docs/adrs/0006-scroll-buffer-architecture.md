@@ -136,10 +136,20 @@ Correct `TIOCGWINSZ` before the first byte is written to the PTY. Send `SIGWINCH
 
 - Update [12-performance.md](../ideas/12-performance.md) to clarify zero-copy applies to the hot ring buffer only.
 - Update [15-memory-management.md](../ideas/15-memory-management.md) to document the two-tier architecture, encryption, and configurable limits.
-- The ring buffer implementation must return memory to the OS on pruning — no arena allocator pooling.
+- ~~The ring buffer implementation must return memory to the OS on pruning — no arena allocator pooling.~~ See addendum below.
 - Phase 0 includes hot ring buffer and alternate screen capture. Disk archive can follow in Phase 0 or early Phase 1.
 - Encryption key management for the disk archive needs a spec (per-session ephemeral key is the simplest approach).
 - Shadow buffer transcript and agent push API are deferred to later phases but the architecture must not preclude them.
+
+## Addendum: Memory Return (2026-03-30)
+
+The original decision required "memory returned to OS on pruning." During Spec-0004 implementation, we discovered this is infeasible with the existing Row type:
+
+- Row contains `Vec<Cell>` (~4.8 KB per row at 200 columns). Each Vec is a separate heap allocation far below the system allocator's large-allocation threshold. Dropping rows does not return pages to the OS on any major platform — the allocator caches freed memory for reuse.
+- The only way to guarantee OS-level memory return is flat-packed cells in mmap pages (Ghostty's model), which requires unsafe code, a custom cell type incompatible with the visible grid's Row, and per-page arena allocators. This is the model that caused Ghostty's 71 GB memory leak.
+- Alacritty and WezTerm both use standard heap allocations for scrollback and have the same RSS behavior: memory grows to peak and stabilizes.
+
+**Revised position:** The ring buffer uses standard Rust allocations (`VecDeque<Row>`). RSS grows to the configured `scrollback_limit` and stabilizes there. The byte-based limit prevents unbounded growth. No arena pooling. Pruned memory is reused by the allocator for new rows. This prevents the Ghostty leak class (arena pooling) without requiring unsafe mmap-backed storage.
 
 ## References
 

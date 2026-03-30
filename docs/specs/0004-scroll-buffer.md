@@ -17,38 +17,31 @@ Defines the two-tier scrollback system: a hot ring buffer in memory for recent l
 
 ### Hot Ring Buffer
 
-A fixed-capacity circular buffer holding recent scrollback rows in memory.
+A bounded circular buffer holding recent scrollback rows in memory.
 
 ```rust
 struct HotBuffer {
-    /// Backing memory allocated via mmap. Freed with munmap on pruning.
-    /// Do NOT use Vec or the system allocator for this buffer.
-    backing: MmapRegion,
-
-    /// Ring buffer of rows. `[Row]` denotes a contiguous sequence over the
-    /// mmap'd region; the actual indirection is implementation-defined.
-    rows: [Row],
-
-    /// Index of the oldest row in the ring (rotation offset).
-    /// Scrolling adjusts this offset without moving data.
-    zero: usize,
-
-    /// Number of active rows (may be less than capacity during startup).
-    len: usize,
+    /// Ring buffer of rows. VecDeque provides O(1) push/pop at both ends
+    /// and O(1) indexed access via `(head + index) % capacity`.
+    rows: VecDeque<Row>,
 
     /// Maximum capacity in bytes. Corresponds to `scrollback_limit` config.
     max_bytes: usize,
 
-    /// Current memory usage in bytes.
+    /// Current estimated memory usage in bytes.
     used_bytes: usize,
 }
 ```
 
-**Zero-copy viewport shift:** Scrolling the viewport changes an offset into the ring buffer. No data is copied or moved. Index access computes `(zero + logical_index) % capacity`. This matches Alacritty's proven `Storage<T>` model.
+**Zero-copy viewport shift:** Scrolling the viewport changes a logical offset into the ring buffer. No data is copied or moved. `VecDeque` provides O(1) indexed access, functionally equivalent to Alacritty's `Storage<T>` ring buffer.
 
-**Memory backing:** The ring buffer's storage is allocated with `mmap` (or platform equivalent) and freed with `munmap`. This guarantees memory is returned to the OS on pruning, avoiding the arena-pooling leak class that caused Ghostty's 71 GB memory leak. Do not use `Vec`, `Box`, or the global allocator for the ring buffer's backing storage.
+**Memory model:** The ring buffer uses standard Rust allocations (`VecDeque<Row>` where each Row owns a `Vec<Cell>`). RSS grows to the configured `max_bytes` limit and stabilizes there. Pruned row memory is reused by subsequent row allocations rather than being returned to the OS. This is the same model used by Alacritty and WezTerm. The byte-based limit prevents unbounded growth.
 
-**Pruning:** When `used_bytes` exceeds `max_bytes`, the oldest rows are removed from the ring buffer. If the disk archive is enabled, pruned rows are serialized and appended to the archive before removal. If the archive is disabled, pruned rows are discarded. After pruning, the freed mmap region is returned to the OS via `munmap` (or `madvise(MADV_FREE)` for partial page release).
+**Byte tracking:** `used_bytes` is estimated as the sum of each row's inline size (`size_of::<Row>()`) plus its cell heap allocation (`cells.capacity() * size_of::<Cell>()`). This slightly overestimates due to allocator overhead but is sufficient for pruning decisions.
+
+**Why not mmap?** Row contains `Vec<Cell>`, which is a heap pointer into a separate allocation (~4.8 KB per row at 200 columns, at 24 bytes/cell after TREK-51 compaction). Each Vec allocation is far smaller than the thresholds at which system allocators use mmap, so dropping individual rows does not return pages to the OS regardless of how the ring buffer itself is structured. Ghostty solves this with flat-packed cells in mmap pages (no Vec), but this requires unsafe code and a custom cell type — and was the root cause of their 71 GB memory leak. The standard allocation model is simpler and proven safe. See ADR-0006 addendum for the full rationale.
+
+**Pruning:** When `used_bytes` exceeds `max_bytes`, the oldest rows are popped from the front of the deque. If the disk archive is enabled, pruned rows are serialized and appended to the archive before removal. If the archive is disabled, pruned rows are discarded. Pruning removes rows until `used_bytes` is below `max_bytes * 0.9` (10% headroom to avoid pruning on every scroll).
 
 ### Cold Disk Archive
 
@@ -203,8 +196,7 @@ When `used_bytes > max_bytes`:
 
 1. Calculate how many rows to prune to bring usage below `max_bytes * 0.9` (prune 10% headroom to avoid pruning on every scroll).
 2. If archive is enabled, serialize the pruned rows into archive frames.
-3. Release the mmap region covering the pruned rows via `munmap` or `madvise(MADV_FREE)`.
-4. Advance the ring buffer's `zero` offset past the pruned rows.
+3. Pop pruned rows from the front of the VecDeque. The allocator reuses freed memory for subsequent row allocations.
 
 ### Archive Full
 
@@ -252,7 +244,7 @@ The parent directory is created with `0700` permissions. `$XDG_RUNTIME_DIR` is t
 - **Archive maximum:** No hard cap. Disk space protection prevents filesystem exhaustion.
 - **Frame read latency:** <100 μs warm (decompression + decryption), <600 μs cold (with page fault).
 - **Pruning latency:** Pruning + archiving a batch of rows should complete within one frame time (16.6 ms at 60fps). With zstd level 3 at 200 MB/s compress and ring at 3.3 GB/s encrypt, a 10% prune of 50 MB = 5 MB takes ~25 ms compress + ~1.5 ms encrypt. This may exceed one frame. Pruning should be performed on a background thread to avoid blocking the VT handler.
-- **Memory return:** All freed ring buffer memory must be returned to the OS within one second of pruning. Verified by OS-level memory tracking (macOS `footprint`, Linux `/proc/self/statm`).
+- **Memory ceiling:** RSS for the hot buffer stabilizes at `max_bytes` and does not grow beyond it. Pruned row memory is reused by subsequent allocations rather than returned to the OS. This is the same behavior as Alacritty and WezTerm. See ADR-0006 addendum.
 
 ## References
 
