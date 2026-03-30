@@ -47,13 +47,14 @@ impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
     fn deactivate_accessibility(&mut self) {}
 }
 
-/// Events sent from the daemon reader thread to the winit event loop.
+/// Events sent from background threads to the winit event loop.
 #[derive(Debug)]
 enum UserEvent {
     RenderUpdate(Box<RenderUpdate>),
     TitleChanged(String),
     Bell,
     Disconnected,
+    ConfigReloaded(oakterm_config::ConfigValues, Option<String>),
 }
 
 /// GPU state created after the window and surface are available.
@@ -105,6 +106,14 @@ struct App {
     /// Stored for future in-window error banner rendering.
     #[allow(dead_code)]
     config_error: Option<String>,
+    /// File watcher for config hot-reload. Must stay alive.
+    #[allow(dead_code)]
+    config_watcher: Option<
+        notify_debouncer_full::Debouncer<
+            notify::RecommendedWatcher,
+            notify_debouncer_full::RecommendedCache,
+        >,
+    >,
     last_sent_dims: (u16, u16),
     /// Set after initial Resize is sent. Gates on first `RedrawRequested`.
     initial_resize_sent: bool,
@@ -125,6 +134,7 @@ impl App {
             accesskit: None,
             config: oakterm_config::ConfigValues::default(),
             config_error: None,
+            config_watcher: None,
             last_sent_dims: (0, 0),
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
@@ -198,6 +208,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.grid = Some(grid);
         self.config = config;
         self.config_error = config_error;
+        self.config_watcher = start_config_watcher(&self.proxy);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -533,6 +544,87 @@ impl ApplicationHandler<UserEvent> for App {
                 eprintln!("daemon disconnected");
                 event_loop.exit();
             }
+            UserEvent::ConfigReloaded(new_config, new_error) => {
+                self.handle_config_reload(new_config, new_error);
+            }
+        }
+    }
+}
+
+impl App {
+    fn handle_config_reload(
+        &mut self,
+        new_config: oakterm_config::ConfigValues,
+        new_error: Option<String>,
+    ) {
+        if let Some(ref err) = new_error {
+            eprintln!("config reload error: {err}");
+            self.config_error = new_error;
+            return;
+        }
+
+        let font_changed = (new_config.font_size - self.config.font_size).abs() > f64::EPSILON
+            || new_config.font_family != self.config.font_family;
+
+        let had_error = self.config_error.is_some();
+        self.config = new_config;
+        self.config_error = None;
+
+        if had_error {
+            eprintln!("config reloaded successfully");
+        }
+
+        if font_changed {
+            if let Some(window) = &self.window {
+                #[allow(clippy::cast_possible_truncation)]
+                #[allow(clippy::cast_possible_truncation)]
+                let font_size_pt = self.config.font_size as f32;
+                #[allow(clippy::cast_possible_truncation)]
+                let font_size = font_size_pt * window.scale_factor() as f32;
+
+                let font_state = match try_init_font(&self.config, font_size) {
+                    Ok(fs) => fs,
+                    Err(e) => {
+                        eprintln!("config reload: font init failed: {e}");
+                        self.config_error = Some(e);
+                        return;
+                    }
+                };
+
+                #[allow(clippy::cast_possible_truncation)]
+                if let (Some(gpu), Some(grid)) = (&self.gpu, &mut self.grid) {
+                    let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
+                    let (cols, rows) = window_to_grid_dims(phys, &font_state.metrics);
+                    let cols = cols.max(1);
+                    let rows = rows.max(1);
+                    grid.resize(cols, rows);
+                    self.last_sent_dims = (cols, rows);
+
+                    if let Some(daemon) = &self.daemon {
+                        let msg = Resize {
+                            pane_id: 0,
+                            cols,
+                            rows,
+                            pixel_width: phys.width.min(u32::from(u16::MAX)) as u16,
+                            pixel_height: phys.height.min(u32::from(u16::MAX)) as u16,
+                        };
+                        match msg.to_frame() {
+                            Ok(frame) => {
+                                if let Err(e) = daemon.send_frame(&frame) {
+                                    eprintln!("daemon write failed during config reload: {e}");
+                                }
+                            }
+                            Err(e) => eprintln!("failed to encode resize after config reload: {e}"),
+                        }
+                    }
+                }
+
+                self.font = Some(font_state);
+            }
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 }
@@ -620,6 +712,101 @@ fn init_font_with_config(config: &oakterm_config::ConfigValues, font_size: f32) 
         atlas: AtlasPlane::new(),
         font_size,
         metrics,
+    }
+}
+
+/// Non-panicking font init for config reload. Returns Err instead of crashing.
+fn try_init_font(
+    config: &oakterm_config::ConfigValues,
+    font_size: f32,
+) -> Result<FontState, String> {
+    let db = font::system_font_db();
+    let (metrics, data) = if config.font_family.is_empty() {
+        font::load_default_metrics(&db, font_size)
+            .map_err(|e| format!("no system monospace font: {e}"))?
+    } else {
+        match font::load_font_by_name(&db, &config.font_family, font_size) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!(
+                    "font '{}' not found ({e}), using system default",
+                    config.font_family
+                );
+                font::load_default_metrics(&db, font_size)
+                    .map_err(|e| format!("no system monospace font: {e}"))?
+            }
+        }
+    };
+
+    let mut shaper = SwashShaper::new();
+    let font_key = shaper
+        .load_font(data, font_size)
+        .ok_or_else(|| "failed to load font into shaper".to_string())?;
+
+    Ok(FontState {
+        shaper,
+        font_key,
+        atlas: AtlasPlane::new(),
+        font_size,
+        metrics,
+    })
+}
+
+fn start_config_watcher(
+    proxy: &EventLoopProxy<UserEvent>,
+) -> Option<
+    notify_debouncer_full::Debouncer<
+        notify::RecommendedWatcher,
+        notify_debouncer_full::RecommendedCache,
+    >,
+> {
+    let config_dir = oakterm_config::config_dir();
+    if !config_dir.exists() {
+        return None;
+    }
+
+    let config_path = config_dir.join("config.lua");
+    let proxy = proxy.clone();
+
+    let debouncer = notify_debouncer_full::new_debouncer(
+        std::time::Duration::from_millis(300),
+        None,
+        move |result: notify_debouncer_full::DebounceEventResult| {
+            let events = match result {
+                Ok(events) => events,
+                Err(errors) => {
+                    for e in &errors {
+                        eprintln!("config watcher error: {e}");
+                    }
+                    return;
+                }
+            };
+            let lua_changed = events.iter().any(|e| {
+                e.paths
+                    .iter()
+                    .any(|p| p.extension().is_some_and(|ext| ext == "lua"))
+            });
+            if !lua_changed {
+                return;
+            }
+            let (config, error) = oakterm_config::load_config_from(&config_path);
+            // Event loop may be closed during shutdown; best-effort.
+            let _ = proxy.send_event(UserEvent::ConfigReloaded(config, error));
+        },
+    );
+
+    match debouncer {
+        Ok(mut watcher) => {
+            if let Err(e) = watcher.watch(&config_dir, notify::RecursiveMode::Recursive) {
+                eprintln!("warning: could not watch config directory: {e}");
+                return None;
+            }
+            Some(watcher)
+        }
+        Err(e) => {
+            eprintln!("warning: could not start config watcher: {e}");
+            None
+        }
     }
 }
 
