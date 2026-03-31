@@ -11,12 +11,14 @@ repository.workspace = true
 oakterm-common = { path = "../oakterm-common" }
 postcard.workspace = true
 ring.workspace = true
+rustix.workspace = true
 serde.workspace = true
 vte = { workspace = true }
 zstd.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = "3"
 
 [[bench]]
 name = "vt_parser"

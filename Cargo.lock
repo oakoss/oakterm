@@ -1967,7 +1967,9 @@ dependencies = [
  "oakterm-common",
  "postcard",
  "ring",
+ "rustix 1.1.4",
  "serde",
+ "tempfile",
  "vte",
  "zstd",
 ]
