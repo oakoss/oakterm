@@ -119,6 +119,10 @@ struct App {
     initial_resize_sent: bool,
     /// Last known mouse position in grid coordinates.
     last_mouse_cell: (u16, u16),
+    /// Lines scrolled up from bottom. 0 = live view (at bottom).
+    viewport_offset: u32,
+    /// Current keyboard modifier state for intercepting Shift+key.
+    modifiers: winit::event::Modifiers,
 }
 
 impl App {
@@ -138,6 +142,8 @@ impl App {
             last_sent_dims: (0, 0),
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
+            viewport_offset: 0,
+            modifiers: winit::event::Modifiers::default(),
         }
     }
 }
@@ -273,6 +279,9 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                 }
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods;
             }
             WindowEvent::KeyboardInput {
                 event:

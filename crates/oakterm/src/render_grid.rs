@@ -1,6 +1,6 @@
 //! Convert client-side grid state to GPU render data.
 
-use oakterm_protocol::render::{RenderUpdate, WireCell};
+use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::GlyphVertex;
 use oakterm_renderer::shaper::{FontKey, FontMetrics, TextRun, TextShaper};
@@ -32,6 +32,14 @@ impl Default for RenderCell {
     }
 }
 
+/// Saved live-view state when the viewport is scrolled up.
+struct LiveSnapshot {
+    cells: Vec<RenderCell>,
+    cursor_x: u16,
+    cursor_y: u16,
+    cursor_visible: bool,
+}
+
 /// Client-side grid state maintained from `RenderUpdate` messages.
 pub struct ClientGrid {
     cells: Vec<RenderCell>,
@@ -43,6 +51,8 @@ pub struct ClientGrid {
     pub seqno: u64,
     /// Dynamic background color from daemon (OSC 11 or default).
     pub bg_color: [u8; 3],
+    /// Saved live state while viewport is scrolled up.
+    live_snapshot: Option<LiveSnapshot>,
 }
 
 impl ClientGrid {
@@ -57,6 +67,7 @@ impl ClientGrid {
             cursor_visible: true,
             seqno: 0,
             bg_color: [0, 0, 0],
+            live_snapshot: None,
         }
     }
 
@@ -83,11 +94,117 @@ impl ClientGrid {
         }
     }
 
-    /// Resize the client grid, clearing all cells.
+    /// Resize the client grid, clearing all cells and exiting scrollback.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
         self.cells = vec![RenderCell::default(); usize::from(cols) * usize::from(rows)];
+        self.live_snapshot = None;
+    }
+
+    /// Whether the viewport is currently showing scrollback.
+    #[must_use]
+    pub fn is_scrolled(&self) -> bool {
+        self.live_snapshot.is_some()
+    }
+
+    /// Save the current live view and enter scrollback mode.
+    /// No-op if already scrolled.
+    pub fn enter_scrollback(&mut self) {
+        if self.live_snapshot.is_some() {
+            return;
+        }
+        self.live_snapshot = Some(LiveSnapshot {
+            cells: self.cells.clone(),
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            cursor_visible: self.cursor_visible,
+        });
+    }
+
+    /// Restore the live view and exit scrollback mode.
+    pub fn exit_scrollback(&mut self) {
+        if let Some(snap) = self.live_snapshot.take() {
+            self.cells = snap.cells;
+            self.cursor_x = snap.cursor_x;
+            self.cursor_y = snap.cursor_y;
+            self.cursor_visible = snap.cursor_visible;
+        }
+    }
+
+    /// Apply a `RenderUpdate` to the saved live snapshot (not the visible cells).
+    /// Used to keep the live state current while the viewport shows scrollback.
+    pub fn apply_update_while_scrolled(&mut self, update: &RenderUpdate) {
+        self.seqno = update.seqno;
+        let Some(snap) = &mut self.live_snapshot else {
+            return;
+        };
+        snap.cursor_x = update.cursor_x;
+        snap.cursor_y = update.cursor_y;
+        snap.cursor_visible = update.cursor_visible;
+
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        for row in &update.dirty_rows {
+            let row_idx = usize::from(row.row_index);
+            if row_idx >= rows {
+                continue;
+            }
+            for (col_idx, cell) in row.cells.iter().enumerate() {
+                if col_idx >= cols {
+                    break;
+                }
+                snap.cells[row_idx * cols + col_idx] = wire_cell_to_render(cell);
+            }
+        }
+    }
+
+    /// Compose the visible grid from scrollback rows and the live snapshot.
+    ///
+    /// `scrollback_rows` are displayed at the top of the viewport.
+    /// If `offset < rows`, the remaining bottom rows come from the live snapshot.
+    /// If `offset >= rows`, the entire viewport shows scrollback.
+    pub fn apply_scrollback(&mut self, scrollback_rows: &[DirtyRow], offset: u16) {
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        let sb_display_rows = usize::from(offset).min(rows);
+
+        // Clear cells.
+        for cell in &mut self.cells {
+            *cell = RenderCell::default();
+        }
+
+        // Top portion: scrollback rows.
+        for (display_row, dirty_row) in scrollback_rows.iter().enumerate() {
+            if display_row >= sb_display_rows {
+                break;
+            }
+            for (col, wire_cell) in dirty_row.cells.iter().enumerate() {
+                if col >= cols {
+                    break;
+                }
+                self.cells[display_row * cols + col] = wire_cell_to_render(wire_cell);
+            }
+        }
+
+        // Bottom portion: live snapshot rows (if partial scroll).
+        if sb_display_rows < rows {
+            if let Some(snap) = &self.live_snapshot {
+                let live_start = 0;
+                let live_count = rows - sb_display_rows;
+                for i in 0..live_count {
+                    let src_idx = (live_start + i) * cols;
+                    let dst_idx = (sb_display_rows + i) * cols;
+                    if src_idx + cols <= snap.cells.len() && dst_idx + cols <= self.cells.len() {
+                        self.cells[dst_idx..dst_idx + cols]
+                            .clone_from_slice(&snap.cells[src_idx..src_idx + cols]);
+                    }
+                }
+            }
+        }
+
+        // Hide cursor while showing scrollback.
+        self.cursor_visible = false;
     }
 
     /// Linear cell index of the cursor, if visible and in-bounds.
@@ -455,5 +572,128 @@ mod tests {
         grid.cursor_visible = true;
         let colors = grid.bg_colors();
         assert_eq!(colors.len(), 8);
+    }
+
+    // --- Scrollback viewport tests ---
+
+    fn make_wire_cell(ch: u8) -> WireCell {
+        WireCell {
+            codepoint: u32::from(ch),
+            fg_r: 255,
+            fg_g: 255,
+            fg_b: 255,
+            fg_type: 0,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            bg_type: 0,
+            flags: 0,
+            extra: vec![],
+        }
+    }
+
+    fn make_dirty_row(index: u16, text: &[u8]) -> DirtyRow {
+        DirtyRow {
+            row_index: index,
+            cells: text.iter().map(|&ch| make_wire_cell(ch)).collect(),
+            semantic_mark: 0,
+            mark_metadata: vec![],
+        }
+    }
+
+    #[test]
+    fn enter_exit_scrollback_roundtrip() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cells[0].codepoint = u32::from(b'A');
+        grid.cursor_x = 2;
+        grid.cursor_visible = true;
+
+        grid.enter_scrollback();
+        assert!(grid.is_scrolled());
+
+        // Modify visible cells (simulating scrollback display).
+        grid.cells[0].codepoint = u32::from(b'Z');
+        grid.cursor_visible = false;
+
+        grid.exit_scrollback();
+        assert!(!grid.is_scrolled());
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'A'));
+        assert_eq!(grid.cursor_x, 2);
+        assert!(grid.cursor_visible);
+    }
+
+    #[test]
+    fn apply_scrollback_full_page() {
+        let mut grid = ClientGrid::new(3, 2);
+        grid.cells[0].codepoint = u32::from(b'L'); // live content
+        grid.enter_scrollback();
+
+        let rows = vec![make_dirty_row(0, b"abc"), make_dirty_row(1, b"def")];
+        grid.apply_scrollback(&rows, 2); // offset=2 >= rows=2, full scrollback
+
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'a'));
+        assert_eq!(grid.cells[3].codepoint, u32::from(b'd'));
+        assert!(!grid.cursor_visible);
+    }
+
+    #[test]
+    fn apply_scrollback_partial_page() {
+        let mut grid = ClientGrid::new(3, 3);
+        // Set up live content.
+        grid.cells[0].codepoint = u32::from(b'R'); // row 0
+        grid.cells[3].codepoint = u32::from(b'S'); // row 1
+        grid.cells[6].codepoint = u32::from(b'T'); // row 2
+        grid.enter_scrollback();
+
+        // Scroll up by 1 line: top 1 row from scrollback, bottom 2 from live.
+        let rows = vec![make_dirty_row(0, b"xxx")];
+        grid.apply_scrollback(&rows, 1);
+
+        // Row 0: scrollback
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'x'));
+        // Row 1: live row 0
+        assert_eq!(grid.cells[3].codepoint, u32::from(b'R'));
+        // Row 2: live row 1
+        assert_eq!(grid.cells[6].codepoint, u32::from(b'S'));
+    }
+
+    #[test]
+    fn apply_update_while_scrolled_updates_snapshot() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cells[0].codepoint = u32::from(b'O');
+        grid.enter_scrollback();
+
+        let update = RenderUpdate {
+            pane_id: 0,
+            seqno: 10,
+            cursor_x: 3,
+            cursor_y: 1,
+            cursor_style: 0,
+            cursor_visible: true,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            dirty_rows: vec![make_dirty_row(0, b"NEW!")],
+        };
+        grid.apply_update_while_scrolled(&update);
+
+        // Visible cells unchanged.
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'O'));
+        // Seqno updated.
+        assert_eq!(grid.seqno, 10);
+
+        // Exit scrollback — should restore the updated snapshot.
+        grid.exit_scrollback();
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'N'));
+        assert_eq!(grid.cursor_x, 3);
+    }
+
+    #[test]
+    fn resize_clears_scrollback_state() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.enter_scrollback();
+        assert!(grid.is_scrolled());
+        grid.resize(10, 5);
+        assert!(!grid.is_scrolled());
     }
 }
