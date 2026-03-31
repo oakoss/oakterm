@@ -4,15 +4,41 @@
 //! standard library functions are removed, memory and execution time
 //! are bounded, and `print` is redirected to stderr.
 
+mod event;
 mod proxy;
 mod schema;
 
+pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
+pub use mlua::Lua;
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{ConfigValues, CursorStyle, Padding};
 
-use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Value, VmState};
+use mlua::{HookTriggers, LuaOptions, StdLib, Value, VmState};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Result of loading and evaluating a config file.
+pub struct ConfigResult {
+    /// Parsed config values (defaults on error).
+    pub config: ConfigValues,
+    /// Registered event handlers (empty on error or when no config file exists).
+    pub registry: EventRegistry,
+    /// The Lua VM, kept alive for handler invocation. `None` when no config
+    /// file exists or when the VM could not be created.
+    pub lua: Option<Lua>,
+    /// Error message if config evaluation failed.
+    pub error: Option<String>,
+}
+
+impl std::fmt::Debug for ConfigResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigResult")
+            .field("config", &self.config)
+            .field("has_lua", &self.lua.is_some())
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Default memory limit for config evaluation (16 MiB).
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
@@ -144,57 +170,85 @@ pub fn config_dir() -> PathBuf {
 
 /// Load config from `config.lua` in the config directory.
 ///
-/// Returns parsed config values and an optional error message.
-/// Never fails — always returns valid `ConfigValues` (defaults on error).
+/// Never fails — returns defaults on error with the error message in
+/// `ConfigResult.error`.
 #[must_use]
-pub fn load_config() -> (ConfigValues, Option<String>) {
+pub fn load_config() -> ConfigResult {
     load_config_from(&config_dir().join("config.lua"))
 }
 
 /// Load config from a specific file path. Testable without touching the real config dir.
 #[must_use]
-pub fn load_config_from(path: &Path) -> (ConfigValues, Option<String>) {
+pub fn load_config_from(path: &Path) -> ConfigResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (ConfigValues::default(), None);
+            return default_result(None);
         }
         Err(e) => {
-            return (
-                ConfigValues::default(),
-                Some(format!("cannot read {}: {e}", path.display())),
-            );
+            return default_result(Some(format!("cannot read {}: {e}", path.display())));
         }
     };
 
     if source.trim().is_empty() {
-        return (ConfigValues::default(), None);
+        return default_result(None);
     }
 
     let (lua, _print_log) = match create_lua_vm() {
         Ok(v) => v,
         Err(e) => {
-            return (
-                ConfigValues::default(),
-                Some(format!("failed to create Lua VM: {e}")),
-            );
+            return default_result(Some(format!("failed to create Lua VM: {e}")));
         }
     };
 
     if let Err(e) = register_config_table(&lua) {
-        return (
-            ConfigValues::default(),
-            Some(format!("failed to register config API: {e}")),
-        );
+        return ConfigResult {
+            config: ConfigValues::default(),
+            registry: EventRegistry::new(),
+            lua: Some(lua),
+            error: Some(format!("failed to register config API: {e}")),
+        };
     }
 
     if let Err(e) = lua.load(&source).set_name(path.to_string_lossy()).exec() {
-        return (ConfigValues::default(), Some(format_config_error(path, &e)));
+        // Remove eval hook before returning — handlers need their own hook.
+        lua.remove_hook();
+        return ConfigResult {
+            config: ConfigValues::default(),
+            registry: EventRegistry::new(),
+            lua: Some(lua),
+            error: Some(format_config_error(path, &e)),
+        };
     }
 
+    // Remove eval hook — handlers will install per-handler hooks.
+    lua.remove_hook();
+
+    let registry = proxy::extract_event_registry(&lua);
+
     match extract_config(&lua) {
-        Ok(config) => (config, None),
-        Err(e) => (ConfigValues::default(), Some(format_config_error(path, &e))),
+        Ok(config) => ConfigResult {
+            config,
+            registry,
+            lua: Some(lua),
+            error: None,
+        },
+        Err(e) => ConfigResult {
+            config: ConfigValues::default(),
+            registry,
+            lua: Some(lua),
+            error: Some(format_config_error(path, &e)),
+        },
+    }
+}
+
+/// Create a default `ConfigResult` without a VM.
+fn default_result(error: Option<String>) -> ConfigResult {
+    ConfigResult {
+        config: ConfigValues::default(),
+        registry: EventRegistry::new(),
+        lua: None,
+        error,
     }
 }
 
@@ -456,62 +510,108 @@ mod tests {
     fn load_config_no_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.lua");
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_none());
-        assert_eq!(config, ConfigValues::default());
+        let r = load_config_from(&path);
+        assert!(r.error.is_none());
+        assert_eq!(r.config, ConfigValues::default());
     }
 
     #[test]
     fn load_config_valid_file() {
         let (path, _dir) = temp_config("oakterm.config.font_size = 20.0");
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_none(), "unexpected error: {err:?}");
-        assert!((config.font_size - 20.0).abs() < f64::EPSILON);
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        assert!((r.config.font_size - 20.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn load_config_syntax_error() {
         let (path, _dir) = temp_config("this is not valid lua }{");
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_some(), "should have error");
-        assert_eq!(config, ConfigValues::default());
+        let r = load_config_from(&path);
+        assert!(r.error.is_some(), "should have error");
+        assert_eq!(r.config, ConfigValues::default());
     }
 
     #[test]
     fn load_config_runtime_error() {
         let (path, _dir) = temp_config(r#"error("intentional")"#);
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_some());
-        assert!(err.unwrap().contains("intentional"));
-        assert_eq!(config, ConfigValues::default());
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        assert!(r.error.unwrap().contains("intentional"));
+        assert_eq!(r.config, ConfigValues::default());
     }
 
     #[test]
     fn load_config_unknown_key() {
         let (path, _dir) = temp_config("oakterm.config.font_szie = 14");
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_some());
-        let msg = err.unwrap();
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
         assert!(msg.contains("did you mean"), "got: {msg}");
-        assert_eq!(config, ConfigValues::default());
+        assert_eq!(r.config, ConfigValues::default());
     }
 
     #[test]
     fn load_config_empty_file() {
         let (path, _dir) = temp_config("");
-        let (config, err) = load_config_from(&path);
-        assert!(err.is_none());
-        assert_eq!(config, ConfigValues::default());
+        let r = load_config_from(&path);
+        assert!(r.error.is_none());
+        assert_eq!(r.config, ConfigValues::default());
     }
 
     #[test]
     fn load_config_error_includes_path() {
         let (path, _dir) = temp_config("bad syntax {{");
-        let (_, err) = load_config_from(&path);
-        let msg = err.unwrap();
+        let r = load_config_from(&path);
+        let msg = r.error.unwrap();
         assert!(
             msg.contains(&path.to_string_lossy().to_string()),
             "error should include path: {msg}"
         );
+    }
+
+    #[test]
+    fn load_config_with_event_handler() {
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.on("config.loaded", function() end)
+            oakterm.on("config.loaded", function() end)
+            oakterm.on("window.focused", function(id) end)
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        assert_eq!(r.registry.handler_count("config.loaded"), 2);
+        assert_eq!(r.registry.handler_count("window.focused"), 1);
+    }
+
+    #[test]
+    fn load_config_unknown_event_is_error() {
+        let (path, _dir) = temp_config(r#"oakterm.on("bogus.event", function() end)"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("unknown event"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_config_handlers_fire_after_extract() {
+        let (path, _dir) = temp_config(
+            r#"
+            _test_fired = false
+            oakterm.on("config.loaded", function() _test_fired = true end)
+            oakterm.config.font_size = 18.0
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        assert!((r.config.font_size - 18.0).abs() < f64::EPSILON);
+        assert_eq!(r.registry.handler_count("config.loaded"), 1);
+        // Fire the handler and verify it actually executes.
+        let lua = r.lua.as_ref().expect("should have VM");
+        let results = r.registry.fire(lua, "config.loaded", &[]);
+        assert_eq!(results.len(), 1);
+        assert!(matches!(results[0], HandlerResult::Ok));
+        let fired: bool = lua.load("return _test_fired").eval().unwrap();
+        assert!(fired);
     }
 }

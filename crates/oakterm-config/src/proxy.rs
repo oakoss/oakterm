@@ -1,7 +1,9 @@
 //! Config proxy table: `oakterm.config` with per-key validation.
+//! Also registers `oakterm.on(event, callback)` for event handlers.
 
+use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
 use crate::schema::{self, ConfigValues, CursorStyle, Padding};
-use mlua::{Lua, Table, Value};
+use mlua::{Function, Lua, Table, Value};
 
 /// Registry key for the hidden backing table that stores validated config values.
 const BACKING_KEY: &str = "__oakterm_config_backing";
@@ -53,12 +55,96 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
 
     proxy.set_metatable(Some(meta))?;
 
-    // Register as oakterm.config.
+    // Initialize event handler table in the Lua named registry.
+    // During eval, oakterm.on() appends callbacks here as Lua functions.
+    // After eval, extract_event_registry() converts them to RegistryKeys.
+    lua.set_named_registry_value(EVENT_REGISTRY_KEY, lua.create_table()?)?;
+
+    // oakterm.on(event, callback)
+    let on_fn = lua.create_function(|lua, (event, callback): (mlua::String, Function)| {
+        let event_str = event.to_str()?;
+
+        if !KNOWN_EVENTS.contains(&event_str.as_ref()) {
+            let suggestion = KNOWN_EVENTS
+                .iter()
+                .filter(|&&e| strsim::jaro(&event_str, e) > 0.8)
+                .max_by(|a, b| {
+                    strsim::jaro(&event_str, a)
+                        .partial_cmp(&strsim::jaro(&event_str, b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .copied();
+            let msg = if let Some(s) = suggestion {
+                format!("unknown event '{event_str}' (did you mean '{s}'?)")
+            } else {
+                format!("unknown event '{event_str}'")
+            };
+            return Err(mlua::Error::RuntimeError(msg));
+        }
+
+        let event_table: Table = lua.named_registry_value(EVENT_REGISTRY_KEY)?;
+        let handlers: Table =
+            if let Some(t) = event_table.get::<Option<Table>>(event_str.as_ref())? {
+                t
+            } else {
+                let t = lua.create_table()?;
+                event_table.set(event_str.as_ref(), t.clone())?;
+                t
+            };
+        handlers.push(callback)?;
+        Ok(())
+    })?;
+
+    // Register as oakterm.config + oakterm.on.
     let oakterm = lua.create_table()?;
     oakterm.set("config", proxy)?;
+    oakterm.set("on", on_fn)?;
     lua.globals().set("oakterm", oakterm)?;
 
     Ok(())
+}
+
+/// Extract the `EventRegistry` from the Lua VM after config evaluation.
+///
+/// Converts Lua function references stored by `oakterm.on()` into
+/// `RegistryKey`s owned by the `EventRegistry`.
+pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
+    let mut registry = EventRegistry::new();
+    let Ok(event_table) = lua.named_registry_value::<Table>(EVENT_REGISTRY_KEY) else {
+        eprintln!("warning: failed to read event registry from Lua VM");
+        return registry;
+    };
+
+    for pair in event_table.pairs::<mlua::String, Table>() {
+        let (event_name, handlers) = match pair {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("warning: skipping malformed event registry entry: {e}");
+                continue;
+            }
+        };
+        let event_str = match event_name.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: skipping event with invalid name: {e}");
+                continue;
+            }
+        };
+        for handler in handlers.sequence_values::<Function>() {
+            let callback = match handler {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("warning: skipping unreadable handler for '{event_str}': {e}");
+                    continue;
+                }
+            };
+            if let Err(e) = registry.register(lua, &event_str, callback) {
+                eprintln!("warning: failed to register handler for '{event_str}': {e}");
+            }
+        }
+    }
+
+    registry
 }
 
 /// Extract a `ConfigValues` struct from the Lua VM after config evaluation.
