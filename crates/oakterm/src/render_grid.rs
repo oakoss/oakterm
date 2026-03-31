@@ -207,6 +207,29 @@ impl ClientGrid {
         self.cursor_visible = false;
     }
 
+    /// Overwrite the bottom-right cells with a scroll position indicator.
+    pub fn set_scroll_indicator(&mut self, offset: u32) {
+        let text = format!(" [{offset} lines] ");
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        let last_row_start = (rows - 1) * cols;
+        let start_col = cols.saturating_sub(text.len());
+        for (i, ch) in text.chars().enumerate() {
+            let col = start_col + i;
+            if col >= cols {
+                break;
+            }
+            self.cells[last_row_start + col] = RenderCell {
+                codepoint: ch as u32,
+                fg: [0, 0, 0],
+                bg: [200, 200, 200],
+            };
+        }
+    }
+
     /// Linear cell index of the cursor, if visible and in-bounds.
     fn cursor_cell_index(&self) -> Option<usize> {
         if self.cursor_visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
@@ -695,5 +718,23 @@ mod tests {
         assert!(grid.is_scrolled());
         grid.resize(10, 5);
         assert!(!grid.is_scrolled());
+    }
+
+    #[test]
+    fn scroll_indicator_overwrites_bottom_right() {
+        let mut grid = ClientGrid::new(20, 3);
+        grid.set_scroll_indicator(42);
+        // Indicator: " [42 lines] " = 13 chars, starts at col 20-13=7 on row 2.
+        let last_row_start = 2 * 20;
+        // Last cell should be trailing space with indicator background.
+        let last_cell = &grid.cells[last_row_start + 19];
+        assert_eq!(last_cell.codepoint, u32::from(b' '));
+        assert_eq!(last_cell.bg, [200, 200, 200]);
+        // " [42 lines] " = 12 chars, starts at col 8.
+        // Col 8 is ' ', col 9 is '[', col 10 is '4'.
+        assert_eq!(grid.cells[last_row_start + 9].codepoint, u32::from(b'['));
+        assert_eq!(grid.cells[last_row_start + 10].codepoint, u32::from(b'4'));
+        // Col 7 should be untouched (default black bg).
+        assert_eq!(grid.cells[last_row_start + 7].bg, [0, 0, 0]);
     }
 }

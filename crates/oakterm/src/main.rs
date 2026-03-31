@@ -281,6 +281,9 @@ impl ApplicationHandler<UserEvent> for App {
                         gpu.config.height = size.height;
                         gpu.surface.configure(&gpu.device, &gpu.config);
 
+                        // Resize exits scrollback (grid.resize clears snapshot).
+                        self.viewport_offset = 0;
+
                         #[allow(clippy::cast_possible_truncation)]
                         if let (Some(font), Some(grid)) = (&self.font, &mut self.grid) {
                             let (cols, rows) = window_to_grid_dims(size, &font.metrics);
@@ -647,10 +650,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::ScrollbackData(data) => {
                 if self.viewport_offset > 0 {
+                    // Clamp offset if we reached the top of scrollback.
+                    let requested = self.grid.as_ref().map_or(24usize, |g| usize::from(g.rows));
+                    if data.rows.len() < requested && !data.has_more {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let actual = data.rows.len() as u32;
+                        self.viewport_offset = self.viewport_offset.min(actual);
+                    }
                     if let Some(grid) = &mut self.grid {
                         #[allow(clippy::cast_possible_truncation)]
                         let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
                         grid.apply_scrollback(&data.rows, offset);
+                        if self.config.scroll_indicator {
+                            grid.set_scroll_indicator(self.viewport_offset);
+                        }
                     }
                     if let Some(w) = &self.window {
                         w.request_redraw();
