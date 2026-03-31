@@ -718,7 +718,7 @@ async fn handle_request(
             let s = screens.lock().await;
             let buf = s.scrollback();
             // Convert negative start_row to buffer index.
-            // buf.len() fits in i64 (scrollback is capped at 50MB, far below i64::MAX).
+            // SAFETY: buf.len() fits in i64 — HotBuffer is capped at 50MB (~250K rows).
             #[allow(clippy::cast_possible_wrap)]
             let buf_len = buf.len() as i64;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -921,6 +921,7 @@ fn find_prompt_in_buffer(
     from_offset: i64,
     direction: SearchDirection,
 ) -> Option<i64> {
+    // SAFETY: buf.len() fits in i64 — HotBuffer is capped at 50MB (~250K rows).
     #[allow(clippy::cast_possible_wrap)]
     let buf_len = buf.len() as i64;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
