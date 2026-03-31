@@ -96,6 +96,22 @@ impl DaemonWriter {
     }
 }
 
+/// Copyable action descriptor to break the borrow on `keybind_registry`
+/// during `dispatch_action_at`. `Callback` stores the index back into the
+/// registry since `RegistryKey` is not `Clone`.
+enum ActionDesc {
+    ScrollUp(u32),
+    ScrollDown(u32),
+    ScrollToPrompt(i32),
+    SendString(Vec<u8>),
+    Copy,
+    Paste,
+    ToggleFullscreen,
+    ReloadConfig,
+    Callback(usize),
+    Stub,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
@@ -111,6 +127,8 @@ struct App {
     lua_vm: Option<oakterm_config::Lua>,
     /// Registered event handlers from config evaluation.
     event_registry: oakterm_config::EventRegistry,
+    /// Registered keybinds from config evaluation.
+    keybind_registry: oakterm_config::KeybindRegistry,
     /// Stored for future in-window error banner rendering.
     #[allow(dead_code)]
     config_error: Option<String>,
@@ -153,6 +171,7 @@ impl App {
             config: oakterm_config::ConfigValues::default(),
             lua_vm: None,
             event_registry: oakterm_config::EventRegistry::new(),
+            keybind_registry: oakterm_config::KeybindRegistry::new(),
             config_error: None,
             config_watcher: None,
             last_sent_dims: (0, 0),
@@ -321,6 +340,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.config = config;
         self.config_error = cr.error;
         self.event_registry = cr.registry;
+        self.keybind_registry = cr.keybinds;
         self.lua_vm = cr.lua;
         // Fire config.loaded event for initial load.
         if self.config_error.is_none() {
@@ -433,79 +453,21 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
-                // Intercept prompt navigation: Cmd+Shift+Up/Down.
-                let shift = self.modifiers.state().shift_key();
-                let super_key = self.modifiers.state().super_key();
-                if super_key && shift {
-                    let handled = match &logical_key {
-                        Key::Named(NamedKey::ArrowUp) => {
-                            if let Some(grid) = &mut self.grid {
-                                if !grid.is_scrolled() {
-                                    grid.enter_scrollback();
-                                }
-                            }
-                            self.request_find_prompt(SearchDirection::Older);
-                            true
+                // Look up keybind in registry (defaults + user config).
+                // lookup_index returns the index so we can release the borrow
+                // before calling dispatch_action (which borrows &mut self).
+                if let Some(chord) = winit_to_chord(self.modifiers, &logical_key) {
+                    if let Some(idx) = self.keybind_registry.lookup_index(&chord) {
+                        if self.dispatch_action_at(idx) {
+                            self.reset_blink();
+                            return;
                         }
-                        Key::Named(NamedKey::ArrowDown) => {
-                            if self.viewport_offset > 0 {
-                                self.request_find_prompt(SearchDirection::Newer);
-                            }
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        return;
+                        // Action returned false (e.g., scroll down when not
+                        // scrolled) — let the key fall through to PTY.
                     }
                 }
 
-                // Intercept scrollback navigation keys.
-                if shift {
-                    let handled = match &logical_key {
-                        Key::Named(NamedKey::PageUp) => {
-                            if let Some(grid) = &mut self.grid {
-                                if !grid.is_scrolled() {
-                                    grid.enter_scrollback();
-                                }
-                                self.viewport_offset =
-                                    self.viewport_offset.saturating_add(u32::from(grid.rows));
-                            }
-                            self.request_scrollback();
-                            true
-                        }
-                        Key::Named(NamedKey::PageDown) if self.viewport_offset > 0 => {
-                            let rows = self.grid.as_ref().map_or(24, |g| u32::from(g.rows));
-                            self.viewport_offset = self.viewport_offset.saturating_sub(rows);
-                            if self.viewport_offset == 0 {
-                                self.return_to_live();
-                            } else {
-                                self.request_scrollback();
-                            }
-                            true
-                        }
-                        Key::Named(NamedKey::Home) => {
-                            if let Some(grid) = &mut self.grid {
-                                if !grid.is_scrolled() {
-                                    grid.enter_scrollback();
-                                }
-                            }
-                            self.viewport_offset = u32::MAX;
-                            self.request_scrollback();
-                            true
-                        }
-                        Key::Named(NamedKey::End) if self.viewport_offset > 0 => {
-                            self.return_to_live();
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        return;
-                    }
-                }
-
-                // Any non-shift key while scrolled: snap back to live first.
+                // Any unbound key while scrolled: snap back to live first.
                 if self.viewport_offset > 0 {
                     self.return_to_live();
                 }
@@ -870,20 +832,183 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
+    /// Dispatch the keybind action at the given registry index.
+    ///
+    /// Copies the action data out of the registry to avoid holding a borrow
+    /// on `self.keybind_registry` while calling `&mut self` methods.
+    #[allow(clippy::too_many_lines)]
+    /// Returns `true` if the action was handled (key consumed), `false` if the
+    /// key should fall through to PTY forwarding.
+    fn dispatch_action_at(&mut self, index: usize) -> bool {
+        use oakterm_config::Action;
+
+        // Copy action data out to release the registry borrow.
+        let action_desc = match self.keybind_registry.get(index) {
+            Some(Action::ScrollUp(n)) => ActionDesc::ScrollUp(*n),
+            Some(Action::ScrollDown(n)) => ActionDesc::ScrollDown(*n),
+            Some(Action::ScrollToPrompt(d)) => ActionDesc::ScrollToPrompt(*d),
+            Some(Action::SendString(b)) => ActionDesc::SendString(b.clone()),
+            Some(Action::Copy) => ActionDesc::Copy,
+            Some(Action::Paste) => ActionDesc::Paste,
+            Some(Action::ToggleFullscreen) => ActionDesc::ToggleFullscreen,
+            Some(Action::ReloadConfig) => ActionDesc::ReloadConfig,
+            Some(Action::Callback(_)) => ActionDesc::Callback(index),
+            Some(
+                Action::SplitPane { .. }
+                | Action::ClosePane
+                | Action::FocusPaneDirection(_)
+                | Action::NewTab
+                | Action::CloseTab
+                | Action::ShowCommandPalette,
+            ) => ActionDesc::Stub,
+            None => return false,
+        };
+
+        match action_desc {
+            ActionDesc::ScrollUp(lines) => {
+                if let Some(grid) = &mut self.grid {
+                    if !grid.is_scrolled() {
+                        grid.enter_scrollback();
+                    }
+                    let amount = if lines == 0 {
+                        u32::from(grid.rows)
+                    } else {
+                        lines
+                    };
+                    self.viewport_offset = self.viewport_offset.saturating_add(amount);
+                }
+                self.request_scrollback();
+                true
+            }
+            ActionDesc::ScrollDown(lines) => {
+                if self.viewport_offset == 0 {
+                    return false; // Not scrolled; let key pass through to PTY.
+                }
+                let amount = if lines == 0 {
+                    self.grid.as_ref().map_or(24, |g| u32::from(g.rows))
+                } else {
+                    lines
+                };
+                self.viewport_offset = self.viewport_offset.saturating_sub(amount);
+                if self.viewport_offset == 0 {
+                    self.return_to_live();
+                } else {
+                    self.request_scrollback();
+                }
+                true
+            }
+            ActionDesc::ScrollToPrompt(direction) => {
+                let dir = if direction < 0 {
+                    SearchDirection::Older
+                } else {
+                    SearchDirection::Newer
+                };
+                if dir == SearchDirection::Older {
+                    if let Some(grid) = &mut self.grid {
+                        if !grid.is_scrolled() {
+                            grid.enter_scrollback();
+                        }
+                    }
+                    self.request_find_prompt(dir);
+                } else if self.viewport_offset > 0 {
+                    self.request_find_prompt(dir);
+                }
+                true
+            }
+            ActionDesc::SendString(bytes) => {
+                if let Some(daemon) = &mut self.daemon {
+                    let msg = KeyInput {
+                        pane_id: 0,
+                        key_data: bytes,
+                    };
+                    match msg.to_frame() {
+                        Ok(frame) => {
+                            if let Err(e) = daemon.send_frame(&frame) {
+                                eprintln!("failed to send keybind string: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("failed to encode keybind string: {e}"),
+                    }
+                }
+                true
+            }
+            ActionDesc::ToggleFullscreen => {
+                if let Some(window) = &self.window {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    } else {
+                        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                    }
+                }
+                true
+            }
+            ActionDesc::ReloadConfig => {
+                let cr = oakterm_config::load_config();
+                self.handle_config_reload(cr);
+                true
+            }
+            ActionDesc::Callback(idx) => {
+                let (Some(lua), Some(oakterm_config::Action::Callback(key))) =
+                    (&self.lua_vm, self.keybind_registry.get(idx))
+                else {
+                    eprintln!("keybind callback skipped: no Lua VM or action mismatch");
+                    return true;
+                };
+                let func = match lua.registry_value::<oakterm_config::mlua::Function>(key) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("keybind callback error: {e}");
+                        return true;
+                    }
+                };
+                if let Err(e) = lua.set_hook(
+                    oakterm_config::mlua::HookTriggers::new().every_nth_instruction(10_000),
+                    {
+                        let start = std::time::Instant::now();
+                        let timeout = std::time::Duration::from_millis(100);
+                        move |_lua, _debug| {
+                            if start.elapsed() > timeout {
+                                Err(oakterm_config::mlua::Error::RuntimeError(
+                                    "keybind callback timed out (100ms)".to_string(),
+                                ))
+                            } else {
+                                Ok(oakterm_config::mlua::VmState::Continue)
+                            }
+                        }
+                    },
+                ) {
+                    eprintln!("keybind callback: failed to install timeout hook: {e}");
+                    return true;
+                }
+                if let Err(e) = func.call::<()>(()) {
+                    eprintln!("keybind callback error: {e}");
+                }
+                lua.remove_hook();
+                true
+            }
+            ActionDesc::Copy | ActionDesc::Paste | ActionDesc::Stub => {
+                // Not yet implemented; let the key pass through to PTY.
+                false
+            }
+        }
+    }
+
     fn handle_config_reload(&mut self, mut cr: oakterm_config::ConfigResult) {
         if let Some(ref err) = cr.error {
             eprintln!("config reload error: {err}");
-            // Clean up the failed result's registry before its VM is dropped.
+            // Clean up the failed result's registries before its VM is dropped.
             if let Some(lua) = &cr.lua {
                 cr.registry.cleanup(lua);
+                cr.keybinds.cleanup(lua);
             }
             self.config_error = cr.error;
             return;
         }
 
-        // Clean up old event handlers before swapping in new ones.
+        // Clean up old event handlers and keybinds before swapping in new ones.
         if let Some(old_lua) = &self.lua_vm {
             self.event_registry.cleanup(old_lua);
+            self.keybind_registry.cleanup(old_lua);
         }
 
         let font_changed = (cr.config.font_size - self.config.font_size).abs() > f64::EPSILON
@@ -893,6 +1018,7 @@ impl App {
         self.config = cr.config;
         self.config_error = None;
         self.event_registry = cr.registry;
+        self.keybind_registry = cr.keybinds;
         self.lua_vm = cr.lua;
 
         if had_error {
@@ -1011,6 +1137,70 @@ fn key_to_bytes(key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
     }
 
     None
+}
+
+/// Convert winit modifier state + logical key to a `KeyChord` for registry lookup.
+fn winit_to_chord(
+    modifiers: winit::event::Modifiers,
+    logical_key: &Key,
+) -> Option<oakterm_config::KeyChord> {
+    use oakterm_config::{KeyChord, KeyName, NamedKeyId};
+
+    let state = modifiers.state();
+    let key = match logical_key {
+        Key::Named(named) => {
+            let id = match named {
+                NamedKey::ArrowUp => NamedKeyId::ArrowUp,
+                NamedKey::ArrowDown => NamedKeyId::ArrowDown,
+                NamedKey::ArrowLeft => NamedKeyId::ArrowLeft,
+                NamedKey::ArrowRight => NamedKeyId::ArrowRight,
+                NamedKey::Home => NamedKeyId::Home,
+                NamedKey::End => NamedKeyId::End,
+                NamedKey::PageUp => NamedKeyId::PageUp,
+                NamedKey::PageDown => NamedKeyId::PageDown,
+                NamedKey::Tab => NamedKeyId::Tab,
+                NamedKey::Enter => NamedKeyId::Enter,
+                NamedKey::Backspace => NamedKeyId::Backspace,
+                NamedKey::Escape => NamedKeyId::Escape,
+                NamedKey::Delete => NamedKeyId::Delete,
+                NamedKey::Insert => NamedKeyId::Insert,
+                NamedKey::Space => NamedKeyId::Space,
+                NamedKey::F1 => NamedKeyId::F1,
+                NamedKey::F2 => NamedKeyId::F2,
+                NamedKey::F3 => NamedKeyId::F3,
+                NamedKey::F4 => NamedKeyId::F4,
+                NamedKey::F5 => NamedKeyId::F5,
+                NamedKey::F6 => NamedKeyId::F6,
+                NamedKey::F7 => NamedKeyId::F7,
+                NamedKey::F8 => NamedKeyId::F8,
+                NamedKey::F9 => NamedKeyId::F9,
+                NamedKey::F10 => NamedKeyId::F10,
+                NamedKey::F11 => NamedKeyId::F11,
+                NamedKey::F12 => NamedKeyId::F12,
+                _ => return None,
+            };
+            KeyName::Named(id)
+        }
+        Key::Character(text) => {
+            // Only match single-character inputs. Multi-character strings
+            // (e.g., IME composition) should not trigger keybinds.
+            let mut chars = text.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            KeyName::Character(ch.to_lowercase().next().unwrap_or(ch))
+        }
+        _ => return None,
+    };
+
+    Some(KeyChord {
+        ctrl: state.control_key(),
+        alt: state.alt_key(),
+        shift: state.shift_key(),
+        super_key: state.super_key(),
+        key,
+    })
 }
 
 #[allow(

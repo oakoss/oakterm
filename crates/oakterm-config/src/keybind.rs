@@ -236,6 +236,34 @@ impl KeybindRegistry {
         }
     }
 
+    /// Create a registry pre-populated with default keybinds.
+    ///
+    /// These match the previously hardcoded scrollback navigation bindings.
+    /// User config overrides these since later registrations win on lookup.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a hardcoded default chord string fails to parse (indicates
+    /// a bug in the default definitions, not a runtime condition).
+    #[must_use]
+    pub fn with_defaults() -> Self {
+        let mut reg = Self::new();
+        let defaults = [
+            ("shift+pageup", Action::ScrollUp(0)),
+            ("shift+pagedown", Action::ScrollDown(0)),
+            ("shift+home", Action::ScrollUp(999_999)),
+            ("shift+end", Action::ScrollDown(999_999)),
+            ("super+shift+up", Action::ScrollToPrompt(-1)),
+            ("super+shift+down", Action::ScrollToPrompt(1)),
+        ];
+        for (chord_str, action) in defaults {
+            // These are hardcoded strings; parse cannot fail.
+            let chord = KeyChord::parse(chord_str).expect("default keybind parse");
+            reg.register(chord, action);
+        }
+        reg
+    }
+
     /// Register a keybind. Last registration for a chord wins.
     pub fn register(&mut self, chord: KeyChord, action: Action) {
         self.bindings.push((chord, action));
@@ -250,6 +278,24 @@ impl KeybindRegistry {
             .rev()
             .find(|(c, _)| c == chord)
             .map(|(_, a)| a)
+    }
+
+    /// Look up the index of the matching binding for a chord.
+    /// Use with `get()` when you need to release the borrow before acting.
+    #[must_use]
+    pub fn lookup_index(&self, chord: &KeyChord) -> Option<usize> {
+        self.bindings
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (c, _))| c == chord)
+            .map(|(i, _)| i)
+    }
+
+    /// Get the action at a specific index.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&Action> {
+        self.bindings.get(index).map(|(_, a)| a)
     }
 
     /// Number of registered bindings.
