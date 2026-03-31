@@ -239,14 +239,9 @@ impl ClientGrid {
         }
     }
 
-    /// Whether the cursor is a block shape (reverse video in bg/fg).
-    fn is_block_cursor(&self) -> bool {
-        self.cursor_style == 0 || self.cursor_style == 1
-    }
-
     /// Linear cell index of the cursor, if visible and in-bounds.
-    fn cursor_cell_index(&self) -> Option<usize> {
-        if self.cursor_visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
+    fn cursor_cell_index(&self, visible: bool) -> Option<usize> {
+        if visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
             Some(usize::from(self.cursor_y) * usize::from(self.cols) + usize::from(self.cursor_x))
         } else {
             None
@@ -254,14 +249,13 @@ impl ClientGrid {
     }
 
     /// Build the packed ABGR background color array for the GPU pipeline.
-    /// Block cursor uses reverse video (fg as bg). Underline/bar leave bg unchanged.
+    /// Cursor cell uses reverse video (fg as bg) for all shapes.
+    /// `cursor_visible`: effective visibility (accounts for blink phase).
+    // TODO: underline/bar should render as partial-cell quads once the
+    // GPU pipeline supports sub-cell geometry.
     #[must_use]
-    pub fn bg_colors(&self) -> Vec<u32> {
-        let cursor_idx = if self.is_block_cursor() {
-            self.cursor_cell_index()
-        } else {
-            None
-        };
+    pub fn bg_colors(&self, cursor_visible: bool) -> Vec<u32> {
+        let cursor_idx = self.cursor_cell_index(cursor_visible);
 
         self.cells
             .iter()
@@ -285,17 +279,13 @@ impl ClientGrid {
         font_size: f32,
         shaper: &impl TextShaper,
         atlas: &mut AtlasPlane,
+        cursor_visible: bool,
     ) -> (Vec<GlyphVertex>, Vec<GlyphUpload>) {
         let mut glyphs = Vec::new();
         let mut uploads = Vec::new();
         let mut dropped = 0u32;
 
-        // Only block cursors reverse fg/bg in the glyph pass.
-        let cursor_idx = if self.is_block_cursor() {
-            self.cursor_cell_index()
-        } else {
-            None
-        };
+        let cursor_idx = self.cursor_cell_index(cursor_visible);
 
         for row in 0..usize::from(self.rows) {
             for col in 0..usize::from(self.cols) {
@@ -441,7 +431,7 @@ mod tests {
     fn client_grid_default_bg_is_black() {
         let mut grid = ClientGrid::new(2, 2);
         grid.cursor_visible = false;
-        let colors = grid.bg_colors();
+        let colors = grid.bg_colors(grid.cursor_visible);
         assert!(colors.iter().all(|&c| c == 0xFF_00_00_00));
     }
 
@@ -496,7 +486,7 @@ mod tests {
 
         grid.apply_update(&update);
 
-        let colors = grid.bg_colors();
+        let colors = grid.bg_colors(grid.cursor_visible);
         assert_eq!(colors[0], pack_bg_color([255, 0, 0]), "first cell red bg");
         assert_eq!(colors[1], pack_bg_color([0, 0, 0]), "second cell black bg");
         assert_eq!(grid.cells[0].codepoint, u32::from(b'H'));
@@ -586,7 +576,7 @@ mod tests {
         grid.cursor_y = 0;
         grid.cursor_visible = true;
 
-        let colors = grid.bg_colors();
+        let colors = grid.bg_colors(grid.cursor_visible);
         // Cursor cell bg should be the fg color (reverse video).
         assert_eq!(colors[1], pack_bg_color([255, 255, 255]));
         // Non-cursor cells stay black.
@@ -605,7 +595,7 @@ mod tests {
         grid.cursor_y = 0;
         grid.cursor_visible = false;
 
-        let colors = grid.bg_colors();
+        let colors = grid.bg_colors(grid.cursor_visible);
         // Cursor hidden — bg stays black.
         assert_eq!(colors[1], pack_bg_color([0, 0, 0]));
     }
@@ -616,7 +606,7 @@ mod tests {
         grid.cursor_x = 99;
         grid.cursor_y = 99;
         grid.cursor_visible = true;
-        let colors = grid.bg_colors();
+        let colors = grid.bg_colors(grid.cursor_visible);
         assert_eq!(colors.len(), 8);
     }
 
