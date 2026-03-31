@@ -246,6 +246,9 @@ pub struct ScreenSet {
     /// Lazily allocated on first DECSET 1049.
     alternate: Option<Grid>,
     scrollback: HotBuffer,
+    /// When true (default), rows scrolling off the alternate screen top
+    /// go to the primary scrollback buffer.
+    save_alternate_scrollback: bool,
 }
 
 impl ScreenSet {
@@ -256,6 +259,7 @@ impl ScreenSet {
             primary: Grid::new(cols, rows),
             alternate: None,
             scrollback: HotBuffer::default(),
+            save_alternate_scrollback: true,
         }
     }
 
@@ -329,6 +333,17 @@ impl ScreenSet {
     /// Access the scrollback buffer mutably.
     pub fn scrollback_mut(&mut self) -> &mut HotBuffer {
         &mut self.scrollback
+    }
+
+    /// Whether alt-screen scrollback is captured to primary.
+    #[must_use]
+    pub fn save_alternate_scrollback(&self) -> bool {
+        self.save_alternate_scrollback
+    }
+
+    /// Set whether alt-screen scrollback is captured to primary.
+    pub fn set_save_alternate_scrollback(&mut self, save: bool) {
+        self.save_alternate_scrollback = save;
     }
 
     /// Full terminal reset: switch to primary, drop alternate, reset primary.

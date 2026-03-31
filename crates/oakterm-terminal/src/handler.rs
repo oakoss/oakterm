@@ -9,7 +9,7 @@
 
 use crate::grid::cell::{self, CellFlags, WideState};
 use crate::grid::row::Row;
-use crate::grid::{Grid, ScreenSet};
+use crate::grid::{Grid, ScreenId, ScreenSet};
 
 /// Abstraction over `Grid` and `ScreenSet` for the handler.
 ///
@@ -53,6 +53,9 @@ impl TermTarget for ScreenSet {
         ScreenSet::exit_alternate(self);
     }
     fn push_scrollback(&mut self, rows: Vec<Row>) {
+        if self.active_screen() == ScreenId::Alternate && !self.save_alternate_scrollback() {
+            return;
+        }
         for row in rows {
             let _pruned = self.scrollback_mut().push(row);
         }
@@ -2172,5 +2175,37 @@ mod tests {
         // Scroll up by 100 (clamped to 3).
         parse_screen(&mut screen, b"\x1b[100S");
         assert_eq!(screen.scrollback().len(), 3);
+    }
+
+    #[test]
+    fn alt_screen_scrollback_enabled_by_default() {
+        let mut screen = test_screen(10, 3);
+        // Enter alt screen (mode 1049), fill and scroll.
+        parse_screen(&mut screen, b"\x1b[?1049h");
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
+        // Default: alt screen rows go to primary scrollback.
+        assert_eq!(screen.scrollback().len(), 1);
+    }
+
+    #[test]
+    fn alt_screen_scrollback_disabled() {
+        let mut screen = test_screen(10, 3);
+        screen.set_save_alternate_scrollback(false);
+        parse_screen(&mut screen, b"\x1b[?1049h");
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
+        assert_eq!(
+            screen.scrollback().len(),
+            0,
+            "alt screen scrollback should be discarded when disabled"
+        );
+    }
+
+    #[test]
+    fn primary_screen_scrollback_unaffected_by_flag() {
+        let mut screen = test_screen(10, 3);
+        screen.set_save_alternate_scrollback(false);
+        // Stay on primary — flag only affects alternate.
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
+        assert_eq!(screen.scrollback().len(), 1);
     }
 }

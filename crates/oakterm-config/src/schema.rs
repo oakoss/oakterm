@@ -45,6 +45,7 @@ pub struct ConfigValues {
     pub cursor_style: CursorStyle,
     pub cursor_blink: bool,
     pub scrollback_limit: u64,
+    pub save_alternate_scrollback: bool,
     pub padding: Padding,
 }
 
@@ -56,6 +57,7 @@ impl Default for ConfigValues {
             cursor_style: CursorStyle::default(),
             cursor_blink: true,
             scrollback_limit: 50 * 1024 * 1024,
+            save_alternate_scrollback: true,
             padding: Padding::default(),
         }
     }
@@ -108,6 +110,10 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "scrollback_limit",
         validate: validate_byte_size,
+    },
+    ConfigKeyDef {
+        name: "save_alternate_scrollback",
+        validate: validate_bool,
     },
     ConfigKeyDef {
         name: "padding",
@@ -404,7 +410,7 @@ mod tests {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            6,
+            7,
             "SCHEMA must match ConfigValues field count"
         );
     }
