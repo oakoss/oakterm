@@ -470,4 +470,72 @@ mod tests {
         encoded.truncate(encoded.len() - 2); // chop off 2 bytes of key_data
         assert!(KeyInput::decode(&encoded).is_err());
     }
+
+    // --- Scrollback protocol tests ---
+
+    #[test]
+    fn get_scrollback_roundtrip() {
+        let msg = GetScrollback {
+            pane_id: 1,
+            start_row: -50,
+            count: 25,
+        };
+        let encoded = msg.encode();
+        assert_eq!(encoded.len(), 16);
+        let decoded = GetScrollback::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn get_scrollback_too_short() {
+        assert!(GetScrollback::decode(&[0; 8]).is_err());
+    }
+
+    #[test]
+    fn scrollback_data_roundtrip_empty() {
+        let msg = ScrollbackData {
+            pane_id: 0,
+            start_row: -10,
+            has_more: false,
+            rows: vec![],
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = ScrollbackData::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn scrollback_data_roundtrip_with_rows() {
+        let msg = ScrollbackData {
+            pane_id: 1,
+            start_row: -5,
+            has_more: true,
+            rows: vec![DirtyRow {
+                row_index: 0,
+                cells: vec![WireCell {
+                    codepoint: 'A' as u32,
+                    fg_r: 255,
+                    fg_g: 255,
+                    fg_b: 255,
+                    fg_type: 0,
+                    bg_r: 0,
+                    bg_g: 0,
+                    bg_b: 0,
+                    bg_type: 0,
+                    flags: 0,
+                    extra: vec![],
+                }],
+                semantic_mark: 0,
+                mark_metadata: vec![],
+            }],
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = ScrollbackData::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn scrollback_data_too_short() {
+        assert!(ScrollbackData::decode(&[0; 10]).is_err());
+    }
 }
