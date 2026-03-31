@@ -10,6 +10,8 @@ use cell::{CellFlags, Color, Rgb};
 use cursor::{CharsetIndex, Cursor, ScrollRegion, StandardCharset};
 use row::Row;
 
+use crate::scroll::HotBuffer;
+
 /// Active DEC private modes and ANSI modes as a bitfield.
 /// Indexed by mode number. Supports modes 0-2047.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +245,7 @@ pub struct ScreenSet {
     primary: Grid,
     /// Lazily allocated on first DECSET 1049.
     alternate: Option<Grid>,
+    scrollback: HotBuffer,
 }
 
 impl ScreenSet {
@@ -252,6 +255,7 @@ impl ScreenSet {
             active: ScreenId::Primary,
             primary: Grid::new(cols, rows),
             alternate: None,
+            scrollback: HotBuffer::default(),
         }
     }
 
@@ -316,7 +320,19 @@ impl ScreenSet {
         self.active = ScreenId::Primary;
     }
 
+    /// Access the scrollback buffer.
+    #[must_use]
+    pub fn scrollback(&self) -> &HotBuffer {
+        &self.scrollback
+    }
+
+    /// Access the scrollback buffer mutably.
+    pub fn scrollback_mut(&mut self) -> &mut HotBuffer {
+        &mut self.scrollback
+    }
+
     /// Full terminal reset: switch to primary, drop alternate, reset primary.
+    /// Scrollback is preserved (matches xterm RIS behavior).
     pub fn reset(&mut self) {
         let cols = self.primary.cols;
         let rows = self.primary.rows;

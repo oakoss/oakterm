@@ -225,6 +225,31 @@ fn screen_set_exit_alternate() {
 }
 
 #[test]
+fn screen_set_scrollback_starts_empty() {
+    let ss = ScreenSet::new(80, 24);
+    assert!(ss.scrollback().is_empty());
+    assert_eq!(ss.scrollback().len(), 0);
+}
+
+#[test]
+fn screen_set_scrollback_accessor() {
+    let mut ss = ScreenSet::new(80, 24);
+    let row = Row::new(80);
+    let _ = ss.scrollback_mut().push(row);
+    assert_eq!(ss.scrollback().len(), 1);
+}
+
+#[test]
+fn screen_set_reset_preserves_scrollback() {
+    let mut ss = ScreenSet::new(80, 24);
+    let _ = ss.scrollback_mut().push(Row::new(80));
+    let _ = ss.scrollback_mut().push(Row::new(80));
+    assert_eq!(ss.scrollback().len(), 2);
+    ss.reset();
+    assert_eq!(ss.scrollback().len(), 2, "scrollback should survive reset");
+}
+
+#[test]
 fn mode_flags_set_and_get() {
     let mut modes = ModeFlags::new();
     assert!(!modes.get(25));
