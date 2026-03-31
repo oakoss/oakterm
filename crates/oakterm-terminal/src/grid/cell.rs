@@ -1,5 +1,7 @@
 /// 24-bit RGB color value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -11,7 +13,9 @@ pub struct Rgb {
 /// SGR 30-37 / 90-97 produce `Named`. SGR 38;5;N produces `Indexed` for all N
 /// (including 0-15). `Named` and `Indexed` are distinct even when they resolve
 /// to the same palette entry — implementations must not normalize between them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Color {
     #[default]
     Default,
@@ -20,7 +24,7 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(u8)]
 pub enum NamedColor {
     Black = 0,
@@ -41,7 +45,9 @@ pub enum NamedColor {
     BrightWhite = 15,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum UnderlineStyle {
     #[default]
     None,
@@ -53,7 +59,10 @@ pub enum UnderlineStyle {
 }
 
 /// Visual attributes for a cell. Stored as a bitfield for compact representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct CellFlags(u16);
 
 impl CellFlags {
@@ -101,7 +110,9 @@ impl CellFlags {
 }
 
 /// Wide character state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum WideState {
     #[default]
     Narrow,
@@ -112,12 +123,13 @@ pub enum WideState {
 }
 
 /// Opaque handle to a hyperlink URI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct HyperlinkId(pub(crate) u32);
 
 /// Heap-allocated storage for rare cell attributes. Only allocated when a cell
 /// has grapheme clusters, underline color, or hyperlinks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellExtra {
     pub(super) graphemes: Vec<char>,
     pub(super) underline_color: Option<Color>,
@@ -129,7 +141,7 @@ pub struct CellExtra {
 /// Common fields (`codepoint`, `fg`, `bg`, `flags`, `underline_style`, `wide`) are inline.
 /// Rare fields (graphemes, `underline_color`, hyperlink) live in a heap-allocated
 /// [`CellExtra`] behind `Option<Box<CellExtra>>` — null (8 bytes) when unused.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cell {
     pub codepoint: char,
     pub fg: Color,

@@ -1,6 +1,8 @@
 /// Per-row base text direction. Reserved for `BiDi` (ADR-0009).
 /// Phase 0 always uses `Ltr`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum Direction {
     #[default]
     Ltr,

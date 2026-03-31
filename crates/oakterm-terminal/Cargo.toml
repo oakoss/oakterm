@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 oakterm-common = { path = "../oakterm-common" }
+postcard.workspace = true
+serde.workspace = true
 vte = { workspace = true }
 
 [dev-dependencies]

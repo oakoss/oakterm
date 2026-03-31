@@ -47,6 +47,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Wire protocol
 prost = "0.14.3"
 
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+
 # Scroll buffer archive
 zstd = "0.13.3"
 ring = "0.17.14"

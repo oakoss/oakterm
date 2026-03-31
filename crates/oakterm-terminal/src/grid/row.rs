@@ -2,7 +2,9 @@ use super::cell::Cell;
 pub use oakterm_common::bidi::Direction;
 
 /// Shell integration semantic mark from OSC 133.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum SemanticMark {
     #[default]
     None,
@@ -13,7 +15,7 @@ pub enum SemanticMark {
 }
 
 /// Metadata attached to a semantic mark.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MarkMetadata {
     ExitCode(i32),
     WorkingDirectory(String),
@@ -22,7 +24,8 @@ pub enum MarkMetadata {
 /// Optimization hint flags for a row. Set on mutation, never cleared
 /// (clearing would require scanning all cells). Consumers must handle
 /// false positives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct RowFlags(u8);
 
 impl RowFlags {
@@ -87,6 +90,7 @@ impl RowFlags {
 }
 
 /// A horizontal sequence of cells with metadata.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     pub cells: Vec<Cell>,
     pub flags: RowFlags,
