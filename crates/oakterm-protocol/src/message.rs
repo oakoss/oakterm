@@ -520,7 +520,15 @@ impl ScrollbackData {
             data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
         let has_more = data[12] != 0;
-        let row_count = u32::from_le_bytes([data[13], data[14], data[15], data[16]]) as usize;
+        let row_count_raw = u32::from_le_bytes([data[13], data[14], data[15], data[16]]);
+        // Cap allocation to prevent OOM from malicious wire data.
+        if row_count_raw > 10_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("ScrollbackData row_count too large: {row_count_raw}"),
+            ));
+        }
+        let row_count = row_count_raw as usize;
 
         let mut offset = 17;
         let mut rows = Vec::with_capacity(row_count);

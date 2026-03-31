@@ -136,6 +136,7 @@ impl ClientGrid {
     /// Used to keep the live state current while the viewport shows scrollback.
     pub fn apply_update_while_scrolled(&mut self, update: &RenderUpdate) {
         self.seqno = update.seqno;
+        self.bg_color = [update.bg_r, update.bg_g, update.bg_b];
         let Some(snap) = &mut self.live_snapshot else {
             return;
         };
@@ -736,5 +737,71 @@ mod tests {
         assert_eq!(grid.cells[last_row_start + 10].codepoint, u32::from(b'4'));
         // Col 7 should be untouched (default black bg).
         assert_eq!(grid.cells[last_row_start + 7].bg, [0, 0, 0]);
+    }
+
+    #[test]
+    fn apply_scrollback_fewer_rows_than_offset() {
+        // Daemon returns 1 row but offset is 3. Top row 0 gets scrollback,
+        // rows 1-2 stay cleared, bottom rows come from live snapshot.
+        let mut grid = ClientGrid::new(3, 4);
+        grid.cells[0].codepoint = u32::from(b'A'); // row 0
+        grid.cells[3].codepoint = u32::from(b'B'); // row 1
+        grid.enter_scrollback();
+
+        let rows = vec![make_dirty_row(0, b"zzz")];
+        grid.apply_scrollback(&rows, 3);
+
+        // Row 0: scrollback data.
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'z'));
+        // Row 1-2: no scrollback data, cleared to default.
+        assert_eq!(grid.cells[3].codepoint, 0);
+        assert_eq!(grid.cells[6].codepoint, 0);
+        // Row 3: live snapshot row 0.
+        assert_eq!(grid.cells[9].codepoint, u32::from(b'A'));
+    }
+
+    #[test]
+    fn apply_update_while_scrolled_noop_when_not_scrolled() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cells[0].codepoint = u32::from(b'X');
+
+        let update = RenderUpdate {
+            pane_id: 0,
+            seqno: 99,
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_style: 0,
+            cursor_visible: true,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            dirty_rows: vec![make_dirty_row(0, b"NEW!")],
+        };
+        grid.apply_update_while_scrolled(&update);
+
+        // Seqno updated even when not scrolled.
+        assert_eq!(grid.seqno, 99);
+        // Visible cells unchanged (no snapshot to write to).
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'X'));
+    }
+
+    #[test]
+    fn enter_scrollback_twice_preserves_original() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.cells[0].codepoint = u32::from(b'O'); // original
+
+        grid.enter_scrollback();
+        // Overwrite visible cells (simulating scrollback display).
+        grid.cells[0].codepoint = u32::from(b'S');
+
+        // Second enter should be a no-op (not overwrite snapshot with 'S').
+        grid.enter_scrollback();
+
+        grid.exit_scrollback();
+        assert_eq!(
+            grid.cells[0].codepoint,
+            u32::from(b'O'),
+            "double enter should not overwrite original snapshot"
+        );
     }
 }
