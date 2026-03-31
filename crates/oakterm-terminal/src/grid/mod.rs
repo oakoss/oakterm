@@ -261,6 +261,8 @@ pub struct ScreenSet {
     save_alternate_scrollback: bool,
     /// Cold disk archive for rows pruned from the hot buffer.
     archive: Option<crate::scroll::archive_manager::ArchiveManager>,
+    /// Active scrollback search, if any.
+    search: Option<crate::search::SearchEngine>,
 }
 
 impl ScreenSet {
@@ -273,6 +275,7 @@ impl ScreenSet {
             scrollback: HotBuffer::default(),
             save_alternate_scrollback: true,
             archive: None,
+            search: None,
         }
     }
 
@@ -370,6 +373,32 @@ impl ScreenSet {
 
     pub fn archive_mut(&mut self) -> Option<&mut crate::scroll::archive_manager::ArchiveManager> {
         self.archive.as_mut()
+    }
+
+    #[must_use]
+    pub fn search(&self) -> Option<&crate::search::SearchEngine> {
+        self.search.as_ref()
+    }
+
+    pub fn search_mut(&mut self) -> Option<&mut crate::search::SearchEngine> {
+        self.search.as_mut()
+    }
+
+    pub fn set_search(&mut self, engine: crate::search::SearchEngine) {
+        self.search = Some(engine);
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search = None;
+    }
+
+    /// Run the current search engine against the scrollback buffer.
+    pub fn run_search(&mut self) {
+        // Split borrow: take engine out, search, put it back.
+        if let Some(mut engine) = self.search.take() {
+            engine.search(&self.scrollback);
+            self.search = Some(engine);
+        }
     }
 
     /// Push a row to the hot buffer, archiving any pruned rows to disk.

@@ -637,4 +637,94 @@ mod tests {
         let decoded = PromptPosition::decode(&frame.payload).unwrap();
         assert_eq!(decoded, msg);
     }
+
+    #[test]
+    fn search_scrollback_roundtrip() {
+        let msg = SearchScrollback {
+            pane_id: 3,
+            flags: SearchFlags(SearchFlags::REGEX),
+            query: "error.*timeout".into(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = SearchScrollback::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn search_scrollback_empty_query() {
+        let msg = SearchScrollback {
+            pane_id: 0,
+            flags: SearchFlags(0),
+            query: String::new(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = SearchScrollback::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn search_scrollback_too_short() {
+        assert!(SearchScrollback::decode(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn search_results_roundtrip() {
+        let msg = SearchResults {
+            pane_id: 1,
+            total_matches: 42,
+            active_index: Some(7),
+            active_row_offset: -100,
+            capped: false,
+            visible_matches: vec![
+                VisibleMatch {
+                    row: 5,
+                    col_start: 10,
+                    col_end: 15,
+                    is_active: true,
+                },
+                VisibleMatch {
+                    row: 8,
+                    col_start: 0,
+                    col_end: 3,
+                    is_active: false,
+                },
+            ],
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = SearchResults::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn search_results_no_matches() {
+        let msg = SearchResults {
+            pane_id: 0,
+            total_matches: 0,
+            active_index: None,
+            active_row_offset: 0,
+            capped: false,
+            visible_matches: vec![],
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = SearchResults::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn search_results_too_short() {
+        assert!(SearchResults::decode(&[0; 10]).is_err());
+    }
+
+    #[test]
+    fn search_nav_roundtrip() {
+        let msg = SearchNav { pane_id: 99 };
+        let encoded = msg.encode();
+        let decoded = SearchNav::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn search_nav_too_short() {
+        assert!(SearchNav::decode(&[0; 2]).is_err());
+    }
 }

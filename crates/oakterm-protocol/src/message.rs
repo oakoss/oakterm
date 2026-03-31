@@ -26,6 +26,13 @@ pub const MSG_SCROLLBACK_DATA: u16 = 0x74;
 pub const MSG_FIND_PROMPT: u16 = 0x75;
 pub const MSG_PROMPT_POSITION: u16 = 0x76;
 
+// GUI — search (0x77-0x7B).
+pub const MSG_SEARCH_SCROLLBACK: u16 = 0x77;
+pub const MSG_SEARCH_RESULTS: u16 = 0x78;
+pub const MSG_SEARCH_NEXT: u16 = 0x79;
+pub const MSG_SEARCH_PREV: u16 = 0x7A;
+pub const MSG_SEARCH_CLOSE: u16 = 0x7B;
+
 // GUI — notifications (0x80-0x8F).
 pub const MSG_TITLE_CHANGED: u16 = 0x80;
 pub const MSG_SET_CLIPBOARD: u16 = 0x81;
@@ -665,5 +672,208 @@ impl PromptPosition {
     /// Returns an error if frame construction fails.
     pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
         Frame::new(MSG_PROMPT_POSITION, serial, self.encode())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Search messages
+// ---------------------------------------------------------------------------
+
+/// Search mode flags packed into a single byte.
+///
+/// Bit 0: regex mode. Bit 1: force case-sensitive (overrides smart case).
+/// When both bits are 0, smart case is used for literal search.
+/// When both are set, regex takes precedence; case sensitivity is
+/// controlled by the pattern itself (e.g. `(?i)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchFlags(pub u8);
+
+impl SearchFlags {
+    pub const REGEX: u8 = 1 << 0;
+    pub const CASE_SENSITIVE: u8 = 1 << 1;
+
+    #[must_use]
+    pub const fn regex(self) -> bool {
+        self.0 & Self::REGEX != 0
+    }
+
+    #[must_use]
+    pub const fn case_sensitive(self) -> bool {
+        self.0 & Self::CASE_SENSITIVE != 0
+    }
+}
+
+/// `SearchScrollback` (0x77): client requests a scrollback search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchScrollback {
+    pub pane_id: u32,
+    pub flags: SearchFlags,
+    pub query: String,
+}
+
+impl SearchScrollback {
+    /// # Errors
+    /// Returns an error if the query string is too long.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(7 + self.query.len());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.push(self.flags.0);
+        encode_str(&mut buf, &self.query)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SearchScrollback too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let flags = SearchFlags(data[4]);
+        let (query, _) = decode_str(data, 5, "search query")?;
+        Ok(Self {
+            pane_id,
+            flags,
+            query,
+        })
+    }
+}
+
+/// A match visible in the current viewport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleMatch {
+    /// Viewport row (0 = top of viewport).
+    pub row: u16,
+    /// Column of match start.
+    pub col_start: u16,
+    /// Column of match end (exclusive).
+    pub col_end: u16,
+    /// Whether this is the currently active (selected) match.
+    pub is_active: bool,
+}
+
+/// `SearchResults` (0x78): daemon responds with search results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResults {
+    pub pane_id: u32,
+    pub total_matches: u32,
+    /// Index of the active match, or `None` if no matches.
+    pub active_index: Option<u32>,
+    /// Scroll offset to show the active match (negative = scrolled up).
+    pub active_row_offset: i64,
+    /// True if the search hit the match cap and stopped early.
+    pub capped: bool,
+    pub visible_matches: Vec<VisibleMatch>,
+}
+
+impl SearchResults {
+    /// # Errors
+    ///
+    /// Returns an error if `visible_matches` exceeds `u16::MAX` entries.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let count: u16 = self.visible_matches.len().try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "visible_matches exceeds u16")
+        })?;
+        let mut buf = Vec::with_capacity(23 + self.visible_matches.len() * 7);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.total_matches.to_le_bytes());
+        buf.extend_from_slice(&self.active_index.unwrap_or(u32::MAX).to_le_bytes());
+        buf.extend_from_slice(&self.active_row_offset.to_le_bytes());
+        buf.push(u8::from(self.capped));
+        buf.extend_from_slice(&count.to_le_bytes());
+        for m in &self.visible_matches {
+            buf.extend_from_slice(&m.row.to_le_bytes());
+            buf.extend_from_slice(&m.col_start.to_le_bytes());
+            buf.extend_from_slice(&m.col_end.to_le_bytes());
+            buf.push(u8::from(m.is_active));
+        }
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 23 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SearchResults too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let total_matches = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let raw_active = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        let active_index = if raw_active == u32::MAX {
+            None
+        } else {
+            Some(raw_active)
+        };
+        let active_row_offset = i64::from_le_bytes([
+            data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19],
+        ]);
+        let capped = data[20] != 0;
+        let match_count = u16::from_le_bytes([data[21], data[22]]) as usize;
+        let mut visible_matches = Vec::with_capacity(match_count);
+        let mut offset = 23;
+        for _ in 0..match_count {
+            if data.len() < offset + 7 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "SearchResults visible match truncated",
+                ));
+            }
+            visible_matches.push(VisibleMatch {
+                row: u16::from_le_bytes([data[offset], data[offset + 1]]),
+                col_start: u16::from_le_bytes([data[offset + 2], data[offset + 3]]),
+                col_end: u16::from_le_bytes([data[offset + 4], data[offset + 5]]),
+                is_active: data[offset + 6] != 0,
+            });
+            offset += 7;
+        }
+        Ok(Self {
+            pane_id,
+            total_matches,
+            active_index,
+            active_row_offset,
+            capped,
+            visible_matches,
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_SEARCH_RESULTS, serial, self.encode()?)
+    }
+}
+
+/// Payload for `SearchNext` (0x79) and `SearchPrev` (0x7A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchNav {
+    pub pane_id: u32,
+}
+
+impl SearchNav {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SearchNav too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
     }
 }

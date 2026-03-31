@@ -118,6 +118,52 @@ fn row_flags_optimization_hints() {
 }
 
 #[test]
+fn row_text_ascii() {
+    let mut row = Row::new(5);
+    row.cells[0].codepoint = 'H';
+    row.cells[1].codepoint = 'e';
+    row.cells[2].codepoint = 'l';
+    row.cells[3].codepoint = 'l';
+    row.cells[4].codepoint = 'o';
+    assert_eq!(row.text(), "Hello");
+}
+
+#[test]
+fn row_text_trailing_nulls_trimmed() {
+    let row = Row::new(3);
+    assert_eq!(row.text(), "");
+}
+
+#[test]
+fn row_text_inner_spaces_preserved() {
+    let mut row = Row::new(5);
+    row.cells[0].codepoint = 'a';
+    row.cells[2].codepoint = 'b';
+    // cells[1] is null (becomes space), cells[3-4] are trailing nulls (trimmed)
+    assert_eq!(row.text(), "a b");
+}
+
+#[test]
+fn row_text_wide_char_skips_continuation() {
+    let mut row = Row::new(4);
+    row.cells[0].codepoint = '漢';
+    row.cells[0].wide = cell::WideState::Wide;
+    row.cells[1].wide = cell::WideState::WideCont;
+    row.cells[2].codepoint = 'A';
+    row.cells[3].codepoint = 'B';
+    assert_eq!(row.text(), "漢AB");
+}
+
+#[test]
+fn row_text_grapheme_cluster() {
+    let mut row = Row::new(2);
+    row.cells[0].codepoint = 'e';
+    row.cells[0].push_grapheme('\u{0301}'); // combining acute
+    row.cells[1].codepoint = 'x';
+    assert_eq!(row.text(), "e\u{0301}x");
+}
+
+#[test]
 fn grid_new_dimensions() {
     let grid = Grid::new(80, 24);
     assert_eq!(grid.cols, 80);

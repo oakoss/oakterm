@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 oakterm-common = { path = "../oakterm-common" }
 postcard.workspace = true
+regex.workspace = true
 ring.workspace = true
 rustix.workspace = true
 serde.workspace = true

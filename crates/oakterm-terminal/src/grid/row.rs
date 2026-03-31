@@ -143,4 +143,33 @@ impl Row {
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize_with(cols, Cell::default);
     }
+
+    /// Extract the text content of this row as a `String`.
+    ///
+    /// Wide character continuation cells are skipped, so byte offsets
+    /// in the returned string do not correspond 1:1 to column indices.
+    /// Grapheme cluster extra codepoints are appended after the base
+    /// codepoint. Null codepoints (empty cells) become spaces, but
+    /// trailing spaces from unwritten cells are trimmed.
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut s = String::with_capacity(self.cells.len());
+        for cell in &self.cells {
+            if cell.wide == super::cell::WideState::WideCont {
+                continue;
+            }
+            let cp = cell.codepoint;
+            if cp == '\0' {
+                s.push(' ');
+            } else {
+                s.push(cp);
+                for &g in cell.graphemes() {
+                    s.push(g);
+                }
+            }
+        }
+        let trimmed = s.trim_end_matches(' ').len();
+        s.truncate(trimmed);
+        s
+    }
 }

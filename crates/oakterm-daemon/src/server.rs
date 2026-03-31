@@ -8,8 +8,9 @@ use oakterm_protocol::message::{
     Bell, ClientHello, ErrorCode, ErrorMessage, FindPrompt, GetScrollback, HandshakeStatus,
     MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE,
     MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE,
-    MSG_RESIZE, MSG_SCROLLBACK_DATA, PaneExited, PromptPosition, ScrollbackData, SearchDirection,
-    ServerHello, TitleChanged,
+    MSG_RESIZE, MSG_SCROLLBACK_DATA, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT, MSG_SEARCH_PREV,
+    MSG_SEARCH_SCROLLBACK, PaneExited, PromptPosition, ScrollbackData, SearchDirection, SearchNav,
+    SearchResults, SearchScrollback, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::cell::{Color, Rgb};
@@ -860,6 +861,80 @@ async fn handle_request(
                 }
             }
         }
+        MSG_SEARCH_SCROLLBACK => {
+            let Ok(req) = SearchScrollback::decode(&frame.payload) else {
+                warn!(conn_id, "malformed SearchScrollback payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed SearchScrollback",
+                );
+            };
+            let mode = if req.flags.regex() {
+                oakterm_terminal::search::SearchMode::Regex
+            } else if req.flags.case_sensitive() {
+                oakterm_terminal::search::SearchMode::CaseSensitive
+            } else {
+                oakterm_terminal::search::SearchMode::SmartCase
+            };
+            let engine = match oakterm_terminal::search::SearchEngine::new(&req.query, mode) {
+                Ok(e) => e,
+                Err(e) => {
+                    return make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::MalformedPayload,
+                        &format!("invalid search pattern: {e}"),
+                    );
+                }
+            };
+            let mut s = screens.lock().await;
+            s.set_search(engine);
+            s.run_search();
+            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+        }
+        MSG_SEARCH_NEXT => {
+            let Ok(req) = SearchNav::decode(&frame.payload) else {
+                warn!(conn_id, "malformed SearchNext payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed SearchNext",
+                );
+            };
+            let mut s = screens.lock().await;
+            if let Some(engine) = s.search_mut() {
+                engine.next();
+            } else {
+                warn!(conn_id, "SearchNext with no active search");
+            }
+            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+        }
+        MSG_SEARCH_PREV => {
+            let Ok(req) = SearchNav::decode(&frame.payload) else {
+                warn!(conn_id, "malformed SearchPrev payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed SearchPrev",
+                );
+            };
+            let mut s = screens.lock().await;
+            if let Some(engine) = s.search_mut() {
+                engine.prev();
+            } else {
+                warn!(conn_id, "SearchPrev with no active search");
+            }
+            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+        }
+        MSG_SEARCH_CLOSE => {
+            // Idempotent, no payload — fire and forget.
+            screens.lock().await.clear_search();
+            RequestResult::NoResponse
+        }
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
             Ok(f) => RequestResult::Response(f),
             Err(e) => {
@@ -1004,8 +1079,57 @@ fn archive_base_dir() -> std::path::PathBuf {
     }
 }
 
-/// Scan `HotBuffer` for the next `PromptStart` mark relative to `from_offset`.
-///
+#[allow(clippy::cast_possible_wrap)]
+fn build_search_response(
+    conn_id: u64,
+    screens: &oakterm_terminal::grid::ScreenSet,
+    pane_id: u32,
+    serial: u32,
+) -> RequestResult {
+    let (total_matches, active_index, active_row_offset, capped) = match screens.search() {
+        Some(engine) => {
+            let total = u32::try_from(engine.match_count()).unwrap_or(u32::MAX);
+            let (idx, offset) = match engine.active_match() {
+                Some(m) => {
+                    let buf_len = screens.scrollback().len();
+                    let neg_offset = m.row as i64 - buf_len as i64;
+                    (
+                        engine
+                            .active_index()
+                            .map(|i| u32::try_from(i).unwrap_or(u32::MAX)),
+                        neg_offset,
+                    )
+                }
+                None => (None, 0),
+            };
+            (total, idx, offset, engine.is_capped())
+        }
+        None => (0, None, 0, false),
+    };
+
+    let response = SearchResults {
+        pane_id,
+        total_matches,
+        active_index,
+        active_row_offset,
+        capped,
+        visible_matches: Vec::new(),
+    };
+
+    match response.to_frame(serial) {
+        Ok(f) => RequestResult::Response(f),
+        Err(e) => {
+            error!(conn_id, error = %e, "failed to create SearchResults frame");
+            make_error_response(
+                conn_id,
+                serial,
+                ErrorCode::InternalError,
+                "SearchResults frame error",
+            )
+        }
+    }
+}
+
 /// Returns `Some(negative_offset)` if found, `None` otherwise. The offset
 /// uses the same coordinate space as `GetScrollback.start_row`.
 fn find_prompt_in_buffer(

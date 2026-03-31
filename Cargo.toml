@@ -79,6 +79,9 @@ rustix = { version = "1.1.4", features = [
   "stdio",
 ] }
 
+# Search
+regex = "1"
+
 # VT parser
 vte = { version = "0.15.0", features = ["ansi"] }
 
