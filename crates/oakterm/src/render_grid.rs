@@ -38,6 +38,7 @@ struct LiveSnapshot {
     cursor_x: u16,
     cursor_y: u16,
     cursor_visible: bool,
+    cursor_style: u8,
 }
 
 /// Client-side grid state maintained from `RenderUpdate` messages.
@@ -48,6 +49,8 @@ pub struct ClientGrid {
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_visible: bool,
+    /// Wire-encoded cursor style (0-5). See `CursorStyle::to_wire`.
+    pub cursor_style: u8,
     pub seqno: u64,
     /// Dynamic background color from daemon (OSC 11 or default).
     pub bg_color: [u8; 3],
@@ -65,6 +68,7 @@ impl ClientGrid {
             cursor_x: 0,
             cursor_y: 0,
             cursor_visible: true,
+            cursor_style: 0,
             seqno: 0,
             bg_color: [0, 0, 0],
             live_snapshot: None,
@@ -76,6 +80,7 @@ impl ClientGrid {
         self.cursor_x = update.cursor_x;
         self.cursor_y = update.cursor_y;
         self.cursor_visible = update.cursor_visible;
+        self.cursor_style = update.cursor_style;
         self.bg_color = [update.bg_r, update.bg_g, update.bg_b];
         self.seqno = update.seqno;
 
@@ -119,6 +124,7 @@ impl ClientGrid {
             cursor_x: self.cursor_x,
             cursor_y: self.cursor_y,
             cursor_visible: self.cursor_visible,
+            cursor_style: self.cursor_style,
         });
     }
 
@@ -129,6 +135,7 @@ impl ClientGrid {
             self.cursor_x = snap.cursor_x;
             self.cursor_y = snap.cursor_y;
             self.cursor_visible = snap.cursor_visible;
+            self.cursor_style = snap.cursor_style;
         }
     }
 
@@ -143,6 +150,7 @@ impl ClientGrid {
         snap.cursor_x = update.cursor_x;
         snap.cursor_y = update.cursor_y;
         snap.cursor_visible = update.cursor_visible;
+        snap.cursor_style = update.cursor_style;
 
         let cols = usize::from(self.cols);
         let rows = usize::from(self.rows);
@@ -231,6 +239,11 @@ impl ClientGrid {
         }
     }
 
+    /// Whether the cursor is a block shape (reverse video in bg/fg).
+    fn is_block_cursor(&self) -> bool {
+        self.cursor_style == 0 || self.cursor_style == 1
+    }
+
     /// Linear cell index of the cursor, if visible and in-bounds.
     fn cursor_cell_index(&self) -> Option<usize> {
         if self.cursor_visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
@@ -241,10 +254,14 @@ impl ClientGrid {
     }
 
     /// Build the packed ABGR background color array for the GPU pipeline.
-    /// The cursor cell uses reverse video (fg color as bg) when visible.
+    /// Block cursor uses reverse video (fg as bg). Underline/bar leave bg unchanged.
     #[must_use]
     pub fn bg_colors(&self) -> Vec<u32> {
-        let cursor_idx = self.cursor_cell_index();
+        let cursor_idx = if self.is_block_cursor() {
+            self.cursor_cell_index()
+        } else {
+            None
+        };
 
         self.cells
             .iter()
@@ -273,7 +290,12 @@ impl ClientGrid {
         let mut uploads = Vec::new();
         let mut dropped = 0u32;
 
-        let cursor_idx = self.cursor_cell_index();
+        // Only block cursors reverse fg/bg in the glyph pass.
+        let cursor_idx = if self.is_block_cursor() {
+            self.cursor_cell_index()
+        } else {
+            None
+        };
 
         for row in 0..usize::from(self.rows) {
             for col in 0..usize::from(self.cols) {

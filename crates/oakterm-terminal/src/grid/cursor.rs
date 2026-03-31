@@ -10,6 +10,48 @@ pub enum CursorStyle {
     SteadyBar,
 }
 
+impl CursorStyle {
+    /// Wire encoding for the protocol.
+    #[must_use]
+    pub fn to_wire(self) -> u8 {
+        match self {
+            Self::BlinkingBlock => 0,
+            Self::SteadyBlock => 1,
+            Self::BlinkingUnderline => 2,
+            Self::SteadyUnderline => 3,
+            Self::BlinkingBar => 4,
+            Self::SteadyBar => 5,
+        }
+    }
+
+    /// Whether this style blinks.
+    #[must_use]
+    pub fn is_blinking(self) -> bool {
+        matches!(
+            self,
+            Self::BlinkingBlock | Self::BlinkingUnderline | Self::BlinkingBar
+        )
+    }
+
+    /// The shape category (block, underline, or bar).
+    #[must_use]
+    pub fn shape(self) -> CursorShape {
+        match self {
+            Self::BlinkingBlock | Self::SteadyBlock => CursorShape::Block,
+            Self::BlinkingUnderline | Self::SteadyUnderline => CursorShape::Underline,
+            Self::BlinkingBar | Self::SteadyBar => CursorShape::Bar,
+        }
+    }
+}
+
+/// Cursor shape without blink state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Block,
+    Underline,
+    Bar,
+}
+
 /// Terminal cursor state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
