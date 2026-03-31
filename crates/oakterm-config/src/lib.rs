@@ -5,10 +5,12 @@
 //! are bounded, and `print` is redirected to stderr.
 
 mod event;
+mod keybind;
 mod proxy;
 mod schema;
 
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
+pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId};
 pub use mlua::Lua;
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{ConfigValues, CursorStyle, Padding};
