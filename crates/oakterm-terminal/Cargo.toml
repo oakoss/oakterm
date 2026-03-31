@@ -13,6 +13,7 @@ postcard.workspace = true
 ring.workspace = true
 rustix.workspace = true
 serde.workspace = true
+tracing.workspace = true
 vte = { workspace = true }
 zstd.workspace = true
 

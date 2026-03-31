@@ -1,5 +1,5 @@
 use oakterm_daemon::server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -15,13 +15,26 @@ fn main() {
 
     let persist = std::env::args().any(|a| a == "--persist");
 
+    let config = oakterm_config::load_config();
+    if let Some(err) = &config.error {
+        warn!("config error (using defaults): {err}");
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
         let mut daemon = server::Daemon::new(80, 24).expect("failed to create daemon");
         daemon.set_persist(persist);
+
+        if config.config.scrollback_archive {
+            daemon.set_archive_config(server::ArchiveConfig {
+                max_bytes: config.config.scrollback_archive_limit,
+            });
+        }
+
         info!(
             path = %daemon.socket_path().display(),
             persist,
+            archive = config.config.scrollback_archive,
             "daemon listening",
         );
         if let Err(e) = daemon.run().await {

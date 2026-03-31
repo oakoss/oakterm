@@ -205,6 +205,12 @@ impl ArchiveManager {
         self.disk_bytes
     }
 
+    /// The session directory path.
+    #[must_use]
+    pub fn session_dir(&self) -> &Path {
+        &self.session_dir
+    }
+
     /// Whether archiving is paused due to low disk space.
     #[must_use]
     pub fn is_paused(&self) -> bool {
@@ -219,10 +225,13 @@ impl ArchiveManager {
     pub fn shutdown(&mut self) -> io::Result<()> {
         // Flush pending rows and finalize the active segment if possible.
         // Errors are non-fatal — we still clean up the directory.
-        let _ = self.flush_pending();
+        if let Err(e) = self.flush_pending() {
+            tracing::warn!(error = %e, "flush_pending failed during shutdown");
+        }
         if let Some(writer) = self.active_writer.take() {
-            if let Ok((_, key)) = writer.finalize() {
-                self.key = Some(key);
+            match writer.finalize() {
+                Ok((_, key)) => self.key = Some(key),
+                Err(e) => tracing::warn!(error = %e, "segment finalization failed during shutdown"),
             }
         }
         if self.session_dir.exists() {
@@ -235,6 +244,11 @@ impl ArchiveManager {
     }
 
     /// Delete orphaned archive directories that don't match the current session.
+    ///
+    /// Session directories are named `{pid}-{timestamp}`. On Unix, the PID
+    /// prefix is checked for liveness before deleting. Directories with
+    /// unrecognised names are left alone.
+    ///
     /// Continues past individual deletion failures, returning the last error.
     ///
     /// # Errors
@@ -257,10 +271,16 @@ impl ArchiveManager {
             let Some(name_str) = name.to_str() else {
                 continue;
             };
-            if name_str != current_session && entry.file_type().is_ok_and(|t| t.is_dir()) {
-                if let Err(e) = fs::remove_dir_all(entry.path()) {
-                    last_error = Some(e);
-                }
+            if name_str == current_session || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            // Skip directories whose owning process is still alive.
+            #[cfg(unix)]
+            if pid_is_alive(name_str) {
+                continue;
+            }
+            if let Err(e) = fs::remove_dir_all(entry.path()) {
+                last_error = Some(e);
             }
         }
         match last_error {
@@ -344,6 +364,22 @@ impl ArchiveManager {
 /// Estimate serialized size of a row (for batching decisions).
 fn estimate_row_bytes(row: &Row) -> usize {
     std::mem::size_of::<Row>() + row.cells.len() * std::mem::size_of::<crate::grid::cell::Cell>()
+}
+
+/// Check whether the process encoded in a `{pid}-{timestamp}` dir name is alive.
+/// Returns `true` (assume alive) if the name doesn't match the expected format.
+#[cfg(unix)]
+fn pid_is_alive(dir_name: &str) -> bool {
+    let Some(pid_str) = dir_name.split('-').next() else {
+        return true;
+    };
+    let Ok(raw_pid) = pid_str.parse::<i32>() else {
+        return true;
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+        return true;
+    };
+    rustix::process::test_kill_process(pid).is_ok()
 }
 
 /// Check if the filesystem has enough free space for archiving.
@@ -514,14 +550,31 @@ mod tests {
     fn cleanup_orphans_deletes_stale() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path();
-        fs::create_dir_all(base.join("current-session")).unwrap();
-        fs::create_dir_all(base.join("old-session")).unwrap();
-        fs::write(base.join("old-session/segment-0000.bin"), b"data").unwrap();
+        // Use {pid}-{timestamp} format. PID 999999999 won't be running.
+        let current = "12345-1000000";
+        let stale = "999999999-900000";
+        fs::create_dir_all(base.join(current)).unwrap();
+        fs::create_dir_all(base.join(stale)).unwrap();
+        fs::write(base.join(format!("{stale}/segment-0000.bin")), b"data").unwrap();
 
-        ArchiveManager::cleanup_orphans(base, "current-session").unwrap();
+        ArchiveManager::cleanup_orphans(base, current).unwrap();
 
-        assert!(base.join("current-session").exists());
-        assert!(!base.join("old-session").exists());
+        assert!(base.join(current).exists());
+        assert!(!base.join(stale).exists());
+    }
+
+    #[test]
+    fn cleanup_orphans_skips_unrecognised_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let current = "12345-1000000";
+        fs::create_dir_all(base.join(current)).unwrap();
+        fs::create_dir_all(base.join("not-a-pid")).unwrap();
+
+        ArchiveManager::cleanup_orphans(base, current).unwrap();
+
+        // Unrecognised name should be left alone.
+        assert!(base.join("not-a-pid").exists());
     }
 
     #[test]

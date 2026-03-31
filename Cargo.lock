@@ -1915,6 +1915,7 @@ name = "oakterm-daemon"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "oakterm-config",
  "oakterm-protocol",
  "oakterm-pty",
  "oakterm-terminal",
@@ -1970,6 +1971,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "tempfile",
+ "tracing",
  "vte",
  "zstd",
 ]

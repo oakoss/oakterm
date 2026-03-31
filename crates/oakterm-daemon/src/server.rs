@@ -50,6 +50,12 @@ enum PtyState {
     Exited { exit_code: i32 },
 }
 
+/// Configuration for the cold disk scrollback archive.
+pub struct ArchiveConfig {
+    /// Maximum archive size in bytes.
+    pub max_bytes: u64,
+}
+
 /// Daemon state shared across tasks.
 pub struct Daemon {
     screens: Arc<Mutex<ScreenSet>>,
@@ -59,6 +65,8 @@ pub struct Daemon {
     /// When false (default), the daemon exits after the last client disconnects.
     /// When true, the daemon stays running with zero clients (headless/persist mode).
     persist: bool,
+    /// When `Some`, cold disk archiving is enabled with the given limits.
+    archive_config: Option<ArchiveConfig>,
 }
 
 impl Daemon {
@@ -80,6 +88,7 @@ impl Daemon {
             dirty_rx,
             socket_path,
             persist: false,
+            archive_config: None,
         }
     }
 
@@ -88,12 +97,48 @@ impl Daemon {
         self.persist = persist;
     }
 
+    pub fn set_archive_config(&mut self, config: ArchiveConfig) {
+        self.archive_config = Some(config);
+    }
+
     /// Listen for connections. The PTY spawns on the first client Resize
     /// so the shell starts at the correct dimensions.
     ///
     /// # Errors
     /// Returns an error if the listener fails to start.
     pub async fn run(&self) -> io::Result<()> {
+        // Set up cold disk archive if configured.
+        if let Some(config) = &self.archive_config {
+            let pid = std::process::id();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let session_id = format!("{pid}-{ts}");
+            let base_dir = archive_base_dir();
+            if let Err(e) =
+                oakterm_terminal::scroll::archive_manager::ArchiveManager::cleanup_orphans(
+                    &base_dir,
+                    &session_id,
+                )
+            {
+                warn!(error = %e, "failed to clean up orphaned archive dirs");
+            }
+            let session_dir = base_dir.join(&session_id).join("scrollback-0");
+            match oakterm_terminal::scroll::archive_manager::ArchiveManager::new(
+                session_dir,
+                config.max_bytes,
+            ) {
+                Ok(mgr) => {
+                    self.screens.lock().await.set_archive(mgr);
+                    info!("scrollback archive enabled");
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to create scrollback archive, continuing without");
+                }
+            }
+        }
+
         if self.socket_path.exists() {
             std::fs::remove_file(&self.socket_path)?;
         }
@@ -143,6 +188,25 @@ impl Daemon {
                 _ = shutdown_rx.wait_for(|&v| v) => {
                     info!("last client disconnected, shutting down");
                     break;
+                }
+            }
+        }
+
+        // Shut down the archive if configured.
+        if let Some(archive) = self.screens.lock().await.archive_mut() {
+            let parent = archive
+                .session_dir()
+                .parent()
+                .map(std::path::Path::to_path_buf);
+            if let Err(e) = archive.shutdown() {
+                warn!(error = %e, "archive shutdown failed");
+            }
+            // Parent should be empty after shutdown removed the scrollback subdirectory.
+            if let Some(p) = parent {
+                if let Err(e) = std::fs::remove_dir(&p) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!(error = %e, path = %p.display(), "failed to remove session directory");
+                    }
                 }
             }
         }
@@ -909,6 +973,34 @@ impl std::io::Write for FdWriter<'_> {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Resolve the base directory for scrollback archive files.
+///
+/// macOS: `$TMPDIR/oakterm-{uid}`. Linux: `$XDG_RUNTIME_DIR/oakterm`
+/// (falls back to `$TMPDIR/oakterm-{uid}`).
+fn archive_base_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+        let uid = rustix::process::getuid().as_raw();
+        std::path::PathBuf::from(tmpdir).join(format!("oakterm-{uid}"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+            std::path::PathBuf::from(xdg).join("oakterm")
+        } else {
+            let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+            let uid = rustix::process::getuid().as_raw();
+            std::path::PathBuf::from(tmpdir).join(format!("oakterm-{uid}"))
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        // No per-user isolation — unsupported platform, exists for compilation only.
+        std::env::temp_dir().join("oakterm")
     }
 }
 

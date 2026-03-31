@@ -259,6 +259,8 @@ pub struct ScreenSet {
     /// When true (default), rows scrolling off the alternate screen top
     /// go to the primary scrollback buffer.
     save_alternate_scrollback: bool,
+    /// Cold disk archive for rows pruned from the hot buffer.
+    archive: Option<crate::scroll::archive_manager::ArchiveManager>,
 }
 
 impl ScreenSet {
@@ -270,6 +272,7 @@ impl ScreenSet {
             alternate: None,
             scrollback: HotBuffer::default(),
             save_alternate_scrollback: true,
+            archive: None,
         }
     }
 
@@ -356,6 +359,31 @@ impl ScreenSet {
         self.save_alternate_scrollback = save;
     }
 
+    pub fn set_archive(&mut self, mgr: crate::scroll::archive_manager::ArchiveManager) {
+        self.archive = Some(mgr);
+    }
+
+    #[must_use]
+    pub fn archive(&self) -> Option<&crate::scroll::archive_manager::ArchiveManager> {
+        self.archive.as_ref()
+    }
+
+    pub fn archive_mut(&mut self) -> Option<&mut crate::scroll::archive_manager::ArchiveManager> {
+        self.archive.as_mut()
+    }
+
+    /// Push a row to the hot buffer, archiving any pruned rows to disk.
+    pub fn push_to_scrollback(&mut self, row: Row) {
+        let pruned = self.scrollback.push(row);
+        if !pruned.is_empty() {
+            if let Some(archive) = &mut self.archive {
+                if let Err(e) = archive.archive_rows(pruned) {
+                    tracing::warn!(error = %e, "failed to archive pruned rows");
+                }
+            }
+        }
+    }
+
     /// Full terminal reset: switch to primary, drop alternate, reset primary.
     /// Scrollback is preserved (matches xterm RIS behavior).
     pub fn reset(&mut self) {
@@ -371,13 +399,13 @@ impl ScreenSet {
     pub fn resize_all(&mut self, cols: u16, rows: u16) {
         let captured = self.primary.resize(cols, rows);
         for row in captured {
-            let _ = self.scrollback.push(row);
+            self.push_to_scrollback(row);
         }
         if let Some(alt) = &mut self.alternate {
             let alt_captured = alt.resize(cols, rows);
             if self.save_alternate_scrollback {
                 for row in alt_captured {
-                    let _ = self.scrollback.push(row);
+                    self.push_to_scrollback(row);
                 }
             }
         }

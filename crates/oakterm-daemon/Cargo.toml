@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+oakterm-config = { path = "../oakterm-config" }
 oakterm-protocol = { path = "../oakterm-protocol" }
 oakterm-pty = { path = "../oakterm-pty" }
 oakterm-terminal = { path = "../oakterm-terminal" }

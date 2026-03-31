@@ -57,7 +57,7 @@ impl TermTarget for ScreenSet {
             return;
         }
         for row in rows {
-            let _pruned = self.scrollback_mut().push(row);
+            self.push_to_scrollback(row);
         }
     }
     fn reset(&mut self) {
