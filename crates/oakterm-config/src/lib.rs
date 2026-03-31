@@ -221,6 +221,13 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         // Defaults are also populated in with_defaults() as a safety net.
     }
 
+    // Install sandboxed require() for multi-file configs.
+    if let Some(parent) = path.parent() {
+        if let Err(e) = install_require(&lua, parent) {
+            eprintln!("warning: failed to install require(): {e}");
+        }
+    }
+
     if let Err(e) = lua.load(&source).set_name(path.to_string_lossy()).exec() {
         // Remove eval hook before returning — handlers need their own hook.
         lua.remove_hook();
@@ -255,6 +262,140 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
             error: Some(format_config_error(path, &e)),
         },
     }
+}
+
+/// Registry key for the module cache table used by sandboxed `require()`.
+const MODULE_CACHE_KEY: &str = "__oakterm_module_cache";
+
+/// Registry key for the sentinel table used to detect circular requires.
+/// A unique Lua table (not a string) avoids collisions with module return values.
+const CIRCULAR_SENTINEL_KEY: &str = "__oakterm_circular_sentinel";
+
+/// Install a sandboxed `require()` function that resolves modules relative
+/// to the config directory. Prevents path traversal and symlink escapes.
+///
+/// # Errors
+///
+/// Returns an error if the function cannot be registered.
+fn install_require(lua: &Lua, config_dir: &Path) -> mlua::Result<()> {
+    lua.set_named_registry_value(MODULE_CACHE_KEY, lua.create_table()?)?;
+    // Unique table as circular-require sentinel (identity comparison, no
+    // string collision possible).
+    lua.set_named_registry_value(CIRCULAR_SENTINEL_KEY, lua.create_table()?)?;
+
+    let config_dir = config_dir.to_path_buf();
+    let require_fn = lua.create_function(move |lua, name: mlua::String| {
+        let name_str = name.to_str()?;
+        validate_module_name(&name_str)?;
+
+        // Check cache.
+        let cache: mlua::Table = lua.named_registry_value(MODULE_CACHE_KEY)?;
+        let sentinel: mlua::Table = lua.named_registry_value(CIRCULAR_SENTINEL_KEY)?;
+        if let Some(cached) = cache.get::<Option<Value>>(name_str.as_ref())? {
+            if let Value::Table(ref t) = cached {
+                if t == &sentinel {
+                    // Circular require: return true as placeholder.
+                    return Ok(Value::Boolean(true));
+                }
+            }
+            return Ok(cached);
+        }
+
+        // Resolve path.
+        let relative = name_str.replace('.', std::path::MAIN_SEPARATOR_STR);
+        let lua_path = config_dir.join(format!("{relative}.lua"));
+        let init_path = config_dir.join(&relative).join("init.lua");
+
+        let resolved = if lua_path.exists() {
+            lua_path
+        } else if init_path.exists() {
+            init_path
+        } else {
+            return Err(mlua::Error::RuntimeError(format!(
+                "module '{name_str}' not found"
+            )));
+        };
+
+        // Security: verify resolved path stays within config directory.
+        let canonical_resolved = resolved.canonicalize().map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot resolve module '{name_str}': {e}"))
+        })?;
+        let canonical_config = config_dir.canonicalize().map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot resolve config directory: {e}"))
+        })?;
+        if !canonical_resolved.starts_with(&canonical_config) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "module '{name_str}' escapes config directory"
+            )));
+        }
+
+        // Read source.
+        let source = std::fs::read_to_string(&resolved).map_err(|e| {
+            mlua::Error::RuntimeError(format!("cannot read module '{name_str}': {e}"))
+        })?;
+
+        // Set sentinel in cache before evaluation (circular require protection).
+        cache.set(name_str.as_ref(), sentinel)?;
+
+        // Evaluate module. Syntax/runtime errors propagate directly — never
+        // mask as "not found" (Neovim's biggest mistake).
+        let result: Value = match lua
+            .load(&source)
+            .set_name(resolved.to_string_lossy())
+            .eval()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                // Remove sentinel so future requires re-report the error.
+                let _ = cache.set(name_str.as_ref(), Value::Nil);
+                return Err(e);
+            }
+        };
+
+        // Cache and return. Modules returning nil are cached as true
+        // (Lua convention: distinguish "loaded" from "not loaded").
+        // Return the same value on first and subsequent loads.
+        let to_cache = if result == Value::Nil {
+            Value::Boolean(true)
+        } else {
+            result.clone()
+        };
+        cache.set(name_str.as_ref(), to_cache.clone())?;
+
+        Ok(to_cache)
+    })?;
+
+    lua.globals().set("require", require_fn)?;
+    Ok(())
+}
+
+/// Validate a module name as dot-separated Lua identifiers.
+fn validate_module_name(name: &str) -> mlua::Result<()> {
+    if name.is_empty() {
+        return Err(mlua::Error::RuntimeError(
+            "invalid module name: empty string".to_string(),
+        ));
+    }
+    for segment in name.split('.') {
+        if segment.is_empty() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid module name '{name}': empty segment"
+            )));
+        }
+        let mut chars = segment.chars();
+        let first = chars.next().unwrap();
+        if !first.is_ascii_alphabetic() && first != '_' {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid module name '{name}': segment '{segment}' must start with a letter or underscore"
+            )));
+        }
+        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid module name '{name}': segment '{segment}' contains invalid characters"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Register default keybinds via Lua before user config runs.
@@ -709,5 +850,175 @@ mod tests {
         let chord = KeyChord::parse("ctrl+c").unwrap();
         let action = r.keybinds.lookup(&chord).unwrap();
         assert!(matches!(action, Action::ReloadConfig));
+    }
+
+    // --- require() tests ---
+
+    #[test]
+    fn require_resolves_lua_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("helpers.lua"), "return 42").unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_result = require("helpers")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let val: i64 = lua.load("return _result").eval().unwrap();
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn require_resolves_dotted_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        std::fs::write(
+            dir.path().join("modules").join("theme.lua"),
+            r#"return "dark""#,
+        )
+        .unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_result = require("modules.theme")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let val: String = lua.load("return _result").eval().unwrap();
+        assert_eq!(val, "dark");
+    }
+
+    #[test]
+    fn require_resolves_init_lua() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("utils")).unwrap();
+        std::fs::write(
+            dir.path().join("utils").join("init.lua"),
+            "return { version = 1 }",
+        )
+        .unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_result = require("utils")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let val: i64 = lua.load("return _result.version").eval().unwrap();
+        assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn require_file_takes_priority_over_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("foo.lua"), r#"return "file""#).unwrap();
+        std::fs::create_dir_all(dir.path().join("foo")).unwrap();
+        std::fs::write(dir.path().join("foo").join("init.lua"), r#"return "dir""#).unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_result = require("foo")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let val: String = lua.load("return _result").eval().unwrap();
+        assert_eq!(val, "file");
+    }
+
+    #[test]
+    fn require_caches_result() {
+        let dir = tempfile::tempdir().unwrap();
+        // Module increments a counter each time it's loaded.
+        std::fs::write(
+            dir.path().join("counter.lua"),
+            "
+            _load_count = (_load_count or 0) + 1
+            return _load_count
+            ",
+        )
+        .unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(
+            &config,
+            r#"
+            _first = require("counter")
+            _second = require("counter")
+            "#,
+        )
+        .unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let first: i64 = lua.load("return _first").eval().unwrap();
+        let second: i64 = lua.load("return _second").eval().unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(second, 1); // Same cached value, not 2.
+    }
+
+    #[test]
+    fn require_missing_module_error() {
+        let (path, _dir) = temp_config(r#"require("nonexistent")"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("not found"), "got: {msg}");
+    }
+
+    #[test]
+    fn require_invalid_name_error() {
+        let (path, _dir) = temp_config(r#"require("../escape")"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("invalid module name"), "got: {msg}");
+    }
+
+    #[test]
+    fn require_empty_name_error() {
+        let (path, _dir) = temp_config(r#"require("")"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("invalid module name"), "got: {msg}");
+    }
+
+    #[test]
+    fn require_syntax_error_propagated() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("broken.lua"), "this is not valid {{").unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"require("broken")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        // Must show the actual syntax error, NOT "module not found".
+        assert!(
+            !msg.contains("not found"),
+            "should not say 'not found': {msg}"
+        );
+    }
+
+    #[test]
+    fn require_circular_no_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.lua"), r#"require("b"); return "a""#).unwrap();
+        std::fs::write(dir.path().join("b.lua"), r#"require("a"); return "b""#).unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_result = require("a")"#).unwrap();
+        let r = load_config_from(&config);
+        // Should not crash. The result may be incomplete but no panic.
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+    }
+
+    #[test]
+    fn require_passes_return_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("data.lua"),
+            r#"return { name = "oak", version = 1 }"#,
+        )
+        .unwrap();
+        let config = dir.path().join("config.lua");
+        std::fs::write(&config, r#"_data = require("data")"#).unwrap();
+        let r = load_config_from(&config);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let lua = r.lua.as_ref().unwrap();
+        let name: String = lua.load("return _data.name").eval().unwrap();
+        let version: i64 = lua.load("return _data.version").eval().unwrap();
+        assert_eq!(name, "oak");
+        assert_eq!(version, 1);
     }
 }
