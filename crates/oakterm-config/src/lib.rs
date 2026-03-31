@@ -25,6 +25,8 @@ pub struct ConfigResult {
     pub config: ConfigValues,
     /// Registered event handlers (empty on error or when no config file exists).
     pub registry: EventRegistry,
+    /// Registered keybinds (empty on error or when no config file exists).
+    pub keybinds: KeybindRegistry,
     /// The Lua VM, kept alive for handler invocation. `None` when no config
     /// file exists or when the VM could not be created.
     pub lua: Option<Lua>,
@@ -207,6 +209,7 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         return ConfigResult {
             config: ConfigValues::default(),
             registry: EventRegistry::new(),
+            keybinds: KeybindRegistry::new(),
             lua: Some(lua),
             error: Some(format!("failed to register config API: {e}")),
         };
@@ -218,6 +221,7 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         return ConfigResult {
             config: ConfigValues::default(),
             registry: EventRegistry::new(),
+            keybinds: KeybindRegistry::new(),
             lua: Some(lua),
             error: Some(format_config_error(path, &e)),
         };
@@ -227,17 +231,20 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
     lua.remove_hook();
 
     let registry = proxy::extract_event_registry(&lua);
+    let keybinds = proxy::extract_keybind_registry(&lua);
 
     match extract_config(&lua) {
         Ok(config) => ConfigResult {
             config,
             registry,
+            keybinds,
             lua: Some(lua),
             error: None,
         },
         Err(e) => ConfigResult {
             config: ConfigValues::default(),
             registry,
+            keybinds,
             lua: Some(lua),
             error: Some(format_config_error(path, &e)),
         },
@@ -249,6 +256,7 @@ fn default_result(error: Option<String>) -> ConfigResult {
     ConfigResult {
         config: ConfigValues::default(),
         registry: EventRegistry::new(),
+        keybinds: KeybindRegistry::new(),
         lua: None,
         error,
     }
@@ -615,5 +623,64 @@ mod tests {
         assert!(matches!(results[0], HandlerResult::Ok));
         let fired: bool = lua.load("return _test_fired").eval().unwrap();
         assert!(fired);
+    }
+
+    #[test]
+    fn load_config_with_keybinds() {
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.keybind("ctrl+k", oakterm.action.reload_config())
+            oakterm.keybind("ctrl+c", oakterm.action.copy())
+            oakterm.keybind("super+shift+t", oakterm.action.new_tab())
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        assert_eq!(r.keybinds.len(), 3);
+        // Verify lookup works.
+        let chord = KeyChord::parse("ctrl+k").unwrap();
+        let action = r.keybinds.lookup(&chord);
+        assert!(action.is_some());
+        assert!(matches!(action.unwrap(), Action::ReloadConfig));
+    }
+
+    #[test]
+    fn load_config_keybind_with_callback() {
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.keybind("ctrl+b", function() print("hello") end)
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        assert_eq!(r.keybinds.len(), 1);
+        let chord = KeyChord::parse("ctrl+b").unwrap();
+        let action = r.keybinds.lookup(&chord);
+        assert!(matches!(action, Some(Action::Callback(_))));
+    }
+
+    #[test]
+    fn load_config_invalid_keybind_chord() {
+        let (path, _dir) = temp_config(r#"oakterm.keybind("hyper+x", oakterm.action.copy())"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("invalid key chord"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_config_keybind_override() {
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.keybind("ctrl+c", oakterm.action.copy())
+            oakterm.keybind("ctrl+c", oakterm.action.reload_config())
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        // Last registration wins.
+        let chord = KeyChord::parse("ctrl+c").unwrap();
+        let action = r.keybinds.lookup(&chord).unwrap();
+        assert!(matches!(action, Action::ReloadConfig));
     }
 }
