@@ -11,8 +11,8 @@ use oakterm_protocol::message::{
     PaneExited, ScrollbackData, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
-use oakterm_terminal::grid::ScreenSet;
 use oakterm_terminal::grid::cell::{Color, Rgb};
+use oakterm_terminal::grid::{ScreenId, ScreenSet};
 use oakterm_terminal::handler;
 use std::io;
 use std::os::unix::io::RawFd;
@@ -497,17 +497,22 @@ async fn handle_request(
             let state = pty_state.lock().await;
             if let PtyState::Running(fd) = *state {
                 drop(state);
+
+                // Read all needed mode/screen state while holding the lock.
                 let s = screens.lock().await;
                 let g = s.active_grid();
-                // Only encode mouse if a mouse mode is active.
                 let sgr = g.modes.get(1006);
                 let click = g.modes.get(1000);
                 let cell_motion = g.modes.get(1002);
                 let all_motion = g.modes.get(1003);
+                let alt_scroll = g.modes.get(1007);
+                let decckm = g.modes.get(1);
+                let on_alt = s.active_screen() == ScreenId::Alternate;
                 drop(s);
 
+                let mouse_reporting = click || cell_motion || all_motion;
                 let should_send = match msg.event_type {
-                    0 | 1 | 3 | 4 => click || cell_motion || all_motion,
+                    0 | 1 | 3 | 4 => mouse_reporting,
                     2 => cell_motion || all_motion,
                     _ => false,
                 };
@@ -518,6 +523,21 @@ async fn handle_request(
                         let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
                         if let Err(e) = rustix::io::write(borrowed, seq.as_bytes()) {
                             warn!(conn_id, error = %e, "PTY mouse write failed");
+                        }
+                    }
+                } else if (msg.event_type == 3 || msg.event_type == 4) && on_alt && alt_scroll {
+                    // Mode 1007: convert wheel to arrow keys on alternate screen.
+                    let arrow: &[u8] = match (msg.event_type, decckm) {
+                        (3, true) => b"\x1bOA",
+                        (3, false) => b"\x1b[A",
+                        (4, true) => b"\x1bOB",
+                        (_, _) => b"\x1b[B",
+                    };
+                    let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
+                    for _ in 0..3 {
+                        if let Err(e) = rustix::io::write(borrowed, arrow) {
+                            warn!(conn_id, error = %e, "PTY alt-scroll write failed");
+                            break;
                         }
                     }
                 }
