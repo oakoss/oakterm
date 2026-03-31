@@ -11,7 +11,7 @@ mod schema;
 
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
 pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId};
-pub use mlua::Lua;
+pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{ConfigValues, CursorStyle, Padding};
 
@@ -209,10 +209,16 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         return ConfigResult {
             config: ConfigValues::default(),
             registry: EventRegistry::new(),
-            keybinds: KeybindRegistry::new(),
+            keybinds: KeybindRegistry::with_defaults(),
             lua: Some(lua),
             error: Some(format!("failed to register config API: {e}")),
         };
+    }
+
+    // Register default keybinds via Lua before user config so user can override.
+    if let Err(e) = register_default_keybinds(&lua) {
+        eprintln!("warning: failed to register default keybinds via Lua: {e}");
+        // Defaults are also populated in with_defaults() as a safety net.
     }
 
     if let Err(e) = lua.load(&source).set_name(path.to_string_lossy()).exec() {
@@ -221,7 +227,7 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         return ConfigResult {
             config: ConfigValues::default(),
             registry: EventRegistry::new(),
-            keybinds: KeybindRegistry::new(),
+            keybinds: KeybindRegistry::with_defaults(),
             lua: Some(lua),
             error: Some(format_config_error(path, &e)),
         };
@@ -251,12 +257,31 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
     }
 }
 
-/// Create a default `ConfigResult` without a VM.
+/// Register default keybinds via Lua before user config runs.
+///
+/// These are the built-in keybinds that were previously hardcoded in main.rs.
+/// User config can override any of these by calling `oakterm.keybind` with
+/// the same key chord (last registration wins).
+fn register_default_keybinds(lua: &Lua) -> mlua::Result<()> {
+    lua.load(
+        r#"
+        oakterm.keybind("shift+pageup", oakterm.action.scroll_up(0))
+        oakterm.keybind("shift+pagedown", oakterm.action.scroll_down(0))
+        oakterm.keybind("shift+home", oakterm.action.scroll_up(999999))
+        oakterm.keybind("shift+end", oakterm.action.scroll_down(999999))
+        oakterm.keybind("super+shift+up", oakterm.action.scroll_to_prompt(-1))
+        oakterm.keybind("super+shift+down", oakterm.action.scroll_to_prompt(1))
+        "#,
+    )
+    .exec()
+}
+
+/// Create a default `ConfigResult` without a VM but with default keybinds.
 fn default_result(error: Option<String>) -> ConfigResult {
     ConfigResult {
         config: ConfigValues::default(),
         registry: EventRegistry::new(),
-        keybinds: KeybindRegistry::new(),
+        keybinds: KeybindRegistry::with_defaults(),
         lua: None,
         error,
     }
@@ -636,8 +661,9 @@ mod tests {
         );
         let r = load_config_from(&path);
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
-        assert_eq!(r.keybinds.len(), 3);
-        // Verify lookup works.
+        // 6 defaults + 3 user = 9 total.
+        assert_eq!(r.keybinds.len(), 9);
+        // Verify user keybind lookup works.
         let chord = KeyChord::parse("ctrl+k").unwrap();
         let action = r.keybinds.lookup(&chord);
         assert!(action.is_some());
@@ -653,7 +679,8 @@ mod tests {
         );
         let r = load_config_from(&path);
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
-        assert_eq!(r.keybinds.len(), 1);
+        // 6 defaults + 1 user = 7 total.
+        assert_eq!(r.keybinds.len(), 7);
         let chord = KeyChord::parse("ctrl+b").unwrap();
         let action = r.keybinds.lookup(&chord);
         assert!(matches!(action, Some(Action::Callback(_))));
