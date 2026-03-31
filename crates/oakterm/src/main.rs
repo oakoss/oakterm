@@ -593,19 +593,19 @@ impl ApplicationHandler<UserEvent> for App {
                 });
 
                 let (bg_colors, glyph_instances) =
-                    if let (Some(grid), Some(font)) = (&mut self.grid, &mut self.font) {
-                        // Hide cursor during blink-off phase for blinking styles.
-                        let saved_visible = grid.cursor_visible;
-                        if !self.blink_visible && matches!(grid.cursor_style, 0 | 2 | 4) {
-                            grid.cursor_visible = false;
-                        }
-                        let bg = grid.bg_colors();
+                    if let (Some(grid), Some(font)) = (&self.grid, &mut self.font) {
+                        // Effective cursor visibility: hidden during blink-off phase.
+                        let cursor_vis = grid.cursor_visible
+                            && (self.blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
+
+                        let bg = grid.bg_colors(cursor_vis);
                         let (glyphs, uploads) = grid.glyph_instances(
                             &font.metrics,
                             font.font_key,
                             font.font_size,
                             &font.shaper,
                             &mut font.atlas,
+                            cursor_vis,
                         );
 
                         upload_glyphs_to_atlas(
@@ -617,7 +617,6 @@ impl ApplicationHandler<UserEvent> for App {
                             &uploads,
                         );
 
-                        grid.cursor_visible = saved_visible;
                         (bg, glyphs)
                     } else {
                         (vec![], vec![])
@@ -747,11 +746,17 @@ impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
         // Blink timeout reached: toggle cursor visibility.
         if matches!(cause, winit::event::StartCause::ResumeTimeReached { .. }) {
-            self.blink_visible = !self.blink_visible;
-            self.blink_deadline =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(530));
-            if let Some(w) = &self.window {
-                w.request_redraw();
+            if self.should_blink() {
+                self.blink_visible = !self.blink_visible;
+                self.blink_deadline =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(530));
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            } else {
+                // Conditions changed; stop blinking.
+                self.blink_visible = true;
+                self.blink_deadline = None;
             }
         }
     }

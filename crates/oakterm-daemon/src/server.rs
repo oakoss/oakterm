@@ -29,6 +29,9 @@ use tokio_util::codec::{Decoder, Encoder};
 /// Handshake timeout per Spec-0001.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Arrow key repeats per wheel tick for mode 1007 alt-screen scroll.
+const ALT_SCROLL_LINES: usize = 3;
+
 /// PTY lifecycle state machine.
 ///
 /// Transitions: `NotSpawned` -> `Running` | `Failed` (terminal);
@@ -534,7 +537,7 @@ async fn handle_request(
                         (_, _) => b"\x1b[B",
                     };
                     let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
-                    for _ in 0..3 {
+                    for _ in 0..ALT_SCROLL_LINES {
                         if let Err(e) = rustix::io::write(borrowed, arrow) {
                             warn!(conn_id, error = %e, "PTY alt-scroll write failed");
                             break;
