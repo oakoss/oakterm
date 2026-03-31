@@ -2094,6 +2094,26 @@ mod tests {
         assert!(grid.dynamic_bg.is_none());
     }
 
+    // --- Mode 1007 (alternateScroll) tests ---
+
+    #[test]
+    fn mode_1007_default_on() {
+        let grid = test_grid(10, 3);
+        assert!(grid.modes.get(1007), "alternateScroll should default ON");
+    }
+
+    #[test]
+    fn mode_1007_toggle() {
+        let mut grid = test_grid(10, 3);
+        assert!(grid.modes.get(1007));
+        // Disable: CSI ? 1007 l
+        parse(&mut grid, b"\x1b[?1007l");
+        assert!(!grid.modes.get(1007));
+        // Re-enable: CSI ? 1007 h
+        parse(&mut grid, b"\x1b[?1007h");
+        assert!(grid.modes.get(1007));
+    }
+
     // --- Scrollback capture tests (use ScreenSet, not bare Grid) ---
 
     fn parse_screen(screen: &mut ScreenSet, input: &[u8]) {

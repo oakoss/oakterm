@@ -147,6 +147,7 @@ impl Grid {
             modes: {
                 let mut m = ModeFlags::new();
                 m.set(7, true); // DECAWM: auto-wrap on by default.
+                m.set(1007, true); // alternateScroll: wheel → arrow keys on alt screen.
                 m
             },
             bidi_mode: BidiMode::Off,
