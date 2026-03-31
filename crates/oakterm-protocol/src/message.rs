@@ -23,6 +23,8 @@ pub const MSG_GET_RENDER_UPDATE: u16 = 0x71;
 pub const MSG_RENDER_UPDATE: u16 = 0x72;
 pub const MSG_GET_SCROLLBACK: u16 = 0x73;
 pub const MSG_SCROLLBACK_DATA: u16 = 0x74;
+pub const MSG_FIND_PROMPT: u16 = 0x75;
+pub const MSG_PROMPT_POSITION: u16 = 0x76;
 
 // GUI — notifications (0x80-0x8F).
 pub const MSG_TITLE_CHANGED: u16 = 0x80;
@@ -544,5 +546,124 @@ impl ScrollbackData {
             has_more,
             rows,
         })
+    }
+}
+
+/// Direction for prompt search. Wire encoding: 0xFF (-1) = older, 0x01 = newer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SearchDirection {
+    /// Search toward older rows (up / toward index 0).
+    Older = 0xFF,
+    /// Search toward newer rows (down / toward live view).
+    Newer = 0x01,
+}
+
+impl TryFrom<u8> for SearchDirection {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        match v {
+            0xFF => Ok(Self::Older),
+            0x01 => Ok(Self::Newer),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown search direction: 0x{v:02X}"),
+            )),
+        }
+    }
+}
+
+/// `FindPrompt` (0x75): client requests the position of the next/previous
+/// shell prompt mark (`SemanticMark::PromptStart`) relative to the current
+/// scrollback offset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindPrompt {
+    pub pane_id: u32,
+    /// Negative offset from the viewport bottom, same semantics as
+    /// `GetScrollback.start_row`.
+    pub from_offset: i64,
+    pub direction: SearchDirection,
+}
+
+impl FindPrompt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(13);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.from_offset.to_le_bytes());
+        buf.push(self.direction as u8);
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short or direction is invalid.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 13 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "FindPrompt too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            from_offset: i64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
+            direction: SearchDirection::try_from(data[12])?,
+        })
+    }
+}
+
+/// `PromptPosition` (0x76): daemon responds with the scrollback offset of
+/// the found prompt. `offset` is `None` when no prompt exists in the search
+/// direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptPosition {
+    pub pane_id: u32,
+    /// Negative offset for the found prompt (same coordinate space as
+    /// `FindPrompt.from_offset`), or `None` if not found.
+    pub offset: Option<i64>,
+}
+
+impl PromptPosition {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(13);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        if let Some(v) = self.offset {
+            buf.extend_from_slice(&v.to_le_bytes());
+            buf.push(1);
+        } else {
+            buf.extend_from_slice(&0_i64.to_le_bytes());
+            buf.push(0);
+        }
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 13 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PromptPosition too short",
+            ));
+        }
+        let raw_offset = i64::from_le_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]);
+        let found = data[12] != 0;
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            offset: if found { Some(raw_offset) } else { None },
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_PROMPT_POSITION, serial, self.encode())
     }
 }

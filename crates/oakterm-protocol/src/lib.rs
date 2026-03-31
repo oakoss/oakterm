@@ -538,4 +538,103 @@ mod tests {
     fn scrollback_data_too_short() {
         assert!(ScrollbackData::decode(&[0; 10]).is_err());
     }
+
+    // --- FindPrompt / PromptPosition protocol tests ---
+
+    use crate::message::SearchDirection;
+
+    #[test]
+    fn find_prompt_roundtrip() {
+        let msg = FindPrompt {
+            pane_id: 1,
+            from_offset: -42,
+            direction: SearchDirection::Older,
+        };
+        let encoded = msg.encode();
+        assert_eq!(encoded.len(), 13);
+        let decoded = FindPrompt::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn find_prompt_forward() {
+        let msg = FindPrompt {
+            pane_id: 0,
+            from_offset: -10,
+            direction: SearchDirection::Newer,
+        };
+        let decoded = FindPrompt::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded.direction, SearchDirection::Newer);
+    }
+
+    #[test]
+    fn find_prompt_invalid_direction() {
+        let mut data = FindPrompt {
+            pane_id: 0,
+            from_offset: -1,
+            direction: SearchDirection::Older,
+        }
+        .encode();
+        data[12] = 0x00; // invalid direction byte
+        assert!(FindPrompt::decode(&data).is_err());
+    }
+
+    #[test]
+    fn find_prompt_too_short() {
+        assert!(FindPrompt::decode(&[0; 8]).is_err());
+    }
+
+    #[test]
+    fn search_direction_try_from() {
+        assert_eq!(
+            SearchDirection::try_from(0xFF).unwrap(),
+            SearchDirection::Older
+        );
+        assert_eq!(
+            SearchDirection::try_from(0x01).unwrap(),
+            SearchDirection::Newer
+        );
+        assert!(SearchDirection::try_from(0x00).is_err());
+        assert!(SearchDirection::try_from(0x02).is_err());
+    }
+
+    #[test]
+    fn prompt_position_found() {
+        let msg = PromptPosition {
+            pane_id: 1,
+            offset: Some(-25),
+        };
+        let encoded = msg.encode();
+        assert_eq!(encoded.len(), 13);
+        let decoded = PromptPosition::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn prompt_position_not_found() {
+        let msg = PromptPosition {
+            pane_id: 0,
+            offset: None,
+        };
+        let decoded = PromptPosition::decode(&msg.encode()).unwrap();
+        assert!(decoded.offset.is_none());
+    }
+
+    #[test]
+    fn prompt_position_too_short() {
+        assert!(PromptPosition::decode(&[0; 8]).is_err());
+    }
+
+    #[test]
+    fn prompt_position_as_frame() {
+        let msg = PromptPosition {
+            pane_id: 1,
+            offset: Some(-15),
+        };
+        let frame = msg.to_frame(7).unwrap();
+        assert_eq!(frame.msg_type, MSG_PROMPT_POSITION);
+        assert_eq!(frame.serial, 7);
+        let decoded = PromptPosition::decode(&frame.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
 }
