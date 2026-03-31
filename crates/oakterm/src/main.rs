@@ -1356,11 +1356,14 @@ fn daemon_reader(
                         break;
                     }
                 },
-                MSG_TITLE_CHANGED => {
-                    if let Ok(msg) = TitleChanged::decode(&frame.payload) {
+                MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
+                    Ok(msg) => {
                         let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
                     }
-                }
+                    Err(e) => {
+                        eprintln!("failed to decode TitleChanged: {e}");
+                    }
+                },
                 MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
                     Ok(data) => {
                         let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
