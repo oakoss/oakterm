@@ -1,12 +1,17 @@
 //! Config proxy table: `oakterm.config` with per-key validation.
-//! Also registers `oakterm.on(event, callback)` for event handlers.
+//! Also registers `oakterm.on(event, callback)` and
+//! `oakterm.keybind(key, action)` with `oakterm.action.*` constructors.
 
 use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
+use crate::keybind::{Action, KeyChord, KeybindRegistry};
 use crate::schema::{self, ConfigValues, CursorStyle, Padding};
 use mlua::{Function, Lua, Table, Value};
 
 /// Registry key for the hidden backing table that stores validated config values.
 const BACKING_KEY: &str = "__oakterm_config_backing";
+
+/// Registry key for keybind entries stored during config evaluation.
+const KEYBIND_REGISTRY_KEY: &str = "__oakterm_keybind_registry";
 
 /// Register the `oakterm.config` proxy table into the Lua VM.
 ///
@@ -95,11 +100,140 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
         Ok(())
     })?;
 
-    // Register as oakterm.config + oakterm.on.
+    // Initialize keybind registry table.
+    lua.set_named_registry_value(KEYBIND_REGISTRY_KEY, lua.create_table()?)?;
+
+    // oakterm.action.* constructors — return tagged tables.
+    let action = lua.create_table()?;
+    register_action_constructors(lua, &action)?;
+
+    // oakterm.keybind(key, action_or_callback)
+    let keybind_fn = lua.create_function(|lua, (key, action): (mlua::String, Value)| {
+        let key_str = key.to_str()?;
+        if let Err(e) = KeyChord::parse(&key_str) {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid key chord '{key_str}': {e}"
+            )));
+        }
+
+        // Validate action is a table (from oakterm.action.*) or a function.
+        match &action {
+            Value::Table(t) => {
+                if t.get::<Option<mlua::String>>("__action_type")?.is_none() {
+                    return Err(mlua::Error::RuntimeError(
+                        "keybind action must be from oakterm.action.* or a function".to_string(),
+                    ));
+                }
+            }
+            Value::Function(_) => {}
+            _ => {
+                return Err(mlua::Error::RuntimeError(
+                    "keybind action must be from oakterm.action.* or a function".to_string(),
+                ));
+            }
+        }
+
+        let registry: Table = lua.named_registry_value(KEYBIND_REGISTRY_KEY)?;
+        let entry = lua.create_table()?;
+        entry.set("key", key_str.as_ref())?;
+        entry.set("action", action)?;
+        registry.push(entry)?;
+        Ok(())
+    })?;
+
+    // Register oakterm global with all subtables.
     let oakterm = lua.create_table()?;
     oakterm.set("config", proxy)?;
     oakterm.set("on", on_fn)?;
+    oakterm.set("action", action)?;
+    oakterm.set("keybind", keybind_fn)?;
     lua.globals().set("oakterm", oakterm)?;
+
+    Ok(())
+}
+
+/// Register `oakterm.action.*` constructor functions.
+fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
+    // Parameterless actions.
+    for name in [
+        "copy",
+        "paste",
+        "toggle_fullscreen",
+        "reload_config",
+        "close_pane",
+        "new_tab",
+        "close_tab",
+        "show_command_palette",
+    ] {
+        let n = name.to_string();
+        action.set(
+            name,
+            lua.create_function(move |lua, ()| {
+                let t = lua.create_table()?;
+                t.set("__action_type", n.as_str())?;
+                Ok(t)
+            })?,
+        )?;
+    }
+
+    // scroll_up(lines) / scroll_down(lines)
+    for name in ["scroll_up", "scroll_down"] {
+        let n = name.to_string();
+        action.set(
+            name,
+            lua.create_function(move |lua, lines: Option<i64>| {
+                let t = lua.create_table()?;
+                t.set("__action_type", n.as_str())?;
+                t.set("lines", lines.unwrap_or(0))?;
+                Ok(t)
+            })?,
+        )?;
+    }
+
+    // scroll_to_prompt(direction)
+    action.set(
+        "scroll_to_prompt",
+        lua.create_function(|lua, direction: i64| {
+            let t = lua.create_table()?;
+            t.set("__action_type", "scroll_to_prompt")?;
+            t.set("direction", direction)?;
+            Ok(t)
+        })?,
+    )?;
+
+    // send_string(data)
+    action.set(
+        "send_string",
+        lua.create_function(|lua, data: mlua::String| {
+            let t = lua.create_table()?;
+            t.set("__action_type", "send_string")?;
+            t.set("data", data)?;
+            Ok(t)
+        })?,
+    )?;
+
+    // split_pane({ direction, size })
+    action.set(
+        "split_pane",
+        lua.create_function(|lua, opts: Table| {
+            let t = lua.create_table()?;
+            t.set("__action_type", "split_pane")?;
+            t.set("direction", opts.get::<mlua::String>("direction")?)?;
+            t.set("size", opts.get::<f64>("size").unwrap_or(0.5))?;
+            Ok(t)
+        })?,
+    )?;
+
+    // focus_pane_direction(direction)
+    action.set(
+        "focus_pane_direction",
+        lua.create_function(|lua, direction: mlua::String| {
+            let t = lua.create_table()?;
+            t.set("__action_type", "focus_pane_direction")?;
+            t.set("direction", direction)?;
+            Ok(t)
+        })?,
+    )?;
 
     Ok(())
 }
@@ -145,6 +279,137 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
     }
 
     registry
+}
+
+/// Extract the `KeybindRegistry` from the Lua VM after config evaluation.
+///
+/// Converts keybind entries stored by `oakterm.keybind()` into
+/// `(KeyChord, Action)` pairs. Callback functions become `RegistryKey`s.
+pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
+    let mut registry = KeybindRegistry::new();
+    let Ok(entries) = lua.named_registry_value::<Table>(KEYBIND_REGISTRY_KEY) else {
+        eprintln!("warning: failed to read keybind registry from Lua VM");
+        return registry;
+    };
+
+    for entry in entries.sequence_values::<Table>() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("warning: skipping malformed keybind entry: {e}");
+                continue;
+            }
+        };
+
+        let key_str: String = match entry.get("key") {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("warning: skipping keybind with missing key: {e}");
+                continue;
+            }
+        };
+
+        let chord = match KeyChord::parse(&key_str) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("warning: skipping keybind with invalid chord '{key_str}': {e}");
+                continue;
+            }
+        };
+
+        let action_value: Value = match entry.get("action") {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("warning: skipping keybind '{key_str}' with missing action: {e}");
+                continue;
+            }
+        };
+
+        let action = match action_value {
+            Value::Function(f) => match lua.create_registry_value(f) {
+                Ok(key) => Action::Callback(key),
+                Err(e) => {
+                    eprintln!("warning: failed to store callback for '{key_str}': {e}");
+                    continue;
+                }
+            },
+            Value::Table(t) => match extract_action_from_table(&t) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("warning: skipping keybind '{key_str}': {e}");
+                    continue;
+                }
+            },
+            _ => {
+                eprintln!(
+                    "warning: skipping keybind '{key_str}': action is not a table or function"
+                );
+                continue;
+            }
+        };
+
+        registry.register(chord, action);
+    }
+
+    registry
+}
+
+/// Convert an action table `{ __action_type = "...", ... }` to an `Action`.
+fn extract_action_from_table(t: &Table) -> Result<Action, String> {
+    let action_type: String = t
+        .get::<Option<String>>("__action_type")
+        .map_err(|e| format!("failed to read __action_type: {e}"))?
+        .ok_or_else(|| "missing __action_type field".to_string())?;
+
+    match action_type.as_str() {
+        "copy" => Ok(Action::Copy),
+        "paste" => Ok(Action::Paste),
+        "toggle_fullscreen" => Ok(Action::ToggleFullscreen),
+        "reload_config" => Ok(Action::ReloadConfig),
+        "close_pane" => Ok(Action::ClosePane),
+        "new_tab" => Ok(Action::NewTab),
+        "close_tab" => Ok(Action::CloseTab),
+        "show_command_palette" => Ok(Action::ShowCommandPalette),
+        "scroll_up" => {
+            let lines: i64 = t.get("lines").unwrap_or(0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(Action::ScrollUp(lines.clamp(0, i64::from(u32::MAX)) as u32))
+        }
+        "scroll_down" => {
+            let lines: i64 = t.get("lines").unwrap_or(0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(Action::ScrollDown(
+                lines.clamp(0, i64::from(u32::MAX)) as u32
+            ))
+        }
+        "scroll_to_prompt" => {
+            let direction: i64 = t
+                .get("direction")
+                .map_err(|e| format!("scroll_to_prompt missing direction: {e}"))?;
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(Action::ScrollToPrompt(direction as i32))
+        }
+        "send_string" => {
+            let data: mlua::String = t
+                .get("data")
+                .map_err(|e| format!("send_string missing data: {e}"))?;
+            Ok(Action::SendString(data.as_bytes().to_vec()))
+        }
+        "split_pane" => {
+            let direction: String = t
+                .get("direction")
+                .map_err(|e| format!("split_pane missing direction: {e}"))?;
+            let size: f64 = t.get("size").unwrap_or(0.5);
+            Ok(Action::SplitPane { direction, size })
+        }
+        "focus_pane_direction" => {
+            let direction: String = t
+                .get("direction")
+                .map_err(|e| format!("focus_pane_direction missing direction: {e}"))?;
+            Ok(Action::FocusPaneDirection(direction))
+        }
+        other => Err(format!("unknown action type '{other}'")),
+    }
 }
 
 /// Extract a `ConfigValues` struct from the Lua VM after config evaluation.
