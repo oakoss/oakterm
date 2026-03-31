@@ -668,7 +668,7 @@ async fn handle_request(
                 seqno: g.seqno,
                 cursor_x: g.cursor.col,
                 cursor_y: g.cursor.row,
-                cursor_style: 0,
+                cursor_style: g.cursor.style.to_wire(),
                 cursor_visible: g.cursor.visible,
                 bg_r,
                 bg_g,
