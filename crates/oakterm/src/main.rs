@@ -348,15 +348,13 @@ impl ApplicationHandler<UserEvent> for App {
                             self.request_scrollback();
                             true
                         }
-                        Key::Named(NamedKey::PageDown) => {
-                            if self.viewport_offset > 0 {
-                                let rows = self.grid.as_ref().map_or(24, |g| u32::from(g.rows));
-                                self.viewport_offset = self.viewport_offset.saturating_sub(rows);
-                                if self.viewport_offset == 0 {
-                                    self.return_to_live();
-                                } else {
-                                    self.request_scrollback();
-                                }
+                        Key::Named(NamedKey::PageDown) if self.viewport_offset > 0 => {
+                            let rows = self.grid.as_ref().map_or(24, |g| u32::from(g.rows));
+                            self.viewport_offset = self.viewport_offset.saturating_sub(rows);
+                            if self.viewport_offset == 0 {
+                                self.return_to_live();
+                            } else {
+                                self.request_scrollback();
                             }
                             true
                         }
@@ -370,10 +368,8 @@ impl ApplicationHandler<UserEvent> for App {
                             self.request_scrollback();
                             true
                         }
-                        Key::Named(NamedKey::End) => {
-                            if self.viewport_offset > 0 {
-                                self.return_to_live();
-                            }
+                        Key::Named(NamedKey::End) if self.viewport_offset > 0 => {
+                            self.return_to_live();
                             true
                         }
                         _ => false,

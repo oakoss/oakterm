@@ -704,8 +704,8 @@ async fn handle_request(
             let rows: Vec<DirtyRow> = (start_idx..end_idx)
                 .filter_map(|i| {
                     let row = buf.get(i)?;
-                    #[allow(clippy::cast_possible_truncation)]
-                    Some(row_to_wire(row, i as u16, &s.active_grid().palette))
+                    // row_index is 0 for scrollback; client uses positional order.
+                    Some(row_to_wire(row, 0, &s.active_grid().palette))
                 })
                 .collect();
 
