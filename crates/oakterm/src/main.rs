@@ -58,7 +58,7 @@ enum UserEvent {
     TitleChanged(String),
     Bell,
     Disconnected,
-    ConfigReloaded(oakterm_config::ConfigValues, Option<String>),
+    ConfigReloaded(Box<oakterm_config::ConfigResult>),
 }
 
 /// GPU state created after the window and surface are available.
@@ -107,6 +107,10 @@ struct App {
     #[allow(dead_code)] // Must stay alive for the window's lifetime.
     accesskit: Option<accesskit_winit::Adapter>,
     config: oakterm_config::ConfigValues,
+    /// Lua VM kept alive for event handler invocation.
+    lua_vm: Option<oakterm_config::Lua>,
+    /// Registered event handlers from config evaluation.
+    event_registry: oakterm_config::EventRegistry,
     /// Stored for future in-window error banner rendering.
     #[allow(dead_code)]
     config_error: Option<String>,
@@ -147,6 +151,8 @@ impl App {
             daemon_process: None,
             accesskit: None,
             config: oakterm_config::ConfigValues::default(),
+            lua_vm: None,
+            event_registry: oakterm_config::EventRegistry::new(),
             config_error: None,
             config_watcher: None,
             last_sent_dims: (0, 0),
@@ -279,10 +285,11 @@ impl ApplicationHandler<UserEvent> for App {
         let gpu = pollster::block_on(init_gpu(window.clone()));
 
         // Load config.
-        let (config, config_error) = oakterm_config::load_config();
-        if let Some(err) = &config_error {
+        let cr = oakterm_config::load_config();
+        if let Some(err) = &cr.error {
             eprintln!("config error: {err}");
         }
+        let config = cr.config.clone();
 
         // Load font at display-native pixel size.
         #[allow(clippy::cast_possible_truncation)] // f64 -> f32 for font size
@@ -312,7 +319,25 @@ impl ApplicationHandler<UserEvent> for App {
         self.font = Some(font_state);
         self.grid = Some(grid);
         self.config = config;
-        self.config_error = config_error;
+        self.config_error = cr.error;
+        self.event_registry = cr.registry;
+        self.lua_vm = cr.lua;
+        // Fire config.loaded event for initial load.
+        if self.config_error.is_none() {
+            if let Some(lua) = &self.lua_vm {
+                for result in self.event_registry.fire(lua, "config.loaded", &[]) {
+                    match result {
+                        oakterm_config::HandlerResult::Error(e) => {
+                            eprintln!("config.loaded handler error: {e}");
+                        }
+                        oakterm_config::HandlerResult::Timeout => {
+                            eprintln!("config.loaded handler timed out (100ms limit)");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         self.config_watcher = start_config_watcher(&self.proxy);
     }
 
@@ -811,8 +836,8 @@ impl ApplicationHandler<UserEvent> for App {
                 eprintln!("daemon disconnected");
                 event_loop.exit();
             }
-            UserEvent::ConfigReloaded(new_config, new_error) => {
-                self.handle_config_reload(new_config, new_error);
+            UserEvent::ConfigReloaded(cr) => {
+                self.handle_config_reload(*cr);
             }
         }
     }
@@ -845,23 +870,30 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 impl App {
-    fn handle_config_reload(
-        &mut self,
-        new_config: oakterm_config::ConfigValues,
-        new_error: Option<String>,
-    ) {
-        if let Some(ref err) = new_error {
+    fn handle_config_reload(&mut self, mut cr: oakterm_config::ConfigResult) {
+        if let Some(ref err) = cr.error {
             eprintln!("config reload error: {err}");
-            self.config_error = new_error;
+            // Clean up the failed result's registry before its VM is dropped.
+            if let Some(lua) = &cr.lua {
+                cr.registry.cleanup(lua);
+            }
+            self.config_error = cr.error;
             return;
         }
 
-        let font_changed = (new_config.font_size - self.config.font_size).abs() > f64::EPSILON
-            || new_config.font_family != self.config.font_family;
+        // Clean up old event handlers before swapping in new ones.
+        if let Some(old_lua) = &self.lua_vm {
+            self.event_registry.cleanup(old_lua);
+        }
+
+        let font_changed = (cr.config.font_size - self.config.font_size).abs() > f64::EPSILON
+            || cr.config.font_family != self.config.font_family;
 
         let had_error = self.config_error.is_some();
-        self.config = new_config;
+        self.config = cr.config;
         self.config_error = None;
+        self.event_registry = cr.registry;
+        self.lua_vm = cr.lua;
 
         if had_error {
             eprintln!("config reloaded successfully");
@@ -913,6 +945,21 @@ impl App {
                 }
 
                 self.font = Some(font_state);
+            }
+        }
+
+        // Fire config.reloaded event on the new handlers.
+        if let Some(lua) = &self.lua_vm {
+            for result in self.event_registry.fire(lua, "config.reloaded", &[]) {
+                match result {
+                    oakterm_config::HandlerResult::Error(e) => {
+                        eprintln!("config.reloaded handler error: {e}");
+                    }
+                    oakterm_config::HandlerResult::Timeout => {
+                        eprintln!("config.reloaded handler timed out (100ms limit)");
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -1082,9 +1129,9 @@ fn start_config_watcher(
             if !lua_changed {
                 return;
             }
-            let (config, error) = oakterm_config::load_config_from(&config_path);
+            let cr = oakterm_config::load_config_from(&config_path);
             // Event loop may be closed during shutdown; best-effort.
-            let _ = proxy.send_event(UserEvent::ConfigReloaded(config, error));
+            let _ = proxy.send_event(UserEvent::ConfigReloaded(Box::new(cr)));
         },
     );
 
