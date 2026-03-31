@@ -5,13 +5,15 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    Bell, ClientHello, ErrorCode, ErrorMessage, GetScrollback, HandshakeStatus, MSG_CLIENT_HELLO,
-    MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT,
-    MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE, MSG_SCROLLBACK_DATA,
-    PaneExited, ScrollbackData, ServerHello, TitleChanged,
+    Bell, ClientHello, ErrorCode, ErrorMessage, FindPrompt, GetScrollback, HandshakeStatus,
+    MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE,
+    MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE,
+    MSG_RESIZE, MSG_SCROLLBACK_DATA, PaneExited, PromptPosition, ScrollbackData, SearchDirection,
+    ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::cell::{Color, Rgb};
+use oakterm_terminal::grid::row::SemanticMark;
 use oakterm_terminal::grid::{ScreenId, ScreenSet};
 use oakterm_terminal::handler;
 use std::io;
@@ -763,6 +765,37 @@ async fn handle_request(
                 }
             }
         }
+        MSG_FIND_PROMPT => {
+            let Ok(req) = FindPrompt::decode(&frame.payload) else {
+                warn!(conn_id, "malformed FindPrompt payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed FindPrompt",
+                );
+            };
+            let s = screens.lock().await;
+            let found_offset =
+                find_prompt_in_buffer(s.scrollback(), req.from_offset, req.direction);
+            let response = PromptPosition {
+                pane_id: req.pane_id,
+                offset: found_offset,
+            };
+
+            match response.to_frame(frame.serial) {
+                Ok(f) => RequestResult::Response(f),
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to create PromptPosition frame");
+                    make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::InternalError,
+                        "PromptPosition frame error",
+                    )
+                }
+            }
+        }
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
             Ok(f) => RequestResult::Response(f),
             Err(e) => {
@@ -879,6 +912,41 @@ impl std::io::Write for FdWriter<'_> {
     }
 }
 
+/// Scan `HotBuffer` for the next `PromptStart` mark relative to `from_offset`.
+///
+/// Returns `Some(negative_offset)` if found, `None` otherwise. The offset
+/// uses the same coordinate space as `GetScrollback.start_row`.
+fn find_prompt_in_buffer(
+    buf: &oakterm_terminal::scroll::HotBuffer,
+    from_offset: i64,
+    direction: SearchDirection,
+) -> Option<i64> {
+    #[allow(clippy::cast_possible_wrap)]
+    let buf_len = buf.len() as i64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let from_idx = (buf_len + from_offset).max(0) as usize;
+
+    let found_idx = match direction {
+        SearchDirection::Older => (0..from_idx).rev().find(|&i| {
+            buf.get(i)
+                .is_some_and(|r| r.semantic_mark == SemanticMark::PromptStart)
+        }),
+        SearchDirection::Newer => {
+            let start = (from_idx + 1).min(buf.len());
+            (start..buf.len()).find(|&i| {
+                buf.get(i)
+                    .is_some_and(|r| r.semantic_mark == SemanticMark::PromptStart)
+            })
+        }
+    };
+
+    found_idx.map(|idx| {
+        #[allow(clippy::cast_possible_wrap)]
+        let offset = idx as i64 - buf_len;
+        offset
+    })
+}
+
 /// Resolve a terminal `Color` to RGB bytes using the palette.
 fn resolve_color(
     color: Color,
@@ -933,5 +1001,120 @@ fn row_to_wire(
         cells,
         semantic_mark: 0,
         mark_metadata: vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oakterm_terminal::grid::row::Row;
+    use oakterm_terminal::scroll::HotBuffer;
+
+    /// Push rows into a buffer, marking specific indices as `PromptStart`.
+    fn buffer_with_prompts(total: usize, prompt_indices: &[usize]) -> HotBuffer {
+        let mut buf = HotBuffer::new(10 * 1024 * 1024);
+        for i in 0..total {
+            let mut row = Row::new(80);
+            if prompt_indices.contains(&i) {
+                row.semantic_mark = SemanticMark::PromptStart;
+            }
+            buf.push(row);
+        }
+        buf
+    }
+
+    #[test]
+    fn find_prompt_backward_finds_nearest() {
+        // Rows: [P, _, _, P, _, _, _, _, _, _]  (P at 0 and 3)
+        let buf = buffer_with_prompts(10, &[0, 3]);
+        // Search backward from offset -5 (index 5)
+        let result = find_prompt_in_buffer(&buf, -5, SearchDirection::Older);
+        // Nearest prompt before index 5 is at index 3 → offset = 3 - 10 = -7
+        assert_eq!(result, Some(-7));
+    }
+
+    #[test]
+    fn find_prompt_backward_skips_current() {
+        // Rows: [_, _, _, P, _, _]  (P at 3)
+        let buf = buffer_with_prompts(6, &[3]);
+        // Search backward from index 3 (offset -3): should skip index 3 itself
+        let result = find_prompt_in_buffer(&buf, -3, SearchDirection::Older);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn find_prompt_forward_finds_nearest() {
+        // Rows: [_, _, _, _, P, _, _, P, _, _]  (P at 4 and 7)
+        let buf = buffer_with_prompts(10, &[4, 7]);
+        // Search forward from offset -8 (index 2)
+        let result = find_prompt_in_buffer(&buf, -8, SearchDirection::Newer);
+        // Nearest prompt after index 2 is at index 4 → offset = 4 - 10 = -6
+        assert_eq!(result, Some(-6));
+    }
+
+    #[test]
+    fn find_prompt_forward_skips_current() {
+        // Rows: [_, _, _, P, _, _]  (P at 3)
+        let buf = buffer_with_prompts(6, &[3]);
+        // Search forward from index 3 (offset -3): should skip index 3
+        let result = find_prompt_in_buffer(&buf, -3, SearchDirection::Newer);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn find_prompt_empty_buffer() {
+        let buf = HotBuffer::new(1024);
+        assert_eq!(find_prompt_in_buffer(&buf, 0, SearchDirection::Older), None);
+        assert_eq!(find_prompt_in_buffer(&buf, 0, SearchDirection::Newer), None);
+    }
+
+    #[test]
+    fn find_prompt_no_prompts_in_buffer() {
+        let buf = buffer_with_prompts(10, &[]);
+        assert_eq!(
+            find_prompt_in_buffer(&buf, -5, SearchDirection::Older),
+            None
+        );
+        assert_eq!(
+            find_prompt_in_buffer(&buf, -5, SearchDirection::Newer),
+            None
+        );
+    }
+
+    #[test]
+    fn find_prompt_offset_clamped_to_zero() {
+        // offset more negative than buffer length → clamped to index 0
+        let buf = buffer_with_prompts(5, &[2]);
+        let result = find_prompt_in_buffer(&buf, -100, SearchDirection::Newer);
+        assert_eq!(result, Some(-3)); // index 2 → 2 - 5 = -3
+    }
+
+    #[test]
+    fn find_prompt_at_live_view() {
+        // offset 0 means live view (from_idx = buf.len())
+        let buf = buffer_with_prompts(5, &[1, 3]);
+        // Backward from live should find the last prompt (index 3)
+        let result = find_prompt_in_buffer(&buf, 0, SearchDirection::Older);
+        assert_eq!(result, Some(-2)); // index 3 → 3 - 5 = -2
+        // Forward from live: nothing after buf.len()
+        let result = find_prompt_in_buffer(&buf, 0, SearchDirection::Newer);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn find_prompt_offset_roundtrip() {
+        // Verify the offset produced by find_prompt_in_buffer converts back
+        // to the correct viewport_offset via checked_neg + u32::try_from.
+        let buf = buffer_with_prompts(100, &[25, 50, 75]);
+        let offset = find_prompt_in_buffer(&buf, -30, SearchDirection::Older)
+            .expect("should find prompt at index 50");
+        // from_idx = 100 + (-30) = 70; nearest prompt before 70 is at index 50
+        assert_eq!(offset, -50); // 50 - 100 = -50
+        // Client conversion: negate to get positive viewport_offset
+        let viewport = offset
+            .checked_neg()
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
+        assert_eq!(viewport, 50);
     }
 }

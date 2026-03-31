@@ -15,9 +15,10 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, GetScrollback, HandshakeStatus, MSG_BELL, MSG_DETACH,
-    MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_RENDER_UPDATE,
-    MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_TITLE_CHANGED, ScrollbackData, TitleChanged,
+    ClientHello, ClientType, FindPrompt, GetScrollback, HandshakeStatus, MSG_BELL, MSG_DETACH,
+    MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK,
+    MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO,
+    MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, SearchDirection, TitleChanged,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -53,6 +54,7 @@ impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
 enum UserEvent {
     RenderUpdate(Box<RenderUpdate>),
     ScrollbackData(Box<ScrollbackData>),
+    PromptPosition(PromptPosition),
     TitleChanged(String),
     Bell,
     Disconnected,
@@ -166,8 +168,33 @@ impl App {
                 start_row: -i64::from(self.viewport_offset),
                 count: u32::from(grid.rows),
             };
-            if let Ok(frame) = Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
-                let _ = daemon.send_frame(&frame);
+            match Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
+                Ok(frame) => {
+                    if let Err(e) = daemon.send_frame(&frame) {
+                        eprintln!("failed to send GetScrollback: {e}");
+                    }
+                }
+                Err(e) => eprintln!("failed to create GetScrollback frame: {e}"),
+            }
+        }
+    }
+
+    /// Ask the daemon to find the next/previous prompt relative to the
+    /// current viewport offset.
+    fn request_find_prompt(&self, direction: SearchDirection) {
+        if let Some(daemon) = &self.daemon {
+            let req = FindPrompt {
+                pane_id: 0,
+                from_offset: -i64::from(self.viewport_offset),
+                direction,
+            };
+            match Frame::new(MSG_FIND_PROMPT, 0, req.encode()) {
+                Ok(frame) => {
+                    if let Err(e) = daemon.send_frame(&frame) {
+                        eprintln!("failed to send FindPrompt: {e}");
+                    }
+                }
+                Err(e) => eprintln!("failed to create FindPrompt frame: {e}"),
             }
         }
     }
@@ -381,8 +408,34 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
-                // Intercept scrollback navigation keys.
+                // Intercept prompt navigation: Cmd+Shift+Up/Down.
                 let shift = self.modifiers.state().shift_key();
+                let super_key = self.modifiers.state().super_key();
+                if super_key && shift {
+                    let handled = match &logical_key {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            if let Some(grid) = &mut self.grid {
+                                if !grid.is_scrolled() {
+                                    grid.enter_scrollback();
+                                }
+                            }
+                            self.request_find_prompt(SearchDirection::Older);
+                            true
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            if self.viewport_offset > 0 {
+                                self.request_find_prompt(SearchDirection::Newer);
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        return;
+                    }
+                }
+
+                // Intercept scrollback navigation keys.
                 if shift {
                     let handled = match &logical_key {
                         Key::Named(NamedKey::PageUp) => {
@@ -721,6 +774,27 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(w) = &self.window {
                         w.request_redraw();
+                    }
+                }
+            }
+            UserEvent::PromptPosition(pos) => {
+                if let Some(offset) = pos.offset {
+                    // offset is negative; negate to get positive viewport_offset.
+                    let Some(new_offset) = offset.checked_neg().and_then(|v| u32::try_from(v).ok())
+                    else {
+                        eprintln!("PromptPosition offset {offset} out of range");
+                        return;
+                    };
+                    if new_offset == 0 {
+                        self.return_to_live();
+                    } else {
+                        self.viewport_offset = new_offset;
+                        if let Some(grid) = &mut self.grid {
+                            if !grid.is_scrolled() {
+                                grid.enter_scrollback();
+                            }
+                        }
+                        self.request_scrollback();
                     }
                 }
             }
@@ -1293,6 +1367,14 @@ fn daemon_reader(
                     }
                     Err(e) => {
                         eprintln!("failed to decode ScrollbackData: {e}");
+                    }
+                },
+                MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
+                    Ok(pos) => {
+                        let _ = proxy.send_event(UserEvent::PromptPosition(pos));
+                    }
+                    Err(e) => {
+                        eprintln!("failed to decode PromptPosition: {e}");
                     }
                 },
                 MSG_BELL => {
