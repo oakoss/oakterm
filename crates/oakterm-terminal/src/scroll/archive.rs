@@ -334,6 +334,191 @@ pub fn read_seek_table(data: &[u8]) -> io::Result<Vec<SeekTableEntry>> {
     deserialize_seek_table(&data[table_start..data.len() - 4])
 }
 
+/// Reads frames and individual rows from a finalized segment buffer.
+pub struct SegmentReader<'a> {
+    data: &'a [u8],
+    seek_table: Vec<SeekTableEntry>,
+    key: &'a LessSafeKey,
+    nonce_start: u64,
+}
+
+impl<'a> SegmentReader<'a> {
+    /// Open a finalized segment for reading.
+    ///
+    /// `nonce_start` is the key's nonce counter at the time this segment
+    /// began writing. Frame N uses nonce `nonce_start + N`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the seek table cannot be parsed.
+    pub fn open(data: &'a [u8], key: &'a LessSafeKey, nonce_start: u64) -> io::Result<Self> {
+        let seek_table = read_seek_table(data)?;
+        Ok(Self {
+            data,
+            seek_table,
+            key,
+            nonce_start,
+        })
+    }
+
+    /// Number of frames in this segment.
+    #[must_use]
+    pub fn frame_count(&self) -> usize {
+        self.seek_table.len()
+    }
+
+    /// Total rows across all frames.
+    #[must_use]
+    pub fn total_rows(&self) -> u64 {
+        self.seek_table
+            .last()
+            .map_or(0, |e| e.first_row_index + u64::from(e.row_count))
+    }
+
+    /// Reference to the seek table.
+    #[must_use]
+    pub fn seek_table(&self) -> &[SeekTableEntry] {
+        &self.seek_table
+    }
+
+    /// Whether this segment contains the given row index.
+    #[must_use]
+    pub fn contains_row(&self, row_index: u64) -> bool {
+        if let (Some(first), Some(last)) = (self.seek_table.first(), self.seek_table.last()) {
+            row_index >= first.first_row_index
+                && row_index < last.first_row_index + u64::from(last.row_count)
+        } else {
+            false
+        }
+    }
+
+    /// Read and decode all rows in a frame by frame index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame index is out of range, or if
+    /// decryption, decompression, or deserialization fails.
+    pub fn read_frame(&self, frame_index: usize) -> io::Result<Vec<Row>> {
+        let entry = self.seek_table.get(frame_index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "frame index {frame_index} out of range ({})",
+                    self.seek_table.len()
+                ),
+            )
+        })?;
+        let frame_data = self.frame_bytes(entry)?;
+        let compressed =
+            decrypt_frame(self.key, self.nonce_start + frame_index as u64, frame_data)?;
+        let serialized = decompress_frame(&compressed)?;
+        row_codec::deserialize_rows(&serialized)
+    }
+
+    /// Read a single row by its absolute row index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the row index is not in this segment, or if
+    /// decryption, decompression, or deserialization fails.
+    #[allow(clippy::cast_possible_truncation)] // offset bounded by u32 row_count
+    pub fn read_row(&self, row_index: u64) -> io::Result<Row> {
+        let (frame_idx, entry) = self.find_frame(row_index)?;
+        let rows = self.read_frame(frame_idx)?;
+        let offset = (row_index - entry.first_row_index) as usize;
+        rows.into_iter().nth(offset).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("row {row_index} not found in frame {frame_idx}"),
+            )
+        })
+    }
+
+    /// Read a range of rows by absolute row index.
+    ///
+    /// Returns up to `count` rows starting from `start`. May span
+    /// multiple frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `start` is not in this segment, or if any
+    /// frame read fails.
+    #[allow(clippy::cast_possible_truncation)] // within-frame offsets fit in usize (< u32 row_count)
+    pub fn read_rows(&self, start: u64, count: usize) -> io::Result<Vec<Row>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        if !self.contains_row(start) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("start row {start} not in this segment"),
+            ));
+        }
+        let mut result = Vec::with_capacity(count);
+        let mut current = start;
+        let end = start.saturating_add(count as u64);
+
+        while current < end && self.contains_row(current) {
+            let (frame_idx, entry) = self.find_frame(current)?;
+            let rows = self.read_frame(frame_idx)?;
+            let frame_start = entry.first_row_index;
+            let skip = (current - frame_start) as usize;
+            let remaining = rows.len().saturating_sub(skip);
+            let take = remaining.min((end - current) as usize);
+            if take == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("frame {frame_idx} has fewer rows than seek table claims"),
+                ));
+            }
+            result.extend(rows.into_iter().skip(skip).take(take));
+            current += take as u64;
+        }
+
+        Ok(result)
+    }
+
+    /// Binary search the seek table for the frame containing `row_index`.
+    fn find_frame(&self, row_index: u64) -> io::Result<(usize, &SeekTableEntry)> {
+        let idx = self
+            .seek_table
+            .partition_point(|e| e.first_row_index + u64::from(e.row_count) <= row_index);
+        let entry = self.seek_table.get(idx).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("row {row_index} not in this segment"),
+            )
+        })?;
+        if row_index < entry.first_row_index {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("row {row_index} not in this segment"),
+            ));
+        }
+        Ok((idx, entry))
+    }
+
+    /// Extract frame bytes from the segment data using a seek table entry.
+    fn frame_bytes(&self, entry: &SeekTableEntry) -> io::Result<&[u8]> {
+        let off: usize = entry.compressed_offset.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compressed_offset exceeds usize",
+            )
+        })?;
+        let len: usize = entry.compressed_size.try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "compressed_size exceeds usize")
+        })?;
+        if off + len > self.data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame at offset {off} + {len} exceeds segment size"),
+            ));
+        }
+        Ok(&self.data[off..off + len])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +735,154 @@ mod tests {
             !data_str.contains("SECRET"),
             "plaintext leaked into encrypted segment"
         );
+    }
+
+    // --- SegmentReader tests ---
+
+    /// Write rows to a segment, returning (data, key, `nonce_start`).
+    fn write_segment(frames: &[Vec<Row>]) -> (Vec<u8>, ArchiveKey, u64) {
+        let mut writer = SegmentWriter::new(Vec::new()).unwrap();
+        let nonce_start = writer.key().nonce_counter();
+        for rows in frames {
+            writer.write_frame(rows).unwrap();
+        }
+        let (data, key) = writer.finalize().unwrap();
+        (data, key, nonce_start)
+    }
+
+    #[test]
+    fn reader_open_and_frame_count() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(80)], vec![Row::new(80)]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        assert_eq!(reader.frame_count(), 2);
+        assert_eq!(reader.total_rows(), 2);
+    }
+
+    #[test]
+    fn reader_read_frame_round_trip() {
+        let mut row = Row::new(40);
+        row.cells[0].codepoint = 'Z';
+        row.cells[0].fg = Color::Named(NamedColor::Magenta);
+        let (data, key, ns) = write_segment(&[vec![row.clone()]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        let rows = reader.read_frame(0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], row);
+    }
+
+    #[test]
+    fn reader_read_frame_out_of_range() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(10)]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        assert!(reader.read_frame(1).is_err());
+    }
+
+    #[test]
+    fn reader_read_row_by_index() {
+        let mut r0 = Row::new(20);
+        r0.cells[0].codepoint = 'A';
+        let mut r1 = Row::new(20);
+        r1.cells[0].codepoint = 'B';
+        let mut r2 = Row::new(20);
+        r2.cells[0].codepoint = 'C';
+
+        // Frame 0: [r0, r1], Frame 1: [r2]
+        let (data, key, ns) = write_segment(&[vec![r0.clone(), r1.clone()], vec![r2.clone()]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+
+        assert_eq!(reader.read_row(0).unwrap(), r0);
+        assert_eq!(reader.read_row(1).unwrap(), r1);
+        assert_eq!(reader.read_row(2).unwrap(), r2);
+    }
+
+    #[test]
+    fn reader_read_row_out_of_range() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(10)]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        assert!(reader.read_row(1).is_err());
+        assert!(reader.read_row(999).is_err());
+    }
+
+    #[test]
+    fn reader_contains_row() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(10); 3], vec![Row::new(10); 2]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        assert!(reader.contains_row(0));
+        assert!(reader.contains_row(4));
+        assert!(!reader.contains_row(5));
+        assert!(!reader.contains_row(100));
+    }
+
+    #[test]
+    fn reader_read_rows_within_frame() {
+        let rows: Vec<Row> = (0..5)
+            .map(|i| {
+                let mut r = Row::new(10);
+                r.cells[0].codepoint = char::from(b'A' + i);
+                r
+            })
+            .collect();
+        let (data, key, ns) = write_segment(std::slice::from_ref(&rows));
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+
+        let result = reader.read_rows(1, 3).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], rows[1]);
+        assert_eq!(result[2], rows[3]);
+    }
+
+    #[test]
+    fn reader_read_rows_spanning_frames() {
+        let mut r0 = Row::new(10);
+        r0.cells[0].codepoint = 'X';
+        let mut r1 = Row::new(10);
+        r1.cells[0].codepoint = 'Y';
+        let mut r2 = Row::new(10);
+        r2.cells[0].codepoint = 'Z';
+
+        // Frame 0: [r0, r1], Frame 1: [r2]
+        let (data, key, ns) = write_segment(&[vec![r0.clone(), r1.clone()], vec![r2.clone()]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+
+        // Read rows 1..3 which spans both frames
+        let result = reader.read_rows(1, 2).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], r1);
+        assert_eq!(result[1], r2);
+    }
+
+    #[test]
+    fn reader_read_rows_truncates_at_segment_end() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(10); 3]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        // Request 10 rows starting at 1, but only 2 remain
+        let result = reader.read_rows(1, 10).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn reader_full_round_trip_with_styles() {
+        let mut r0 = Row::new(40);
+        r0.cells[0].codepoint = 'H';
+        r0.cells[0].fg = Color::Rgb(255, 0, 0);
+        r0.cells[0].flags = CellFlags::BOLD.union(CellFlags::ITALIC);
+        r0.semantic_mark = SemanticMark::PromptStart;
+
+        let mut r1 = Row::new(40);
+        r1.cells[0].codepoint = 'W';
+        r1.cells[0].bg = Color::Named(NamedColor::Blue);
+
+        let (data, key, ns) = write_segment(&[vec![r0.clone()], vec![r1.clone()]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+
+        assert_eq!(reader.read_row(0).unwrap(), r0);
+        assert_eq!(reader.read_row(1).unwrap(), r1);
+    }
+
+    #[test]
+    fn reader_read_rows_out_of_range_start() {
+        let (data, key, ns) = write_segment(&[vec![Row::new(10); 3]]);
+        let reader = SegmentReader::open(&data, key.key(), ns).unwrap();
+        assert!(reader.read_rows(99, 1).is_err());
     }
 }
