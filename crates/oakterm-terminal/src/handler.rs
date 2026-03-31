@@ -8,6 +8,7 @@
 //! while the daemon passes a `ScreenSet` for alternate screen support.
 
 use crate::grid::cell::{self, CellFlags, WideState};
+use crate::grid::row::Row;
 use crate::grid::{Grid, ScreenSet};
 
 /// Abstraction over `Grid` and `ScreenSet` for the handler.
@@ -20,6 +21,9 @@ pub trait TermTarget {
     fn active_grid_mut(&mut self) -> &mut Grid;
     fn enter_alternate(&mut self) {}
     fn exit_alternate(&mut self) {}
+    /// Push rows that scrolled off the visible area into scrollback.
+    /// Default no-op for single-grid test contexts.
+    fn push_scrollback(&mut self, _rows: Vec<Row>) {}
     /// Full terminal reset (RIS). Resets to primary screen, drops alternate.
     fn reset(&mut self) {
         let g = self.active_grid_mut();
@@ -48,6 +52,11 @@ impl TermTarget for ScreenSet {
     fn exit_alternate(&mut self) {
         ScreenSet::exit_alternate(self);
     }
+    fn push_scrollback(&mut self, rows: Vec<Row>) {
+        for row in rows {
+            let _pruned = self.scrollback_mut().push(row);
+        }
+    }
     fn reset(&mut self) {
         ScreenSet::reset(self);
     }
@@ -69,9 +78,10 @@ impl<'a, T: TermTarget, W: std::io::Write> Terminal<'a, T, W> {
 
 // --- Free functions for grid manipulation (avoids borrow checker conflicts) ---
 
-fn write_char(g: &mut Grid, c: char) {
+fn write_char(g: &mut Grid, c: char) -> Vec<Row> {
     let c = map_charset(g, c);
     let cols = g.cols;
+    let mut captured = Vec::new();
 
     if g.cursor.col >= cols {
         if g.modes.get(7) {
@@ -81,7 +91,7 @@ fn write_char(g: &mut Grid, c: char) {
                 line.flags.set_wrapped(true);
             }
             g.cursor.col = 0;
-            do_linefeed(g);
+            captured = do_linefeed(g);
 
             let new_row = g.cursor.row as usize;
             if let Some(line) = g.lines.get_mut(new_row) {
@@ -123,22 +133,29 @@ fn write_char(g: &mut Grid, c: char) {
     }
 
     g.cursor.col += 1;
+    captured
 }
 
-fn do_linefeed(g: &mut Grid) {
+fn do_linefeed(g: &mut Grid) -> Vec<Row> {
     let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom);
-    if g.cursor.row >= bottom {
-        do_scroll_up(g, 1);
+    let captured = if g.cursor.row >= bottom {
+        do_scroll_up(g, 1)
     } else {
         g.cursor.row += 1;
-    }
+        Vec::new()
+    };
     // LNM (mode 20): LF implies CR.
     if g.modes.get(20) {
         g.cursor.col = 0;
     }
+    captured
 }
 
-fn do_scroll_up(g: &mut Grid, count: usize) {
+/// Scroll the grid up by `count` rows within the scroll region.
+/// Returns the rows that scrolled off the top (only when scroll region
+/// starts at row 0, i.e. full-screen scroll). Sub-region scrolls are
+/// internal rearrangement and produce no scrollback.
+fn do_scroll_up(g: &mut Grid, count: usize) -> Vec<Row> {
     let top = g.scroll_region.map_or(0, |r| r.top) as usize;
     let bottom = g.scroll_region.map_or(g.rows - 1, |r| r.bottom) as usize;
     let count = count.min(bottom - top + 1);
@@ -146,14 +163,27 @@ fn do_scroll_up(g: &mut Grid, count: usize) {
     g.lines[top..=bottom].rotate_left(count);
     let cols = g.cols as usize;
     let bg = g.current_bg;
-    for row in &mut g.lines[(bottom + 1 - count)..=bottom] {
-        *row = crate::grid::row::Row::new_with_bg(cols, bg);
+
+    // After rotate_left, the old top rows sit at [bottom+1-count..=bottom].
+    // Capture them before overwriting (only for full-screen scrolls).
+    let mut captured = Vec::new();
+    if top == 0 {
+        captured.reserve(count);
+        for row in &mut g.lines[(bottom + 1 - count)..=bottom] {
+            captured.push(std::mem::replace(row, Row::new_with_bg(cols, bg)));
+        }
+    } else {
+        for row in &mut g.lines[(bottom + 1 - count)..=bottom] {
+            *row = Row::new_with_bg(cols, bg);
+        }
     }
 
     let seqno = g.next_seqno();
     for row in &mut g.lines[top..=bottom] {
         row.seqno = seqno;
     }
+
+    captured
 }
 
 fn do_scroll_down(g: &mut Grid, count: usize) {
@@ -165,7 +195,7 @@ fn do_scroll_down(g: &mut Grid, count: usize) {
 
     g.lines[top..=bottom].rotate_right(count);
     for row in &mut g.lines[top..top + count] {
-        *row = crate::grid::row::Row::new_with_bg(cols, bg);
+        *row = Row::new_with_bg(cols, bg);
     }
 
     let seqno = g.next_seqno();
@@ -226,7 +256,7 @@ fn clear_grid(g: &mut Grid) {
     let cols = g.cols as usize;
     let bg = g.current_bg;
     for line in &mut g.lines {
-        *line = crate::grid::row::Row::new_with_bg(cols, bg);
+        *line = Row::new_with_bg(cols, bg);
     }
     g.touch_all();
 }
@@ -293,7 +323,10 @@ fn convert_named_color(n: vte::ansi::NamedColor) -> cell::Color {
 
 impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W> {
     fn input(&mut self, c: char) {
-        write_char(self.target.active_grid_mut(), c);
+        let captured = write_char(self.target.active_grid_mut(), c);
+        if !captured.is_empty() {
+            self.target.push_scrollback(captured);
+        }
     }
 
     fn terminal_attribute(&mut self, attr: vte::ansi::Attr) {
@@ -413,7 +446,10 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     }
 
     fn linefeed(&mut self) {
-        do_linefeed(self.target.active_grid_mut());
+        let captured = do_linefeed(self.target.active_grid_mut());
+        if !captured.is_empty() {
+            self.target.push_scrollback(captured);
+        }
     }
 
     fn put_tab(&mut self, count: u16) {
@@ -423,7 +459,10 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     }
 
     fn scroll_up(&mut self, count: usize) {
-        do_scroll_up(self.target.active_grid_mut(), count);
+        let captured = do_scroll_up(self.target.active_grid_mut(), count);
+        if !captured.is_empty() {
+            self.target.push_scrollback(captured);
+        }
     }
 
     fn scroll_down(&mut self, count: usize) {
@@ -446,12 +485,12 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                     }
                 }
                 for line in &mut g.lines[row + 1..rows] {
-                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
+                    *line = Row::new_with_bg(cols, bg);
                 }
             }
             vte::ansi::ClearMode::Above => {
                 for line in &mut g.lines[..row] {
-                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
+                    *line = Row::new_with_bg(cols, bg);
                 }
                 if let Some(line) = g.lines.get_mut(row) {
                     for cell in &mut line.cells[..=col.min(cols - 1)] {
@@ -461,7 +500,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             }
             vte::ansi::ClearMode::All => {
                 for line in &mut g.lines {
-                    *line = crate::grid::row::Row::new_with_bg(cols, bg);
+                    *line = Row::new_with_bg(cols, bg);
                 }
             }
             vte::ansi::ClearMode::Saved => {}
@@ -553,7 +592,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
         g.lines[top..=bottom].rotate_right(count);
         for line in &mut g.lines[top..top + count] {
-            *line = crate::grid::row::Row::new_with_bg(cols, bg);
+            *line = Row::new_with_bg(cols, bg);
         }
 
         let seqno = g.next_seqno();
@@ -562,6 +601,9 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         }
     }
 
+    /// DL deletes lines at cursor within the scroll region. Deleted rows
+    /// are NOT captured to scrollback (matches xterm: only full-screen
+    /// scroll-region scrolls via LF / `scroll_up` produce scrollback).
     fn delete_lines(&mut self, count: usize) {
         let g = self.target.active_grid_mut();
         let region_top = g.scroll_region.map_or(0, |r| r.top) as usize;
@@ -577,7 +619,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
         g.lines[top..=bottom].rotate_left(count);
         for line in &mut g.lines[(bottom + 1 - count)..=bottom] {
-            *line = crate::grid::row::Row::new_with_bg(cols, bg);
+            *line = Row::new_with_bg(cols, bg);
         }
 
         let seqno = g.next_seqno();
@@ -776,7 +818,10 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     // linefeed() + carriage_return(), never as newline().
 
     fn substitute(&mut self) {
-        write_char(self.target.active_grid_mut(), '\u{FFFD}');
+        let captured = write_char(self.target.active_grid_mut(), '\u{FFFD}');
+        if !captured.is_empty() {
+            self.target.push_scrollback(captured);
+        }
     }
 
     fn decaln(&mut self) {
@@ -2044,5 +2089,88 @@ mod tests {
         assert!(grid.dynamic_bg.is_some());
         parse(&mut grid, b"\x1b]111\x1b\\");
         assert!(grid.dynamic_bg.is_none());
+    }
+
+    // --- Scrollback capture tests (use ScreenSet, not bare Grid) ---
+
+    fn parse_screen(screen: &mut ScreenSet, input: &[u8]) {
+        process_bytes(screen, input, &mut std::io::sink());
+    }
+
+    #[test]
+    fn scroll_captures_row_to_scrollback() {
+        let mut screen = test_screen(10, 3);
+        // Fill 3 rows and scroll one off.
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
+        assert_eq!(screen.scrollback().len(), 1);
+        let row = screen.scrollback().get(0).unwrap();
+        // The first row "aaa" scrolled off.
+        let text: String = row.cells.iter().take(3).map(|c| c.codepoint).collect();
+        assert_eq!(text, "aaa");
+    }
+
+    #[test]
+    fn scroll_captures_multiple_rows() {
+        let mut screen = test_screen(10, 3);
+        // Fill 3 rows, then scroll 3 more off.
+        parse_screen(&mut screen, b"r1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6");
+        assert_eq!(screen.scrollback().len(), 3);
+    }
+
+    #[test]
+    fn sub_region_scroll_no_scrollback() {
+        let mut screen = test_screen(10, 5);
+        // Set scroll region to rows 2-4 (1-based: CSI 2;4 r).
+        parse_screen(&mut screen, b"\x1b[2;4r");
+        // Move cursor to row 4 and scroll within the region.
+        parse_screen(&mut screen, b"\x1b[4;1H");
+        parse_screen(&mut screen, b"\r\nline");
+        assert_eq!(
+            screen.scrollback().len(),
+            0,
+            "sub-region scroll should not produce scrollback"
+        );
+    }
+
+    #[test]
+    fn linefeed_at_bottom_captures_scrollback() {
+        let mut screen = test_screen(5, 2);
+        parse_screen(&mut screen, b"ab\r\ncd\r\nef");
+        // Two rows visible, "ab" should have scrolled off.
+        assert_eq!(screen.scrollback().len(), 1);
+        let row = screen.scrollback().get(0).unwrap();
+        let text: String = row.cells.iter().take(2).map(|c| c.codepoint).collect();
+        assert_eq!(text, "ab");
+    }
+
+    #[test]
+    fn explicit_scroll_up_captures_scrollback() {
+        let mut screen = test_screen(10, 3);
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc");
+        // Explicit scroll-up by 2: CSI 2 S
+        parse_screen(&mut screen, b"\x1b[2S");
+        assert_eq!(screen.scrollback().len(), 2);
+    }
+
+    #[test]
+    fn auto_wrap_captures_scrollback() {
+        // 3-col, 2-row grid. Fill both rows via wrapping, then wrap again.
+        let mut screen = test_screen(3, 2);
+        // "abcdef" fills row 0 (abc) and wraps to row 1 (def).
+        // "ghi" wraps past row 1, scrolling row 0 ("abc") off.
+        parse_screen(&mut screen, b"abcdefghi");
+        assert_eq!(screen.scrollback().len(), 1);
+        let row = screen.scrollback().get(0).unwrap();
+        let text: String = row.cells.iter().take(3).map(|c| c.codepoint).collect();
+        assert_eq!(text, "abc");
+    }
+
+    #[test]
+    fn scroll_count_exceeding_grid_clamped() {
+        let mut screen = test_screen(10, 3);
+        parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc");
+        // Scroll up by 100 (clamped to 3).
+        parse_screen(&mut screen, b"\x1b[100S");
+        assert_eq!(screen.scrollback().len(), 3);
     }
 }
