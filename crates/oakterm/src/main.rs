@@ -15,8 +15,9 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, HandshakeStatus, MSG_BELL, MSG_DETACH, MSG_DIRTY_NOTIFY,
-    MSG_GET_RENDER_UPDATE, MSG_RENDER_UPDATE, MSG_SERVER_HELLO, MSG_TITLE_CHANGED, TitleChanged,
+    ClientHello, ClientType, GetScrollback, HandshakeStatus, MSG_BELL, MSG_DETACH,
+    MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_RENDER_UPDATE,
+    MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_TITLE_CHANGED, ScrollbackData, TitleChanged,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -51,6 +52,7 @@ impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
 #[derive(Debug)]
 enum UserEvent {
     RenderUpdate(Box<RenderUpdate>),
+    ScrollbackData(Box<ScrollbackData>),
     TitleChanged(String),
     Bell,
     Disconnected,
@@ -144,6 +146,41 @@ impl App {
             last_mouse_cell: (0, 0),
             viewport_offset: 0,
             modifiers: winit::event::Modifiers::default(),
+        }
+    }
+
+    /// Request scrollback rows from the daemon for the current viewport offset.
+    fn request_scrollback(&self) {
+        if let (Some(daemon), Some(grid)) = (&self.daemon, &self.grid) {
+            let req = GetScrollback {
+                pane_id: 0,
+                start_row: -i64::from(self.viewport_offset),
+                count: u32::from(grid.rows),
+            };
+            if let Ok(frame) = Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
+                let _ = daemon.send_frame(&frame);
+            }
+        }
+    }
+
+    /// Return to live view from scrollback.
+    fn return_to_live(&mut self) {
+        self.viewport_offset = 0;
+        if let Some(grid) = &mut self.grid {
+            grid.exit_scrollback();
+        }
+        // Request a full refresh to ensure live view is current.
+        if let Some(daemon) = &self.daemon {
+            let req = GetRenderUpdate {
+                pane_id: 0,
+                since_seqno: 0,
+            };
+            if let Ok(frame) = Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()) {
+                let _ = daemon.send_frame(&frame);
+            }
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 }
@@ -293,6 +330,61 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
+                // Intercept scrollback navigation keys.
+                let shift = self.modifiers.state().shift_key();
+                if shift {
+                    let handled = match &logical_key {
+                        Key::Named(NamedKey::PageUp) => {
+                            if let Some(grid) = &mut self.grid {
+                                if !grid.is_scrolled() {
+                                    grid.enter_scrollback();
+                                }
+                                self.viewport_offset =
+                                    self.viewport_offset.saturating_add(u32::from(grid.rows));
+                            }
+                            self.request_scrollback();
+                            true
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            if self.viewport_offset > 0 {
+                                let rows = self.grid.as_ref().map_or(24, |g| u32::from(g.rows));
+                                self.viewport_offset = self.viewport_offset.saturating_sub(rows);
+                                if self.viewport_offset == 0 {
+                                    self.return_to_live();
+                                } else {
+                                    self.request_scrollback();
+                                }
+                            }
+                            true
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            if let Some(grid) = &mut self.grid {
+                                if !grid.is_scrolled() {
+                                    grid.enter_scrollback();
+                                }
+                            }
+                            self.viewport_offset = u32::MAX;
+                            self.request_scrollback();
+                            true
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if self.viewport_offset > 0 {
+                                self.return_to_live();
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        return;
+                    }
+                }
+
+                // Any non-shift key while scrolled: snap back to live first.
+                if self.viewport_offset > 0 {
+                    self.return_to_live();
+                }
+
                 let bytes = key_to_bytes(&logical_key, text.as_deref());
                 if let (Some(daemon), Some(bytes)) = (&mut self.daemon, bytes) {
                     let msg = KeyInput {
@@ -534,10 +626,26 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::RenderUpdate(update) => {
                 if let Some(grid) = &mut self.grid {
-                    grid.apply_update(&update);
+                    if grid.is_scrolled() {
+                        grid.apply_update_while_scrolled(&update);
+                    } else {
+                        grid.apply_update(&update);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
                 }
-                if let Some(w) = &self.window {
-                    w.request_redraw();
+            }
+            UserEvent::ScrollbackData(data) => {
+                if self.viewport_offset > 0 {
+                    if let Some(grid) = &mut self.grid {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
+                        grid.apply_scrollback(&data.rows, offset);
+                    }
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
                 }
             }
             UserEvent::TitleChanged(title) => {
@@ -1077,6 +1185,14 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
                     }
                 }
+                MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
+                    Ok(data) => {
+                        let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
+                    }
+                    Err(e) => {
+                        eprintln!("failed to decode ScrollbackData: {e}");
+                    }
+                },
                 MSG_BELL => {
                     let _ = proxy.send_event(UserEvent::Bell);
                 }
