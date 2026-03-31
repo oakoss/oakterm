@@ -439,3 +439,102 @@ impl Bell {
         Frame::new(MSG_BELL, 0, self.encode())
     }
 }
+
+/// `GetScrollback` (0x73): client requests scrollback rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetScrollback {
+    pub pane_id: u32,
+    /// Negative offset from the viewport top. -1 = most recent scrollback row.
+    pub start_row: i64,
+    pub count: u32,
+}
+
+impl GetScrollback {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(16);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.start_row.to_le_bytes());
+        buf.extend_from_slice(&self.count.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 16 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "GetScrollback too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            start_row: i64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
+            count: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+        })
+    }
+}
+
+/// `ScrollbackData` (0x74): daemon responds with scrollback rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollbackData {
+    pub pane_id: u32,
+    pub start_row: i64,
+    pub has_more: bool,
+    pub rows: Vec<crate::render::DirtyRow>,
+}
+
+impl ScrollbackData {
+    /// # Errors
+    /// Returns an error if row count exceeds u32 or row encoding fails.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let row_count: u32 =
+            self.rows.len().try_into().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "too many scrollback rows")
+            })?;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.start_row.to_le_bytes());
+        buf.push(u8::from(self.has_more));
+        buf.extend_from_slice(&row_count.to_le_bytes());
+        for row in &self.rows {
+            buf.extend_from_slice(&row.encode()?);
+        }
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 17 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ScrollbackData too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let start_row = i64::from_le_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]);
+        let has_more = data[12] != 0;
+        let row_count = u32::from_le_bytes([data[13], data[14], data[15], data[16]]) as usize;
+
+        let mut offset = 17;
+        let mut rows = Vec::with_capacity(row_count);
+        for _ in 0..row_count {
+            let (row, consumed) = crate::render::DirtyRow::decode(&data[offset..])?;
+            rows.push(row);
+            offset += consumed;
+        }
+
+        Ok(Self {
+            pane_id,
+            start_row,
+            has_more,
+            rows,
+        })
+    }
+}

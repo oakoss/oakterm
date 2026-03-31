@@ -5,9 +5,10 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    Bell, ClientHello, ErrorCode, ErrorMessage, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DETACH,
-    MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG,
-    MSG_RENDER_UPDATE, MSG_RESIZE, PaneExited, ServerHello, TitleChanged,
+    Bell, ClientHello, ErrorCode, ErrorMessage, GetScrollback, HandshakeStatus, MSG_CLIENT_HELLO,
+    MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT,
+    MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE, MSG_SCROLLBACK_DATA,
+    PaneExited, ScrollbackData, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::ScreenSet;
@@ -634,35 +635,7 @@ async fn handle_request(
                 .iter()
                 .filter_map(|&idx| {
                     let row = g.lines.get(idx as usize)?;
-                    let cells: Vec<WireCell> = row
-                        .cells
-                        .iter()
-                        .map(|c| {
-                            let (fg_r, fg_g, fg_b, fg_type) =
-                                resolve_color(c.fg, &g.palette, 255, 255, 255);
-                            let (bg_r, bg_g, bg_b, bg_type) =
-                                resolve_color(c.bg, &g.palette, 0, 0, 0);
-                            WireCell {
-                                codepoint: c.codepoint as u32,
-                                fg_r,
-                                fg_g,
-                                fg_b,
-                                fg_type,
-                                bg_r,
-                                bg_g,
-                                bg_b,
-                                bg_type,
-                                flags: c.flags.bits(),
-                                extra: vec![],
-                            }
-                        })
-                        .collect();
-                    Some(DirtyRow {
-                        row_index: idx,
-                        cells,
-                        semantic_mark: 0,
-                        mark_metadata: vec![],
-                    })
+                    Some(row_to_wire(row, idx, &g.palette))
                 })
                 .collect();
 
@@ -703,6 +676,66 @@ async fn handle_request(
                         frame.serial,
                         ErrorCode::InternalError,
                         "RenderUpdate encode error",
+                    )
+                }
+            }
+        }
+        MSG_GET_SCROLLBACK => {
+            let Ok(req) = GetScrollback::decode(&frame.payload) else {
+                warn!(conn_id, "malformed GetScrollback payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed GetScrollback",
+                );
+            };
+            let s = screens.lock().await;
+            let buf = s.scrollback();
+            // Convert negative start_row to buffer index.
+            // buf.len() fits in i64 (scrollback is capped at 50MB, far below i64::MAX).
+            #[allow(clippy::cast_possible_wrap)]
+            let buf_len = buf.len() as i64;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let start_idx = (buf_len + req.start_row).max(0) as usize;
+            let end_idx = (start_idx + req.count as usize).min(buf.len());
+            let has_more = start_idx > 0;
+
+            let rows: Vec<DirtyRow> = (start_idx..end_idx)
+                .filter_map(|i| {
+                    let row = buf.get(i)?;
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(row_to_wire(row, i as u16, &s.active_grid().palette))
+                })
+                .collect();
+
+            let data = ScrollbackData {
+                pane_id: req.pane_id,
+                start_row: req.start_row,
+                has_more,
+                rows,
+            };
+
+            match data.encode() {
+                Ok(payload) => match Frame::new(MSG_SCROLLBACK_DATA, frame.serial, payload) {
+                    Ok(f) => RequestResult::Response(f),
+                    Err(e) => {
+                        error!(conn_id, error = %e, "failed to create ScrollbackData frame");
+                        make_error_response(
+                            conn_id,
+                            frame.serial,
+                            ErrorCode::InternalError,
+                            "ScrollbackData frame error",
+                        )
+                    }
+                },
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to encode ScrollbackData");
+                    make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::InternalError,
+                        "ScrollbackData encode error",
                     )
                 }
             }
@@ -842,5 +875,40 @@ fn resolve_color(
             (rgb.r, rgb.g, rgb.b, 2)
         }
         Color::Rgb(r, g, b) => (r, g, b, 3),
+    }
+}
+
+/// Convert a terminal `Row` to a wire `DirtyRow` using the given palette.
+fn row_to_wire(
+    row: &oakterm_terminal::grid::row::Row,
+    row_index: u16,
+    palette: &[Rgb; 256],
+) -> DirtyRow {
+    let cells: Vec<WireCell> = row
+        .cells
+        .iter()
+        .map(|c| {
+            let (fg_r, fg_g, fg_b, fg_type) = resolve_color(c.fg, palette, 255, 255, 255);
+            let (bg_r, bg_g, bg_b, bg_type) = resolve_color(c.bg, palette, 0, 0, 0);
+            WireCell {
+                codepoint: c.codepoint as u32,
+                fg_r,
+                fg_g,
+                fg_b,
+                fg_type,
+                bg_r,
+                bg_g,
+                bg_b,
+                bg_type,
+                flags: c.flags.bits(),
+                extra: vec![],
+            }
+        })
+        .collect();
+    DirtyRow {
+        row_index,
+        cells,
+        semantic_mark: 0,
+        mark_metadata: vec![],
     }
 }
