@@ -125,6 +125,12 @@ struct App {
     viewport_offset: u32,
     /// Current keyboard modifier state for intercepting Shift+key.
     modifiers: winit::event::Modifiers,
+    /// Blink phase: true = cursor visible, false = cursor hidden.
+    blink_visible: bool,
+    /// Next blink toggle deadline. `None` when blink is paused.
+    blink_deadline: Option<std::time::Instant>,
+    /// Whether the window currently has focus.
+    focused: bool,
 }
 
 impl App {
@@ -146,6 +152,9 @@ impl App {
             last_mouse_cell: (0, 0),
             viewport_offset: 0,
             modifiers: winit::event::Modifiers::default(),
+            blink_visible: true,
+            blink_deadline: None,
+            focused: true,
         }
     }
 
@@ -182,6 +191,32 @@ impl App {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+    }
+
+    /// Reset blink to visible and restart the timer.
+    fn reset_blink(&mut self) {
+        self.blink_visible = true;
+        if self.should_blink() {
+            self.blink_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(530));
+        } else {
+            self.blink_deadline = None;
+        }
+    }
+
+    /// Whether the cursor should currently be blinking.
+    fn should_blink(&self) -> bool {
+        if !self.config.cursor_blink || !self.focused {
+            return false;
+        }
+        let Some(grid) = &self.grid else {
+            return false;
+        };
+        if !grid.cursor_visible || grid.is_scrolled() {
+            return false;
+        }
+        // Blinking styles: 0=BlinkingBlock, 2=BlinkingUnderline, 4=BlinkingBar
+        matches!(grid.cursor_style, 0 | 2 | 4)
     }
 }
 
@@ -323,6 +358,19 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods;
             }
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if focused {
+                    self.reset_blink();
+                } else {
+                    // Show solid cursor when unfocused.
+                    self.blink_visible = true;
+                    self.blink_deadline = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -401,6 +449,7 @@ impl ApplicationHandler<UserEvent> for App {
                         Err(e) => eprintln!("failed to encode key input: {e}"),
                     }
                 }
+                self.reset_blink();
             }
             WindowEvent::CursorMoved { position, .. } =>
             {
@@ -544,7 +593,12 @@ impl ApplicationHandler<UserEvent> for App {
                 });
 
                 let (bg_colors, glyph_instances) =
-                    if let (Some(grid), Some(font)) = (&self.grid, &mut self.font) {
+                    if let (Some(grid), Some(font)) = (&mut self.grid, &mut self.font) {
+                        // Hide cursor during blink-off phase for blinking styles.
+                        let saved_visible = grid.cursor_visible;
+                        if !self.blink_visible && matches!(grid.cursor_style, 0 | 2 | 4) {
+                            grid.cursor_visible = false;
+                        }
                         let bg = grid.bg_colors();
                         let (glyphs, uploads) = grid.glyph_instances(
                             &font.metrics,
@@ -563,6 +617,7 @@ impl ApplicationHandler<UserEvent> for App {
                             &uploads,
                         );
 
+                        grid.cursor_visible = saved_visible;
                         (bg, glyphs)
                     } else {
                         (vec![], vec![])
@@ -638,6 +693,10 @@ impl ApplicationHandler<UserEvent> for App {
                         grid.apply_update_while_scrolled(&update);
                     } else {
                         grid.apply_update(&update);
+                        // Restart blink — cursor style may have changed.
+                        if self.blink_deadline.is_none() && self.should_blink() {
+                            self.reset_blink();
+                        }
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
@@ -682,6 +741,26 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ConfigReloaded(new_config, new_error) => {
                 self.handle_config_reload(new_config, new_error);
             }
+        }
+    }
+
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        // Blink timeout reached: toggle cursor visibility.
+        if matches!(cause, winit::event::StartCause::ResumeTimeReached { .. }) {
+            self.blink_visible = !self.blink_visible;
+            self.blink_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(530));
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(deadline) = self.blink_deadline {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 }
