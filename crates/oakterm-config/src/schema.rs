@@ -33,11 +33,74 @@ impl CursorStyle {
         }
     }
 
-    const ALL: &[&str] = &["block", "underline", "bar"];
+    pub(crate) const ALL: &[&str] = &["block", "underline", "bar"];
+}
+
+/// Window decoration style for config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowDecorations {
+    #[default]
+    Full,
+    None,
+}
+
+impl WindowDecorations {
+    /// Parse from a Lua config string.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "full" => Some(Self::Full),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// Config string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::None => "none",
+        }
+    }
+
+    pub(crate) const ALL: &[&str] = &["full", "none"];
+}
+
+/// Update check policy for config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdateCheck {
+    #[default]
+    Off,
+    Check,
+}
+
+impl UpdateCheck {
+    /// Parse from a Lua config string.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "check" => Some(Self::Check),
+            _ => None,
+        }
+    }
+
+    /// Config string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Check => "check",
+        }
+    }
+
+    pub(crate) const ALL: &[&str] = &["off", "check"];
 }
 
 /// Parsed configuration values extracted from Lua state.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // Config keys are individually spec'd bools.
 pub struct ConfigValues {
     /// Font family name. Empty means "use platform default".
     pub font_family: String,
@@ -48,6 +111,14 @@ pub struct ConfigValues {
     pub save_alternate_scrollback: bool,
     pub scroll_indicator: bool,
     pub padding: Padding,
+    /// Theme name. Empty means "use built-in default".
+    pub theme: String,
+    pub window_decorations: WindowDecorations,
+    pub confirm_close_process: bool,
+    pub scrollback_archive: bool,
+    pub scrollback_archive_limit: u64,
+    pub daemon_persist: bool,
+    pub check_for_updates: UpdateCheck,
 }
 
 impl Default for ConfigValues {
@@ -61,6 +132,13 @@ impl Default for ConfigValues {
             save_alternate_scrollback: true,
             scroll_indicator: true,
             padding: Padding::default(),
+            theme: String::new(),
+            window_decorations: WindowDecorations::default(),
+            confirm_close_process: true,
+            scrollback_archive: true,
+            scrollback_archive_limit: 1024 * 1024 * 1024,
+            daemon_persist: false,
+            check_for_updates: UpdateCheck::default(),
         }
     }
 }
@@ -124,6 +202,34 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "padding",
         validate: validate_padding,
+    },
+    ConfigKeyDef {
+        name: "theme",
+        validate: validate_string,
+    },
+    ConfigKeyDef {
+        name: "window_decorations",
+        validate: validate_window_decorations,
+    },
+    ConfigKeyDef {
+        name: "confirm_close_process",
+        validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "scrollback_archive",
+        validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "scrollback_archive_limit",
+        validate: validate_byte_size,
+    },
+    ConfigKeyDef {
+        name: "daemon_persist",
+        validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "check_for_updates",
+        validate: validate_check_for_updates,
     },
 ];
 
@@ -222,7 +328,7 @@ fn validate_font_size(_lua: &Lua, value: &Value) -> mlua::Result<()> {
         Ok(())
     } else {
         Err(mlua::Error::RuntimeError(format!(
-            "font_size must be greater than 0 and less than 200, got {n}"
+            "must be greater than 0 and less than 200, got {n}"
         )))
     }
 }
@@ -233,9 +339,35 @@ fn validate_cursor_style(_lua: &Lua, value: &Value) -> mlua::Result<()> {
         Ok(())
     } else {
         Err(mlua::Error::RuntimeError(format!(
-            "invalid cursor_style '{}' (expected: {})",
+            "invalid value '{}' (expected: {})",
             s,
             CursorStyle::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_window_decorations(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    if WindowDecorations::from_config_str(&s).is_some() {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "invalid value '{}' (expected: {})",
+            s,
+            WindowDecorations::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_check_for_updates(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    if UpdateCheck::from_config_str(&s).is_some() {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "invalid value '{}' (expected: {})",
+            s,
+            UpdateCheck::ALL.join(", ")
         )))
     }
 }
@@ -248,7 +380,7 @@ fn validate_byte_size(_lua: &Lua, value: &Value) -> mlua::Result<()> {
                 Ok(())
             } else {
                 Err(mlua::Error::RuntimeError(
-                    "scrollback_limit must be a finite non-negative number".to_string(),
+                    "value must be a finite non-negative number".to_string(),
                 ))
             }
         }
@@ -401,6 +533,13 @@ mod tests {
         assert_eq!(d.scrollback_limit, 50 * 1024 * 1024);
         assert_eq!(d.padding.top, 8);
         assert_eq!(d.padding.left, 12);
+        assert_eq!(d.theme, "");
+        assert_eq!(d.window_decorations, WindowDecorations::Full);
+        assert!(d.confirm_close_process);
+        assert!(d.scrollback_archive);
+        assert_eq!(d.scrollback_archive_limit, 1024 * 1024 * 1024);
+        assert!(!d.daemon_persist);
+        assert_eq!(d.check_for_updates, UpdateCheck::Off);
     }
 
     #[test]
@@ -412,11 +551,27 @@ mod tests {
     }
 
     #[test]
+    fn window_decorations_round_trip() {
+        for s in WindowDecorations::ALL {
+            let d = WindowDecorations::from_config_str(s).unwrap();
+            assert_eq!(d.as_str(), *s);
+        }
+    }
+
+    #[test]
+    fn update_check_round_trip() {
+        for s in UpdateCheck::ALL {
+            let u = UpdateCheck::from_config_str(s).unwrap();
+            assert_eq!(u.as_str(), *s);
+        }
+    }
+
+    #[test]
     fn schema_covers_all_keys() {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            8,
+            15,
             "SCHEMA must match ConfigValues field count"
         );
     }

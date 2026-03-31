@@ -4,7 +4,7 @@
 
 use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
 use crate::keybind::{Action, KeyChord, KeybindRegistry};
-use crate::schema::{self, ConfigValues, CursorStyle, Padding};
+use crate::schema::{self, ConfigValues, CursorStyle, Padding, UpdateCheck, WindowDecorations};
 use mlua::{Function, Lua, Table, Value};
 
 /// Registry key for the hidden backing table that stores validated config values.
@@ -47,7 +47,8 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
                 return Err(mlua::Error::RuntimeError(msg));
             };
 
-            (def.validate)(lua, &value)?;
+            (def.validate)(lua, &value)
+                .map_err(|e| mlua::Error::RuntimeError(format!("{}: {e}", def.name)))?;
 
             let backing: Table = lua.named_registry_value(BACKING_KEY)?;
             backing.set(key_str, value)?;
@@ -141,14 +142,65 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
         Ok(())
     })?;
 
-    // Register oakterm global with all subtables.
+    // Register oakterm global with all subtables and utility functions.
     let oakterm = lua.create_table()?;
     oakterm.set("config", proxy)?;
     oakterm.set("on", on_fn)?;
     oakterm.set("action", action)?;
     oakterm.set("keybind", keybind_fn)?;
+    register_platform_utilities(lua, &oakterm)?;
     lua.globals().set("oakterm", oakterm)?;
 
+    Ok(())
+}
+
+/// Register `oakterm.os()`, `oakterm.hostname()`, and `oakterm.log()`.
+fn register_platform_utilities(lua: &Lua, oakterm: &Table) -> mlua::Result<()> {
+    // oakterm.os() — compile-time platform detection.
+    let platform_fn = lua.create_function(|_, ()| {
+        let name = if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "unknown"
+        };
+        Ok(name)
+    })?;
+
+    // oakterm.hostname() — system hostname (writes to stderr on non-UTF-8).
+    let hostname_fn = lua.create_function(|_, ()| {
+        let raw = gethostname::gethostname();
+        if let Some(s) = raw.to_str() {
+            Ok(s.to_string())
+        } else {
+            let lossy = raw.to_string_lossy().into_owned();
+            eprintln!("[config:warn] hostname contains non-UTF-8 bytes; using: {lossy}");
+            Ok(lossy)
+        }
+    })?;
+
+    // oakterm.log(level, message) — config-level logging.
+    let log_fn = lua.create_function(|_, (level, message): (mlua::String, mlua::String)| {
+        let level_str = level.to_str()?;
+        match level_str.as_ref() {
+            "debug" | "info" | "warn" | "error" => {}
+            _ => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "invalid log level '{level_str}' (expected: debug, info, warn, error)"
+                )));
+            }
+        }
+        let msg = message.to_str()?;
+        eprintln!("[config:{level_str}] {msg}");
+        Ok(())
+    })?;
+
+    oakterm.set("os", platform_fn)?;
+    oakterm.set("hostname", hostname_fn)?;
+    oakterm.set("log", log_fn)?;
     Ok(())
 }
 
@@ -436,8 +488,12 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
     let cursor_style: CursorStyle = match backing.get::<Option<mlua::String>>("cursor_style")? {
         Some(s) => {
             let s = s.to_str()?;
-            CursorStyle::from_config_str(&s)
-                .ok_or_else(|| mlua::Error::RuntimeError(format!("invalid cursor_style '{s}'")))?
+            CursorStyle::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid cursor_style '{s}' (expected: {})",
+                    CursorStyle::ALL.join(", ")
+                ))
+            })?
         }
         None => defaults.cursor_style,
     };
@@ -446,7 +502,8 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("cursor_blink")?
         .unwrap_or(defaults.cursor_blink);
 
-    let scrollback_limit = extract_scrollback_limit(&backing, defaults.scrollback_limit)?;
+    let scrollback_limit =
+        extract_byte_size_field(&backing, "scrollback_limit", defaults.scrollback_limit)?;
 
     let save_alternate_scrollback: bool = backing
         .get::<Option<bool>>("save_alternate_scrollback")?
@@ -458,6 +515,56 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
 
     let padding = extract_padding(&backing, defaults.padding)?;
 
+    let theme: String = backing
+        .get::<Option<mlua::String>>("theme")?
+        .map(|s| s.to_str().map(|s| s.to_string()))
+        .transpose()?
+        .unwrap_or(defaults.theme);
+
+    let window_decorations = match backing.get::<Option<mlua::String>>("window_decorations")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            WindowDecorations::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid window_decorations '{s}' (expected: {})",
+                    WindowDecorations::ALL.join(", ")
+                ))
+            })?
+        }
+        None => defaults.window_decorations,
+    };
+
+    let confirm_close_process: bool = backing
+        .get::<Option<bool>>("confirm_close_process")?
+        .unwrap_or(defaults.confirm_close_process);
+
+    let scrollback_archive: bool = backing
+        .get::<Option<bool>>("scrollback_archive")?
+        .unwrap_or(defaults.scrollback_archive);
+
+    let scrollback_archive_limit = extract_byte_size_field(
+        &backing,
+        "scrollback_archive_limit",
+        defaults.scrollback_archive_limit,
+    )?;
+
+    let daemon_persist: bool = backing
+        .get::<Option<bool>>("daemon_persist")?
+        .unwrap_or(defaults.daemon_persist);
+
+    let check_for_updates = match backing.get::<Option<mlua::String>>("check_for_updates")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            UpdateCheck::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid check_for_updates '{s}' (expected: {})",
+                    UpdateCheck::ALL.join(", ")
+                ))
+            })?
+        }
+        None => defaults.check_for_updates,
+    };
+
     Ok(ConfigValues {
         font_family,
         font_size,
@@ -467,15 +574,22 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         save_alternate_scrollback,
         scroll_indicator,
         padding,
+        theme,
+        window_decorations,
+        confirm_close_process,
+        scrollback_archive,
+        scrollback_archive_limit,
+        daemon_persist,
+        check_for_updates,
     })
 }
 
-fn extract_scrollback_limit(backing: &Table, default: u64) -> mlua::Result<u64> {
-    let value: Value = backing.get("scrollback_limit")?;
+fn extract_byte_size_field(backing: &Table, field: &str, default: u64) -> mlua::Result<u64> {
+    let value: Value = backing.get(field)?;
     match value {
         Value::Nil => Ok(default),
         Value::Integer(n) => u64::try_from(n).map_err(|_| {
-            mlua::Error::RuntimeError(format!("scrollback_limit must be non-negative, got {n}"))
+            mlua::Error::RuntimeError(format!("{field} must be non-negative, got {n}"))
         }),
         Value::Number(n) if n.is_finite() && n >= 0.0 =>
         {
@@ -483,15 +597,17 @@ fn extract_scrollback_limit(backing: &Table, default: u64) -> mlua::Result<u64> 
             Ok(n as u64)
         }
         Value::Number(n) => Err(mlua::Error::RuntimeError(format!(
-            "scrollback_limit must be a finite non-negative number, got {n}"
+            "{field} must be a finite non-negative number, got {n}"
         ))),
         Value::String(s) => {
             let s = s.to_str()?;
-            schema::parse_byte_size(&s).map_err(mlua::Error::RuntimeError)
+            schema::parse_byte_size(&s)
+                .map_err(|e| mlua::Error::RuntimeError(format!("{field}: {e}")))
         }
-        _ => Err(mlua::Error::RuntimeError(
-            "unexpected type for scrollback_limit".to_string(),
-        )),
+        _ => Err(mlua::Error::RuntimeError(format!(
+            "expected number or size string for {field}, got {}",
+            value.type_name()
+        ))),
     }
 }
 
@@ -741,5 +857,133 @@ mod tests {
             Value::String(s) => assert_eq!(s.to_str().unwrap(), "oakterm.config"),
             _ => panic!("expected string from protected metatable, got {result:?}"),
         }
+    }
+
+    #[test]
+    fn set_valid_theme() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.theme = "catppuccin-mocha""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.theme, "catppuccin-mocha");
+    }
+
+    #[test]
+    fn set_valid_window_decorations() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.window_decorations = "none""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.window_decorations, WindowDecorations::None);
+    }
+
+    #[test]
+    fn set_invalid_window_decorations() {
+        let lua = setup();
+        let err = lua
+            .load(r#"oakterm.config.window_decorations = "borderless""#)
+            .exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("full, none"), "got: {msg}");
+    }
+
+    #[test]
+    fn set_valid_confirm_close_process() {
+        let lua = setup();
+        lua.load("oakterm.config.confirm_close_process = false")
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert!(!cfg.confirm_close_process);
+    }
+
+    #[test]
+    fn set_valid_scrollback_archive() {
+        let lua = setup();
+        lua.load("oakterm.config.scrollback_archive = false")
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert!(!cfg.scrollback_archive);
+    }
+
+    #[test]
+    fn set_valid_scrollback_archive_limit() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.scrollback_archive_limit = "2GB""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.scrollback_archive_limit, 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn set_valid_daemon_persist() {
+        let lua = setup();
+        lua.load("oakterm.config.daemon_persist = true")
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert!(cfg.daemon_persist);
+    }
+
+    #[test]
+    fn set_valid_check_for_updates() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.check_for_updates = "check""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.check_for_updates, UpdateCheck::Check);
+    }
+
+    #[test]
+    fn set_invalid_check_for_updates() {
+        let lua = setup();
+        let err = lua
+            .load(r#"oakterm.config.check_for_updates = "auto""#)
+            .exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("off, check"), "got: {msg}");
+    }
+
+    #[test]
+    fn os_returns_known_platform() {
+        let lua = setup();
+        let result: String = lua.load("return oakterm.os()").eval().unwrap();
+        assert!(
+            ["macos", "linux", "windows", "unknown"].contains(&result.as_str()),
+            "unexpected os: {result}"
+        );
+    }
+
+    #[test]
+    fn hostname_returns_nonempty_string() {
+        let lua = setup();
+        let result: String = lua.load("return oakterm.hostname()").eval().unwrap();
+        assert!(!result.is_empty(), "hostname should not be empty");
+    }
+
+    #[test]
+    fn log_valid_levels() {
+        let lua = setup();
+        for level in ["debug", "info", "warn", "error"] {
+            lua.load(format!(r#"oakterm.log("{level}", "test message")"#))
+                .exec()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn log_invalid_level() {
+        let lua = setup();
+        let err = lua.load(r#"oakterm.log("trace", "msg")"#).exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("invalid log level"), "got: {msg}");
     }
 }

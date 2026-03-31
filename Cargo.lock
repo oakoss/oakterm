@@ -1865,6 +1865,7 @@ version = "0.1.0"
 name = "oakterm-config"
 version = "0.1.0"
 dependencies = [
+ "gethostname",
  "mlua",
  "strsim",
  "tempfile",
