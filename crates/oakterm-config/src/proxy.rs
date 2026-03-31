@@ -101,6 +101,10 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("save_alternate_scrollback")?
         .unwrap_or(defaults.save_alternate_scrollback);
 
+    let scroll_indicator: bool = backing
+        .get::<Option<bool>>("scroll_indicator")?
+        .unwrap_or(defaults.scroll_indicator);
+
     let padding = extract_padding(&backing, defaults.padding)?;
 
     Ok(ConfigValues {
@@ -110,6 +114,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         cursor_blink,
         scrollback_limit,
         save_alternate_scrollback,
+        scroll_indicator,
         padding,
     })
 }
