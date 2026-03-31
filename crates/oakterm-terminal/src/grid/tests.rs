@@ -250,6 +250,37 @@ fn screen_set_reset_preserves_scrollback() {
 }
 
 #[test]
+fn resize_shrink_captures_to_scrollback() {
+    let mut ss = ScreenSet::new(10, 5);
+    // Write content so rows aren't all empty.
+    ss.primary_mut().lines[3].cells[0].codepoint = 'x';
+    ss.primary_mut().lines[4].cells[0].codepoint = 'y';
+    ss.resize_all(10, 3);
+    assert_eq!(ss.scrollback().len(), 2);
+}
+
+#[test]
+fn resize_grow_no_scrollback() {
+    let mut ss = ScreenSet::new(10, 3);
+    ss.resize_all(10, 5);
+    assert_eq!(ss.scrollback().len(), 0);
+}
+
+#[test]
+fn resize_alt_screen_respects_flag() {
+    let mut ss = ScreenSet::new(10, 5);
+    ss.enter_alternate();
+    ss.set_save_alternate_scrollback(false);
+    ss.resize_all(10, 3);
+    // Primary rows captured, alt rows discarded.
+    assert_eq!(
+        ss.scrollback().len(),
+        2,
+        "only primary rows should be captured"
+    );
+}
+
+#[test]
 fn mode_flags_set_and_get() {
     let mut modes = ModeFlags::new();
     assert!(!modes.get(25));

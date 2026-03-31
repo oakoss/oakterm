@@ -187,17 +187,24 @@ impl Grid {
     }
 
     /// Resize the grid to new dimensions.
-    /// Rejects zero-dimension resizes (no-op).
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    /// Returns rows removed when shrinking vertically (for scrollback capture).
+    /// Rejects zero-dimension resizes (no-op, returns empty).
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Vec<Row> {
         if cols == 0 || rows == 0 {
-            return;
+            return Vec::new();
         }
+
+        let new_rows = rows as usize;
+        let captured = if new_rows < self.lines.len() {
+            self.lines.split_off(new_rows)
+        } else {
+            Vec::new()
+        };
 
         self.cols = cols;
         self.rows = rows;
 
-        self.lines
-            .resize_with(rows as usize, || Row::new(cols as usize));
+        self.lines.resize_with(new_rows, || Row::new(cols as usize));
         for line in &mut self.lines {
             line.resize(cols as usize);
         }
@@ -224,6 +231,8 @@ impl Grid {
 
         self.scroll_region = None;
         self.touch_all();
+
+        captured
     }
 
     /// Return indices of rows changed since `since_seqno`.
@@ -357,10 +366,19 @@ impl ScreenSet {
     }
 
     /// Resize both primary and alternate grids (if allocated).
+    /// Rows removed by shrinking are captured into scrollback.
     pub fn resize_all(&mut self, cols: u16, rows: u16) {
-        self.primary.resize(cols, rows);
+        let captured = self.primary.resize(cols, rows);
+        for row in captured {
+            let _ = self.scrollback.push(row);
+        }
         if let Some(alt) = &mut self.alternate {
-            alt.resize(cols, rows);
+            let alt_captured = alt.resize(cols, rows);
+            if self.save_alternate_scrollback {
+                for row in alt_captured {
+                    let _ = self.scrollback.push(row);
+                }
+            }
         }
     }
 }
