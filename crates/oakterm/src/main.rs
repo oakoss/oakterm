@@ -438,25 +438,34 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if let Some(daemon) = &mut self.daemon {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (scroll_up, count) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, v) => (v > 0.0, v.abs() as u32),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.y > 0.0, 1u32),
+                };
+                let scroll_lines = 3 * count;
+
+                // Scroll UP: enter scrollback or scroll further up.
+                // Scroll DOWN while scrolled: scroll toward live.
+                // Scroll DOWN at live: forward to daemon (app mouse reporting).
+                if scroll_up {
+                    if let Some(grid) = &mut self.grid {
+                        if !grid.is_scrolled() {
+                            grid.enter_scrollback();
+                        }
+                        self.viewport_offset = self.viewport_offset.saturating_add(scroll_lines);
+                    }
+                    self.request_scrollback();
+                } else if self.viewport_offset > 0 {
+                    self.viewport_offset = self.viewport_offset.saturating_sub(scroll_lines);
+                    if self.viewport_offset == 0 {
+                        self.return_to_live();
+                    } else {
+                        self.request_scrollback();
+                    }
+                } else if let Some(daemon) = &mut self.daemon {
                     let (x, y) = self.last_mouse_cell;
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let (event_type, count) = match delta {
-                        winit::event::MouseScrollDelta::LineDelta(_, v) => {
-                            if v > 0.0 {
-                                (3u8, v as u32)
-                            } else {
-                                (4u8, (-v) as u32)
-                            }
-                        }
-                        winit::event::MouseScrollDelta::PixelDelta(p) => {
-                            if p.y > 0.0 {
-                                (3u8, 1u32)
-                            } else {
-                                (4u8, 1u32)
-                            }
-                        }
-                    };
+                    let event_type = if scroll_up { 3u8 } else { 4u8 };
                     for _ in 0..count.min(5) {
                         let msg = MouseInput {
                             pane_id: 0,
