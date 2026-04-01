@@ -77,9 +77,14 @@ impl accesskit::ActivationHandler for TerminalActivationHandler {
     }
 }
 
-struct NoOpActionHandler;
-impl accesskit::ActionHandler for NoOpActionHandler {
-    fn do_action(&mut self, _request: accesskit::ActionRequest) {}
+struct TerminalActionHandler {
+    proxy: EventLoopProxy<UserEvent>,
+}
+
+impl accesskit::ActionHandler for TerminalActionHandler {
+    fn do_action(&mut self, request: accesskit::ActionRequest) {
+        let _ = self.proxy.send_event(UserEvent::AccessKitAction(request));
+    }
 }
 
 struct NoOpDeactivationHandler;
@@ -95,6 +100,7 @@ enum UserEvent {
     PromptPosition(PromptPosition),
     TitleChanged(String),
     Bell,
+    AccessKitAction(accesskit::ActionRequest),
     Disconnected,
     ConfigReloaded(Box<oakterm_config::ConfigResult>),
 }
@@ -268,6 +274,30 @@ impl App {
         }
     }
 
+    /// Scroll the viewport by `lines`. Positive = up (into scrollback),
+    /// negative = down (toward live). Handles enter/exit scrollback.
+    fn scroll_viewport(&mut self, lines: i32) {
+        if lines > 0 {
+            if let Some(grid) = &mut self.grid {
+                if !grid.is_scrolled() {
+                    grid.enter_scrollback();
+                }
+                #[allow(clippy::cast_sign_loss)]
+                {
+                    self.viewport_offset = self.viewport_offset.saturating_add(lines as u32);
+                }
+            }
+            self.request_scrollback();
+        } else if lines < 0 && self.viewport_offset > 0 {
+            self.viewport_offset = self.viewport_offset.saturating_sub(lines.unsigned_abs());
+            if self.viewport_offset == 0 {
+                self.return_to_live();
+            } else {
+                self.request_scrollback();
+            }
+        }
+    }
+
     /// Return to live view from scrollback.
     fn return_to_live(&mut self) {
         self.viewport_offset = 0;
@@ -340,7 +370,9 @@ impl ApplicationHandler<UserEvent> for App {
             TerminalActivationHandler {
                 state: self.a11y_state.clone(),
             },
-            NoOpActionHandler,
+            TerminalActionHandler {
+                proxy: self.proxy.clone(),
+            },
             NoOpDeactivationHandler,
         );
         self.accesskit = Some(accesskit);
@@ -638,26 +670,13 @@ impl ApplicationHandler<UserEvent> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, v) => (v > 0.0, v.abs() as u32),
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y > 0.0, 1u32),
                 };
-                let scroll_lines = 3 * count;
+                #[allow(clippy::cast_possible_wrap)]
+                let scroll_lines = (3 * count) as i32;
 
-                // Scroll UP: enter scrollback or scroll further up.
-                // Scroll DOWN while scrolled: scroll toward live.
-                // Scroll DOWN at live: forward to daemon (app mouse reporting).
                 if scroll_up {
-                    if let Some(grid) = &mut self.grid {
-                        if !grid.is_scrolled() {
-                            grid.enter_scrollback();
-                        }
-                        self.viewport_offset = self.viewport_offset.saturating_add(scroll_lines);
-                    }
-                    self.request_scrollback();
+                    self.scroll_viewport(scroll_lines);
                 } else if self.viewport_offset > 0 {
-                    self.viewport_offset = self.viewport_offset.saturating_sub(scroll_lines);
-                    if self.viewport_offset == 0 {
-                        self.return_to_live();
-                    } else {
-                        self.request_scrollback();
-                    }
+                    self.scroll_viewport(-scroll_lines);
                 } else if let Some(daemon) = &mut self.daemon {
                     let (x, y) = self.last_mouse_cell;
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
@@ -1107,6 +1126,41 @@ impl ApplicationHandler<UserEvent> for App {
                     };
                     let clear = oakterm_a11y::build_incremental_update(&clear_input);
                     adapter.update_if_active(|| clear);
+                }
+            }
+            UserEvent::AccessKitAction(request) => {
+                match request.action {
+                    accesskit::Action::Focus => {
+                        if let Some(w) = &self.window {
+                            w.focus_window();
+                        }
+                    }
+                    accesskit::Action::ScrollUp => {
+                        let page = self.grid.as_ref().map_or(24, |g| i32::from(g.rows));
+                        self.scroll_viewport(page);
+                    }
+                    accesskit::Action::ScrollDown => {
+                        let page = self.grid.as_ref().map_or(24, |g| i32::from(g.rows));
+                        self.scroll_viewport(-page);
+                    }
+                    accesskit::Action::SetScrollOffset => {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        if let Some(accesskit::ActionData::SetScrollOffset(point)) = request.data {
+                            let target = point.y.max(0.0) as u32;
+                            if target == 0 {
+                                self.return_to_live();
+                            } else {
+                                if let Some(grid) = &mut self.grid {
+                                    if !grid.is_scrolled() {
+                                        grid.enter_scrollback();
+                                    }
+                                }
+                                self.viewport_offset = target;
+                                self.request_scrollback();
+                            }
+                        }
+                    }
+                    _ => {} // SetTextSelection deferred
                 }
             }
             UserEvent::Disconnected => {
