@@ -1906,6 +1906,7 @@ version = "0.1.0"
 dependencies = [
  "gethostname",
  "mlua",
+ "serde_json",
  "strsim",
  "tempfile",
 ]

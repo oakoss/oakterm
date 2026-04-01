@@ -5,11 +5,14 @@
 //! are bounded, and `print` is redirected to stderr.
 
 mod event;
+mod init;
 mod keybind;
 mod proxy;
 mod schema;
+mod stubs;
 
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
+pub use init::{InitResult, ensure_stubs, init_config};
 pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId};
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
@@ -174,11 +177,17 @@ pub fn config_dir() -> PathBuf {
 
 /// Load config from `config.lua` in the config directory.
 ///
-/// Never fails — returns defaults on error with the error message in
-/// `ConfigResult.error`.
+/// Also ensures type stubs are up to date (writes `types/oakterm.lua`
+/// if content differs). Never fails — returns defaults on error with
+/// the error message in `ConfigResult.error`.
 #[must_use]
 pub fn load_config() -> ConfigResult {
-    load_config_from(&config_dir().join("config.lua"))
+    let dir = config_dir();
+    // Best-effort stub delivery on every launch.
+    if let Err(e) = ensure_stubs(&dir) {
+        eprintln!("warning: failed to update type stubs: {e}");
+    }
+    load_config_from(&dir.join("config.lua"))
 }
 
 /// Load config from a specific file path. Testable without touching the real config dir.

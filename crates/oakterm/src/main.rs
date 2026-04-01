@@ -2170,6 +2170,11 @@ fn main() {
         return;
     }
 
+    if std::env::args().any(|a| a == "--init-config") {
+        run_init_config();
+        return;
+    }
+
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("failed to create event loop");
@@ -2178,6 +2183,34 @@ fn main() {
     let proxy = event_loop.create_proxy();
     let mut app = App::new(proxy);
     event_loop.run_app(&mut app).expect("event loop error");
+}
+
+fn run_init_config() {
+    let config_dir = oakterm_config::config_dir();
+    match oakterm_config::init_config(&config_dir) {
+        Ok(result) => {
+            println!("Config directory: {}", result.config_dir.display());
+            if result.created_config {
+                println!("  Created config.lua");
+            } else {
+                println!("  config.lua already exists (unchanged)");
+            }
+            if result.created_luarc {
+                println!("  Created .luarc.json");
+            } else {
+                println!("  .luarc.json already exists (unchanged)");
+            }
+            if result.updated_stubs {
+                println!("  Updated types/oakterm.lua");
+            } else {
+                println!("  types/oakterm.lua is up to date");
+            }
+        }
+        Err(e) => {
+            eprintln!("error: failed to initialize config: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn version_string() -> String {
