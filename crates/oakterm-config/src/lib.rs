@@ -19,8 +19,28 @@ pub use proxy::{extract_config, register_config_table};
 pub use schema::{ConfigValues, CursorStyle, Padding, UpdateCheck, WindowDecorations};
 
 use mlua::{HookTriggers, LuaOptions, StdLib, Value, VmState};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Global appearance: 0 = dark, 1 = light.
+static APPEARANCE: AtomicU8 = AtomicU8::new(0);
+
+/// Get the current system appearance.
+#[must_use]
+pub fn current_appearance() -> &'static str {
+    if APPEARANCE.load(Ordering::Relaxed) == 1 {
+        "light"
+    } else {
+        "dark"
+    }
+}
+
+/// Set the system appearance. Called by the GUI on startup and on
+/// `WindowEvent::ThemeChanged`.
+pub fn set_appearance(light: bool) {
+    APPEARANCE.store(u8::from(light), Ordering::Relaxed);
+}
 
 /// Result of loading and evaluating a config file.
 pub struct ConfigResult {
@@ -464,6 +484,17 @@ mod tests {
 
     fn vm() -> (Lua, PrintLog) {
         create_lua_vm().expect("failed to create VM")
+    }
+
+    #[test]
+    fn appearance_set_and_get() {
+        // Single test to avoid parallel mutation of the global atomic.
+        set_appearance(false);
+        assert_eq!(current_appearance(), "dark");
+        set_appearance(true);
+        assert_eq!(current_appearance(), "light");
+        set_appearance(false);
+        assert_eq!(current_appearance(), "dark");
     }
 
     #[test]

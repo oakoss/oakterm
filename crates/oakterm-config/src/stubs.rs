@@ -14,8 +14,10 @@ pub(crate) const OAKTERM_LUA_STUB: &str = r#"---@meta _
 ---@alias oakterm.UpdateCheck "off"|"check"
 ---@alias oakterm.LogLevel "debug"|"info"|"warn"|"error"
 ---@alias oakterm.Platform "macos"|"linux"|"windows"
+---@alias oakterm.Appearance "dark"|"light"
 ---@alias oakterm.PaneDirection "left"|"right"|"up"|"down"
 ---@alias oakterm.EventName
+---| "appearance.changed"
 ---| "config.loaded"
 ---| "config.reloaded"
 ---| "window.created"
@@ -149,6 +151,10 @@ function oakterm.on(event, callback) end
 ---@return oakterm.Platform
 function oakterm.os() end
 
+--- Get the current system appearance (dark or light mode).
+---@return oakterm.Appearance
+function oakterm.appearance() end
+
 --- Get the system hostname.
 ---@return string
 function oakterm.hostname() end
@@ -215,5 +221,10 @@ pub(crate) const CONFIG_TEMPLATE: &str = r#"-- OakTerm configuration
 -- Event handlers
 -- oakterm.on("config.loaded", function()
 --     oakterm.log("info", "Config loaded!")
+-- end)
+
+-- Dark/light mode
+-- oakterm.on("appearance.changed", function(appearance)
+--     oakterm.log("info", "Appearance: " .. appearance)
 -- end)
 "#;

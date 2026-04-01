@@ -198,9 +198,13 @@ fn register_platform_utilities(lua: &Lua, oakterm: &Table) -> mlua::Result<()> {
         Ok(())
     })?;
 
+    // oakterm.appearance() — current system dark/light mode.
+    let appearance_fn = lua.create_function(|_, ()| Ok(crate::current_appearance()))?;
+
     oakterm.set("os", platform_fn)?;
     oakterm.set("hostname", hostname_fn)?;
     oakterm.set("log", log_fn)?;
+    oakterm.set("appearance", appearance_fn)?;
     Ok(())
 }
 
@@ -959,6 +963,23 @@ mod tests {
             ["macos", "linux", "windows", "unknown"].contains(&result.as_str()),
             "unexpected os: {result}"
         );
+    }
+
+    #[test]
+    fn appearance_returns_and_reflects_changes() {
+        // Single test to avoid parallel mutation of the global atomic.
+        let lua = setup();
+        let result: String = lua.load("return oakterm.appearance()").eval().unwrap();
+        assert!(
+            ["dark", "light"].contains(&result.as_str()),
+            "unexpected appearance: {result}"
+        );
+        crate::set_appearance(true);
+        let result: String = lua.load("return oakterm.appearance()").eval().unwrap();
+        assert_eq!(result, "light");
+        crate::set_appearance(false);
+        let result: String = lua.load("return oakterm.appearance()").eval().unwrap();
+        assert_eq!(result, "dark");
     }
 
     #[test]

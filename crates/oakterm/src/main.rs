@@ -380,6 +380,11 @@ impl ApplicationHandler<UserEvent> for App {
         );
         self.accesskit = Some(accesskit);
 
+        // Detect initial system appearance before config loads.
+        if let Some(theme) = window.theme() {
+            oakterm_config::set_appearance(theme == winit::window::Theme::Light);
+        }
+
         window.set_visible(true);
 
         let gpu = pollster::block_on(init_gpu(window.clone()));
@@ -571,6 +576,29 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods;
+            }
+            WindowEvent::ThemeChanged(theme) => {
+                oakterm_config::set_appearance(theme == winit::window::Theme::Light);
+                if let Some(lua) = &self.lua_vm {
+                    let appearance = oakterm_config::current_appearance();
+                    if let Ok(val) = lua.create_string(appearance) {
+                        for result in self.event_registry.fire(
+                            lua,
+                            "appearance.changed",
+                            &[oakterm_config::mlua::Value::String(val.clone())],
+                        ) {
+                            match result {
+                                oakterm_config::HandlerResult::Error(e) => {
+                                    eprintln!("appearance.changed handler error: {e}");
+                                }
+                                oakterm_config::HandlerResult::Timeout => {
+                                    eprintln!("appearance.changed handler timed out (100ms limit)");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;

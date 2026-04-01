@@ -10,6 +10,7 @@ use std::time::Duration;
 
 /// Known event names per Spec-0005.
 pub const KNOWN_EVENTS: &[&str] = &[
+    "appearance.changed",
     "config.loaded",
     "config.reloaded",
     "window.created",
