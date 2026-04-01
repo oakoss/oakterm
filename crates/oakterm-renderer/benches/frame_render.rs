@@ -3,9 +3,10 @@ use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::{BgUniforms, GlyphVertex, TextUniforms};
 use oakterm_renderer::shaper::GlyphPlacement;
 
-fn prepopulated_atlas() -> AtlasPlane {
-    let mut atlas = AtlasPlane::new();
-    for i in 0..100u32 {
+fn prepopulated_atlas(count: u32) -> AtlasPlane {
+    // Use a large atlas so allocation doesn't limit the glyph count.
+    let mut atlas = AtlasPlane::with_size(2048, 2048);
+    for i in 0..count {
         let key = GlyphCacheKey {
             font_id: 0,
             glyph_id: i,
@@ -19,21 +20,41 @@ fn prepopulated_atlas() -> AtlasPlane {
 fn atlas_lookup(c: &mut Criterion) {
     let mut group = c.benchmark_group("atlas");
 
-    group.bench_function("cache_hit", |b| {
-        let mut atlas = prepopulated_atlas();
-        let key = GlyphCacheKey {
-            font_id: 0,
-            glyph_id: 50,
-            size_tenths: 140,
-        };
-        b.iter(|| {
-            std::hint::black_box(atlas.get(&key));
+    // Same-key repeated hit at different atlas sizes.
+    for &count in &[100u32, 256, 512, 1024] {
+        group.bench_function(format!("cache_hit_{count}"), |b| {
+            let mut atlas = prepopulated_atlas(count);
+            let key = GlyphCacheKey {
+                font_id: 0,
+                glyph_id: count / 2,
+                size_tenths: 140,
+            };
+            b.iter(|| {
+                std::hint::black_box(atlas.get(&key));
+            });
         });
-    });
+    }
+
+    // Sequential access pattern — different key each iteration (worst case for LRU promote).
+    for &count in &[100u32, 256, 512, 1024] {
+        group.bench_function(format!("cache_hit_sequential_{count}"), |b| {
+            let mut atlas = prepopulated_atlas(count);
+            let mut i = 0u32;
+            b.iter(|| {
+                let key = GlyphCacheKey {
+                    font_id: 0,
+                    glyph_id: i % count,
+                    size_tenths: 140,
+                };
+                std::hint::black_box(atlas.get(&key));
+                i = i.wrapping_add(1);
+            });
+        });
+    }
 
     group.bench_function("cache_miss_insert", |b| {
         b.iter_batched(
-            prepopulated_atlas,
+            || prepopulated_atlas(100),
             |mut atlas| {
                 let key = GlyphCacheKey {
                     font_id: 0,

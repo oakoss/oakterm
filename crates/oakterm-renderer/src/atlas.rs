@@ -4,7 +4,7 @@
 //! Uses `etagere::BucketedAtlasAllocator` for packing. LRU eviction when full.
 
 use etagere::{AllocId, BucketedAtlasAllocator, Size};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashSet;
 
 /// Initial atlas texture size.
 const INITIAL_SIZE: u32 = 256;
@@ -34,9 +34,8 @@ pub struct AtlasPlane {
     allocator: BucketedAtlasAllocator,
     width: u32,
     height: u32,
-    cache: HashMap<GlyphCacheKey, AtlasRegion>,
-    lru: VecDeque<GlyphCacheKey>,
-    in_use: std::collections::HashSet<GlyphCacheKey>,
+    lru: lru::LruCache<GlyphCacheKey, AtlasRegion>,
+    in_use: HashSet<GlyphCacheKey>,
 }
 
 impl AtlasPlane {
@@ -57,22 +56,15 @@ impl AtlasPlane {
             allocator,
             width,
             height,
-            cache: HashMap::new(),
-            lru: VecDeque::new(),
-            in_use: std::collections::HashSet::new(),
+            // Unbounded: etagere is the real capacity constraint, not the LRU.
+            lru: lru::LruCache::unbounded(),
+            in_use: HashSet::new(),
         }
     }
 
-    /// Look up a cached glyph. Updates LRU order.
+    /// Look up a cached glyph. Promotes to most-recently-used in O(1).
     pub fn get(&mut self, key: &GlyphCacheKey) -> Option<AtlasRegion> {
-        if let Some(&region) = self.cache.get(key) {
-            // Move to back of LRU (most recently used).
-            self.lru.retain(|k| k != key);
-            self.lru.push_back(*key);
-            Some(region)
-        } else {
-            None
-        }
+        self.lru.get(key).copied()
     }
 
     /// Allocate space for a glyph and insert it into the cache.
@@ -95,32 +87,25 @@ impl AtlasPlane {
                 placement,
                 alloc_id: region.id,
             };
-            self.cache.insert(key, atlas_region);
-            self.lru.push_back(key);
+            self.lru.push(key, atlas_region);
             return Some(atlas_region);
         }
 
         // Evict LRU entries until we have space.
-        let mut skipped = 0;
-        let total = self.lru.len();
-        while let Some(evict_key) = self.lru.front().copied() {
+        let mut skipped = Vec::new();
+        while let Some((evict_key, evict_region)) = self.lru.pop_lru() {
             if self.in_use.contains(&evict_key) {
-                self.lru.pop_front();
-                self.lru.push_back(evict_key);
-                skipped += 1;
-                if skipped >= total {
-                    break; // All entries are in-use.
-                }
+                skipped.push((evict_key, evict_region));
                 continue;
             }
 
-            skipped = 0;
-            if let Some(region) = self.cache.remove(&evict_key) {
-                self.allocator.deallocate(region.alloc_id);
-            }
-            self.lru.pop_front();
+            self.allocator.deallocate(evict_region.alloc_id);
 
             if let Some(region) = self.try_allocate(width, height) {
+                // Re-insert skipped in-use entries.
+                for (k, v) in skipped {
+                    self.lru.push(k, v);
+                }
                 let atlas_region = AtlasRegion {
                     x: region.rectangle.min.x as u32,
                     y: region.rectangle.min.y as u32,
@@ -129,12 +114,16 @@ impl AtlasPlane {
                     placement,
                     alloc_id: region.id,
                 };
-                self.cache.insert(key, atlas_region);
-                self.lru.push_back(key);
+                self.lru.push(key, atlas_region);
                 return Some(atlas_region);
             }
         }
 
+        // All entries were in-use or eviction didn't free enough space.
+        // Re-insert skipped entries.
+        for (k, v) in skipped {
+            self.lru.push(k, v);
+        }
         None
     }
 
@@ -151,13 +140,13 @@ impl AtlasPlane {
     /// Number of cached glyphs.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.cache.len()
+        self.lru.len()
     }
 
     /// Whether the cache is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.cache.is_empty()
+        self.lru.is_empty()
     }
 
     /// Atlas texture dimensions.
@@ -168,7 +157,6 @@ impl AtlasPlane {
 
     /// Clear all cached glyphs (e.g., on font size change or DPI change).
     pub fn clear(&mut self) {
-        self.cache.clear();
         self.lru.clear();
         self.in_use.clear();
         self.allocator = BucketedAtlasAllocator::new(Size::new(

@@ -13,6 +13,7 @@ ttf-parser = { workspace = true }
 fontdb = { workspace = true }
 swash = { workspace = true }
 etagere = { workspace = true }
+lru = { workspace = true }
 bytemuck = { workspace = true }
 
 [features]
