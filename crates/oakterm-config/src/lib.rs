@@ -144,7 +144,7 @@ fn install_print_override(lua: &Lua) -> mlua::Result<PrintLog> {
             .lock()
             .expect("print log mutex poisoned")
             .push(line.clone());
-        eprintln!("[config] {line}");
+        tracing::info!(target: "config", "{line}");
         Ok(())
     })?;
 
@@ -205,7 +205,7 @@ pub fn load_config() -> ConfigResult {
     let dir = config_dir();
     // Best-effort stub delivery on every launch.
     if let Err(e) = ensure_stubs(&dir) {
-        eprintln!("warning: failed to update type stubs: {e}");
+        tracing::warn!(error = %e, "failed to update type stubs");
     }
     load_config_from(&dir.join("config.lua"))
 }
@@ -246,14 +246,14 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
 
     // Register default keybinds via Lua before user config so user can override.
     if let Err(e) = register_default_keybinds(&lua) {
-        eprintln!("warning: failed to register default keybinds via Lua: {e}");
+        tracing::warn!(error = %e, "failed to register default keybinds via Lua");
         // Defaults are also populated in with_defaults() as a safety net.
     }
 
     // Install sandboxed require() for multi-file configs.
     if let Some(parent) = path.parent() {
         if let Err(e) = install_require(&lua, parent) {
-            eprintln!("warning: failed to install require(): {e}");
+            tracing::warn!(error = %e, "failed to install require()");
         }
     }
 

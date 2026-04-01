@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 winit = { workspace = true }
 wgpu = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 accesskit = { workspace = true }
 accesskit_winit = { workspace = true }
 oakterm-a11y = { path = "../oakterm-a11y" }

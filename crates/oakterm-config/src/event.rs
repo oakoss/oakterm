@@ -117,7 +117,7 @@ impl EventRegistry {
         for (event, keys) in self.handlers.drain() {
             for key in keys {
                 if let Err(e) = lua.remove_registry_value(key) {
-                    eprintln!("warning: failed to clean up handler for '{event}': {e}");
+                    tracing::warn!(event = %event, error = %e, "failed to clean up handler");
                 }
             }
         }

@@ -380,7 +380,7 @@ impl ClientGrid {
         atlas.clear_in_use();
 
         if dropped > 0 {
-            eprintln!("atlas full: {dropped} glyphs could not be allocated");
+            tracing::warn!(dropped, "atlas full: glyphs could not be allocated");
         }
 
         (glyphs, uploads)

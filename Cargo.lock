@@ -1889,6 +1889,8 @@ dependencies = [
  "oakterm-protocol",
  "oakterm-renderer",
  "pollster",
+ "tracing",
+ "tracing-subscriber",
  "vergen",
  "vergen-gitcl",
  "wgpu",
@@ -1918,6 +1920,7 @@ dependencies = [
  "serde_json",
  "strsim",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1971,6 +1974,7 @@ dependencies = [
  "pollster",
  "swash",
  "tokio",
+ "tracing",
  "ttf-parser",
  "wgpu",
 ]

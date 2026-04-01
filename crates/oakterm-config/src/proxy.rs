@@ -177,7 +177,7 @@ fn register_platform_utilities(lua: &Lua, oakterm: &Table) -> mlua::Result<()> {
             Ok(s.to_string())
         } else {
             let lossy = raw.to_string_lossy().into_owned();
-            eprintln!("[config:warn] hostname contains non-UTF-8 bytes; using: {lossy}");
+            tracing::warn!(hostname = %lossy, "hostname contains non-UTF-8 bytes");
             Ok(lossy)
         }
     })?;
@@ -194,7 +194,13 @@ fn register_platform_utilities(lua: &Lua, oakterm: &Table) -> mlua::Result<()> {
             }
         }
         let msg = message.to_str()?;
-        eprintln!("[config:{level_str}] {msg}");
+        match level_str.as_ref() {
+            "debug" => tracing::debug!(target: "config", "{msg}"),
+            "info" => tracing::info!(target: "config", "{msg}"),
+            "warn" => tracing::warn!(target: "config", "{msg}"),
+            "error" => tracing::error!(target: "config", "{msg}"),
+            _ => unreachable!(),
+        }
         Ok(())
     })?;
 
@@ -301,7 +307,7 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
 pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
     let mut registry = EventRegistry::new();
     let Ok(event_table) = lua.named_registry_value::<Table>(EVENT_REGISTRY_KEY) else {
-        eprintln!("warning: failed to read event registry from Lua VM");
+        tracing::warn!("failed to read event registry from Lua VM");
         return registry;
     };
 
@@ -309,14 +315,14 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
         let (event_name, handlers) = match pair {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("warning: skipping malformed event registry entry: {e}");
+                tracing::warn!(error = %e, "skipping malformed event registry entry");
                 continue;
             }
         };
         let event_str = match event_name.to_str() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("warning: skipping event with invalid name: {e}");
+                tracing::warn!(error = %e, "skipping event with invalid name");
                 continue;
             }
         };
@@ -324,12 +330,12 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
             let callback = match handler {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("warning: skipping unreadable handler for '{event_str}': {e}");
+                    tracing::warn!(event = %event_str, error = %e, "skipping unreadable handler");
                     continue;
                 }
             };
             if let Err(e) = registry.register(lua, &event_str, callback) {
-                eprintln!("warning: failed to register handler for '{event_str}': {e}");
+                tracing::warn!(event = %event_str, error = %e, "failed to register handler");
             }
         }
     }
@@ -344,7 +350,7 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
 pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
     let mut registry = KeybindRegistry::new();
     let Ok(entries) = lua.named_registry_value::<Table>(KEYBIND_REGISTRY_KEY) else {
-        eprintln!("warning: failed to read keybind registry from Lua VM");
+        tracing::warn!("failed to read keybind registry from Lua VM");
         return registry;
     };
 
@@ -352,7 +358,7 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("warning: skipping malformed keybind entry: {e}");
+                tracing::warn!(error = %e, "skipping malformed keybind entry");
                 continue;
             }
         };
@@ -360,7 +366,7 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
         let key_str: String = match entry.get("key") {
             Ok(k) => k,
             Err(e) => {
-                eprintln!("warning: skipping keybind with missing key: {e}");
+                tracing::warn!(error = %e, "skipping keybind with missing key");
                 continue;
             }
         };
@@ -368,7 +374,7 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
         let chord = match KeyChord::parse(&key_str) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("warning: skipping keybind with invalid chord '{key_str}': {e}");
+                tracing::warn!(chord = %key_str, error = %e, "skipping keybind with invalid chord");
                 continue;
             }
         };
@@ -376,7 +382,7 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
         let action_value: Value = match entry.get("action") {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("warning: skipping keybind '{key_str}' with missing action: {e}");
+                tracing::warn!(chord = %key_str, error = %e, "skipping keybind with missing action");
                 continue;
             }
         };
@@ -385,21 +391,19 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
             Value::Function(f) => match lua.create_registry_value(f) {
                 Ok(key) => Action::Callback(key),
                 Err(e) => {
-                    eprintln!("warning: failed to store callback for '{key_str}': {e}");
+                    tracing::warn!(chord = %key_str, error = %e, "failed to store callback");
                     continue;
                 }
             },
             Value::Table(t) => match extract_action_from_table(&t) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("warning: skipping keybind '{key_str}': {e}");
+                    tracing::warn!(chord = %key_str, error = %e, "skipping keybind");
                     continue;
                 }
             },
             _ => {
-                eprintln!(
-                    "warning: skipping keybind '{key_str}': action is not a table or function"
-                );
+                tracing::warn!(chord = %key_str, "skipping keybind: action is not a table or function");
                 continue;
             }
         };

@@ -4,6 +4,8 @@ use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
+use tracing::{debug, error, warn};
+
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -57,7 +59,7 @@ impl accesskit::ActivationHandler for TerminalActivationHandler {
         let guard = match self.state.lock() {
             Ok(g) => g,
             Err(e) => {
-                eprintln!("a11y: mutex poisoned in activation handler: {e}");
+                warn!(error = %e, "a11y: mutex poisoned in activation handler");
                 return None;
             }
         };
@@ -249,10 +251,10 @@ impl App {
             match Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
                 Ok(frame) => {
                     if let Err(e) = daemon.send_frame(&frame) {
-                        eprintln!("failed to send GetScrollback: {e}");
+                        error!(error = %e, "failed to send GetScrollback");
                     }
                 }
-                Err(e) => eprintln!("failed to create GetScrollback frame: {e}"),
+                Err(e) => error!(error = %e, "failed to create GetScrollback frame"),
             }
         }
     }
@@ -269,10 +271,10 @@ impl App {
             match Frame::new(MSG_FIND_PROMPT, 0, req.encode()) {
                 Ok(frame) => {
                     if let Err(e) = daemon.send_frame(&frame) {
-                        eprintln!("failed to send FindPrompt: {e}");
+                        error!(error = %e, "failed to send FindPrompt");
                     }
                 }
-                Err(e) => eprintln!("failed to create FindPrompt frame: {e}"),
+                Err(e) => error!(error = %e, "failed to create FindPrompt frame"),
             }
         }
     }
@@ -313,8 +315,13 @@ impl App {
                 pane_id: 0,
                 since_seqno: 0,
             };
-            if let Ok(frame) = Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()) {
-                let _ = daemon.send_frame(&frame);
+            match Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()) {
+                Ok(frame) => {
+                    if let Err(e) = daemon.send_frame(&frame) {
+                        error!(error = %e, "daemon write failed during return_to_live");
+                    }
+                }
+                Err(e) => error!(error = %e, "failed to encode render update request"),
             }
         }
         if let Some(w) = &self.window {
@@ -350,6 +357,7 @@ impl App {
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    #[allow(clippy::too_many_lines)]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -387,12 +395,19 @@ impl ApplicationHandler<UserEvent> for App {
 
         window.set_visible(true);
 
-        let gpu = pollster::block_on(init_gpu(window.clone()));
+        let gpu = match pollster::block_on(init_gpu(window.clone())) {
+            Ok(state) => state,
+            Err(e) => {
+                error!(error = %e, "fatal: GPU initialization failed");
+                event_loop.exit();
+                return;
+            }
+        };
 
         // Load config.
         let cr = oakterm_config::load_config();
         if let Some(err) = &cr.error {
-            eprintln!("config error: {err}");
+            warn!(error = %err, "config error");
         }
         let config = cr.config.clone();
 
@@ -401,7 +416,14 @@ impl ApplicationHandler<UserEvent> for App {
         let font_size_pt = config.font_size as f32;
         #[allow(clippy::cast_possible_truncation)] // scale factor fits in f32
         let font_size = font_size_pt * window.scale_factor() as f32;
-        let font_state = init_font_with_config(&config, font_size);
+        let font_state = match try_init_font(&config, font_size) {
+            Ok(state) => state,
+            Err(e) => {
+                error!(error = %e, "fatal: font initialization failed");
+                event_loop.exit();
+                return;
+            }
+        };
 
         let size = window.inner_size();
         let (cols, rows) = window_to_grid_dims(size, &font_state.metrics);
@@ -413,7 +435,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.daemon_process = child;
             }
             Err(e) => {
-                eprintln!("fatal: failed to connect to daemon: {e}");
+                error!(error = %e, "fatal: failed to connect to daemon");
                 event_loop.exit();
                 return;
             }
@@ -435,7 +457,7 @@ impl ApplicationHandler<UserEvent> for App {
                     title_changed: false,
                 });
             }
-            Err(e) => eprintln!("a11y: mutex poisoned during init: {e}"),
+            Err(e) => warn!(error = %e, "a11y: mutex poisoned during init"),
         }
 
         self.window = Some(window);
@@ -453,10 +475,10 @@ impl ApplicationHandler<UserEvent> for App {
                 for result in self.event_registry.fire(lua, "config.loaded", &[]) {
                     match result {
                         oakterm_config::HandlerResult::Error(e) => {
-                            eprintln!("config.loaded handler error: {e}");
+                            warn!(error = %e, "config.loaded handler error");
                         }
                         oakterm_config::HandlerResult::Timeout => {
-                            eprintln!("config.loaded handler timed out (100ms limit)");
+                            warn!("config.loaded handler timed out (100ms limit)");
                         }
                         _ => {}
                     }
@@ -522,7 +544,7 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("a11y: mutex poisoned during resize: {e}");
+                                        warn!(error = %e, "a11y: mutex poisoned during resize");
                                         String::new()
                                     }
                                 };
@@ -557,12 +579,12 @@ impl ApplicationHandler<UserEvent> for App {
                                     match msg.to_frame() {
                                         Ok(frame) => {
                                             if let Err(e) = daemon.send_frame(&frame) {
-                                                eprintln!("daemon write failed: {e}");
+                                                error!(error = %e, "daemon write failed");
                                                 self.daemon = None;
                                                 event_loop.exit();
                                             }
                                         }
-                                        Err(e) => eprintln!("failed to encode resize: {e}"),
+                                        Err(e) => error!(error = %e, "failed to encode resize"),
                                     }
                                 }
                             }
@@ -589,10 +611,10 @@ impl ApplicationHandler<UserEvent> for App {
                         ) {
                             match result {
                                 oakterm_config::HandlerResult::Error(e) => {
-                                    eprintln!("appearance.changed handler error: {e}");
+                                    warn!(error = %e, "appearance.changed handler error");
                                 }
                                 oakterm_config::HandlerResult::Timeout => {
-                                    eprintln!("appearance.changed handler timed out (100ms limit)");
+                                    warn!("appearance.changed handler timed out (100ms limit)");
                                 }
                                 _ => {}
                             }
@@ -651,12 +673,12 @@ impl ApplicationHandler<UserEvent> for App {
                     match msg.to_frame() {
                         Ok(frame) => {
                             if let Err(e) = daemon.send_frame(&frame) {
-                                eprintln!("daemon write failed: {e}");
+                                error!(error = %e, "daemon write failed");
                                 self.daemon = None;
                                 event_loop.exit();
                             }
                         }
-                        Err(e) => eprintln!("failed to encode key input: {e}"),
+                        Err(e) => error!(error = %e, "failed to encode key input"),
                     }
                 }
                 self.reset_blink();
@@ -703,8 +725,15 @@ impl ApplicationHandler<UserEvent> for App {
                                 modifiers: encode_mouse_modifiers(self.modifiers),
                                 button: btn,
                             };
-                            if let Ok(frame) = msg.to_frame() {
-                                let _ = daemon.send_frame(&frame);
+                            match msg.to_frame() {
+                                Ok(frame) => {
+                                    if let Err(e) = daemon.send_frame(&frame) {
+                                        error!(error = %e, "daemon write failed");
+                                        self.daemon = None;
+                                        event_loop.exit();
+                                    }
+                                }
+                                Err(e) => error!(error = %e, "failed to encode mouse input"),
                             }
                         }
                     }
@@ -740,8 +769,16 @@ impl ApplicationHandler<UserEvent> for App {
                                 modifiers: mods,
                                 button: 0,
                             };
-                            if let Ok(frame) = msg.to_frame() {
-                                let _ = daemon.send_frame(&frame);
+                            match msg.to_frame() {
+                                Ok(frame) => {
+                                    if let Err(e) = daemon.send_frame(&frame) {
+                                        error!(error = %e, "daemon write failed");
+                                        self.daemon = None;
+                                        event_loop.exit();
+                                        return;
+                                    }
+                                }
+                                Err(e) => error!(error = %e, "failed to encode mouse wheel"),
                             }
                         }
                     }
@@ -772,7 +809,7 @@ impl ApplicationHandler<UserEvent> for App {
                         match msg.to_frame() {
                             Ok(frame) => {
                                 if let Err(e) = daemon.send_frame(&frame) {
-                                    eprintln!("daemon write failed: {e}");
+                                    error!(error = %e, "daemon write failed");
                                     self.daemon = None;
                                     event_loop.exit();
                                     return;
@@ -780,7 +817,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.initial_resize_sent = true;
                             }
                             Err(e) => {
-                                eprintln!("fatal: failed to encode initial resize: {e}");
+                                error!(error = %e, "fatal: failed to encode initial resize");
                                 event_loop.exit();
                                 return;
                             }
@@ -800,7 +837,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
                     CurrentSurfaceTexture::Validation => {
-                        eprintln!("wgpu surface validation error; skipping frame");
+                        error!("wgpu surface validation error; skipping frame");
                         return;
                     }
                 };
@@ -943,7 +980,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("a11y: mutex poisoned: {e}");
+                                    warn!(error = %e, "a11y: mutex poisoned");
                                     (false, false, String::new())
                                 }
                             };
@@ -1080,7 +1117,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // offset is negative; negate to get positive viewport_offset.
                     let Some(new_offset) = offset.checked_neg().and_then(|v| u32::try_from(v).ok())
                     else {
-                        eprintln!("PromptPosition offset {offset} out of range");
+                        warn!(offset, "PromptPosition offset out of range");
                         return;
                     };
                     if new_offset == 0 {
@@ -1109,7 +1146,7 @@ impl ApplicationHandler<UserEvent> for App {
                             s.title_changed = false; // consumed immediately below
                         }
                     }
-                    Err(e) => eprintln!("a11y: mutex poisoned on title change: {e}"),
+                    Err(e) => warn!(error = %e, "a11y: mutex poisoned on title change"),
                 }
                 if let (Some(grid), Some(adapter)) = (&self.grid, &mut self.accesskit) {
                     let current_title = self
@@ -1216,7 +1253,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Disconnected => {
-                eprintln!("daemon disconnected");
+                error!("daemon disconnected");
                 event_loop.exit();
             }
             UserEvent::ConfigReloaded(cr) => {
@@ -1345,10 +1382,10 @@ impl App {
                     match msg.to_frame() {
                         Ok(frame) => {
                             if let Err(e) = daemon.send_frame(&frame) {
-                                eprintln!("failed to send keybind string: {e}");
+                                error!(error = %e, "failed to send keybind string");
                             }
                         }
-                        Err(e) => eprintln!("failed to encode keybind string: {e}"),
+                        Err(e) => error!(error = %e, "failed to encode keybind string"),
                     }
                 }
                 true
@@ -1372,13 +1409,13 @@ impl App {
                 let (Some(lua), Some(oakterm_config::Action::Callback(key))) =
                     (&self.lua_vm, self.keybind_registry.get(idx))
                 else {
-                    eprintln!("keybind callback skipped: no Lua VM or action mismatch");
+                    warn!("keybind callback skipped: no Lua VM or action mismatch");
                     return true;
                 };
                 let func = match lua.registry_value::<oakterm_config::mlua::Function>(key) {
                     Ok(f) => f,
                     Err(e) => {
-                        eprintln!("keybind callback error: {e}");
+                        warn!(error = %e, "keybind callback error");
                         return true;
                     }
                 };
@@ -1398,11 +1435,11 @@ impl App {
                         }
                     },
                 ) {
-                    eprintln!("keybind callback: failed to install timeout hook: {e}");
+                    warn!(error = %e, "keybind callback: failed to install timeout hook");
                     return true;
                 }
                 if let Err(e) = func.call::<()>(()) {
-                    eprintln!("keybind callback error: {e}");
+                    warn!(error = %e, "keybind callback error");
                 }
                 lua.remove_hook();
                 true
@@ -1416,7 +1453,7 @@ impl App {
 
     fn handle_config_reload(&mut self, mut cr: oakterm_config::ConfigResult) {
         if let Some(ref err) = cr.error {
-            eprintln!("config reload error: {err}");
+            warn!(error = %err, "config reload error");
             // Clean up the failed result's registries before its VM is dropped.
             if let Some(lua) = &cr.lua {
                 cr.registry.cleanup(lua);
@@ -1443,7 +1480,7 @@ impl App {
         self.lua_vm = cr.lua;
 
         if had_error {
-            eprintln!("config reloaded successfully");
+            debug!("config reloaded successfully");
         }
 
         if font_changed {
@@ -1457,7 +1494,7 @@ impl App {
                 let font_state = match try_init_font(&self.config, font_size) {
                     Ok(fs) => fs,
                     Err(e) => {
-                        eprintln!("config reload: font init failed: {e}");
+                        warn!(error = %e, "config reload: font init failed");
                         self.config_error = Some(e);
                         return;
                     }
@@ -1483,10 +1520,12 @@ impl App {
                         match msg.to_frame() {
                             Ok(frame) => {
                                 if let Err(e) = daemon.send_frame(&frame) {
-                                    eprintln!("daemon write failed during config reload: {e}");
+                                    error!(error = %e, "daemon write failed during config reload");
                                 }
                             }
-                            Err(e) => eprintln!("failed to encode resize after config reload: {e}"),
+                            Err(e) => {
+                                error!(error = %e, "failed to encode resize after config reload");
+                            }
                         }
                     }
                 }
@@ -1500,10 +1539,10 @@ impl App {
             for result in self.event_registry.fire(lua, "config.reloaded", &[]) {
                 match result {
                     oakterm_config::HandlerResult::Error(e) => {
-                        eprintln!("config.reloaded handler error: {e}");
+                        warn!(error = %e, "config.reloaded handler error");
                     }
                     oakterm_config::HandlerResult::Timeout => {
-                        eprintln!("config.reloaded handler timed out (100ms limit)");
+                        warn!("config.reloaded handler timed out (100ms limit)");
                     }
                     _ => {}
                 }
@@ -1638,35 +1677,7 @@ fn window_to_grid_dims(
     (cols, rows)
 }
 
-fn init_font_with_config(config: &oakterm_config::ConfigValues, font_size: f32) -> FontState {
-    let db = font::system_font_db();
-    let (metrics, data) = if config.font_family.is_empty() {
-        font::load_default_metrics(&db, font_size).expect("no system monospace font found")
-    } else {
-        font::load_font_by_name(&db, &config.font_family, font_size).unwrap_or_else(|e| {
-            eprintln!(
-                "font '{}' not found ({e}), using system default",
-                config.font_family
-            );
-            font::load_default_metrics(&db, font_size).expect("no system monospace font found")
-        })
-    };
-
-    let mut shaper = SwashShaper::new();
-    let font_key = shaper
-        .load_font(data, font_size)
-        .expect("failed to load font into shaper");
-
-    FontState {
-        shaper,
-        font_key,
-        atlas: AtlasPlane::new(),
-        font_size,
-        metrics,
-    }
-}
-
-/// Non-panicking font init for config reload. Returns Err instead of crashing.
+/// Non-panicking font init. Returns Err instead of crashing.
 fn try_init_font(
     config: &oakterm_config::ConfigValues,
     font_size: f32,
@@ -1679,9 +1690,10 @@ fn try_init_font(
         match font::load_font_by_name(&db, &config.font_family, font_size) {
             Ok(result) => result,
             Err(e) => {
-                eprintln!(
-                    "font '{}' not found ({e}), using system default",
-                    config.font_family
+                warn!(
+                    error = %e,
+                    font_family = %config.font_family,
+                    "font not found, using system default"
                 );
                 font::load_default_metrics(&db, font_size)
                     .map_err(|e| format!("no system monospace font: {e}"))?
@@ -1727,7 +1739,7 @@ fn start_config_watcher(
                 Ok(events) => events,
                 Err(errors) => {
                     for e in &errors {
-                        eprintln!("config watcher error: {e}");
+                        warn!(error = %e, "config watcher error");
                     }
                     return;
                 }
@@ -1749,13 +1761,13 @@ fn start_config_watcher(
     match debouncer {
         Ok(mut watcher) => {
             if let Err(e) = watcher.watch(&config_dir, notify::RecursiveMode::Recursive) {
-                eprintln!("warning: could not watch config directory: {e}");
+                warn!(error = %e, "could not watch config directory");
                 return None;
             }
             Some(watcher)
         }
         Err(e) => {
-            eprintln!("warning: could not start config watcher: {e}");
+            warn!(error = %e, "could not start config watcher");
             None
         }
     }
@@ -2012,7 +2024,7 @@ fn daemon_reader(
                     let req_frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, payload)
                         .expect("GetRenderUpdate payload fits in frame");
                     if let Err(e) = writer.send_frame(&req_frame) {
-                        eprintln!("daemon write error: {e}");
+                        error!(error = %e, "daemon write error");
                         let _ = proxy.send_event(UserEvent::Disconnected);
                         break;
                     }
@@ -2023,9 +2035,10 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
                     }
                     Err(e) => {
-                        eprintln!(
-                            "failed to decode RenderUpdate ({} bytes), disconnecting: {e}",
-                            frame.payload.len()
+                        error!(
+                            error = %e,
+                            payload_len = frame.payload.len(),
+                            "failed to decode RenderUpdate, disconnecting"
                         );
                         let _ = proxy.send_event(UserEvent::Disconnected);
                         break;
@@ -2036,7 +2049,7 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
                     }
                     Err(e) => {
-                        eprintln!("failed to decode TitleChanged: {e}");
+                        error!(error = %e, "failed to decode TitleChanged");
                     }
                 },
                 MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
@@ -2044,7 +2057,7 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
                     }
                     Err(e) => {
-                        eprintln!("failed to decode ScrollbackData: {e}");
+                        error!(error = %e, "failed to decode ScrollbackData");
                     }
                 },
                 MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
@@ -2052,18 +2065,21 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::PromptPosition(pos));
                     }
                     Err(e) => {
-                        eprintln!("failed to decode PromptPosition: {e}");
+                        error!(error = %e, "failed to decode PromptPosition");
                     }
                 },
                 MSG_BELL => {
                     let _ = proxy.send_event(UserEvent::Bell);
                 }
                 other => {
-                    eprintln!("unhandled daemon message: 0x{other:04x}");
+                    warn!(
+                        msg_type = format_args!("0x{other:04x}"),
+                        "unhandled daemon message"
+                    );
                 }
             },
             Err(e) => {
-                eprintln!("daemon read error: {e}");
+                error!(error = %e, "daemon read error");
                 let _ = proxy.send_event(UserEvent::Disconnected);
                 break;
             }
@@ -2132,11 +2148,11 @@ fn create_atlas_texture(
     (texture, view, sampler)
 }
 
-async fn init_gpu(window: Arc<Window>) -> GpuState {
+async fn init_gpu(window: Arc<Window>) -> Result<GpuState, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance
         .create_surface(window.clone())
-        .expect("failed to create wgpu surface");
+        .map_err(|e| format!("failed to create wgpu surface: {e}"))?;
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -2145,12 +2161,12 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
             force_fallback_adapter: false,
         })
         .await
-        .expect("no compatible GPU adapter found");
+        .map_err(|e| format!("no compatible GPU adapter found: {e}"))?;
 
-    let (device, queue) = adapter
+    let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
         .request_device(&wgpu::DeviceDescriptor::default())
         .await
-        .expect("failed to create GPU device");
+        .map_err(|e| format!("failed to create GPU device: {e}"))?;
 
     let caps = surface.get_capabilities(&adapter);
     let format = caps
@@ -2159,7 +2175,7 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
         .find(|f| f.is_srgb())
         .or(caps.formats.first())
         .copied()
-        .expect("no compatible surface format found");
+        .ok_or_else(|| "no compatible surface format found".to_string())?;
 
     let size = window.inner_size();
     let config = wgpu::SurfaceConfiguration {
@@ -2180,7 +2196,7 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
     let (atlas_texture, atlas_view, atlas_sampler) =
         create_atlas_texture(&device, atlas_w, atlas_h);
 
-    GpuState {
+    Ok(GpuState {
         surface,
         device,
         queue,
@@ -2189,7 +2205,7 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
         atlas_texture,
         atlas_view,
         atlas_sampler,
-    }
+    })
 }
 
 fn main() {
@@ -2197,6 +2213,16 @@ fn main() {
         println!("{}", version_string());
         return;
     }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .with_file(false)
+        .with_line_number(false)
+        .init();
 
     if std::env::args().any(|a| a == "--init-config") {
         run_init_config();
@@ -2235,7 +2261,7 @@ fn run_init_config() {
             }
         }
         Err(e) => {
-            eprintln!("error: failed to initialize config: {e}");
+            error!(error = %e, "failed to initialize config");
             std::process::exit(1);
         }
     }
