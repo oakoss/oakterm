@@ -114,6 +114,12 @@ pub fn build_initial_tree(input: &TreeInput<'_>) -> TreeUpdate {
     }
 }
 
+/// Text to announce to screen readers via the live region node.
+pub struct Announcement {
+    pub text: String,
+    pub level: Live,
+}
+
 /// Input for an incremental tree update (per-frame).
 pub struct IncrementalInput<'a> {
     pub rows: u16,
@@ -133,6 +139,7 @@ pub struct IncrementalInput<'a> {
     /// being rebuilt (no cursor or title change).
     pub title: &'a str,
     pub title_changed: bool,
+    pub announcement: Option<&'a Announcement>,
     pub cell_width: f64,
     pub cell_height: f64,
 }
@@ -197,6 +204,19 @@ pub fn build_incremental_update(input: &IncrementalInput<'_>) -> TreeUpdate {
 
         nodes.push((TERMINAL_ID, terminal));
     }
+
+    // Always push the announcement node so stale text is cleared.
+    // Live regions trigger on value *changes*, so clearing to "" after
+    // an announcement ensures the next identical text is re-announced.
+    let mut ann_node = Node::new(Role::Label);
+    if let Some(ann) = input.announcement {
+        ann_node.set_live(ann.level);
+        ann_node.set_value(ann.text.as_str());
+    } else {
+        ann_node.set_live(Live::Polite);
+        ann_node.set_value("");
+    }
+    nodes.push((ANNOUNCEMENT_ID, ann_node));
 
     TreeUpdate {
         nodes,
@@ -429,13 +449,14 @@ mod tests {
             cursor_row_text: "",
             title: "",
             title_changed: false,
+            announcement: None,
             cell_width: 8.0,
             cell_height: 16.0,
         };
         let update = build_incremental_update(&input);
         assert!(update.tree.is_none());
-        // Only the dirty row node should be present.
-        assert_eq!(update.nodes.len(), 1);
+        // Dirty row + announcement (cleared).
+        assert_eq!(update.nodes.len(), 2);
         assert_eq!(update.nodes[0].0, row_node_id(5));
         assert_eq!(update.nodes[0].1.value(), Some("changed"));
     }
@@ -454,12 +475,13 @@ mod tests {
             cursor_row_text: "hello",
             title: "test",
             title_changed: false,
+            announcement: None,
             cell_width: 8.0,
             cell_height: 16.0,
         };
         let update = build_incremental_update(&input);
-        // Dirty row + terminal node.
-        assert_eq!(update.nodes.len(), 2);
+        // Dirty row + terminal node + announcement.
+        assert_eq!(update.nodes.len(), 3);
         let has_terminal = update.nodes.iter().any(|(id, _)| *id == TERMINAL_ID);
         assert!(has_terminal);
     }
@@ -477,11 +499,14 @@ mod tests {
             cursor_row_text: "",
             title: "",
             title_changed: false,
+            announcement: None,
             cell_width: 8.0,
             cell_height: 16.0,
         };
         let update = build_incremental_update(&input);
-        assert!(update.nodes.is_empty());
+        // Only the announcement node (cleared to "").
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].0, ANNOUNCEMENT_ID);
     }
 
     #[test]
@@ -497,11 +522,13 @@ mod tests {
             cursor_row_text: "",
             title: "new title",
             title_changed: true,
+            announcement: None,
             cell_width: 8.0,
             cell_height: 16.0,
         };
         let update = build_incremental_update(&input);
-        assert_eq!(update.nodes.len(), 1);
+        // Terminal node + announcement.
+        assert_eq!(update.nodes.len(), 2);
         assert_eq!(update.nodes[0].0, TERMINAL_ID);
         assert_eq!(update.nodes[0].1.label(), Some("new title"));
     }
@@ -520,12 +547,91 @@ mod tests {
             cursor_row_text: "",
             title: "",
             title_changed: false,
+            announcement: None,
             cell_width: 8.0,
             cell_height: 16.0,
         };
         let update = build_incremental_update(&input);
-        assert_eq!(update.nodes.len(), 2);
+        // 2 dirty rows + announcement.
+        assert_eq!(update.nodes.len(), 3);
         assert_eq!(update.nodes[0].0, row_node_id(2));
         assert_eq!(update.nodes[1].0, row_node_id(7));
+    }
+
+    #[test]
+    fn incremental_announcement_polite() {
+        let ann = Announcement {
+            text: "hello world".into(),
+            level: Live::Polite,
+        };
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[],
+            dirty_row_texts: &[],
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            announcement: Some(&ann),
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].0, ANNOUNCEMENT_ID);
+        assert_eq!(update.nodes[0].1.value(), Some("hello world"));
+        assert_eq!(update.nodes[0].1.live(), Some(Live::Polite));
+    }
+
+    #[test]
+    fn incremental_announcement_assertive() {
+        let ann = Announcement {
+            text: "Bell".into(),
+            level: Live::Assertive,
+        };
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[],
+            dirty_row_texts: &[],
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            announcement: Some(&ann),
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert_eq!(update.nodes[0].1.live(), Some(Live::Assertive));
+    }
+
+    #[test]
+    fn incremental_no_announcement_clears_node() {
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[],
+            dirty_row_texts: &[],
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            announcement: None,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        // Announcement node is always pushed (cleared to "" when no announcement).
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].0, ANNOUNCEMENT_ID);
+        assert_eq!(update.nodes[0].1.value(), Some(""));
     }
 }

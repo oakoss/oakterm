@@ -195,6 +195,8 @@ struct App {
     focused: bool,
     /// Shared state for the AccessKit activation handler.
     a11y_state: Arc<Mutex<Option<A11ySnapshot>>>,
+    /// Debounce: last time an a11y announcement was sent.
+    last_announcement: Option<std::time::Instant>,
 }
 
 impl App {
@@ -223,6 +225,7 @@ impl App {
             blink_deadline: None,
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
+            last_announcement: None,
         }
     }
 
@@ -874,6 +877,39 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                             };
 
+                        // Announce new output at bottom of terminal (debounced).
+                        let announcement = if dirty_indices.is_empty() || grid.rows == 0 {
+                            None
+                        } else {
+                            let bottom = grid.rows.saturating_sub(1);
+                            let has_bottom = dirty_indices.contains(&bottom);
+                            let debounce_ok = self
+                                .last_announcement
+                                .is_none_or(|t| t.elapsed().as_millis() >= 100);
+                            if has_bottom && debounce_ok {
+                                // Collect text from dirty rows near the bottom.
+                                let text: String = dirty_indices
+                                    .iter()
+                                    .zip(dirty_texts.iter())
+                                    .filter(|(i, _)| **i >= bottom.saturating_sub(2))
+                                    .map(|(_, t)| t.as_str())
+                                    .filter(|t| !t.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                if text.is_empty() {
+                                    None
+                                } else {
+                                    self.last_announcement = Some(std::time::Instant::now());
+                                    Some(oakterm_a11y::Announcement {
+                                        text,
+                                        level: accesskit::Live::Polite,
+                                    })
+                                }
+                            } else {
+                                None
+                            }
+                        };
+
                         if !dirty_indices.is_empty() || cursor_changed || title_changed {
                             let cursor_row_text = grid.row_text(grid.cursor_y);
                             let font = self.font.as_ref();
@@ -888,6 +924,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 cursor_row_text: &cursor_row_text,
                                 title: &current_title,
                                 title_changed,
+                                announcement: announcement.as_ref(),
                                 cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
                                 cell_height: font
                                     .map_or(16.0, |f| f64::from(f.metrics.cell_height)),
@@ -950,6 +987,7 @@ impl ApplicationHandler<UserEvent> for App {
                             cursor_row_text: &cursor_row_text,
                             title: &title,
                             title_changed: false,
+                            announcement: None,
                             cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
                             cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
                         };
@@ -1022,6 +1060,7 @@ impl ApplicationHandler<UserEvent> for App {
                         cursor_row_text: &cursor_row_text,
                         title: &current_title,
                         title_changed: true,
+                        announcement: None,
                         cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
                         cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
                     };
@@ -1030,7 +1069,45 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Bell => {
-                // Visual bell or system beep. No-op for Phase 0.
+                // Announce bell to screen readers (assertive = interrupts).
+                if let (Some(grid), Some(adapter)) = (&self.grid, &mut self.accesskit) {
+                    let cursor_row_text = grid.row_text(grid.cursor_y);
+                    let title = self
+                        .a11y_state
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.as_ref().map(|s| s.title.clone()))
+                        .unwrap_or_default();
+                    let ann = oakterm_a11y::Announcement {
+                        text: "Bell".into(),
+                        level: accesskit::Live::Assertive,
+                    };
+                    let font = self.font.as_ref();
+                    let input = oakterm_a11y::IncrementalInput {
+                        rows: grid.rows,
+                        cols: grid.cols,
+                        dirty_row_indices: &[],
+                        dirty_row_texts: &[],
+                        cursor_row: grid.cursor_y,
+                        cursor_col: grid.cursor_x,
+                        cursor_changed: false,
+                        cursor_row_text: &cursor_row_text,
+                        title: &title,
+                        title_changed: false,
+                        announcement: Some(&ann),
+                        cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
+                        cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
+                    };
+                    let bell_update = oakterm_a11y::build_incremental_update(&input);
+                    adapter.update_if_active(|| bell_update);
+                    // Clear so a repeated bell is a fresh text transition.
+                    let clear_input = oakterm_a11y::IncrementalInput {
+                        announcement: None,
+                        ..input
+                    };
+                    let clear = oakterm_a11y::build_incremental_update(&clear_input);
+                    adapter.update_if_active(|| clear);
+                }
             }
             UserEvent::Disconnected => {
                 eprintln!("daemon disconnected");
