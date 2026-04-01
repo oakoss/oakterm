@@ -44,6 +44,8 @@ struct A11ySnapshot {
     scrollback_lines: u64,
     cell_width: f64,
     cell_height: f64,
+    /// Set when title changes; cleared after the next incremental update.
+    title_changed: bool,
 }
 
 struct TerminalActivationHandler {
@@ -387,6 +389,7 @@ impl ApplicationHandler<UserEvent> for App {
                     scrollback_lines: 0,
                     cell_width: f64::from(font_state.metrics.cell_width),
                     cell_height: f64::from(font_state.metrics.cell_height),
+                    title_changed: false,
                 });
             }
             Err(e) => eprintln!("a11y: mutex poisoned during init: {e}"),
@@ -453,7 +456,49 @@ impl ApplicationHandler<UserEvent> for App {
                         #[allow(clippy::cast_possible_truncation)]
                         if let (Some(font), Some(grid)) = (&self.font, &mut self.grid) {
                             let (cols, rows) = window_to_grid_dims(size, &font.metrics);
+                            let dims_changed = grid.rows != rows || grid.cols != cols;
                             grid.resize(cols, rows);
+
+                            // Full a11y tree rebuild on resize (row count changed).
+                            if dims_changed {
+                                let row_texts = grid.row_texts();
+                                let cw = f64::from(font.metrics.cell_width);
+                                let ch = f64::from(font.metrics.cell_height);
+                                let title = match self.a11y_state.lock() {
+                                    Ok(mut s) => {
+                                        if let Some(snap) = s.as_mut() {
+                                            snap.rows = rows;
+                                            snap.cols = cols;
+                                            snap.row_texts.clone_from(&row_texts);
+                                            snap.cursor_row = grid.cursor_y;
+                                            snap.cursor_col = grid.cursor_x;
+                                            snap.title_changed = false;
+                                            snap.title.clone()
+                                        } else {
+                                            String::new()
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("a11y: mutex poisoned during resize: {e}");
+                                        String::new()
+                                    }
+                                };
+                                let input = oakterm_a11y::TreeInput {
+                                    rows,
+                                    cols,
+                                    row_texts: &row_texts,
+                                    cursor_row: grid.cursor_y,
+                                    cursor_col: grid.cursor_x,
+                                    title: &title,
+                                    scrollback_lines: 0,
+                                    cell_width: cw,
+                                    cell_height: ch,
+                                };
+                                let full_tree = oakterm_a11y::build_initial_tree(&input);
+                                if let Some(adapter) = &mut self.accesskit {
+                                    adapter.update_if_active(|| full_tree);
+                                }
+                            }
 
                             // Defer until RedrawRequested; startup fires multiple Resized events.
                             if self.initial_resize_sent && (cols, rows) != self.last_sent_dims {
@@ -783,28 +828,73 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::RenderUpdate(update) => {
+                // Build a11y incremental data while grid is borrowed,
+                // then send it via adapter after the grid borrow ends.
+                let mut a11y_update: Option<accesskit::TreeUpdate> = None;
+
                 if let Some(grid) = &mut self.grid {
                     if grid.is_scrolled() {
-                        // A11y snapshot not updated during scrollback (TREK-62 scope).
                         grid.apply_update_while_scrolled(&update);
                     } else {
                         grid.apply_update(&update);
-                        // Keep the a11y snapshot current for AT activation.
-                        match self.a11y_state.lock() {
-                            Ok(mut snap) => {
-                                if let Some(s) = snap.as_mut() {
-                                    s.rows = grid.rows;
-                                    s.cols = grid.cols;
-                                    s.row_texts = grid.row_texts();
-                                    s.cursor_row = grid.cursor_y;
-                                    s.cursor_col = grid.cursor_x;
+
+                        // Build incremental a11y update from dirty rows.
+                        let dirty_indices: Vec<u16> =
+                            update.dirty_rows.iter().map(|r| r.row_index).collect();
+                        let dirty_texts: Vec<String> =
+                            dirty_indices.iter().map(|&i| grid.row_text(i)).collect();
+
+                        // Detect cursor/title changes and update snapshot.
+                        let (cursor_changed, title_changed, current_title) =
+                            match self.a11y_state.lock() {
+                                Ok(mut snap) => {
+                                    if let Some(s) = snap.as_mut() {
+                                        let cc = s.cursor_row != grid.cursor_y
+                                            || s.cursor_col != grid.cursor_x;
+                                        let tc = s.title_changed;
+                                        s.title_changed = false;
+                                        let title = s.title.clone();
+                                        s.rows = grid.rows;
+                                        s.cols = grid.cols;
+                                        s.row_texts = grid.row_texts();
+                                        s.cursor_row = grid.cursor_y;
+                                        s.cursor_col = grid.cursor_x;
+                                        (cc, tc, title)
+                                    } else {
+                                        (false, false, String::new())
+                                    }
                                 }
-                            }
-                            Err(e) => eprintln!("a11y: mutex poisoned: {e}"),
+                                Err(e) => {
+                                    eprintln!("a11y: mutex poisoned: {e}");
+                                    (false, false, String::new())
+                                }
+                            };
+
+                        if !dirty_indices.is_empty() || cursor_changed || title_changed {
+                            let cursor_row_text = grid.row_text(grid.cursor_y);
+                            let font = self.font.as_ref();
+                            let input = oakterm_a11y::IncrementalInput {
+                                rows: grid.rows,
+                                cols: grid.cols,
+                                dirty_row_indices: &dirty_indices,
+                                dirty_row_texts: &dirty_texts,
+                                cursor_row: grid.cursor_y,
+                                cursor_col: grid.cursor_x,
+                                cursor_changed,
+                                cursor_row_text: &cursor_row_text,
+                                title: &current_title,
+                                title_changed,
+                                cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
+                                cell_height: font
+                                    .map_or(16.0, |f| f64::from(f.metrics.cell_height)),
+                            };
+                            a11y_update = Some(oakterm_a11y::build_incremental_update(&input));
                         }
+
                         // Restart blink — cursor style may have changed.
                         if self.blink_deadline.is_none() && self.should_blink() {
                             self.reset_blink();
@@ -813,6 +903,11 @@ impl ApplicationHandler<UserEvent> for App {
                             w.request_redraw();
                         }
                     }
+                }
+
+                // Send incremental a11y update (grid borrow is released).
+                if let (Some(adapter), Some(tree_update)) = (&mut self.accesskit, a11y_update) {
+                    adapter.update_if_active(|| tree_update);
                 }
             }
             UserEvent::ScrollbackData(data) => {
@@ -824,6 +919,7 @@ impl ApplicationHandler<UserEvent> for App {
                         let actual = data.rows.len() as u32;
                         self.viewport_offset = self.viewport_offset.min(actual);
                     }
+                    let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     if let Some(grid) = &mut self.grid {
                         #[allow(clippy::cast_possible_truncation)]
                         let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
@@ -831,6 +927,39 @@ impl ApplicationHandler<UserEvent> for App {
                         if self.config.scroll_indicator {
                             grid.set_scroll_indicator(self.viewport_offset);
                         }
+                        // All visible rows changed — update a11y with full row set.
+                        let all_indices: Vec<u16> = (0..grid.rows).collect();
+                        let all_texts: Vec<String> =
+                            all_indices.iter().map(|&i| grid.row_text(i)).collect();
+                        let font = self.font.as_ref();
+                        let cursor_row_text = grid.row_text(grid.cursor_y);
+                        let title = self
+                            .a11y_state
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.as_ref().map(|s| s.title.clone()))
+                            .unwrap_or_default();
+                        let input = oakterm_a11y::IncrementalInput {
+                            rows: grid.rows,
+                            cols: grid.cols,
+                            dirty_row_indices: &all_indices,
+                            dirty_row_texts: &all_texts,
+                            cursor_row: grid.cursor_y,
+                            cursor_col: grid.cursor_x,
+                            cursor_changed: true,
+                            cursor_row_text: &cursor_row_text,
+                            title: &title,
+                            title_changed: false,
+                            cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
+                            cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
+                        };
+                        a11y_scrollback_update =
+                            Some(oakterm_a11y::build_incremental_update(&input));
+                    }
+                    if let (Some(adapter), Some(tree_update)) =
+                        (&mut self.accesskit, a11y_scrollback_update)
+                    {
+                        adapter.update_if_active(|| tree_update);
                     }
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -863,10 +992,41 @@ impl ApplicationHandler<UserEvent> for App {
                     let display = if title.is_empty() { "oakterm" } else { &title };
                     w.set_title(display);
                 }
-                if let Ok(mut snap) = self.a11y_state.lock() {
-                    if let Some(s) = snap.as_mut() {
-                        s.title = title;
+                // Update snapshot and immediately push to AT (no render event needed).
+                match self.a11y_state.lock() {
+                    Ok(mut snap) => {
+                        if let Some(s) = snap.as_mut() {
+                            s.title = title;
+                            s.title_changed = false; // consumed immediately below
+                        }
                     }
+                    Err(e) => eprintln!("a11y: mutex poisoned on title change: {e}"),
+                }
+                if let (Some(grid), Some(adapter)) = (&self.grid, &mut self.accesskit) {
+                    let current_title = self
+                        .a11y_state
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.as_ref().map(|s| s.title.clone()))
+                        .unwrap_or_default();
+                    let cursor_row_text = grid.row_text(grid.cursor_y);
+                    let font = self.font.as_ref();
+                    let input = oakterm_a11y::IncrementalInput {
+                        rows: grid.rows,
+                        cols: grid.cols,
+                        dirty_row_indices: &[],
+                        dirty_row_texts: &[],
+                        cursor_row: grid.cursor_y,
+                        cursor_col: grid.cursor_x,
+                        cursor_changed: false,
+                        cursor_row_text: &cursor_row_text,
+                        title: &current_title,
+                        title_changed: true,
+                        cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
+                        cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
+                    };
+                    let update = oakterm_a11y::build_incremental_update(&input);
+                    adapter.update_if_active(|| update);
                 }
             }
             UserEvent::Bell => {

@@ -114,8 +114,101 @@ pub fn build_initial_tree(input: &TreeInput<'_>) -> TreeUpdate {
     }
 }
 
+/// Input for an incremental tree update (per-frame).
+pub struct IncrementalInput<'a> {
+    pub rows: u16,
+    pub cols: u16,
+    /// Indices of rows whose content changed this frame.
+    pub dirty_row_indices: &'a [u16],
+    /// Text for each dirty row (parallel to `dirty_row_indices`).
+    pub dirty_row_texts: &'a [String],
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+    pub cursor_changed: bool,
+    /// Text of the cursor's row (for clamping `cursor_col`). Needed because
+    /// the cursor row may not be in the dirty set.
+    pub cursor_row_text: &'a str,
+    /// Current terminal title. Always set so the label isn't lost on
+    /// cursor-only updates. `None` only when the terminal node is not
+    /// being rebuilt (no cursor or title change).
+    pub title: &'a str,
+    pub title_changed: bool,
+    pub cell_width: f64,
+    pub cell_height: f64,
+}
+
+/// Build an incremental tree update containing only changed nodes.
+#[must_use]
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss
+)]
+pub fn build_incremental_update(input: &IncrementalInput<'_>) -> TreeUpdate {
+    let mut nodes = Vec::new();
+
+    // Rebuild dirty row TextRuns.
+    for (i, &row_idx) in input.dirty_row_indices.iter().enumerate() {
+        let text = input.dirty_row_texts.get(i).map_or("", String::as_str);
+        let text_run = build_text_run(
+            text,
+            row_idx as usize,
+            input.cols,
+            input.cell_width,
+            input.cell_height,
+        );
+        nodes.push((row_node_id(row_idx as usize), text_run));
+    }
+
+    // Update terminal node if cursor or title changed.
+    // AccessKit overwrites entire nodes, so all properties must be re-set.
+    if input.cursor_changed || input.title_changed {
+        let mut terminal = Node::new(Role::Terminal);
+        terminal.set_label(input.title);
+        terminal.set_row_count(input.rows as usize);
+        terminal.set_column_count(input.cols as usize);
+        terminal.add_action(Action::Focus);
+        terminal.add_action(Action::ScrollUp);
+        terminal.add_action(Action::ScrollDown);
+        terminal.add_action(Action::SetScrollOffset);
+        terminal.add_action(Action::SetTextSelection);
+
+        let mut children: Vec<NodeId> = (0..input.rows as usize).map(row_node_id).collect();
+        children.push(ANNOUNCEMENT_ID);
+        terminal.set_children(children);
+
+        // Always set text selection — AccessKit overwrites the entire node.
+        let cursor_row = if input.rows == 0 {
+            0
+        } else {
+            (input.cursor_row as usize).min(input.rows as usize - 1)
+        };
+        let cursor_col = (input.cursor_col as usize).min(input.cursor_row_text.chars().count());
+        terminal.set_text_selection(TextSelection {
+            anchor: TextPosition {
+                node: row_node_id(cursor_row),
+                character_index: cursor_col,
+            },
+            focus: TextPosition {
+                node: row_node_id(cursor_row),
+                character_index: cursor_col,
+            },
+        });
+
+        nodes.push((TERMINAL_ID, terminal));
+    }
+
+    TreeUpdate {
+        nodes,
+        tree: None,
+        tree_id: TreeId::ROOT,
+        focus: TERMINAL_ID,
+    }
+}
+
+#[must_use]
 #[allow(clippy::cast_precision_loss)]
-fn build_text_run(
+pub fn build_text_run(
     text: &str,
     row_idx: usize,
     cols: u16,
@@ -318,5 +411,121 @@ mod tests {
     fn row_node_id_offset() {
         assert_eq!(row_node_id(0), NodeId(1000));
         assert_eq!(row_node_id(23), NodeId(1023));
+    }
+
+    // --- Incremental update tests ---
+
+    #[test]
+    fn incremental_only_dirty_rows() {
+        let texts = vec!["changed".to_string()];
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[5],
+            dirty_row_texts: &texts,
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert!(update.tree.is_none());
+        // Only the dirty row node should be present.
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].0, row_node_id(5));
+        assert_eq!(update.nodes[0].1.value(), Some("changed"));
+    }
+
+    #[test]
+    fn incremental_cursor_change_includes_terminal() {
+        let texts = vec!["hello".to_string()];
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[0],
+            dirty_row_texts: &texts,
+            cursor_row: 0,
+            cursor_col: 3,
+            cursor_changed: true,
+            cursor_row_text: "hello",
+            title: "test",
+            title_changed: false,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        // Dirty row + terminal node.
+        assert_eq!(update.nodes.len(), 2);
+        let has_terminal = update.nodes.iter().any(|(id, _)| *id == TERMINAL_ID);
+        assert!(has_terminal);
+    }
+
+    #[test]
+    fn incremental_no_cursor_change_omits_terminal() {
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[],
+            dirty_row_texts: &[],
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert!(update.nodes.is_empty());
+    }
+
+    #[test]
+    fn incremental_title_change_includes_terminal() {
+        let input = IncrementalInput {
+            rows: 24,
+            cols: 80,
+            dirty_row_indices: &[],
+            dirty_row_texts: &[],
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "new title",
+            title_changed: true,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert_eq!(update.nodes.len(), 1);
+        assert_eq!(update.nodes[0].0, TERMINAL_ID);
+        assert_eq!(update.nodes[0].1.label(), Some("new title"));
+    }
+
+    #[test]
+    fn incremental_multiple_dirty_rows() {
+        let texts = vec!["aaa".to_string(), "bbb".to_string()];
+        let input = IncrementalInput {
+            rows: 10,
+            cols: 40,
+            dirty_row_indices: &[2, 7],
+            dirty_row_texts: &texts,
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_changed: false,
+            cursor_row_text: "",
+            title: "",
+            title_changed: false,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_incremental_update(&input);
+        assert_eq!(update.nodes.len(), 2);
+        assert_eq!(update.nodes[0].0, row_node_id(2));
+        assert_eq!(update.nodes[1].0, row_node_id(7));
     }
 }
