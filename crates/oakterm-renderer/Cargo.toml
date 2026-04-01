@@ -15,6 +15,7 @@ swash = { workspace = true }
 etagere = { workspace = true }
 lru = { workspace = true }
 bytemuck = { workspace = true }
+tracing = { workspace = true }
 
 [features]
 gpu-tests = []

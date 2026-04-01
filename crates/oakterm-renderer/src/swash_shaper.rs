@@ -4,6 +4,8 @@
 //! glyph IDs via the font's cmap table and rasterizes using swash's
 //! hinting engine. Swappable for platform-native backends later.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::font;
 use crate::shaper::{
     FontKey, FontMetrics, GlyphBitmap, GlyphPlacement, PixelFormat, ShapedGlyph, TextRun,
@@ -59,9 +61,17 @@ impl TextShaper for SwashShaper {
     #[allow(clippy::cast_possible_truncation)] // glyph IDs fit in u16 for ttf-parser
     fn shape(&self, run: &TextRun<'_>) -> Vec<ShapedGlyph> {
         let Some(entry) = self.fonts.get(&run.font) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(font = ?run.font, "shape: font key not found");
+            }
             return vec![];
         };
         let Ok(face) = ttf_parser::Face::parse(&entry.data, 0) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(font = ?run.font, "shape: font data failed to parse");
+            }
             return vec![];
         };
 
@@ -90,6 +100,10 @@ impl TextShaper for SwashShaper {
 
     fn metrics(&self, font: FontKey, size: f32) -> FontMetrics {
         let Some(entry) = self.fonts.get(&font) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(?font, "metrics: font key not found");
+            }
             return FontMetrics {
                 cell_width: 0.0,
                 cell_height: 0.0,
@@ -99,6 +113,14 @@ impl TextShaper for SwashShaper {
         };
         // Recompute from font data at requested size.
         let Ok(face) = ttf_parser::Face::parse(&entry.data, 0) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    ?font,
+                    size,
+                    "metrics: font data failed to parse, using cached metrics"
+                );
+            }
             return entry.metrics;
         };
         font::compute_metrics_from_face(&face, size)
@@ -107,10 +129,18 @@ impl TextShaper for SwashShaper {
     #[allow(clippy::cast_possible_truncation)] // glyph IDs fit in u16 for swash render
     fn rasterize(&self, font: FontKey, glyph_id: u32, size: f32) -> GlyphBitmap {
         let Some(entry) = self.fonts.get(&font) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(?font, glyph_id, "rasterize: font key not found");
+            }
             return empty_bitmap();
         };
 
         let Some(font_ref) = FontRef::from_index(&entry.data, 0) else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(?font, glyph_id, "rasterize: font data failed to parse");
+            }
             return empty_bitmap();
         };
 
@@ -125,26 +155,29 @@ impl TextShaper for SwashShaper {
         .format(Format::Alpha)
         .render(&mut scaler, glyph_id as u16);
 
-        match image {
-            Some(img) => {
-                let bpp = 1; // Alpha8
-                debug_assert_eq!(
-                    img.data.len(),
-                    (img.placement.width * img.placement.height) as usize * bpp,
-                    "rasterized bitmap data length mismatch"
-                );
-                GlyphBitmap {
-                    width: img.placement.width,
-                    height: img.placement.height,
-                    placement: GlyphPlacement {
-                        top: img.placement.top,
-                        left: img.placement.left,
-                    },
-                    format: PixelFormat::Alpha8,
-                    data: img.data,
-                }
+        if let Some(img) = image {
+            let bpp = 1; // Alpha8
+            debug_assert_eq!(
+                img.data.len(),
+                (img.placement.width * img.placement.height) as usize * bpp,
+                "rasterized bitmap data length mismatch"
+            );
+            GlyphBitmap {
+                width: img.placement.width,
+                height: img.placement.height,
+                placement: GlyphPlacement {
+                    top: img.placement.top,
+                    left: img.placement.left,
+                },
+                format: PixelFormat::Alpha8,
+                data: img.data,
             }
-            None => empty_bitmap(),
+        } else {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(?font, glyph_id, size, "rasterize: swash returned no image");
+            }
+            empty_bitmap()
         }
     }
 }

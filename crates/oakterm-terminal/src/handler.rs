@@ -7,9 +7,19 @@
 //! The handler is generic over `TermTarget`: tests pass a bare `Grid`,
 //! while the daemon passes a `ScreenSet` for alternate screen support.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::grid::cell::{self, CellFlags, WideState};
 use crate::grid::row::Row;
 use crate::grid::{Grid, ScreenId, ScreenSet};
+
+/// Log a VT response write failure at most once (broken writer is permanent).
+fn warn_writer_once(e: &std::io::Error, response: &str) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(error = %e, response, "failed to write VT response");
+    }
+}
 
 /// Abstraction over `Grid` and `ScreenSet` for the handler.
 ///
@@ -918,10 +928,12 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         let r = u16::from(color.r) * 257;
         let green = u16::from(color.g) * 257;
         let b = u16::from(color.b) * 257;
-        let _ = write!(
+        if let Err(e) = write!(
             self.writer,
             "\x1b]{prefix};rgb:{r:04x}/{green:04x}/{b:04x}{terminator}"
-        );
+        ) {
+            warn_writer_once(&e, "OSC color report");
+        }
     }
 
     fn set_title(&mut self, title: Option<String>) {
@@ -938,11 +950,15 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         match intermediate {
             // DA1 (CSI c): report VT220 with ANSI color.
             None => {
-                let _ = self.writer.write_all(b"\x1b[?62;22c");
+                if let Err(e) = self.writer.write_all(b"\x1b[?62;22c") {
+                    warn_writer_once(&e, "DA1");
+                }
             }
             // DA2 (CSI > c): report version.
             Some('>') => {
-                let _ = self.writer.write_all(b"\x1b[>0;0;0c");
+                if let Err(e) = self.writer.write_all(b"\x1b[>0;0;0c") {
+                    warn_writer_once(&e, "DA2");
+                }
             }
             _ => {}
         }
@@ -954,7 +970,9 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             let g = self.target.active_grid_mut();
             let row = g.cursor.row + 1;
             let col = g.cursor.col + 1;
-            let _ = write!(self.writer, "\x1b[{row};{col}R");
+            if let Err(e) = write!(self.writer, "\x1b[{row};{col}R") {
+                warn_writer_once(&e, "DSR/CPR");
+            }
         }
     }
 
