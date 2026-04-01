@@ -1,7 +1,7 @@
 ---
 spec: '0002'
 title: VT Parser & Terminal Handler
-status: draft
+status: implementing
 date: 2026-03-26
 adrs: ['0004', '0008']
 tags: [core]

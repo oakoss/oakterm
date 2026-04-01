@@ -1,7 +1,7 @@
 ---
 spec: '0006'
 title: Accessibility Bridge
-status: draft
+status: complete
 date: 2026-03-27
 adrs: ['0001']
 tags: [a11y, core]

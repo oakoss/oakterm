@@ -1,7 +1,7 @@
 ---
 spec: '0001'
 title: Daemon Wire Protocol
-status: draft
+status: implementing
 date: 2026-03-26
 adrs: ['0007']
 tags: [core]

@@ -1,7 +1,7 @@
 ---
 spec: '0004'
 title: Scroll Buffer & Archive
-status: draft
+status: complete
 date: 2026-03-26
 adrs: ['0006']
 tags: [core]

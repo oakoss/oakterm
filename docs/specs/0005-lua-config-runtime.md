@@ -1,7 +1,7 @@
 ---
 spec: '0005'
 title: Lua Config Runtime
-status: draft
+status: implementing
 date: 2026-03-27
 adrs: ['0005']
 tags: [config, core]
@@ -312,8 +312,9 @@ OakTerm ships type stub files for Lua Language Server autocomplete.
 
 **Stub delivery:**
 
-- On first launch (or `oakterm --init-config`), the types directory and `.luarc.json` are created if they don't exist.
-- On upgrade, the types directory is overwritten with the new version's stubs. User config files are never modified.
+- On every launch, `types/oakterm.lua` is written if the content differs from the embedded version. This keeps stubs current after upgrades without user intervention.
+- `oakterm --init-config` creates the full config directory: `config.lua` (commented template), `.luarc.json`, and `types/oakterm.lua`. User files (`config.lua`, `.luarc.json`) are created only if absent and never overwritten.
+- `.luarc.json` is not created automatically on launch — it changes editor behavior and requires explicit opt-in via `--init-config`.
 - The stubs are generated from the same Rust config type definitions that the runtime uses, keeping them in sync. Initially hand-written; codegen from `schemars` JSON Schema is a future optimization.
 
 ## Behavior
