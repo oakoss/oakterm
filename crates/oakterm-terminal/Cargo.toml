@@ -30,5 +30,13 @@ harness = false
 name = "screen_buffer"
 harness = false
 
+[[bench]]
+name = "row_codec"
+harness = false
+
+[[bench]]
+name = "scroll_search"
+harness = false
+
 [lints]
 workspace = true
