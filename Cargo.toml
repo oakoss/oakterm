@@ -20,6 +20,9 @@ license = "BSL-1.1"
 repository = "https://github.com/oakoss/oakterm"
 
 [workspace.dependencies]
+# Clipboard
+arboard = "3.6.1"
+
 # GPU rendering
 wgpu = "29.0.1"
 

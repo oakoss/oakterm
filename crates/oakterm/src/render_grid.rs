@@ -454,7 +454,6 @@ impl ClientGrid {
     /// `viewport_offset` maps visible row 0 to selection row
     /// `-(viewport_offset)`. Each line is trimmed of trailing whitespace.
     #[must_use]
-    #[allow(dead_code)] // Public API for clipboard (TREK-79).
     pub fn extract_selection_text(&self, selection: &Selection, viewport_offset: u32) -> String {
         let (start, end) = selection.normalized();
         let cols = usize::from(self.cols);
@@ -556,6 +555,7 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
+            bracketed_paste: false,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![
@@ -613,6 +613,7 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
+            bracketed_paste: false,
             dirty_rows: vec![],
         };
         grid.apply_update(&update);
@@ -635,6 +636,7 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
+            bracketed_paste: false,
             dirty_rows: vec![DirtyRow {
                 row_index: 99,
                 cells: vec![WireCell {
@@ -816,6 +818,7 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
+            bracketed_paste: false,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);
@@ -894,6 +897,7 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
+            bracketed_paste: false,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);

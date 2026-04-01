@@ -750,6 +750,7 @@ async fn handle_request(
                 bg_r,
                 bg_g,
                 bg_b,
+                bracketed_paste: g.modes.get(2004),
                 dirty_rows,
             };
 

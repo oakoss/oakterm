@@ -208,6 +208,8 @@ struct App {
     a11y_state: Arc<Mutex<Option<A11ySnapshot>>>,
     /// Debounce: last time an a11y announcement was sent.
     last_announcement: Option<std::time::Instant>,
+    /// Whether the terminal has DECSET 2004 (bracketed paste) active.
+    bracketed_paste: bool,
     /// Active text selection, if any.
     selection: Option<oakterm_terminal::grid::selection::Selection>,
     /// Left mouse button held for drag tracking.
@@ -250,6 +252,7 @@ impl App {
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
             last_announcement: None,
+            bracketed_paste: false,
             selection: None,
             mouse_pressed: false,
             click_count: 0,
@@ -745,17 +748,7 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
-                // Clear selection on any keystroke.
-                if self.selection.is_some() {
-                    self.selection = None;
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
-                }
-
-                // Look up keybind in registry (defaults + user config).
-                // lookup_index returns the index so we can release the borrow
-                // before calling dispatch_action (which borrows &mut self).
+                // Look up keybind BEFORE clearing selection so Copy can read it.
                 if let Some(chord) = winit_to_chord(self.modifiers, &logical_key) {
                     if let Some(idx) = self.keybind_registry.lookup_index(&chord) {
                         if self.dispatch_action_at(idx) {
@@ -764,6 +757,14 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         // Action returned false (e.g., scroll down when not
                         // scrolled) — let the key fall through to PTY.
+                    }
+                }
+
+                // Clear selection on non-copy keystrokes.
+                if self.selection.is_some() {
+                    self.selection = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
                     }
                 }
 
@@ -1114,6 +1115,8 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::RenderUpdate(update) => {
+                self.bracketed_paste = update.bracketed_paste;
+
                 // Build a11y incremental data while grid is borrowed,
                 // then send it via adapter after the grid borrow ends.
                 let mut a11y_update: Option<accesskit::TreeUpdate> = None;
@@ -1615,10 +1618,61 @@ impl App {
                 lua.remove_hook();
                 true
             }
-            ActionDesc::Copy | ActionDesc::Paste | ActionDesc::Stub => {
-                // Not yet implemented; let the key pass through to PTY.
-                false
+            ActionDesc::Copy => {
+                if let (Some(sel), Some(grid)) = (&self.selection, &self.grid) {
+                    let text = grid.extract_selection_text(sel, self.viewport_offset);
+                    if !text.is_empty() {
+                        match arboard::Clipboard::new() {
+                            Ok(mut cb) => {
+                                if let Err(e) = cb.set_text(&text) {
+                                    warn!(error = %e, "clipboard set failed");
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "clipboard init failed"),
+                        }
+                    }
+                }
+                true
             }
+            ActionDesc::Paste => {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => match cb.get_text() {
+                        Ok(text) if !text.is_empty() => {
+                            if let Some(daemon) = &mut self.daemon {
+                                // Normalize line endings: PTY expects \r.
+                                let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+                                let key_data = if self.bracketed_paste {
+                                    let mut buf = Vec::with_capacity(normalized.len() + 12);
+                                    buf.extend_from_slice(b"\x1b[200~");
+                                    buf.extend_from_slice(normalized.as_bytes());
+                                    buf.extend_from_slice(b"\x1b[201~");
+                                    buf
+                                } else {
+                                    normalized.into_bytes()
+                                };
+                                let msg = oakterm_protocol::input::KeyInput {
+                                    pane_id: 0,
+                                    key_data,
+                                };
+                                match msg.to_frame() {
+                                    Ok(frame) => {
+                                        if let Err(e) = daemon.send_frame(&frame) {
+                                            error!(error = %e, "daemon write failed");
+                                            self.daemon = None;
+                                        }
+                                    }
+                                    Err(e) => error!(error = %e, "failed to encode paste"),
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => warn!(error = %e, "clipboard get failed"),
+                    },
+                    Err(e) => warn!(error = %e, "clipboard init failed"),
+                }
+                true
+            }
+            ActionDesc::Stub => false,
         }
     }
 
