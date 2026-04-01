@@ -113,7 +113,7 @@ fn build_uniforms(c: &mut Criterion) {
                 viewport_height: 640.0,
                 atlas_width: 256.0,
                 atlas_height: 256.0,
-                text_contrast: 1.2,
+                text_gamma: 1.7,
                 pad: 0.0,
             };
             std::hint::black_box((bg, text));

@@ -12,6 +12,7 @@ pub(crate) const OAKTERM_LUA_STUB: &str = r#"---@meta _
 ---@alias oakterm.CursorStyle "block"|"underline"|"bar"
 ---@alias oakterm.WindowDecorations "full"|"none"
 ---@alias oakterm.UpdateCheck "off"|"check"
+---@alias oakterm.TextBlending "linear"|"linear_corrected"
 ---@alias oakterm.LogLevel "debug"|"info"|"warn"|"error"
 ---@alias oakterm.Platform "macos"|"linux"|"windows"
 ---@alias oakterm.Appearance "dark"|"light"
@@ -124,6 +125,8 @@ function ActionModule.show_command_palette() end
 ---@field scrollback_archive_limit integer|string Archive size limit in bytes or "1GB" (default: "1GB")
 ---@field daemon_persist boolean Keep daemon alive after last window closes (default: false)
 ---@field check_for_updates oakterm.UpdateCheck Update check policy (default: "off")
+---@field text_blending oakterm.TextBlending Text blending mode for color accuracy (default: "linear_corrected")
+---@field text_gamma number Text gamma compensation, higher = thicker text (default: 1.7 macOS, 1.0 Linux)
 
 ---@class oakterm
 ---@field config oakterm.Config Configuration table

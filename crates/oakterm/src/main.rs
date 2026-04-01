@@ -395,7 +395,21 @@ impl ApplicationHandler<UserEvent> for App {
 
         window.set_visible(true);
 
-        let gpu = match pollster::block_on(init_gpu(window.clone())) {
+        // Load config before GPU init so blending mode is available for pipeline.
+        let cr = oakterm_config::load_config();
+        if let Some(err) = &cr.error {
+            warn!(error = %err, "config error");
+        }
+        let config = cr.config.clone();
+
+        let blending_mode = match config.text_blending {
+            oakterm_config::TextBlending::Linear => oakterm_renderer::shaders::BLENDING_LINEAR,
+            oakterm_config::TextBlending::LinearCorrected => {
+                oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED
+            }
+        };
+
+        let gpu = match pollster::block_on(init_gpu(window.clone(), blending_mode)) {
             Ok(state) => state,
             Err(e) => {
                 error!(error = %e, "fatal: GPU initialization failed");
@@ -403,13 +417,6 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
         };
-
-        // Load config.
-        let cr = oakterm_config::load_config();
-        if let Some(err) = &cr.error {
-            warn!(error = %err, "config error");
-        }
-        let config = cr.config.clone();
 
         // Load font at display-native pixel size.
         #[allow(clippy::cast_possible_truncation)] // f64 -> f32 for font size
@@ -903,7 +910,8 @@ impl ApplicationHandler<UserEvent> for App {
                     viewport_height: gpu.config.height as f32,
                     atlas_width: atlas_w as f32,
                     atlas_height: atlas_h as f32,
-                    text_contrast: 1.2,
+                    #[allow(clippy::cast_possible_truncation)] // gamma is small (0-5)
+                    text_gamma: self.config.text_gamma as f32,
                     pad: 0.0,
                 };
 
@@ -2148,7 +2156,7 @@ fn create_atlas_texture(
     (texture, view, sampler)
 }
 
-async fn init_gpu(window: Arc<Window>) -> Result<GpuState, String> {
+async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance
         .create_surface(window.clone())
@@ -2190,7 +2198,7 @@ async fn init_gpu(window: Arc<Window>) -> Result<GpuState, String> {
     };
     surface.configure(&device, &config);
 
-    let pipeline = RenderPipeline::new(&device, format);
+    let pipeline = RenderPipeline::new(&device, format, blending_mode);
     // AtlasPlane::new() creates a 256x256 atlas — match the GPU texture.
     let (atlas_w, atlas_h) = AtlasPlane::new().size();
     let (atlas_texture, atlas_view, atlas_sampler) =

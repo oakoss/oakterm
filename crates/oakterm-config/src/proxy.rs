@@ -4,7 +4,9 @@
 
 use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
 use crate::keybind::{Action, KeyChord, KeybindRegistry};
-use crate::schema::{self, ConfigValues, CursorStyle, Padding, UpdateCheck, WindowDecorations};
+use crate::schema::{
+    self, ConfigValues, CursorStyle, Padding, TextBlending, UpdateCheck, WindowDecorations,
+};
 use mlua::{Function, Lua, Table, Value};
 
 /// Registry key for the hidden backing table that stores validated config values.
@@ -479,6 +481,7 @@ fn extract_action_from_table(t: &Table) -> Result<Action, String> {
 /// # Errors
 ///
 /// Returns an error if a set value cannot be converted to the expected Rust type.
+#[allow(clippy::too_many_lines)] // One field extraction per config key.
 pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
     let backing: Table = lua.named_registry_value(BACKING_KEY)?;
     let defaults = ConfigValues::default();
@@ -573,6 +576,23 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         None => defaults.check_for_updates,
     };
 
+    let text_blending = match backing.get::<Option<mlua::String>>("text_blending")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            TextBlending::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid text_blending '{s}' (expected: {})",
+                    TextBlending::ALL.join(", ")
+                ))
+            })?
+        }
+        None => defaults.text_blending,
+    };
+
+    let text_gamma: f64 = backing
+        .get::<Option<f64>>("text_gamma")?
+        .unwrap_or(defaults.text_gamma);
+
     Ok(ConfigValues {
         font_family,
         font_size,
@@ -589,6 +609,8 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         scrollback_archive_limit,
         daemon_persist,
         check_for_updates,
+        text_blending,
+        text_gamma,
     })
 }
 

@@ -90,7 +90,7 @@ fn text_uniforms(cell_w: f32, cell_h: f32, vp_w: f32, vp_h: f32) -> TextUniforms
         viewport_height: vp_h,
         atlas_width: 16.0,
         atlas_height: 16.0,
-        text_contrast: 1.2,
+        text_gamma: 1.7,
         pad: 0.0,
     }
 }
@@ -175,13 +175,21 @@ fn pixel_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 #[test]
 fn pipeline_creation_succeeds() {
     let (device, _queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let _pipeline = RenderPipeline::new(&device, FORMAT);
+    let _pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 }
 
 #[test]
 fn render_empty_grid() {
     let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let pipeline = RenderPipeline::new(&device, FORMAT);
+    let pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 
     // 1x1 pixel target — degenerate grid with no cells.
     let target = create_render_target(&device, 1, 1);
@@ -208,7 +216,11 @@ fn render_empty_grid() {
 #[test]
 fn render_partial_zero_grid() {
     let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let pipeline = RenderPipeline::new(&device, FORMAT);
+    let pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 
     let target = create_render_target(&device, 1, 1);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -235,7 +247,11 @@ fn render_partial_zero_grid() {
 #[test]
 fn render_background_produces_correct_colors() {
     let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let pipeline = RenderPipeline::new(&device, FORMAT);
+    let pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -281,7 +297,11 @@ fn render_background_produces_correct_colors() {
 #[test]
 fn render_single_glyph() {
     let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let pipeline = RenderPipeline::new(&device, FORMAT);
+    let pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -317,7 +337,11 @@ fn render_single_glyph() {
 #[test]
 fn render_text_produces_visible_pixels() {
     let (device, queue) = pollster::block_on(create_test_device()).expect("no GPU adapter");
-    let pipeline = RenderPipeline::new(&device, FORMAT);
+    let pipeline = RenderPipeline::new(
+        &device,
+        FORMAT,
+        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+    );
 
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());

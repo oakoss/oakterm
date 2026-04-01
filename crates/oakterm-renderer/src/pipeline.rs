@@ -34,7 +34,7 @@ pub struct TextUniforms {
     pub viewport_height: f32,
     pub atlas_width: f32,
     pub atlas_height: f32,
-    pub text_contrast: f32,
+    pub text_gamma: f32,
     pub pad: f32,
 }
 
@@ -57,15 +57,17 @@ impl RenderPipeline {
     /// Panics if shader compilation fails.
     #[must_use]
     #[allow(clippy::too_many_lines)] // Pipeline setup is inherently verbose
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, blending_mode: u32) -> Self {
+        let bg_src = crate::shaders::background_shader(blending_mode);
         let bg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bg_shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shaders::BACKGROUND_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(bg_src.into()),
         });
 
+        let text_src = crate::shaders::text_shader(blending_mode);
         let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("text_shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shaders::TEXT_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(text_src.into()),
         });
 
         let bg_bind_group_layout =

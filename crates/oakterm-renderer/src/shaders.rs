@@ -1,27 +1,58 @@
 //! WGSL shaders for the two-pass terminal renderer.
 
+/// Shared color space functions used by both passes.
+const COLOR_FUNCTIONS: &str = "
+// sRGB → linear (IEC 61966-2-1).
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn srgb_to_linear3(c: vec3f) -> vec3f {
+    return vec3f(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
+}
+
+fn luminance(c: vec3f) -> f32 {
+    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+}
+";
+
 /// Background pass: renders cell background colors.
 /// Reads from a storage buffer of packed RGBA colors, one per cell.
-pub const BACKGROUND_SHADER: &str = r"
-struct Uniforms {
+#[must_use]
+pub fn background_shader(blending_mode: u32) -> String {
+    format!(
+        r"
+{COLOR_FUNCTIONS}
+
+// TODO: sRGB→P3 conversion — apply when CAMetalLayer color space is set.
+// const SRGB_TO_P3: mat3x3f = mat3x3f(
+//     vec3f(0.8225, 0.1775, 0.0000),
+//     vec3f(0.0332, 0.9668, 0.0000),
+//     vec3f(0.0171, 0.0724, 0.9105),
+// );
+
+const BLENDING_MODE: u32 = {blending_mode}u;
+
+struct Uniforms {{
     cols: u32,
     rows: u32,
     cell_width: f32,
     cell_height: f32,
     viewport_width: f32,
     viewport_height: f32,
-}
+}}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var<storage, read> bg_colors: array<u32>;
 
-struct VertexOutput {
+struct VertexOutput {{
     @builtin(position) position: vec4f,
     @location(0) color: vec4f,
-}
+}}
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {{
     let col = ii % u.cols;
     let row = ii / u.cols;
 
@@ -36,65 +67,77 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let ndc_x = (x / u.viewport_width) * 2.0 - 1.0;
     let ndc_y = 1.0 - (y / u.viewport_height) * 2.0;
 
-    // Unpack RGBA from u32 (ABGR packed).
+    // Unpack sRGB from u32 (ABGR packed).
     let packed = bg_colors[ii];
     let r = f32(packed & 0xFFu) / 255.0;
     let g = f32((packed >> 8u) & 0xFFu) / 255.0;
     let b = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
 
+    // Linearize sRGB for correct framebuffer output.
+    let color = srgb_to_linear3(vec3f(r, g, b));
+
     var out: VertexOutput;
     out.position = vec4f(ndc_x, ndc_y, 0.0, 1.0);
-    out.color = vec4f(r, g, b, a);
+    out.color = vec4f(color, a);
     return out;
-}
+}}
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
     return in.color;
+}}
+"
+    )
 }
-";
 
 /// Text pass: renders glyph quads from the atlas.
 /// Each instance is one glyph with position, atlas UV, and foreground color.
-pub const TEXT_SHADER: &str = r"
-struct Uniforms {
+#[must_use]
+pub fn text_shader(blending_mode: u32) -> String {
+    format!(
+        r"
+{COLOR_FUNCTIONS}
+
+const BLENDING_MODE: u32 = {blending_mode}u;
+
+struct Uniforms {{
     cell_width: f32,
     cell_height: f32,
     viewport_width: f32,
     viewport_height: f32,
     atlas_width: f32,
     atlas_height: f32,
-    text_contrast: f32,
+    text_gamma: f32,
     _pad: f32,
-}
+}}
 
-struct GlyphInstance {
+struct GlyphInstance {{
     // Pixel position of the glyph.
     @location(0) pos: vec2f,
     // Size of the glyph in pixels.
     @location(1) size: vec2f,
     // UV origin in the atlas (pixels).
     @location(2) uv_origin: vec2f,
-    // Foreground color (linear RGB + alpha).
+    // Foreground color (sRGB, linearized in shader).
     @location(3) fg_color: vec4f,
-    // Background luminance (for text contrast adjustment).
+    // Background luminance (linear, for text gamma adjustment).
     @location(4) bg_luminance: f32,
-}
+}}
 
-struct VertexOutput {
+struct VertexOutput {{
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
     @location(1) fg_color: vec4f,
     @location(2) bg_luminance: f32,
-}
+}}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput {{
     let x = select(glyph.pos.x, glyph.pos.x + glyph.size.x, vi == 1u || vi == 3u);
     let y = select(glyph.pos.y, glyph.pos.y + glyph.size.y, vi == 2u || vi == 3u);
 
@@ -110,21 +153,32 @@ fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput
     out.fg_color = glyph.fg_color;
     out.bg_luminance = glyph.bg_luminance;
     return out;
-}
-
-fn luminance(c: vec3f) -> f32 {
-    return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-}
+}}
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
     let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
 
-    // Text contrast adjustment: boost alpha when fg/bg contrast is low.
-    let fg_lum = luminance(in.fg_color.rgb);
+    let fg_linear = srgb_to_linear3(in.fg_color.rgb);
+    let fg_lum = luminance(fg_linear);
     let contrast_diff = abs(fg_lum - in.bg_luminance);
-    let adjusted_alpha = alpha * mix(u.text_contrast, 1.0, contrast_diff);
 
-    return vec4f(in.fg_color.rgb, in.fg_color.a * adjusted_alpha);
+    // Text gamma compensation: font rasterizers assume sRGB-space blending,
+    // so linear blending makes text too thin/thick. Compensate with a
+    // luminance-dependent gamma adjustment (Kitty's approach).
+    var adjusted_alpha = alpha;
+    if BLENDING_MODE == 2u {{
+        // linear_corrected: apply gamma compensation
+        let gamma_adj = mix(u.text_gamma, 1.0, contrast_diff);
+        adjusted_alpha = pow(alpha, gamma_adj);
+    }}
+
+    return vec4f(fg_linear, in.fg_color.a * adjusted_alpha);
+}}
+"
+    )
 }
-";
+
+/// Blending mode constants matching `TextBlending` enum.
+pub const BLENDING_LINEAR: u32 = 1;
+pub const BLENDING_LINEAR_CORRECTED: u32 = 2;

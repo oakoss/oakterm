@@ -98,6 +98,39 @@ impl UpdateCheck {
     pub(crate) const ALL: &[&str] = &["off", "check"];
 }
 
+/// Text blending mode for color accuracy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextBlending {
+    /// Gamma-correct linear blending (mathematically correct, thinner text).
+    Linear,
+    /// Linear blending with gamma compensation (default, best of both).
+    #[default]
+    LinearCorrected,
+}
+
+impl TextBlending {
+    /// Parse from a Lua config string.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "linear" => Some(Self::Linear),
+            "linear_corrected" => Some(Self::LinearCorrected),
+            _ => None,
+        }
+    }
+
+    /// Config string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::LinearCorrected => "linear_corrected",
+        }
+    }
+
+    pub(crate) const ALL: &[&str] = &["linear", "linear_corrected"];
+}
+
 /// Parsed configuration values extracted from Lua state.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // Config keys are individually spec'd bools.
@@ -119,6 +152,10 @@ pub struct ConfigValues {
     pub scrollback_archive_limit: u64,
     pub daemon_persist: bool,
     pub check_for_updates: UpdateCheck,
+    pub text_blending: TextBlending,
+    /// Text gamma compensation exponent. Higher = thicker text.
+    /// macOS default: 1.7, Linux default: 1.0.
+    pub text_gamma: f64,
 }
 
 impl Default for ConfigValues {
@@ -139,6 +176,8 @@ impl Default for ConfigValues {
             scrollback_archive_limit: 1024 * 1024 * 1024,
             daemon_persist: false,
             check_for_updates: UpdateCheck::default(),
+            text_blending: TextBlending::default(),
+            text_gamma: if cfg!(target_os = "macos") { 1.7 } else { 1.0 },
         }
     }
 }
@@ -230,6 +269,14 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "check_for_updates",
         validate: validate_check_for_updates,
+    },
+    ConfigKeyDef {
+        name: "text_blending",
+        validate: validate_text_blending,
+    },
+    ConfigKeyDef {
+        name: "text_gamma",
+        validate: validate_text_gamma,
     },
 ];
 
@@ -368,6 +415,30 @@ fn validate_check_for_updates(_lua: &Lua, value: &Value) -> mlua::Result<()> {
             "invalid value '{}' (expected: {})",
             s,
             UpdateCheck::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_text_blending(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    if TextBlending::from_config_str(&s).is_some() {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "invalid value '{}' (expected: {})",
+            s,
+            TextBlending::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_text_gamma(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let n = as_number(value)?;
+    if n > 0.0 && n <= 5.0 {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "must be greater than 0 and at most 5.0, got {n}"
         )))
     }
 }
@@ -567,11 +638,19 @@ mod tests {
     }
 
     #[test]
+    fn text_blending_round_trip() {
+        for s in TextBlending::ALL {
+            let tb = TextBlending::from_config_str(s).unwrap();
+            assert_eq!(tb.as_str(), *s);
+        }
+    }
+
+    #[test]
     fn schema_covers_all_keys() {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            15,
+            17,
             "SCHEMA must match ConfigValues field count"
         );
     }

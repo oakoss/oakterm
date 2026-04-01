@@ -16,7 +16,9 @@ pub use init::{InitResult, ensure_stubs, init_config};
 pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId};
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
-pub use schema::{ConfigValues, CursorStyle, Padding, UpdateCheck, WindowDecorations};
+pub use schema::{
+    ConfigValues, CursorStyle, Padding, TextBlending, UpdateCheck, WindowDecorations,
+};
 
 use mlua::{HookTriggers, LuaOptions, StdLib, Value, VmState};
 use std::sync::atomic::{AtomicU8, Ordering};

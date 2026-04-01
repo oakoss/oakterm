@@ -5,6 +5,15 @@ use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::GlyphVertex;
 use oakterm_renderer::shaper::{FontKey, FontMetrics, TextRun, TextShaper};
 
+/// sRGB to linear (IEC 61966-2-1). Matches the shader's `srgb_to_linear`.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// A glyph bitmap that needs uploading to the GPU atlas texture.
 pub struct GlyphUpload {
     pub x: u32,
@@ -352,6 +361,7 @@ impl ClientGrid {
                     (cell.fg, cell.bg)
                 };
 
+                // sRGB values passed to shader (linearized in fragment shader).
                 let fg = [
                     f32::from(fg_rgb[0]) / 255.0,
                     f32::from(fg_rgb[1]) / 255.0,
@@ -359,9 +369,13 @@ impl ClientGrid {
                     1.0,
                 ];
 
-                let bg_lum = 0.2126 * f32::from(bg_rgb[0]) / 255.0
-                    + 0.7152 * f32::from(bg_rgb[1]) / 255.0
-                    + 0.0722 * f32::from(bg_rgb[2]) / 255.0;
+                // Linearize bg for luminance (must match shader's linear space).
+                let bg_lum = {
+                    let lr = srgb_to_linear(f32::from(bg_rgb[0]) / 255.0);
+                    let lg = srgb_to_linear(f32::from(bg_rgb[1]) / 255.0);
+                    let lb = srgb_to_linear(f32::from(bg_rgb[2]) / 255.0);
+                    0.2126 * lr + 0.7152 * lg + 0.0722 * lb
+                };
 
                 glyphs.push(GlyphVertex {
                     pos: [
