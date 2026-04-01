@@ -581,10 +581,17 @@ async fn handle_request(
                 drop(s);
 
                 let mouse_reporting = click || cell_motion || all_motion;
-                let should_send = match msg.event_type {
-                    0 | 1 | 3 | 4 => mouse_reporting,
-                    2 => cell_motion || all_motion,
-                    _ => false,
+                // Shift (bit 2) bypasses mouse tracking — don't forward to PTY.
+                // Defense-in-depth: the GUI also filters Shift events.
+                let shift_held = msg.modifiers & 4 != 0;
+                let should_send = if shift_held {
+                    false
+                } else {
+                    match msg.event_type {
+                        0 | 1 | 3 | 4 => mouse_reporting,
+                        2 => cell_motion || all_motion,
+                        _ => false,
+                    }
                 };
 
                 if should_send {

@@ -193,6 +193,8 @@ struct App {
     viewport_offset: u32,
     /// Current keyboard modifier state for intercepting Shift+key.
     modifiers: winit::event::Modifiers,
+    /// Buttons whose press was Shift-bypassed; suppress their release too.
+    shift_bypassed_buttons: u8,
     /// Blink phase: true = cursor visible, false = cursor hidden.
     blink_visible: bool,
     /// Next blink toggle deadline. `None` when blink is paused.
@@ -227,6 +229,7 @@ impl App {
             last_mouse_cell: (0, 0),
             viewport_offset: 0,
             modifiers: winit::event::Modifiers::default(),
+            shift_bypassed_buttons: 0,
             blink_visible: true,
             blink_deadline: None,
             focused: true,
@@ -640,27 +643,42 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if let Some(daemon) = &mut self.daemon {
-                    let (x, y) = self.last_mouse_cell;
-                    let btn = match button {
-                        winit::event::MouseButton::Middle => 1,
-                        winit::event::MouseButton::Right => 2,
-                        _ => 0,
-                    };
-                    let event_type = match state {
-                        ElementState::Pressed => 0,
-                        ElementState::Released => 1,
-                    };
-                    let msg = MouseInput {
-                        pane_id: 0,
-                        event_type,
-                        x,
-                        y,
-                        modifiers: 0,
-                        button: btn,
-                    };
-                    if let Ok(frame) = msg.to_frame() {
-                        let _ = daemon.send_frame(&frame);
+                let btn = match button {
+                    winit::event::MouseButton::Middle => 1u8,
+                    winit::event::MouseButton::Right => 2,
+                    _ => 0,
+                };
+                let btn_bit = 1u8 << btn;
+                let shift = self.modifiers.state().shift_key();
+
+                match state {
+                    ElementState::Pressed if shift => {
+                        // Shift bypass: suppress press and track for release.
+                        self.shift_bypassed_buttons |= btn_bit;
+                    }
+                    ElementState::Released if self.shift_bypassed_buttons & btn_bit != 0 => {
+                        // Suppress release for a Shift-bypassed press.
+                        self.shift_bypassed_buttons &= !btn_bit;
+                    }
+                    _ => {
+                        if let Some(daemon) = &mut self.daemon {
+                            let (x, y) = self.last_mouse_cell;
+                            let event_type = match state {
+                                ElementState::Pressed => 0,
+                                ElementState::Released => 1,
+                            };
+                            let msg = MouseInput {
+                                pane_id: 0,
+                                event_type,
+                                x,
+                                y,
+                                modifiers: encode_mouse_modifiers(self.modifiers),
+                                button: btn,
+                            };
+                            if let Ok(frame) = msg.to_frame() {
+                                let _ = daemon.send_frame(&frame);
+                            }
+                        }
                     }
                 }
             }
@@ -673,24 +691,30 @@ impl ApplicationHandler<UserEvent> for App {
                 #[allow(clippy::cast_possible_wrap)]
                 let scroll_lines = (3 * count) as i32;
 
+                let shift = self.modifiers.state().shift_key();
+
                 if scroll_up {
                     self.scroll_viewport(scroll_lines);
                 } else if self.viewport_offset > 0 {
                     self.scroll_viewport(-scroll_lines);
-                } else if let Some(daemon) = &mut self.daemon {
-                    let (x, y) = self.last_mouse_cell;
-                    let event_type = if scroll_up { 3u8 } else { 4u8 };
-                    for _ in 0..count.min(5) {
-                        let msg = MouseInput {
-                            pane_id: 0,
-                            event_type,
-                            x,
-                            y,
-                            modifiers: 0,
-                            button: 0,
-                        };
-                        if let Ok(frame) = msg.to_frame() {
-                            let _ = daemon.send_frame(&frame);
+                } else if !shift {
+                    // Forward to daemon only when Shift is not held.
+                    if let Some(daemon) = &mut self.daemon {
+                        let (x, y) = self.last_mouse_cell;
+                        let event_type = if scroll_up { 3u8 } else { 4u8 };
+                        let mods = encode_mouse_modifiers(self.modifiers);
+                        for _ in 0..count.min(5) {
+                            let msg = MouseInput {
+                                pane_id: 0,
+                                event_type,
+                                x,
+                                y,
+                                modifiers: mods,
+                                button: 0,
+                            };
+                            if let Ok(frame) = msg.to_frame() {
+                                let _ = daemon.send_frame(&frame);
+                            }
                         }
                     }
                 }
@@ -1764,6 +1788,23 @@ fn upload_glyphs_to_atlas(
             },
         );
     }
+}
+
+/// Encode winit modifier state to xterm mouse modifier bits.
+/// Shift=4, Alt/Meta=8, Ctrl=16.
+fn encode_mouse_modifiers(mods: winit::event::Modifiers) -> u8 {
+    let s = mods.state();
+    let mut bits = 0u8;
+    if s.shift_key() {
+        bits |= 4;
+    }
+    if s.alt_key() {
+        bits |= 8;
+    }
+    if s.control_key() {
+        bits |= 16;
+    }
+    bits
 }
 
 /// Connect to the daemon, spawning it if needed.
