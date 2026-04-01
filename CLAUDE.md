@@ -71,3 +71,13 @@ Conventional commits: `type(scope): short description`
 Types: `docs`, `chore`, `feat`, `fix`, `refactor`, `test`, `perf`, `ci`
 
 Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`, `core`, `setup`, `renderer`, `ci`
+
+Task references go in the commit footer as a bare `TREK-XX`, not in the subject line:
+
+```text
+feat(core): implement dark/light mode detection
+
+Detect OS appearance via winit ThemeChanged and expose to Lua config.
+
+TREK-50
+```

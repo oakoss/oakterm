@@ -21,3 +21,5 @@ commit-msg:
   commands:
     conventional-commit:
       run: cog verify --file {1}
+    no-trek-in-subject:
+      run: "! head -1 {1} | grep -qE '\\(TREK-[0-9]+' && echo 'ok' || (echo 'error: TREK-XX belongs in the commit footer, not the subject line' && exit 1)"
