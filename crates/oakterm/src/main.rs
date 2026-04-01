@@ -158,6 +158,7 @@ enum ActionDesc {
     Stub,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
@@ -207,6 +208,18 @@ struct App {
     a11y_state: Arc<Mutex<Option<A11ySnapshot>>>,
     /// Debounce: last time an a11y announcement was sent.
     last_announcement: Option<std::time::Instant>,
+    /// Active text selection, if any.
+    selection: Option<oakterm_terminal::grid::selection::Selection>,
+    /// Left mouse button held for drag tracking.
+    mouse_pressed: bool,
+    /// Click count for double/triple click detection.
+    click_count: u8,
+    /// Timestamp of last click for multi-click detection.
+    last_click_time: Option<std::time::Instant>,
+    /// Cell position of last click for multi-click detection.
+    last_click_pos: (u16, u16),
+    /// Last known mouse position in pixel coordinates.
+    last_mouse_pixel: (f64, f64),
 }
 
 impl App {
@@ -237,6 +250,12 @@ impl App {
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
             last_announcement: None,
+            selection: None,
+            mouse_pressed: false,
+            click_count: 0,
+            last_click_time: None,
+            last_click_pos: (0, 0),
+            last_mouse_pixel: (0.0, 0.0),
         }
     }
 
@@ -324,6 +343,80 @@ impl App {
                 Err(e) => error!(error = %e, "failed to encode render update request"),
             }
         }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Start or update a text selection based on current mouse state.
+    /// Handles single, double (word), and triple (line) click detection.
+    fn start_selection(&mut self) {
+        use oakterm_terminal::grid::selection::{
+            AnchorSide, Selection, SelectionType, word_boundaries,
+        };
+
+        let (col, row) = self.last_mouse_cell;
+        let now = std::time::Instant::now();
+        let cw = self
+            .font
+            .as_ref()
+            .map_or(8.0, |f| f64::from(f.metrics.cell_width));
+        let side = if (self.last_mouse_pixel.0 % cw) > (cw / 2.0) {
+            AnchorSide::Right
+        } else {
+            AnchorSide::Left
+        };
+
+        // Multi-click detection: same cell within 300ms increments click count.
+        let same_cell = self.last_click_pos == (col, row);
+        let within_timeout = self
+            .last_click_time
+            .is_some_and(|t| now.duration_since(t).as_millis() < 300);
+
+        if same_cell && within_timeout {
+            self.click_count = (self.click_count + 1).min(3);
+        } else {
+            self.click_count = 1;
+        }
+        self.last_click_time = Some(now);
+        self.last_click_pos = (col, row);
+
+        let sel_row = i64::from(row) - i64::from(self.viewport_offset);
+
+        match self.click_count {
+            2 => {
+                // Semantic (word) selection.
+                if let Some(grid) = &self.grid {
+                    if row < grid.rows {
+                        let text: Vec<char> = grid.row_text(row).chars().collect();
+                        // Click past end of text: no word to select.
+                        if (col as usize) < text.len() {
+                            let (start_col, end_col) = word_boundaries(&text, col);
+                            let mut sel = Selection::new(
+                                SelectionType::Semantic,
+                                sel_row,
+                                start_col,
+                                AnchorSide::Left,
+                            );
+                            sel.update(sel_row, end_col, AnchorSide::Right);
+                            self.selection = Some(sel);
+                        }
+                    }
+                }
+            }
+            3 => {
+                // Line selection.
+                let mut sel = Selection::new(SelectionType::Line, sel_row, 0, AnchorSide::Left);
+                sel.update(sel_row, 0, AnchorSide::Left);
+                self.selection = Some(sel);
+            }
+            _ => {
+                // Normal (single click) selection.
+                self.selection = Some(Selection::new(SelectionType::Normal, sel_row, col, side));
+            }
+        }
+
+        self.mouse_pressed = true;
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -652,6 +745,14 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
+                // Clear selection on any keystroke.
+                if self.selection.is_some() {
+                    self.selection = None;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+
                 // Look up keybind in registry (defaults + user config).
                 // lookup_index returns the index so we can release the borrow
                 // before calling dispatch_action (which borrows &mut self).
@@ -690,13 +791,56 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.reset_blink();
             }
-            WindowEvent::CursorMoved { position, .. } =>
-            {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse_pixel = (position.x, position.y);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 if let Some(font) = &self.font {
                     let col = (position.x as f32 / font.metrics.cell_width) as u16;
                     let row = (position.y as f32 / font.metrics.cell_height) as u16;
                     self.last_mouse_cell = (col, row);
+
+                    // Update selection end during drag.
+                    if self.mouse_pressed {
+                        use oakterm_terminal::grid::selection::{
+                            AnchorSide, SelectionType, word_boundaries,
+                        };
+                        let cw = f64::from(font.metrics.cell_width);
+                        let side = if (position.x % cw) > (cw / 2.0) {
+                            AnchorSide::Right
+                        } else {
+                            AnchorSide::Left
+                        };
+                        let sel_row = i64::from(row) - i64::from(self.viewport_offset);
+                        if let Some(sel) = &mut self.selection {
+                            if sel.ty == SelectionType::Semantic {
+                                // Snap drag to word boundaries.
+                                if let Some(grid) = &self.grid {
+                                    if row < grid.rows {
+                                        let text: Vec<char> = grid.row_text(row).chars().collect();
+                                        if (col as usize) < text.len() {
+                                            let (start_col, end_col) = word_boundaries(&text, col);
+                                            // Snap to near edge based on drag direction.
+                                            let backward = sel_row < sel.start.row
+                                                || (sel_row == sel.start.row
+                                                    && col < sel.start.col);
+                                            if backward {
+                                                sel.update(sel_row, start_col, AnchorSide::Left);
+                                            } else {
+                                                sel.update(sel_row, end_col, AnchorSide::Right);
+                                            }
+                                        } else {
+                                            sel.update(sel_row, col, side);
+                                        }
+                                    }
+                                }
+                            } else {
+                                sel.update(sel_row, col, side);
+                            }
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -712,12 +856,27 @@ impl ApplicationHandler<UserEvent> for App {
                     ElementState::Pressed if shift => {
                         // Shift bypass: suppress press and track for release.
                         self.shift_bypassed_buttons |= btn_bit;
+
+                        // Start selection on Shift+left click.
+                        if btn == 0 {
+                            self.start_selection();
+                        }
                     }
                     ElementState::Released if self.shift_bypassed_buttons & btn_bit != 0 => {
                         // Suppress release for a Shift-bypassed press.
                         self.shift_bypassed_buttons &= !btn_bit;
+                        if btn == 0 {
+                            self.mouse_pressed = false;
+                        }
                     }
                     _ => {
+                        // Clear selection on non-shift click.
+                        if state == ElementState::Pressed && btn == 0 && self.selection.is_some() {
+                            self.selection = None;
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
                         if let Some(daemon) = &mut self.daemon {
                             let (x, y) = self.last_mouse_cell;
                             let event_type = match state {
@@ -854,35 +1013,39 @@ impl ApplicationHandler<UserEvent> for App {
                     ..Default::default()
                 });
 
-                let (bg_colors, glyph_instances) =
-                    if let (Some(grid), Some(font)) = (&self.grid, &mut self.font) {
-                        // Effective cursor visibility: hidden during blink-off phase.
-                        let cursor_vis = grid.cursor_visible
-                            && (self.blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
+                let (bg_colors, glyph_instances) = if let (Some(grid), Some(font)) =
+                    (&self.grid, &mut self.font)
+                {
+                    // Effective cursor visibility: hidden during blink-off phase.
+                    let cursor_vis = grid.cursor_visible
+                        && (self.blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
 
-                        let bg = grid.bg_colors(cursor_vis);
-                        let (glyphs, uploads) = grid.glyph_instances(
-                            &font.metrics,
-                            font.font_key,
-                            font.font_size,
-                            &font.shaper,
-                            &mut font.atlas,
-                            cursor_vis,
-                        );
+                    let bg =
+                        grid.bg_colors(cursor_vis, self.selection.as_ref(), self.viewport_offset);
+                    let (glyphs, uploads) = grid.glyph_instances(
+                        &font.metrics,
+                        font.font_key,
+                        font.font_size,
+                        &font.shaper,
+                        &mut font.atlas,
+                        cursor_vis,
+                        self.selection.as_ref(),
+                        self.viewport_offset,
+                    );
 
-                        upload_glyphs_to_atlas(
-                            &gpu.device,
-                            &gpu.queue,
-                            &mut gpu.atlas_texture,
-                            &mut gpu.atlas_view,
-                            &font.atlas,
-                            &uploads,
-                        );
+                    upload_glyphs_to_atlas(
+                        &gpu.device,
+                        &gpu.queue,
+                        &mut gpu.atlas_texture,
+                        &mut gpu.atlas_view,
+                        &font.atlas,
+                        &uploads,
+                    );
 
-                        (bg, glyphs)
-                    } else {
-                        (vec![], vec![])
-                    };
+                    (bg, glyphs)
+                } else {
+                    (vec![], vec![])
+                };
 
                 let (cols, rows) = self
                     .grid

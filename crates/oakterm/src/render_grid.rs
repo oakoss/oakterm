@@ -4,6 +4,7 @@ use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::GlyphVertex;
 use oakterm_renderer::shaper::{FontKey, FontMetrics, TextRun, TextShaper};
+use oakterm_terminal::grid::selection::Selection;
 
 /// sRGB to linear (IEC 61966-2-1). Matches the shader's `srgb_to_linear`.
 fn srgb_to_linear(c: f32) -> f32 {
@@ -263,14 +264,27 @@ impl ClientGrid {
     // TODO: underline/bar should render as partial-cell quads once the
     // GPU pipeline supports sub-cell geometry.
     #[must_use]
-    pub fn bg_colors(&self, cursor_visible: bool) -> Vec<u32> {
+    pub fn bg_colors(
+        &self,
+        cursor_visible: bool,
+        selection: Option<&Selection>,
+        viewport_offset: u32,
+    ) -> Vec<u32> {
         let cursor_idx = self.cursor_cell_index(cursor_visible);
+        let cols = usize::from(self.cols);
 
         self.cells
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                if Some(i) == cursor_idx {
+                let row = i / cols;
+                let col = i % cols;
+                #[allow(clippy::cast_possible_wrap)]
+                let sel_row = row as i64 - i64::from(viewport_offset);
+                #[allow(clippy::cast_possible_truncation)]
+                let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
+
+                if Some(i) == cursor_idx || selected {
                     pack_bg_color(c.fg)
                 } else {
                     pack_bg_color(c.bg)
@@ -280,7 +294,7 @@ impl ClientGrid {
     }
 
     /// Build glyph instances and any new bitmap uploads needed.
-    #[allow(clippy::cast_precision_loss)] // col/row indices fit in f32
+    #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)] // col/row indices fit in f32
     pub fn glyph_instances(
         &self,
         metrics: &FontMetrics,
@@ -289,6 +303,8 @@ impl ClientGrid {
         shaper: &impl TextShaper,
         atlas: &mut AtlasPlane,
         cursor_visible: bool,
+        selection: Option<&Selection>,
+        viewport_offset: u32,
     ) -> (Vec<GlyphVertex>, Vec<GlyphUpload>) {
         let mut glyphs = Vec::new();
         let mut uploads = Vec::new();
@@ -355,7 +371,11 @@ impl ClientGrid {
                 let y = row as f32 * metrics.cell_height;
 
                 let is_cursor = Some(idx) == cursor_idx;
-                let (fg_rgb, bg_rgb) = if is_cursor {
+                #[allow(clippy::cast_possible_wrap)]
+                let sel_row = row as i64 - i64::from(viewport_offset);
+                #[allow(clippy::cast_possible_truncation)]
+                let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
+                let (fg_rgb, bg_rgb) = if is_cursor || selected {
                     (cell.bg, cell.fg)
                 } else {
                     (cell.fg, cell.bg)
@@ -428,6 +448,50 @@ impl ClientGrid {
     pub fn row_texts(&self) -> Vec<String> {
         (0..self.rows).map(|r| self.row_text(r)).collect()
     }
+
+    /// Extract the text covered by a selection from the visible grid.
+    ///
+    /// `viewport_offset` maps visible row 0 to selection row
+    /// `-(viewport_offset)`. Each line is trimmed of trailing whitespace.
+    #[must_use]
+    #[allow(dead_code)] // Public API for clipboard (TREK-79).
+    pub fn extract_selection_text(&self, selection: &Selection, viewport_offset: u32) -> String {
+        let (start, end) = selection.normalized();
+        let cols = usize::from(self.cols);
+        let rows = usize::from(self.rows);
+        let mut lines: Vec<String> = Vec::new();
+
+        for vis_row in 0..rows {
+            #[allow(clippy::cast_possible_wrap)]
+            let sel_row = vis_row as i64 - i64::from(viewport_offset);
+            if sel_row < start.row || sel_row > end.row {
+                continue;
+            }
+
+            let row_start = vis_row * cols;
+            let mut line = String::with_capacity(cols);
+
+            for col in 0..cols {
+                #[allow(clippy::cast_possible_truncation)]
+                if !selection.contains(sel_row, col as u16) {
+                    continue;
+                }
+                let cell = &self.cells[row_start + col];
+                if cell.codepoint == 0 {
+                    line.push(' ');
+                } else {
+                    line.push(char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}'));
+                }
+            }
+
+            // Trim trailing whitespace from each line.
+            let trimmed_len = line.trim_end().len();
+            line.truncate(trimmed_len);
+            lines.push(line);
+        }
+
+        lines.join("\n")
+    }
 }
 
 /// Pack RGB bytes into the ABGR u32 format the shader expects.
@@ -474,7 +538,7 @@ mod tests {
     fn client_grid_default_bg_is_black() {
         let mut grid = ClientGrid::new(2, 2);
         grid.cursor_visible = false;
-        let colors = grid.bg_colors(grid.cursor_visible);
+        let colors = grid.bg_colors(grid.cursor_visible, None, 0);
         assert!(colors.iter().all(|&c| c == 0xFF_00_00_00));
     }
 
@@ -529,7 +593,7 @@ mod tests {
 
         grid.apply_update(&update);
 
-        let colors = grid.bg_colors(grid.cursor_visible);
+        let colors = grid.bg_colors(grid.cursor_visible, None, 0);
         assert_eq!(colors[0], pack_bg_color([255, 0, 0]), "first cell red bg");
         assert_eq!(colors[1], pack_bg_color([0, 0, 0]), "second cell black bg");
         assert_eq!(grid.cells[0].codepoint, u32::from(b'H'));
@@ -619,7 +683,7 @@ mod tests {
         grid.cursor_y = 0;
         grid.cursor_visible = true;
 
-        let colors = grid.bg_colors(grid.cursor_visible);
+        let colors = grid.bg_colors(grid.cursor_visible, None, 0);
         // Cursor cell bg should be the fg color (reverse video).
         assert_eq!(colors[1], pack_bg_color([255, 255, 255]));
         // Non-cursor cells stay black.
@@ -638,7 +702,7 @@ mod tests {
         grid.cursor_y = 0;
         grid.cursor_visible = false;
 
-        let colors = grid.bg_colors(grid.cursor_visible);
+        let colors = grid.bg_colors(grid.cursor_visible, None, 0);
         // Cursor hidden — bg stays black.
         assert_eq!(colors[1], pack_bg_color([0, 0, 0]));
     }
@@ -649,7 +713,7 @@ mod tests {
         grid.cursor_x = 99;
         grid.cursor_y = 99;
         grid.cursor_visible = true;
-        let colors = grid.bg_colors(grid.cursor_visible);
+        let colors = grid.bg_colors(grid.cursor_visible, None, 0);
         assert_eq!(colors.len(), 8);
     }
 

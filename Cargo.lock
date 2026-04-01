@@ -1888,6 +1888,7 @@ dependencies = [
  "oakterm-daemon",
  "oakterm-protocol",
  "oakterm-renderer",
+ "oakterm-terminal",
  "pollster",
  "tracing",
  "tracing-subscriber",
