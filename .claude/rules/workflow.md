@@ -34,7 +34,9 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
 **I4. TDD** — `/tdd` for core functions. Red-green-refactor with adversarial tests and clippy inline. The bigger the task, the more TDD matters — decompose into vertical slices (e.g., "binds socket" → "accepts connection" → "completes handshake"), not horizontal layers.
 
-**I5. Implement** — code until tests pass and clippy is clean.
+**I5. Implement** — code until tests pass and clippy is clean. Add structured logging (`tracing`) for error paths, state transitions, and operations that could fail silently. Don't log happy-path hot loops (VT parsing, rendering) — log initialization, config changes, connection events, and errors.
+
+**I5b. Benchmark** — if the feature touches a hot path (rendering, VT parsing, grid ops, scrollback, search), add or extend a criterion benchmark in the relevant `benches/` directory. Run `mise run bench` to verify. Skip for cold paths (config loading, CLI flags, one-time setup).
 
 **I6. Update Tracking** — trekker comment + status. Update docs if implementation diverged from spec.
 
