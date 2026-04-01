@@ -47,7 +47,9 @@ pub struct GlyphVertex {
     pub uv_origin: [f32; 2],
     pub fg_color: [f32; 4],
     pub bg_luminance: f32,
-    pub pad: [f32; 3],
+    /// 1.0 for color emoji (sampled from color atlas), 0.0 for mono text.
+    pub is_color: f32,
+    pub pad: [f32; 2],
 }
 
 impl RenderPipeline {
@@ -130,6 +132,17 @@ impl RenderPipeline {
                         binding: 2,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // Color atlas texture (Rgba8UnormSrgb for emoji).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
                         count: None,
                     },
                 ],
@@ -216,6 +229,12 @@ impl RenderPipeline {
                             offset: 40,
                             shader_location: 4,
                         },
+                        // is_color
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 44,
+                            shader_location: 5,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -265,6 +284,7 @@ impl RenderPipeline {
         glyph_instances: &[GlyphVertex],
         atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
+        color_atlas_view: &wgpu::TextureView,
         clear_color: wgpu::Color,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -354,6 +374,10 @@ impl RenderPipeline {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::Sampler(atlas_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(color_atlas_view),
                     },
                 ],
             });

@@ -69,6 +69,25 @@ fn create_test_atlas(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView
     (texture, view, sampler)
 }
 
+fn create_test_color_atlas(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_color_atlas"),
+        size: wgpu::Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 #[allow(clippy::cast_precision_loss)] // cols/rows are small test values
 fn bg_uniforms(cols: u32, rows: u32, cell_w: f32, cell_h: f32) -> BgUniforms {
     BgUniforms {
@@ -195,6 +214,7 @@ fn render_empty_grid() {
     let target = create_render_target(&device, 1, 1);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (_atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
+    let (_color_atlas_tex, color_atlas_view) = create_test_color_atlas(&device);
 
     let uniforms = bg_uniforms(0, 0, 8.0, 16.0);
     let text = text_uniforms(8.0, 16.0, 0.0, 0.0);
@@ -209,6 +229,7 @@ fn render_empty_grid() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        &color_atlas_view,
         wgpu::Color::BLACK,
     );
 }
@@ -225,6 +246,7 @@ fn render_partial_zero_grid() {
     let target = create_render_target(&device, 1, 1);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (_atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
+    let (_color_atlas_tex, color_atlas_view) = create_test_color_atlas(&device);
 
     // cols > 0 but rows = 0 — cell_count is still 0.
     let uniforms = bg_uniforms(5, 0, 8.0, 16.0);
@@ -240,6 +262,7 @@ fn render_partial_zero_grid() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        &color_atlas_view,
         wgpu::Color::BLACK,
     );
 }
@@ -256,6 +279,7 @@ fn render_background_produces_correct_colors() {
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (_atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
+    let (_color_atlas_tex, color_atlas_view) = create_test_color_atlas(&device);
 
     // 2x2 grid: red, green, blue, white (ABGR packed).
     let bg_colors: Vec<u32> = vec![0xFF_00_00_FF, 0xFF_00_FF_00, 0xFF_FF_00_00, 0xFF_FF_FF_FF];
@@ -272,6 +296,7 @@ fn render_background_produces_correct_colors() {
         &[],
         &atlas_view,
         &atlas_sampler,
+        &color_atlas_view,
         wgpu::Color::BLACK,
     );
 
@@ -306,6 +331,7 @@ fn render_single_glyph() {
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (_atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
+    let (_color_atlas_tex, color_atlas_view) = create_test_color_atlas(&device);
 
     let bg_colors: Vec<u32> = vec![0xFF_00_00_00; 4];
     let uniforms = bg_uniforms(2, 2, 80.0, 24.0);
@@ -317,7 +343,8 @@ fn render_single_glyph() {
         uv_origin: [0.0, 0.0],
         fg_color: [1.0, 1.0, 1.0, 1.0],
         bg_luminance: 0.0,
-        pad: [0.0; 3],
+        is_color: 0.0,
+        pad: [0.0; 2],
     }];
 
     pipeline.render(
@@ -330,6 +357,7 @@ fn render_single_glyph() {
         &glyphs,
         &atlas_view,
         &atlas_sampler,
+        &color_atlas_view,
         wgpu::Color::BLACK,
     );
 }
@@ -346,6 +374,7 @@ fn render_text_produces_visible_pixels() {
     let target = create_render_target(&device, 160, 48);
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let (atlas_tex, atlas_view, atlas_sampler) = create_test_atlas(&device);
+    let (_color_atlas_tex, color_atlas_view) = create_test_color_atlas(&device);
 
     // Write opaque white block to the atlas so glyphs produce visible output.
     let atlas_data = vec![0xFF_u8; 8 * 14];
@@ -380,7 +409,8 @@ fn render_text_produces_visible_pixels() {
             uv_origin: [0.0, 0.0],
             fg_color: [1.0, 1.0, 1.0, 1.0],
             bg_luminance: 0.0,
-            pad: [0.0; 3],
+            is_color: 0.0,
+            pad: [0.0; 2],
         },
         GlyphVertex {
             pos: [18.0, 4.0],
@@ -388,7 +418,8 @@ fn render_text_produces_visible_pixels() {
             uv_origin: [0.0, 0.0],
             fg_color: [0.0, 1.0, 0.0, 1.0],
             bg_luminance: 0.0,
-            pad: [0.0; 3],
+            is_color: 0.0,
+            pad: [0.0; 2],
         },
     ];
 
@@ -402,6 +433,7 @@ fn render_text_produces_visible_pixels() {
         &glyphs,
         &atlas_view,
         &atlas_sampler,
+        &color_atlas_view,
         wgpu::Color::BLACK,
     );
 

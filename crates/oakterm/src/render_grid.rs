@@ -1,9 +1,11 @@
 //! Convert client-side grid state to GPU render data.
 
 use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
+use std::collections::HashSet;
+
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::GlyphVertex;
-use oakterm_renderer::shaper::{FontKey, FontMetrics, TextRun, TextShaper};
+use oakterm_renderer::shaper::{FontKey, FontMetrics, PixelFormat, TextRun, TextShaper};
 use oakterm_terminal::grid::selection::Selection;
 
 /// sRGB to linear (IEC 61966-2-1). Matches the shader's `srgb_to_linear`.
@@ -12,6 +14,15 @@ fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Map wire-encoded cursor style to shape: 0 = block, 1 = underline, 2 = bar.
+fn cursor_shape_from_wire(wire: u8) -> u8 {
+    match wire {
+        2 | 3 => 1,
+        4 | 5 => 2,
+        _ => 0,
     }
 }
 
@@ -259,10 +270,10 @@ impl ClientGrid {
     }
 
     /// Build the packed ABGR background color array for the GPU pipeline.
-    /// Cursor cell uses reverse video (fg as bg) for all shapes.
+    ///
+    /// Block cursors use reverse video (fg as bg). Underline and bar cursors
+    /// leave the background unchanged and render as sub-cell glyph quads.
     /// `cursor_visible`: effective visibility (accounts for blink phase).
-    // TODO: underline/bar should render as partial-cell quads once the
-    // GPU pipeline supports sub-cell geometry.
     #[must_use]
     pub fn bg_colors(
         &self,
@@ -271,6 +282,7 @@ impl ClientGrid {
         viewport_offset: u32,
     ) -> Vec<u32> {
         let cursor_idx = self.cursor_cell_index(cursor_visible);
+        let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
         let cols = usize::from(self.cols);
 
         self.cells
@@ -284,7 +296,8 @@ impl ClientGrid {
                 #[allow(clippy::cast_possible_truncation)]
                 let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
 
-                if Some(i) == cursor_idx || selected {
+                let block_cursor = is_block && Some(i) == cursor_idx;
+                if block_cursor || selected {
                     pack_bg_color(c.fg)
                 } else {
                     pack_bg_color(c.bg)
@@ -294,7 +307,13 @@ impl ClientGrid {
     }
 
     /// Build glyph instances and any new bitmap uploads needed.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)] // col/row indices fit in f32
+    ///
+    /// Returns `(instances, mono_uploads, color_uploads)`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )] // col/row indices fit in f32
     pub fn glyph_instances(
         &self,
         metrics: &FontMetrics,
@@ -302,12 +321,15 @@ impl ClientGrid {
         font_size: f32,
         shaper: &impl TextShaper,
         atlas: &mut AtlasPlane,
+        color_atlas: &mut AtlasPlane,
+        color_keys: &mut HashSet<GlyphCacheKey>,
         cursor_visible: bool,
         selection: Option<&Selection>,
         viewport_offset: u32,
-    ) -> (Vec<GlyphVertex>, Vec<GlyphUpload>) {
+    ) -> (Vec<GlyphVertex>, Vec<GlyphUpload>, Vec<GlyphUpload>) {
         let mut glyphs = Vec::new();
         let mut uploads = Vec::new();
+        let mut color_uploads = Vec::new();
         let mut dropped = 0u32;
 
         let cursor_idx = self.cursor_cell_index(cursor_visible);
@@ -342,40 +364,97 @@ impl ClientGrid {
                     size_tenths: (font_size * 10.0) as u32,
                 };
 
-                let region = if let Some(r) = atlas.get(&cache_key) {
-                    r
+                // Check if this glyph is already known to be color.
+                let is_color_cached = color_keys.contains(&cache_key);
+
+                let (region, is_color) = if is_color_cached {
+                    if let Some(r) = color_atlas.get(&cache_key) {
+                        (r, true)
+                    } else {
+                        // Evicted from color atlas; re-rasterize.
+                        let bitmap = shaper.rasterize(font_key, glyph.glyph_id, font_size);
+                        if bitmap.width == 0 || bitmap.height == 0 {
+                            continue;
+                        }
+                        let Some(r) = color_atlas.insert(
+                            cache_key,
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap.placement,
+                        ) else {
+                            dropped += 1;
+                            continue;
+                        };
+                        color_uploads.push(GlyphUpload {
+                            x: r.x,
+                            y: r.y,
+                            width: bitmap.width,
+                            height: bitmap.height,
+                            data: bitmap.data,
+                        });
+                        (r, true)
+                    }
+                } else if let Some(r) = atlas.get(&cache_key) {
+                    (r, false)
                 } else {
+                    // Not in either atlas — rasterize and route by format.
                     let bitmap = shaper.rasterize(font_key, glyph.glyph_id, font_size);
                     if bitmap.width == 0 || bitmap.height == 0 {
                         continue;
                     }
-                    let Some(r) =
-                        atlas.insert(cache_key, bitmap.width, bitmap.height, bitmap.placement)
-                    else {
-                        dropped += 1;
-                        continue;
-                    };
-                    uploads.push(GlyphUpload {
-                        x: r.x,
-                        y: r.y,
-                        width: bitmap.width,
-                        height: bitmap.height,
-                        data: bitmap.data,
-                    });
-                    r
+                    if bitmap.format == PixelFormat::Rgba32 {
+                        let Some(r) = color_atlas.insert(
+                            cache_key,
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap.placement,
+                        ) else {
+                            dropped += 1;
+                            continue;
+                        };
+                        color_keys.insert(cache_key);
+                        color_uploads.push(GlyphUpload {
+                            x: r.x,
+                            y: r.y,
+                            width: bitmap.width,
+                            height: bitmap.height,
+                            data: bitmap.data,
+                        });
+                        (r, true)
+                    } else {
+                        let Some(r) =
+                            atlas.insert(cache_key, bitmap.width, bitmap.height, bitmap.placement)
+                        else {
+                            dropped += 1;
+                            continue;
+                        };
+                        uploads.push(GlyphUpload {
+                            x: r.x,
+                            y: r.y,
+                            width: bitmap.width,
+                            height: bitmap.height,
+                            data: bitmap.data,
+                        });
+                        (r, false)
+                    }
                 };
 
-                atlas.mark_in_use(&cache_key);
+                if is_color {
+                    color_atlas.mark_in_use(&cache_key);
+                } else {
+                    atlas.mark_in_use(&cache_key);
+                }
 
                 let x = col as f32 * metrics.cell_width;
                 let y = row as f32 * metrics.cell_height;
 
                 let is_cursor = Some(idx) == cursor_idx;
+                let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
                 #[allow(clippy::cast_possible_wrap)]
                 let sel_row = row as i64 - i64::from(viewport_offset);
                 #[allow(clippy::cast_possible_truncation)]
                 let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
-                let (fg_rgb, bg_rgb) = if is_cursor || selected {
+                let (fg_rgb, bg_rgb) = if (is_cursor && is_block) || selected {
                     (cell.bg, cell.fg)
                 } else {
                     (cell.fg, cell.bg)
@@ -406,18 +485,65 @@ impl ClientGrid {
                     uv_origin: [region.x as f32, region.y as f32],
                     fg_color: fg,
                     bg_luminance: bg_lum,
-                    pad: [0.0; 3],
+                    is_color: if is_color { 1.0 } else { 0.0 },
+                    pad: [0.0; 2],
+                });
+            }
+        }
+
+        // Emit a sub-cell cursor quad for underline or bar styles.
+        let cursor_shape = cursor_shape_from_wire(self.cursor_style);
+        if cursor_shape != 0 {
+            if let Some(_cursor_idx) = cursor_idx {
+                let cx = f32::from(self.cursor_x) * metrics.cell_width;
+                let cy = f32::from(self.cursor_y) * metrics.cell_height;
+
+                // Use the cell's fg color for the cursor line.
+                let cell_idx = usize::from(self.cursor_y) * usize::from(self.cols)
+                    + usize::from(self.cursor_x);
+                let cursor_fg = if cell_idx < self.cells.len() {
+                    self.cells[cell_idx].fg
+                } else {
+                    [255, 255, 255]
+                };
+                let fg = [
+                    f32::from(cursor_fg[0]) / 255.0,
+                    f32::from(cursor_fg[1]) / 255.0,
+                    f32::from(cursor_fg[2]) / 255.0,
+                    1.0,
+                ];
+
+                let (pos, size) = if cursor_shape == 1 {
+                    // Underline: thin line at cell bottom.
+                    (
+                        [cx, cy + metrics.cell_height - 2.0],
+                        [metrics.cell_width, 2.0],
+                    )
+                } else {
+                    // Bar: thin line at cell left edge.
+                    ([cx, cy], [2.0, metrics.cell_height])
+                };
+
+                glyphs.push(GlyphVertex {
+                    pos,
+                    size,
+                    uv_origin: [0.0, 0.0],
+                    fg_color: fg,
+                    bg_luminance: -1.0, // sentinel: shader skips atlas sampling
+                    is_color: 0.0,
+                    pad: [0.0; 2],
                 });
             }
         }
 
         atlas.clear_in_use();
+        color_atlas.clear_in_use();
 
         if dropped > 0 {
             tracing::warn!(dropped, "atlas full: glyphs could not be allocated");
         }
 
-        (glyphs, uploads)
+        (glyphs, uploads, color_uploads)
     }
 
     /// Extract text from a single visible row. Null codepoints become spaces;

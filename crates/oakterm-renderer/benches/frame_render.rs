@@ -136,7 +136,8 @@ fn build_glyph_vertices(c: &mut Criterion) {
                         uv_origin: [0.0, 0.0],
                         fg_color: [1.0, 1.0, 1.0, 1.0],
                         bg_luminance: 0.0,
-                        pad: [0.0; 3],
+                        is_color: 0.0,
+                        pad: [0.0; 2],
                     }
                 })
                 .collect();

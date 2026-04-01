@@ -117,6 +117,8 @@ struct GpuState {
     atlas_texture: wgpu::Texture,
     atlas_view: wgpu::TextureView,
     atlas_sampler: wgpu::Sampler,
+    color_atlas_texture: wgpu::Texture,
+    color_atlas_view: wgpu::TextureView,
 }
 
 /// Font and glyph state for text rendering.
@@ -124,6 +126,9 @@ struct FontState {
     shaper: SwashShaper,
     font_key: FontKey,
     atlas: AtlasPlane,
+    color_atlas: AtlasPlane,
+    /// Cache keys of glyphs stored in the color atlas.
+    color_keys: std::collections::HashSet<oakterm_renderer::atlas::GlyphCacheKey>,
     font_size: f32,
     metrics: oakterm_renderer::shaper::FontMetrics,
 }
@@ -1023,12 +1028,14 @@ impl ApplicationHandler<UserEvent> for App {
 
                     let bg =
                         grid.bg_colors(cursor_vis, self.selection.as_ref(), self.viewport_offset);
-                    let (glyphs, uploads) = grid.glyph_instances(
+                    let (glyphs, uploads, color_uploads) = grid.glyph_instances(
                         &font.metrics,
                         font.font_key,
                         font.font_size,
                         &font.shaper,
                         &mut font.atlas,
+                        &mut font.color_atlas,
+                        &mut font.color_keys,
                         cursor_vis,
                         self.selection.as_ref(),
                         self.viewport_offset,
@@ -1041,6 +1048,14 @@ impl ApplicationHandler<UserEvent> for App {
                         &mut gpu.atlas_view,
                         &font.atlas,
                         &uploads,
+                    );
+                    upload_color_glyphs_to_atlas(
+                        &gpu.device,
+                        &gpu.queue,
+                        &mut gpu.color_atlas_texture,
+                        &mut gpu.color_atlas_view,
+                        &font.color_atlas,
+                        &color_uploads,
                     );
 
                     (bg, glyphs)
@@ -1099,6 +1114,7 @@ impl ApplicationHandler<UserEvent> for App {
                     &glyph_instances,
                     &gpu.atlas_view,
                     &gpu.atlas_sampler,
+                    &gpu.color_atlas_view,
                     clear_color,
                 );
 
@@ -1935,6 +1951,8 @@ fn try_init_font(
         shaper,
         font_key,
         atlas: AtlasPlane::new(),
+        color_atlas: AtlasPlane::new(),
+        color_keys: std::collections::HashSet::new(),
         font_size,
         metrics,
     })
@@ -2044,6 +2062,64 @@ fn upload_glyphs_to_atlas(
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(upload.width),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: upload.width,
+                height: upload.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
+/// Upload new color glyph bitmaps to the GPU color atlas texture.
+fn upload_color_glyphs_to_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    color_atlas_texture: &mut wgpu::Texture,
+    color_atlas_view: &mut wgpu::TextureView,
+    color_atlas: &AtlasPlane,
+    uploads: &[render_grid::GlyphUpload],
+) {
+    let (atlas_w, atlas_h) = color_atlas.size();
+    let tex_size = color_atlas_texture.size();
+
+    if tex_size.width != atlas_w || tex_size.height != atlas_h {
+        *color_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("color_glyph_atlas"),
+            size: wgpu::Extent3d {
+                width: atlas_w,
+                height: atlas_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        *color_atlas_view =
+            color_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    }
+
+    for upload in uploads {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: color_atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: upload.x,
+                    y: upload.y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &upload.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(upload.width * 4),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
@@ -2373,6 +2449,29 @@ fn create_atlas_texture(
     (texture, view, sampler)
 }
 
+fn create_color_atlas_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("color_glyph_atlas"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance
@@ -2420,6 +2519,8 @@ async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, S
     let (atlas_w, atlas_h) = AtlasPlane::new().size();
     let (atlas_texture, atlas_view, atlas_sampler) =
         create_atlas_texture(&device, atlas_w, atlas_h);
+    let (color_atlas_texture, color_atlas_view) =
+        create_color_atlas_texture(&device, atlas_w, atlas_h);
 
     Ok(GpuState {
         surface,
@@ -2430,6 +2531,8 @@ async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, S
         atlas_texture,
         atlas_view,
         atlas_sampler,
+        color_atlas_texture,
+        color_atlas_view,
     })
 }
 

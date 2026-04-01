@@ -123,6 +123,8 @@ struct GlyphInstance {{
     @location(3) fg_color: vec4f,
     // Background luminance (linear, for text gamma adjustment).
     @location(4) bg_luminance: f32,
+    // 1.0 for color emoji, 0.0 for mono text.
+    @location(5) is_color: f32,
 }}
 
 struct VertexOutput {{
@@ -130,11 +132,13 @@ struct VertexOutput {{
     @location(0) uv: vec2f,
     @location(1) fg_color: vec4f,
     @location(2) bg_luminance: f32,
+    @location(3) is_color: f32,
 }}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
+@group(0) @binding(3) var color_atlas_texture: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput {{
@@ -152,14 +156,25 @@ fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput
     out.uv = vec2f(uv_x / u.atlas_width, uv_y / u.atlas_height);
     out.fg_color = glyph.fg_color;
     out.bg_luminance = glyph.bg_luminance;
+    out.is_color = glyph.is_color;
     return out;
 }}
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
-    let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
-
+    // Solid-color quad (cursor underline/bar): skip atlas sampling.
     let fg_linear = srgb_to_linear3(in.fg_color.rgb);
+    if in.bg_luminance < -0.5 {{
+        return vec4f(fg_linear, in.fg_color.a);
+    }}
+
+    // Color emoji: sample from the Rgba8UnormSrgb color atlas.
+    // The GPU auto-converts sRGB->linear on read, so values are linear-space.
+    if in.is_color > 0.5 {{
+        return textureSample(color_atlas_texture, atlas_sampler, in.uv);
+    }}
+
+    let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
     let fg_lum = luminance(fg_linear);
     let contrast_diff = abs(fg_lum - in.bg_luminance);
 

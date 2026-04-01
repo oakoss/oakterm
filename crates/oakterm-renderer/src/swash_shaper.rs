@@ -13,6 +13,7 @@ use crate::shaper::{
 };
 use std::collections::HashMap;
 use swash::FontRef;
+use swash::scale::image::Content;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
 use swash::zeno::Format;
 
@@ -148,20 +149,26 @@ impl TextShaper for SwashShaper {
         let mut scaler = context.builder(font_ref).size(size).hint(true).build();
 
         let image = Render::new(&[
-            Source::ColorOutline(0),
             Source::ColorBitmap(StrikeWith::BestFit),
+            Source::ColorOutline(0),
             Source::Outline,
         ])
         .format(Format::Alpha)
         .render(&mut scaler, glyph_id as u16);
 
         if let Some(img) = image {
-            let bpp = 1; // Alpha8
+            let is_color = img.content == Content::Color;
+            let bpp: usize = if is_color { 4 } else { 1 };
             debug_assert_eq!(
                 img.data.len(),
                 (img.placement.width * img.placement.height) as usize * bpp,
                 "rasterized bitmap data length mismatch"
             );
+            let format = if is_color {
+                PixelFormat::Rgba32
+            } else {
+                PixelFormat::Alpha8
+            };
             GlyphBitmap {
                 width: img.placement.width,
                 height: img.placement.height,
@@ -169,7 +176,7 @@ impl TextShaper for SwashShaper {
                     top: img.placement.top,
                     left: img.placement.left,
                 },
-                format: PixelFormat::Alpha8,
+                format,
                 data: img.data,
             }
         } else {
