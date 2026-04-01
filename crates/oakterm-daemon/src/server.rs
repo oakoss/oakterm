@@ -14,7 +14,7 @@ use oakterm_protocol::message::{
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::cell::{Color, Rgb};
-use oakterm_terminal::grid::row::SemanticMark;
+use oakterm_terminal::grid::row::{MarkMetadata, SemanticMark};
 use oakterm_terminal::grid::{ScreenId, ScreenSet};
 use oakterm_terminal::handler;
 use std::io;
@@ -1220,11 +1220,15 @@ fn row_to_wire(
             }
         })
         .collect();
+    let mark_metadata = row
+        .mark_metadata
+        .as_ref()
+        .map_or_else(Vec::new, MarkMetadata::to_wire_bytes);
     DirtyRow {
         row_index,
         cells,
-        semantic_mark: 0,
-        mark_metadata: vec![],
+        semantic_mark: row.semantic_mark.to_wire(),
+        mark_metadata,
     }
 }
 

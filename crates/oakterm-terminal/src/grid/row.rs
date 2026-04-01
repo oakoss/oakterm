@@ -14,11 +14,44 @@ pub enum SemanticMark {
     OutputEnd,
 }
 
+impl SemanticMark {
+    /// Encode this mark as a wire byte.
+    #[must_use]
+    pub const fn to_wire(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::PromptStart => 1,
+            Self::InputStart => 2,
+            Self::OutputStart => 3,
+            Self::OutputEnd => 4,
+        }
+    }
+}
+
 /// Metadata attached to a semantic mark.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MarkMetadata {
     ExitCode(i32),
     WorkingDirectory(String),
+}
+
+impl MarkMetadata {
+    /// Encode this metadata as wire bytes (tag byte + payload).
+    #[must_use]
+    pub fn to_wire_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::ExitCode(code) => {
+                let mut buf = vec![0u8]; // tag 0 = exit code
+                buf.extend_from_slice(&code.to_le_bytes());
+                buf
+            }
+            Self::WorkingDirectory(dir) => {
+                let mut buf = vec![1u8]; // tag 1 = working directory
+                buf.extend_from_slice(dir.as_bytes());
+                buf
+            }
+        }
+    }
 }
 
 /// Optimization hint flags for a row. Set on mutation, never cleared
