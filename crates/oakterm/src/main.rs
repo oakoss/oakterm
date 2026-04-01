@@ -30,12 +30,48 @@ use oakterm_renderer::swash_shaper::SwashShaper;
 
 use render_grid::ClientGrid;
 
-// AccessKit no-op handlers per Spec-0006 lazy activation.
+// AccessKit handlers per Spec-0006.
 
-struct NoOpActivationHandler;
-impl accesskit::ActivationHandler for NoOpActivationHandler {
+/// Snapshot of state needed to build the accessibility tree.
+/// Shared between App and the activation handler via `Arc<Mutex<>>`.
+struct A11ySnapshot {
+    rows: u16,
+    cols: u16,
+    row_texts: Vec<String>,
+    cursor_row: u16,
+    cursor_col: u16,
+    title: String,
+    scrollback_lines: u64,
+    cell_width: f64,
+    cell_height: f64,
+}
+
+struct TerminalActivationHandler {
+    state: Arc<Mutex<Option<A11ySnapshot>>>,
+}
+
+impl accesskit::ActivationHandler for TerminalActivationHandler {
     fn request_initial_tree(&mut self) -> Option<accesskit::TreeUpdate> {
-        None
+        let guard = match self.state.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("a11y: mutex poisoned in activation handler: {e}");
+                return None;
+            }
+        };
+        let snap = guard.as_ref()?;
+        let input = oakterm_a11y::TreeInput {
+            rows: snap.rows,
+            cols: snap.cols,
+            row_texts: &snap.row_texts,
+            cursor_row: snap.cursor_row,
+            cursor_col: snap.cursor_col,
+            title: &snap.title,
+            scrollback_lines: snap.scrollback_lines,
+            cell_width: snap.cell_width,
+            cell_height: snap.cell_height,
+        };
+        Some(oakterm_a11y::build_initial_tree(&input))
     }
 }
 
@@ -155,6 +191,8 @@ struct App {
     blink_deadline: Option<std::time::Instant>,
     /// Whether the window currently has focus.
     focused: bool,
+    /// Shared state for the AccessKit activation handler.
+    a11y_state: Arc<Mutex<Option<A11ySnapshot>>>,
 }
 
 impl App {
@@ -182,6 +220,7 @@ impl App {
             blink_visible: true,
             blink_deadline: None,
             focused: true,
+            a11y_state: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -293,7 +332,9 @@ impl ApplicationHandler<UserEvent> for App {
         let accesskit = accesskit_winit::Adapter::with_direct_handlers(
             event_loop,
             &window,
-            NoOpActivationHandler,
+            TerminalActivationHandler {
+                state: self.a11y_state.clone(),
+            },
             NoOpActionHandler,
             NoOpDeactivationHandler,
         );
@@ -331,6 +372,24 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
                 return;
             }
+        }
+
+        // Populate the a11y snapshot so the activation handler can build a tree.
+        match self.a11y_state.lock() {
+            Ok(mut snap) => {
+                *snap = Some(A11ySnapshot {
+                    rows: grid.rows,
+                    cols: grid.cols,
+                    row_texts: grid.row_texts(),
+                    cursor_row: grid.cursor_y,
+                    cursor_col: grid.cursor_x,
+                    title: String::new(),
+                    scrollback_lines: 0,
+                    cell_width: f64::from(font_state.metrics.cell_width),
+                    cell_height: f64::from(font_state.metrics.cell_height),
+                });
+            }
+            Err(e) => eprintln!("a11y: mutex poisoned during init: {e}"),
         }
 
         self.window = Some(window);
@@ -729,9 +788,23 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::RenderUpdate(update) => {
                 if let Some(grid) = &mut self.grid {
                     if grid.is_scrolled() {
+                        // A11y snapshot not updated during scrollback (TREK-62 scope).
                         grid.apply_update_while_scrolled(&update);
                     } else {
                         grid.apply_update(&update);
+                        // Keep the a11y snapshot current for AT activation.
+                        match self.a11y_state.lock() {
+                            Ok(mut snap) => {
+                                if let Some(s) = snap.as_mut() {
+                                    s.rows = grid.rows;
+                                    s.cols = grid.cols;
+                                    s.row_texts = grid.row_texts();
+                                    s.cursor_row = grid.cursor_y;
+                                    s.cursor_col = grid.cursor_x;
+                                }
+                            }
+                            Err(e) => eprintln!("a11y: mutex poisoned: {e}"),
+                        }
                         // Restart blink — cursor style may have changed.
                         if self.blink_deadline.is_none() && self.should_blink() {
                             self.reset_blink();
@@ -789,6 +862,11 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(w) = &self.window {
                     let display = if title.is_empty() { "oakterm" } else { &title };
                     w.set_title(display);
+                }
+                if let Ok(mut snap) = self.a11y_state.lock() {
+                    if let Some(s) = snap.as_mut() {
+                        s.title = title;
+                    }
                 }
             }
             UserEvent::Bell => {

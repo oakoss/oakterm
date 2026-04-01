@@ -1874,6 +1874,7 @@ dependencies = [
  "accesskit_winit",
  "notify",
  "notify-debouncer-full",
+ "oakterm-a11y",
  "oakterm-config",
  "oakterm-daemon",
  "oakterm-protocol",
@@ -1888,6 +1889,9 @@ dependencies = [
 [[package]]
 name = "oakterm-a11y"
 version = "0.1.0"
+dependencies = [
+ "accesskit",
+]
 
 [[package]]
 name = "oakterm-common"

@@ -385,6 +385,35 @@ impl ClientGrid {
 
         (glyphs, uploads)
     }
+
+    /// Extract text from a single visible row. Null codepoints become spaces;
+    /// invalid codepoints become U+FFFD. Trailing spaces are trimmed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row >= self.rows`.
+    #[must_use]
+    pub fn row_text(&self, row: u16) -> String {
+        let start = usize::from(row) * usize::from(self.cols);
+        let end = start + usize::from(self.cols);
+        let mut s = String::with_capacity(usize::from(self.cols));
+        for cell in &self.cells[start..end] {
+            if cell.codepoint == 0 {
+                s.push(' ');
+            } else {
+                s.push(char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}'));
+            }
+        }
+        let trimmed = s.trim_end_matches(' ').len();
+        s.truncate(trimmed);
+        s
+    }
+
+    /// Extract text from all visible rows.
+    #[must_use]
+    pub fn row_texts(&self) -> Vec<String> {
+        (0..self.rows).map(|r| self.row_text(r)).collect()
+    }
 }
 
 /// Pack RGB bytes into the ABGR u32 format the shader expects.
@@ -815,5 +844,31 @@ mod tests {
             u32::from(b'O'),
             "double enter should not overwrite original snapshot"
         );
+    }
+
+    #[test]
+    fn row_text_with_content() {
+        let mut grid = ClientGrid::new(10, 1);
+        for (i, ch) in "hello".chars().enumerate() {
+            grid.cells[i].codepoint = ch as u32;
+        }
+        assert_eq!(grid.row_text(0), "hello");
+    }
+
+    #[test]
+    fn row_text_empty_row() {
+        let grid = ClientGrid::new(10, 1);
+        assert_eq!(grid.row_text(0), "");
+    }
+
+    #[test]
+    fn row_texts_all_rows() {
+        let mut grid = ClientGrid::new(5, 2);
+        grid.cells[0].codepoint = u32::from(b'A');
+        grid.cells[5].codepoint = u32::from(b'B');
+        let texts = grid.row_texts();
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], "A");
+        assert_eq!(texts[1], "B");
     }
 }

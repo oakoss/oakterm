@@ -12,6 +12,7 @@ winit = { workspace = true }
 wgpu = { workspace = true }
 accesskit = { workspace = true }
 accesskit_winit = { workspace = true }
+oakterm-a11y = { path = "../oakterm-a11y" }
 oakterm-renderer = { path = "../oakterm-renderer" }
 oakterm-protocol = { path = "../oakterm-protocol" }
 oakterm-config = { path = "../oakterm-config" }
