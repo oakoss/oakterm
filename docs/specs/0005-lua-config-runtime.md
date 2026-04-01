@@ -1,7 +1,7 @@
 ---
 spec: '0005'
 title: Lua Config Runtime
-status: implementing
+status: complete
 date: 2026-03-27
 adrs: ['0005']
 tags: [config, core]
