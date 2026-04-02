@@ -114,6 +114,8 @@ fn build_uniforms(c: &mut Criterion) {
                 atlas_width: 256.0,
                 atlas_height: 256.0,
                 text_gamma: 1.7,
+                color_atlas_width: 256.0,
+                color_atlas_height: 256.0,
                 pad: 0.0,
             };
             std::hint::black_box((bg, text));

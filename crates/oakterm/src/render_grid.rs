@@ -524,12 +524,14 @@ impl ClientGrid {
                     ([cx, cy], [2.0, metrics.cell_height])
                 };
 
+                // UV is unused — the bg_luminance sentinel causes the shader
+                // to output solid fg_color before sampling the atlas.
                 glyphs.push(GlyphVertex {
                     pos,
                     size,
                     uv_origin: [0.0, 0.0],
                     fg_color: fg,
-                    bg_luminance: -1.0, // sentinel: shader skips atlas sampling
+                    bg_luminance: -1.0,
                     is_color: 0.0,
                     pad: [0.0; 2],
                 });

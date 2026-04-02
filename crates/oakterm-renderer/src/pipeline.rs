@@ -35,6 +35,8 @@ pub struct TextUniforms {
     pub atlas_width: f32,
     pub atlas_height: f32,
     pub text_gamma: f32,
+    pub color_atlas_width: f32,
+    pub color_atlas_height: f32,
     pub pad: f32,
 }
 

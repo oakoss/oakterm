@@ -109,6 +109,8 @@ struct Uniforms {{
     atlas_width: f32,
     atlas_height: f32,
     text_gamma: f32,
+    color_atlas_width: f32,
+    color_atlas_height: f32,
     _pad: f32,
 }}
 
@@ -153,7 +155,10 @@ fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput
 
     var out: VertexOutput;
     out.position = vec4f(ndc_x, ndc_y, 0.0, 1.0);
-    out.uv = vec2f(uv_x / u.atlas_width, uv_y / u.atlas_height);
+    // Normalize UV against the correct atlas dimensions.
+    let aw = select(u.atlas_width, u.color_atlas_width, glyph.is_color > 0.5);
+    let ah = select(u.atlas_height, u.color_atlas_height, glyph.is_color > 0.5);
+    out.uv = vec2f(uv_x / aw, uv_y / ah);
     out.fg_color = glyph.fg_color;
     out.bg_luminance = glyph.bg_luminance;
     out.is_color = glyph.is_color;

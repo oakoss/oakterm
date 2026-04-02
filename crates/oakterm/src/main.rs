@@ -1091,6 +1091,14 @@ impl ApplicationHandler<UserEvent> for App {
                     atlas_height: atlas_h as f32,
                     #[allow(clippy::cast_possible_truncation)] // gamma is small (0-5)
                     text_gamma: self.config.text_gamma as f32,
+                    color_atlas_width: self
+                        .font
+                        .as_ref()
+                        .map_or(256.0, |f| f.color_atlas.size().0 as f32),
+                    color_atlas_height: self
+                        .font
+                        .as_ref()
+                        .map_or(256.0, |f| f.color_atlas.size().1 as f32),
                     pad: 0.0,
                 };
 
@@ -2029,20 +2037,40 @@ fn upload_glyphs_to_atlas(
     let tex_size = atlas_texture.size();
 
     if tex_size.width != atlas_w || tex_size.height != atlas_h {
-        *atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph_atlas"),
-            size: wgpu::Extent3d {
-                width: atlas_w,
-                height: atlas_h,
+        let old_texture = std::mem::replace(
+            atlas_texture,
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("glyph_atlas"),
+                size: wgpu::Extent3d {
+                    width: atlas_w,
+                    height: atlas_h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+        );
+        // Copy old content so cached glyphs aren't lost on resize.
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let copy_w = tex_size.width.min(atlas_w);
+        let copy_h = tex_size.height.min(atlas_h);
+        encoder.copy_texture_to_texture(
+            old_texture.as_image_copy(),
+            atlas_texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: copy_w,
+                height: copy_h,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        );
+        queue.submit(std::iter::once(encoder.finish()));
         *atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
     }
 
@@ -2086,20 +2114,39 @@ fn upload_color_glyphs_to_atlas(
     let tex_size = color_atlas_texture.size();
 
     if tex_size.width != atlas_w || tex_size.height != atlas_h {
-        *color_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("color_glyph_atlas"),
-            size: wgpu::Extent3d {
-                width: atlas_w,
-                height: atlas_h,
+        let old_texture = std::mem::replace(
+            color_atlas_texture,
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("color_glyph_atlas"),
+                size: wgpu::Extent3d {
+                    width: atlas_w,
+                    height: atlas_h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+        );
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let copy_w = tex_size.width.min(atlas_w);
+        let copy_h = tex_size.height.min(atlas_h);
+        encoder.copy_texture_to_texture(
+            old_texture.as_image_copy(),
+            color_atlas_texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: copy_w,
+                height: copy_h,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        );
+        queue.submit(std::iter::once(encoder.finish()));
         *color_atlas_view =
             color_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
     }
@@ -2437,7 +2484,9 @@ fn create_atlas_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::R8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2465,7 +2514,9 @@ fn create_color_atlas_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

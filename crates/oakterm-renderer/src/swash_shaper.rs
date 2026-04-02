@@ -153,6 +153,8 @@ impl TextShaper for SwashShaper {
             Source::ColorOutline(0),
             Source::Outline,
         ])
+        // Format::Alpha applies to Outline sources only; ColorBitmap/ColorOutline
+        // always produce RGBA regardless of this hint. We detect via Content::Color.
         .format(Format::Alpha)
         .render(&mut scaler, glyph_id as u16);
 

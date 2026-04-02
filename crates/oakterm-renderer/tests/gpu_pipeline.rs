@@ -110,6 +110,8 @@ fn text_uniforms(cell_w: f32, cell_h: f32, vp_w: f32, vp_h: f32) -> TextUniforms
         atlas_width: 16.0,
         atlas_height: 16.0,
         text_gamma: 1.7,
+        color_atlas_width: 16.0,
+        color_atlas_height: 16.0,
         pad: 0.0,
     }
 }
