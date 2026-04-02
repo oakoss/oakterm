@@ -7,7 +7,10 @@ use etagere::{AllocId, BucketedAtlasAllocator, Size};
 use std::collections::HashSet;
 
 /// Initial atlas texture size.
-const INITIAL_SIZE: u32 = 256;
+const INITIAL_SIZE: u32 = 512;
+
+/// Maximum atlas dimension (capped to avoid unbounded VRAM growth).
+const MAX_SIZE: u32 = 4096;
 
 /// A region allocated in the atlas texture.
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +127,11 @@ impl AtlasPlane {
         for (k, v) in skipped {
             self.lru.push(k, v);
         }
+
+        // Grow the atlas and retry.
+        if let Some(region) = self.grow_and_retry(key, width, height, placement) {
+            return Some(region);
+        }
         None
     }
 
@@ -163,6 +171,44 @@ impl AtlasPlane {
             self.width.try_into().unwrap_or(i32::MAX),
             self.height.try_into().unwrap_or(i32::MAX),
         ));
+    }
+
+    /// Double the atlas dimensions (up to `MAX_SIZE`) and retry allocation.
+    /// `etagere::grow()` preserves all existing allocations.
+    #[allow(clippy::cast_sign_loss)]
+    fn grow_and_retry(
+        &mut self,
+        key: GlyphCacheKey,
+        width: u32,
+        height: u32,
+        placement: crate::shaper::GlyphPlacement,
+    ) -> Option<AtlasRegion> {
+        loop {
+            let new_w = (self.width * 2).min(MAX_SIZE);
+            let new_h = (self.height * 2).min(MAX_SIZE);
+            if new_w == self.width && new_h == self.height {
+                return None; // Already at max size.
+            }
+            self.allocator.grow(Size::new(
+                new_w.try_into().unwrap_or(i32::MAX),
+                new_h.try_into().unwrap_or(i32::MAX),
+            ));
+            self.width = new_w;
+            self.height = new_h;
+
+            if let Some(region) = self.try_allocate(width, height) {
+                let atlas_region = AtlasRegion {
+                    x: region.rectangle.min.x as u32,
+                    y: region.rectangle.min.y as u32,
+                    width,
+                    height,
+                    placement,
+                    alloc_id: region.id,
+                };
+                self.lru.push(key, atlas_region);
+                return Some(atlas_region);
+            }
+        }
     }
 
     #[allow(clippy::cast_possible_truncation)] // atlas coords fit in u32
@@ -235,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn in_use_prevents_eviction() {
+    fn in_use_grows_atlas() {
         let mut atlas = AtlasPlane::with_size(32, 32);
 
         for i in 0..4 {
@@ -247,14 +293,15 @@ mod tests {
             atlas.mark_in_use(&key(i));
         }
 
-        // Should fail — can't evict anything.
+        // Should grow the atlas since eviction can't free in-use glyphs.
         let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
-        assert!(region.is_none(), "all in-use, can't evict");
+        assert!(region.is_some(), "should grow atlas when all in-use");
+        assert_eq!(atlas.size(), (64, 64));
 
-        // Clear in-use, now eviction works.
+        // Clear in-use, eviction still works at the new size.
         atlas.clear_in_use();
-        let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
-        assert!(region.is_some(), "after clearing in-use, eviction works");
+        let region = atlas.insert(key(200), 16, 16, P_DEFAULT);
+        assert!(region.is_some(), "allocation works at new size");
     }
 
     #[test]
@@ -270,10 +317,67 @@ mod tests {
     }
 
     #[test]
-    fn oversized_glyph_returns_none() {
+    fn oversized_glyph_grows_to_fit() {
         let mut atlas = AtlasPlane::with_size(32, 32);
-        // Glyph larger than the atlas.
+        // Glyph larger than initial atlas — should grow to accommodate.
         let region = atlas.insert(key(1), 64, 64, GlyphPlacement { top: 60, left: 0 });
+        assert!(region.is_some(), "should grow atlas to fit large glyph");
+        assert!(atlas.size().0 >= 64);
+    }
+
+    #[test]
+    fn truly_oversized_glyph_returns_none() {
+        let mut atlas = AtlasPlane::with_size(32, 32);
+        // Glyph larger than MAX_SIZE — can't grow enough.
+        let region = atlas.insert(
+            key(1),
+            MAX_SIZE + 1,
+            MAX_SIZE + 1,
+            GlyphPlacement { top: 0, left: 0 },
+        );
         assert!(region.is_none());
+    }
+
+    #[test]
+    fn grow_on_full() {
+        let mut atlas = AtlasPlane::with_size(32, 32);
+        // Fill atlas and mark all in-use so eviction can't free space.
+        for i in 0..4 {
+            atlas.insert(key(i), 16, 16, P_DEFAULT);
+            atlas.mark_in_use(&key(i));
+        }
+        // Insert should grow the atlas instead of failing.
+        let region = atlas.insert(key(100), 16, 16, P_DEFAULT);
+        assert!(region.is_some(), "should grow atlas and allocate");
+        assert_eq!(atlas.size(), (64, 64));
+    }
+
+    #[test]
+    fn grow_capped_at_max() {
+        let mut atlas = AtlasPlane::with_size(MAX_SIZE, MAX_SIZE);
+        // Fill and mark in-use.
+        let region = atlas.insert(key(0), 16, 16, P_DEFAULT);
+        assert!(region.is_some());
+        atlas.mark_in_use(&key(0));
+        // Fill remaining space with a huge glyph that won't fit.
+        let region = atlas.insert(key(1), MAX_SIZE, MAX_SIZE, P_DEFAULT);
+        assert!(region.is_none(), "can't grow past max");
+    }
+
+    #[test]
+    fn existing_allocations_valid_after_grow() {
+        let mut atlas = AtlasPlane::with_size(32, 32);
+        let r1 = atlas.insert(key(1), 16, 16, P_DEFAULT).unwrap();
+        atlas.mark_in_use(&key(1));
+        // Force growth by filling and inserting when all in-use.
+        for i in 2..=4 {
+            atlas.insert(key(i), 16, 16, P_DEFAULT);
+            atlas.mark_in_use(&key(i));
+        }
+        let _new = atlas.insert(key(100), 16, 16, P_DEFAULT).unwrap();
+        // Original allocation should still be accessible with same coords.
+        let cached = atlas.get(&key(1)).unwrap();
+        assert_eq!(cached.x, r1.x);
+        assert_eq!(cached.y, r1.y);
     }
 }
