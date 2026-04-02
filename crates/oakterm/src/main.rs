@@ -539,7 +539,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         let size = window.inner_size();
-        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics);
+        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics, &config.padding);
         let grid = ClientGrid::new(cols.max(1), rows.max(1));
 
         match connect_to_daemon(&self.proxy) {
@@ -633,7 +633,8 @@ impl ApplicationHandler<UserEvent> for App {
 
                         #[allow(clippy::cast_possible_truncation)]
                         if let (Some(font), Some(grid)) = (&self.font, &mut self.grid) {
-                            let (cols, rows) = window_to_grid_dims(size, &font.metrics);
+                            let (cols, rows) =
+                                window_to_grid_dims(size, &font.metrics, &self.config.padding);
                             let dims_changed = grid.rows != rows || grid.cols != cols;
                             grid.resize(cols, rows);
 
@@ -804,10 +805,17 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse_pixel = (position.x, position.y);
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss // padding values are small
+                )]
                 if let Some(font) = &self.font {
-                    let col = (position.x as f32 / font.metrics.cell_width) as u16;
-                    let row = (position.y as f32 / font.metrics.cell_height) as u16;
+                    // Subtract padding so clicks in the gutter map to cell 0.
+                    let px = (position.x as f32 - self.config.padding.left as f32).max(0.0);
+                    let py = (position.y as f32 - self.config.padding.top as f32).max(0.0);
+                    let col = (px / font.metrics.cell_width) as u16;
+                    let row = (py / font.metrics.cell_height) as u16;
                     self.last_mouse_cell = (col, row);
 
                     // Update selection end during drag.
@@ -816,7 +824,8 @@ impl ApplicationHandler<UserEvent> for App {
                             AnchorSide, SelectionType, word_boundaries,
                         };
                         let cw = f64::from(font.metrics.cell_width);
-                        let side = if (position.x % cw) > (cw / 2.0) {
+                        let adj_x = (position.x - f64::from(self.config.padding.left)).max(0.0);
+                        let side = if (adj_x % cw) > (cw / 2.0) {
                             AnchorSide::Right
                         } else {
                             AnchorSide::Left
@@ -974,7 +983,8 @@ impl ApplicationHandler<UserEvent> for App {
                     {
                         let size =
                             winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
-                        let (cols, rows) = window_to_grid_dims(size, &font.metrics);
+                        let (cols, rows) =
+                            window_to_grid_dims(size, &font.metrics, &self.config.padding);
                         self.last_sent_dims = (cols, rows);
                         let msg = Resize {
                             pane_id: 0,
@@ -1050,6 +1060,8 @@ impl ApplicationHandler<UserEvent> for App {
                         cursor_vis,
                         self.selection.as_ref(),
                         self.viewport_offset,
+                        self.config.padding.left as f32,
+                        self.config.padding.top as f32,
                     );
 
                     upload_glyphs_to_atlas(
@@ -1091,7 +1103,8 @@ impl ApplicationHandler<UserEvent> for App {
                     cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics.cell_height),
                     viewport_width: gpu.config.width as f32,
                     viewport_height: gpu.config.height as f32,
-                    pad: [0.0; 2],
+                    pad_left: self.config.padding.left as f32,
+                    pad_top: self.config.padding.top as f32,
                 };
                 let text_uniforms = TextUniforms {
                     cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics.cell_width),
@@ -1765,7 +1778,8 @@ impl App {
                 #[allow(clippy::cast_possible_truncation)]
                 if let (Some(gpu), Some(grid)) = (&self.gpu, &mut self.grid) {
                     let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
-                    let (cols, rows) = window_to_grid_dims(phys, &font_state.metrics);
+                    let (cols, rows) =
+                        window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
                     let cols = cols.max(1);
                     let rows = rows.max(1);
                     grid.resize(cols, rows);
@@ -1953,9 +1967,12 @@ fn winit_to_chord(
 fn window_to_grid_dims(
     size: winit::dpi::PhysicalSize<u32>,
     metrics: &oakterm_renderer::shaper::FontMetrics,
+    padding: &oakterm_config::Padding,
 ) -> (u16, u16) {
-    let cols = ((size.width as f32 / metrics.cell_width) as u16).max(1);
-    let rows = ((size.height as f32 / metrics.cell_height) as u16).max(1);
+    let usable_w = size.width.saturating_sub(padding.left + padding.right);
+    let usable_h = size.height.saturating_sub(padding.top + padding.bottom);
+    let cols = ((usable_w as f32 / metrics.cell_width) as u16).max(1);
+    let rows = ((usable_h as f32 / metrics.cell_height) as u16).max(1);
     (cols, rows)
 }
 

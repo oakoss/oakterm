@@ -21,7 +21,8 @@ pub struct BgUniforms {
     pub cell_height: f32,
     pub viewport_width: f32,
     pub viewport_height: f32,
-    pub pad: [f32; 2],
+    pub pad_left: f32,
+    pub pad_top: f32,
 }
 
 /// Uniform data for the text pass.

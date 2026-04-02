@@ -342,6 +342,8 @@ impl ClientGrid {
         cursor_visible: bool,
         selection: Option<&Selection>,
         viewport_offset: u32,
+        pad_left: f32,
+        pad_top: f32,
     ) -> (Vec<GlyphVertex>, Vec<GlyphUpload>, Vec<GlyphUpload>) {
         let mut glyphs = Vec::new();
         let mut uploads = Vec::new();
@@ -477,8 +479,8 @@ impl ClientGrid {
                     atlas.mark_in_use(&cache_key);
                 }
 
-                let x = col as f32 * metrics.cell_width;
-                let y = row as f32 * metrics.cell_height;
+                let x = col as f32 * metrics.cell_width + pad_left;
+                let y = row as f32 * metrics.cell_height + pad_top;
 
                 let is_cursor = Some(idx) == cursor_idx;
                 let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
@@ -527,8 +529,8 @@ impl ClientGrid {
         let cursor_shape = cursor_shape_from_wire(self.cursor_style);
         if cursor_shape != 0 {
             if let Some(_cursor_idx) = cursor_idx {
-                let cx = f32::from(self.cursor_x) * metrics.cell_width;
-                let cy = f32::from(self.cursor_y) * metrics.cell_height;
+                let cx = f32::from(self.cursor_x) * metrics.cell_width + pad_left;
+                let cy = f32::from(self.cursor_y) * metrics.cell_height + pad_top;
 
                 // Use the cell's fg color for the cursor line.
                 let cell_idx = usize::from(self.cursor_y) * usize::from(self.cols)

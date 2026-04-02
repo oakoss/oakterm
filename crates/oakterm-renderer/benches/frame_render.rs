@@ -104,7 +104,8 @@ fn build_uniforms(c: &mut Criterion) {
                 cell_height: 16.0,
                 viewport_width: 960.0,
                 viewport_height: 640.0,
-                pad: [0.0; 2],
+                pad_left: 0.0,
+                pad_top: 0.0,
             };
             let text = TextUniforms {
                 cell_width: 8.0,

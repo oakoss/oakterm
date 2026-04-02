@@ -97,7 +97,8 @@ fn bg_uniforms(cols: u32, rows: u32, cell_w: f32, cell_h: f32) -> BgUniforms {
         cell_height: cell_h,
         viewport_width: cols as f32 * cell_w,
         viewport_height: rows as f32 * cell_h,
-        pad: [0.0; 2],
+        pad_left: 0.0,
+        pad_top: 0.0,
     }
 }
 

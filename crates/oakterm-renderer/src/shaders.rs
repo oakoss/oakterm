@@ -45,6 +45,8 @@ struct Uniforms {{
     cell_height: f32,
     viewport_width: f32,
     viewport_height: f32,
+    pad_left: f32,
+    pad_top: f32,
 }}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -60,8 +62,8 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let col = ii % u.cols;
     let row = ii / u.cols;
 
-    let x0 = f32(col) * u.cell_width;
-    let y0 = f32(row) * u.cell_height;
+    let x0 = f32(col) * u.cell_width + u.pad_left;
+    let y0 = f32(row) * u.cell_height + u.pad_top;
 
     // Quad vertices: 0=TL, 1=TR, 2=BL, 3=BR. Triangle strip: 0,1,2,3.
     let x = select(x0, x0 + u.cell_width, vi == 1u || vi == 3u);
