@@ -16,7 +16,6 @@ use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpd
 use oakterm_terminal::grid::cell::{Color, Rgb};
 use oakterm_terminal::grid::row::{MarkMetadata, SemanticMark};
 use oakterm_terminal::grid::{ScreenId, ScreenSet};
-use oakterm_terminal::handler;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
@@ -284,7 +283,7 @@ async fn pty_read_loop(
                 let mut s = screens.lock().await;
                 let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
                 let mut pty_writer = FdWriter(borrowed_wr);
-                handler::process_bytes(&mut *s, &buf[..n], &mut pty_writer);
+                s.process_bytes(&buf[..n], &mut pty_writer);
                 let seqno = s.active_grid().seqno;
                 drop(s);
                 let _ = dirty_tx.send(seqno);

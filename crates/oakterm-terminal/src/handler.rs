@@ -965,14 +965,23 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     }
 
     fn device_status(&mut self, param: usize) {
-        if param == 6 {
-            // DSR: cursor position report (1-based).
-            let g = self.target.active_grid_mut();
-            let row = g.cursor.row + 1;
-            let col = g.cursor.col + 1;
-            if let Err(e) = write!(self.writer, "\x1b[{row};{col}R") {
-                warn_writer_once(&e, "DSR/CPR");
+        match param {
+            5 => {
+                // DSR: device status — report "OK".
+                if let Err(e) = self.writer.write_all(b"\x1b[0n") {
+                    warn_writer_once(&e, "DSR status");
+                }
             }
+            6 => {
+                // DSR: cursor position report (1-based).
+                let g = self.target.active_grid_mut();
+                let row = g.cursor.row + 1;
+                let col = g.cursor.col + 1;
+                if let Err(e) = write!(self.writer, "\x1b[{row};{col}R") {
+                    warn_writer_once(&e, "DSR/CPR");
+                }
+            }
+            _ => {}
         }
     }
 

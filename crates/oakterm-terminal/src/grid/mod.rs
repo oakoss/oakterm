@@ -263,6 +263,9 @@ pub struct ScreenSet {
     archive: Option<crate::scroll::archive_manager::ArchiveManager>,
     /// Active scrollback search, if any.
     search: Option<crate::search::SearchEngine>,
+    /// VT parser state, persisted across PTY read chunks to avoid
+    /// mid-sequence splits that leak escape fragments as literal text.
+    processor: vte::ansi::Processor<vte::ansi::StdSyncHandler>,
 }
 
 impl ScreenSet {
@@ -275,8 +278,24 @@ impl ScreenSet {
             scrollback: HotBuffer::default(),
             save_alternate_scrollback: true,
             archive: None,
+            processor: vte::ansi::Processor::new(),
             search: None,
         }
+    }
+
+    /// Feed PTY output through the persistent VT parser.
+    ///
+    /// The parser state is preserved across calls so escape sequences
+    /// that span read chunk boundaries are handled correctly.
+    pub fn process_bytes(&mut self, input: &[u8], writer: &mut impl std::io::Write) {
+        // Temporarily extract the processor to avoid a double mutable borrow
+        // (self is borrowed by Terminal::new, processor by advance).
+        let mut processor = std::mem::replace(&mut self.processor, vte::ansi::Processor::new());
+        {
+            let mut terminal = crate::handler::Terminal::new(self, writer);
+            processor.advance(&mut terminal, input);
+        }
+        self.processor = processor;
     }
 
     #[must_use]
@@ -421,6 +440,7 @@ impl ScreenSet {
         self.active = ScreenId::Primary;
         self.alternate = None;
         self.primary = Grid::new(cols, rows);
+        self.processor = vte::ansi::Processor::new();
     }
 
     /// Resize both primary and alternate grids (if allocated).
