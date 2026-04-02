@@ -352,6 +352,11 @@ impl ClientGrid {
 
         let cursor_idx = self.cursor_cell_index(cursor_visible);
 
+        let expected_len = usize::from(self.rows) * usize::from(self.cols);
+        if self.cells.len() < expected_len {
+            return (glyphs, uploads, color_uploads);
+        }
+
         for row in 0..usize::from(self.rows) {
             for col in 0..usize::from(self.cols) {
                 let idx = row * usize::from(self.cols) + col;
@@ -592,6 +597,9 @@ impl ClientGrid {
     pub fn row_text(&self, row: u16) -> String {
         let start = usize::from(row) * usize::from(self.cols);
         let end = start + usize::from(self.cols);
+        if end > self.cells.len() {
+            return String::new();
+        }
         let mut s = String::with_capacity(usize::from(self.cols));
         for cell in &self.cells[start..end] {
             if cell.codepoint == 0 {
@@ -630,6 +638,9 @@ impl ClientGrid {
             }
 
             let row_start = vis_row * cols;
+            if row_start + cols > self.cells.len() {
+                continue;
+            }
             let mut line = String::with_capacity(cols);
 
             for col in 0..cols {
