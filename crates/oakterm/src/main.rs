@@ -2647,11 +2647,12 @@ fn set_surface_p3_colorspace(window: &Window) -> bool {
     };
 
     // Safety: the NSView pointer is valid for the window's lifetime.
-    // We get its layer (CAMetalLayer set by wgpu) to configure color space.
+    // wgpu may set the view's layer to a CAMetalLayer directly, or the
+    // CAMetalLayer may be a sublayer of a backing layer. Search both.
     #[allow(unsafe_code)]
     unsafe {
         use objc2::msg_send;
-        use objc2::runtime::AnyObject;
+        use objc2::runtime::{AnyClass, AnyObject, Bool};
         use objc2_quartz_core::CAMetalLayer;
 
         let ns_view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
@@ -2660,10 +2661,39 @@ fn set_surface_p3_colorspace(window: &Window) -> bool {
             warn!("NSView has no layer for P3 color space");
             return false;
         }
-        let metal_layer: &CAMetalLayer = &*(layer.cast::<CAMetalLayer>());
-        metal_layer.setColorspace(Some(&p3));
+
+        let metal_class = AnyClass::get(c"CAMetalLayer");
+        let Some(metal_class) = metal_class else {
+            warn!("CAMetalLayer class not found");
+            return false;
+        };
+
+        // Check if the view's layer is directly a CAMetalLayer.
+        let is_metal: Bool = msg_send![layer, isKindOfClass: metal_class];
+        if is_metal.as_bool() {
+            let metal_layer: &CAMetalLayer = &*(layer.cast::<CAMetalLayer>());
+            metal_layer.setColorspace(Some(&p3));
+            return true;
+        }
+
+        // Search sublayers for the CAMetalLayer.
+        let sublayers: *mut AnyObject = msg_send![layer, sublayers];
+        if !sublayers.is_null() {
+            let count: usize = msg_send![sublayers, count];
+            for i in 0..count {
+                let sublayer: *mut AnyObject = msg_send![sublayers, objectAtIndex: i];
+                let is_metal: Bool = msg_send![sublayer, isKindOfClass: metal_class];
+                if is_metal.as_bool() {
+                    let metal_layer: &CAMetalLayer = &*(sublayer.cast::<CAMetalLayer>());
+                    metal_layer.setColorspace(Some(&p3));
+                    return true;
+                }
+            }
+        }
+
+        warn!("no CAMetalLayer found on NSView for P3 color space");
+        false
     }
-    true
 }
 
 fn main() {
