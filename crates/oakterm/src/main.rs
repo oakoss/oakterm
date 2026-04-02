@@ -1700,6 +1700,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // One block per config change type.
     fn handle_config_reload(&mut self, mut cr: oakterm_config::ConfigResult) {
         if let Some(ref err) = cr.error {
             warn!(error = %err, "config reload error");
@@ -1720,6 +1721,7 @@ impl App {
 
         let font_changed = (cr.config.font_size - self.config.font_size).abs() > f64::EPSILON
             || cr.config.font_family != self.config.font_family;
+        let blending_changed = cr.config.text_blending != self.config.text_blending;
 
         let had_error = self.config_error.is_some();
         self.config = cr.config;
@@ -1780,6 +1782,25 @@ impl App {
                 }
 
                 self.font = Some(font_state);
+            }
+        }
+
+        // Recreate GPU pipeline if blending mode changed (baked into shader).
+        if blending_changed {
+            if let Some(gpu) = &mut self.gpu {
+                let blending_mode = match self.config.text_blending {
+                    oakterm_config::TextBlending::Linear => {
+                        oakterm_renderer::shaders::BLENDING_LINEAR
+                    }
+                    oakterm_config::TextBlending::LinearCorrected => {
+                        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED
+                    }
+                };
+                gpu.pipeline = oakterm_renderer::pipeline::RenderPipeline::new(
+                    &gpu.device,
+                    gpu.config.format,
+                    blending_mode,
+                );
             }
         }
 
