@@ -103,6 +103,202 @@ pub fn load_font_by_name(
         })
 }
 
+/// Font data for all style variants of a family.
+pub struct FontVariants {
+    /// Regular (normal weight, upright) face.
+    pub regular: (Vec<u8>, FontMetrics),
+    /// Bold face, if available.
+    pub bold: Option<(Vec<u8>, FontMetrics)>,
+    /// Italic face, if available.
+    pub italic: Option<(Vec<u8>, FontMetrics)>,
+    /// Bold-italic face, if available.
+    pub bold_italic: Option<(Vec<u8>, FontMetrics)>,
+}
+
+/// Load all style variants of the system's default monospace font.
+///
+/// # Errors
+/// Returns an error if no regular monospace font can be found.
+pub fn load_default_variants(db: &fontdb::Database, font_size: f32) -> io::Result<FontVariants> {
+    // Find a regular face first.
+    let (regular_family, regular) = {
+        // Try preferred named families first.
+        let mut found: Option<(String, (Vec<u8>, FontMetrics))> = None;
+        for family in PREFERRED_FAMILIES {
+            if let Some(result) = load_face_with_query(
+                db,
+                family,
+                fontdb::Weight::NORMAL,
+                fontdb::Style::Normal,
+                font_size,
+            ) {
+                found = Some(((*family).to_string(), result));
+                break;
+            }
+        }
+        if found.is_none() {
+            // Fall back to generic monospace.
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Monospace],
+                weight: fontdb::Weight::NORMAL,
+                stretch: fontdb::Stretch::Normal,
+                style: fontdb::Style::Normal,
+            };
+            if let Some(id) = db.query(&query) {
+                if let Some(face_info) = db.face(id) {
+                    let family_name = face_info
+                        .families
+                        .first()
+                        .map_or_else(String::new, |(name, _)| name.clone());
+                    if let Some(result) = load_face(db, id, font_size) {
+                        found = Some((family_name, result));
+                    }
+                }
+            }
+        }
+        found.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "no monospace font found on system")
+        })?
+    };
+
+    let bold = load_face_with_query(
+        db,
+        &regular_family,
+        fontdb::Weight::BOLD,
+        fontdb::Style::Normal,
+        font_size,
+    );
+    let italic = load_face_with_query(
+        db,
+        &regular_family,
+        fontdb::Weight::NORMAL,
+        fontdb::Style::Italic,
+        font_size,
+    )
+    .or_else(|| {
+        // Some fonts expose italic as Oblique.
+        load_face_with_query(
+            db,
+            &regular_family,
+            fontdb::Weight::NORMAL,
+            fontdb::Style::Oblique,
+            font_size,
+        )
+    });
+    let bold_italic = load_face_with_query(
+        db,
+        &regular_family,
+        fontdb::Weight::BOLD,
+        fontdb::Style::Italic,
+        font_size,
+    )
+    .or_else(|| {
+        load_face_with_query(
+            db,
+            &regular_family,
+            fontdb::Weight::BOLD,
+            fontdb::Style::Oblique,
+            font_size,
+        )
+    });
+
+    Ok(FontVariants {
+        regular,
+        bold,
+        italic,
+        bold_italic,
+    })
+}
+
+/// Load all style variants of a named font family.
+///
+/// # Errors
+/// Returns an error if the regular face is not found.
+pub fn load_font_variants(
+    db: &fontdb::Database,
+    family: &str,
+    font_size: f32,
+) -> io::Result<FontVariants> {
+    let regular = load_face_with_query(
+        db,
+        family,
+        fontdb::Weight::NORMAL,
+        fontdb::Style::Normal,
+        font_size,
+    )
+    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("font not found: {family}")))?;
+    let bold = load_face_with_query(
+        db,
+        family,
+        fontdb::Weight::BOLD,
+        fontdb::Style::Normal,
+        font_size,
+    );
+    let italic = load_face_with_query(
+        db,
+        family,
+        fontdb::Weight::NORMAL,
+        fontdb::Style::Italic,
+        font_size,
+    )
+    .or_else(|| {
+        load_face_with_query(
+            db,
+            family,
+            fontdb::Weight::NORMAL,
+            fontdb::Style::Oblique,
+            font_size,
+        )
+    });
+    let bold_italic = load_face_with_query(
+        db,
+        family,
+        fontdb::Weight::BOLD,
+        fontdb::Style::Italic,
+        font_size,
+    )
+    .or_else(|| {
+        load_face_with_query(
+            db,
+            family,
+            fontdb::Weight::BOLD,
+            fontdb::Style::Oblique,
+            font_size,
+        )
+    });
+
+    Ok(FontVariants {
+        regular,
+        bold,
+        italic,
+        bold_italic,
+    })
+}
+
+/// Query fontdb for a specific weight/style combination of a family.
+fn load_face_with_query(
+    db: &fontdb::Database,
+    family: &str,
+    weight: fontdb::Weight,
+    style: fontdb::Style,
+    font_size: f32,
+) -> Option<(Vec<u8>, FontMetrics)> {
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name(family)],
+        weight,
+        stretch: fontdb::Stretch::Normal,
+        style,
+    };
+    let id = db.query(&query)?;
+    // Verify the match actually has the requested properties.
+    // fontdb uses CSS best-match, which can return regular for a bold query.
+    let face_info = db.face(id)?;
+    if face_info.weight != weight || face_info.style != style {
+        return None;
+    }
+    load_face(db, id, font_size)
+}
+
 fn load_face(
     db: &fontdb::Database,
     id: fontdb::ID,

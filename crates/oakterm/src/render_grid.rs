@@ -41,6 +41,8 @@ struct RenderCell {
     codepoint: u32,
     fg: [u8; 3],
     bg: [u8; 3],
+    /// Raw `CellFlags` bits from the wire protocol (BOLD=1, ITALIC=4).
+    flags: u16,
 }
 
 impl Default for RenderCell {
@@ -49,8 +51,21 @@ impl Default for RenderCell {
             codepoint: 0,
             fg: [255, 255, 255],
             bg: [0, 0, 0],
+            flags: 0,
         }
     }
+}
+
+/// Font keys for all style variants, used to select the right face per cell.
+pub struct FontKeys {
+    /// Regular (normal weight, upright) font.
+    pub regular: FontKey,
+    /// Bold font, if loaded.
+    pub bold: Option<FontKey>,
+    /// Italic font, if loaded.
+    pub italic: Option<FontKey>,
+    /// Bold-italic font, if loaded.
+    pub bold_italic: Option<FontKey>,
 }
 
 /// Saved live-view state when the viewport is scrolled up.
@@ -256,6 +271,7 @@ impl ClientGrid {
                 codepoint: ch as u32,
                 fg: [0, 0, 0],
                 bg: [200, 200, 200],
+                flags: 0,
             };
         }
     }
@@ -317,7 +333,7 @@ impl ClientGrid {
     pub fn glyph_instances(
         &self,
         metrics: &FontMetrics,
-        font_key: FontKey,
+        font_keys: &FontKeys,
         font_size: f32,
         shaper: &impl TextShaper,
         atlas: &mut AtlasPlane,
@@ -346,10 +362,26 @@ impl ClientGrid {
                     continue;
                 };
 
+                // Select font variant based on cell flags.
+                let cell_font_key = {
+                    let bold = cell.flags & 0x0001 != 0;
+                    let italic = cell.flags & 0x0004 != 0;
+                    match (bold, italic) {
+                        (true, true) => font_keys
+                            .bold_italic
+                            .or(font_keys.bold)
+                            .or(font_keys.italic)
+                            .unwrap_or(font_keys.regular),
+                        (true, false) => font_keys.bold.unwrap_or(font_keys.regular),
+                        (false, true) => font_keys.italic.unwrap_or(font_keys.regular),
+                        (false, false) => font_keys.regular,
+                    }
+                };
+
                 let text = ch.to_string();
                 let run = TextRun {
                     text: &text,
-                    font: font_key,
+                    font: cell_font_key,
                     size: font_size,
                 };
                 let result = shaper.shape(&run);
@@ -359,7 +391,7 @@ impl ClientGrid {
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let cache_key = GlyphCacheKey {
-                    font_id: 0,
+                    font_id: cell_font_key.id(),
                     glyph_id: glyph.glyph_id,
                     size_tenths: (font_size * 10.0) as u32,
                 };
@@ -372,7 +404,7 @@ impl ClientGrid {
                         (r, true)
                     } else {
                         // Evicted from color atlas; re-rasterize.
-                        let bitmap = shaper.rasterize(font_key, glyph.glyph_id, font_size);
+                        let bitmap = shaper.rasterize(cell_font_key, glyph.glyph_id, font_size);
                         if bitmap.width == 0 || bitmap.height == 0 {
                             continue;
                         }
@@ -398,7 +430,7 @@ impl ClientGrid {
                     (r, false)
                 } else {
                     // Not in either atlas — rasterize and route by format.
-                    let bitmap = shaper.rasterize(font_key, glyph.glyph_id, font_size);
+                    let bitmap = shaper.rasterize(cell_font_key, glyph.glyph_id, font_size);
                     if bitmap.width == 0 || bitmap.height == 0 {
                         continue;
                     }
@@ -632,6 +664,7 @@ fn wire_cell_to_render(cell: &WireCell) -> RenderCell {
         codepoint: cell.codepoint,
         fg: [cell.fg_r, cell.fg_g, cell.fg_b],
         bg: [cell.bg_r, cell.bg_g, cell.bg_b],
+        flags: cell.flags,
     }
 }
 
@@ -808,6 +841,7 @@ mod tests {
             codepoint: u32::from(b'A'),
             fg: [255, 255, 255],
             bg: [0, 0, 0],
+            flags: 0,
         };
         grid.cursor_x = 1;
         grid.cursor_y = 0;
@@ -827,6 +861,7 @@ mod tests {
             codepoint: u32::from(b'A'),
             fg: [255, 255, 255],
             bg: [0, 0, 0],
+            flags: 0,
         };
         grid.cursor_x = 1;
         grid.cursor_y = 0;

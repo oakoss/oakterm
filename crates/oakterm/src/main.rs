@@ -127,6 +127,9 @@ struct GpuState {
 struct FontState {
     shaper: SwashShaper,
     font_key: FontKey,
+    bold_key: Option<FontKey>,
+    italic_key: Option<FontKey>,
+    bold_italic_key: Option<FontKey>,
     atlas: AtlasPlane,
     color_atlas: AtlasPlane,
     /// Cache keys of glyphs stored in the color atlas.
@@ -1030,9 +1033,15 @@ impl ApplicationHandler<UserEvent> for App {
 
                     let bg =
                         grid.bg_colors(cursor_vis, self.selection.as_ref(), self.viewport_offset);
+                    let keys = render_grid::FontKeys {
+                        regular: font.font_key,
+                        bold: font.bold_key,
+                        italic: font.italic_key,
+                        bold_italic: font.bold_italic_key,
+                    };
                     let (glyphs, uploads, color_uploads) = grid.glyph_instances(
                         &font.metrics,
-                        font.font_key,
+                        &keys,
                         font.font_size,
                         &font.shaper,
                         &mut font.atlas,
@@ -1956,11 +1965,11 @@ fn try_init_font(
     font_size: f32,
 ) -> Result<FontState, String> {
     let db = font::system_font_db();
-    let (metrics, data) = if config.font_family.is_empty() {
-        font::load_default_metrics(&db, font_size)
+    let variants = if config.font_family.is_empty() {
+        font::load_default_variants(&db, font_size)
             .map_err(|e| format!("no system monospace font: {e}"))?
     } else {
-        match font::load_font_by_name(&db, &config.font_family, font_size) {
+        match font::load_font_variants(&db, &config.font_family, font_size) {
             Ok(result) => result,
             Err(e) => {
                 warn!(
@@ -1968,20 +1977,42 @@ fn try_init_font(
                     font_family = %config.font_family,
                     "font not found, using system default"
                 );
-                font::load_default_metrics(&db, font_size)
+                font::load_default_variants(&db, font_size)
                     .map_err(|e| format!("no system monospace font: {e}"))?
             }
         }
     };
 
+    let (regular_data, metrics) = variants.regular;
     let mut shaper = SwashShaper::new();
     let font_key = shaper
-        .load_font(data, font_size)
+        .load_font(regular_data, font_size)
         .ok_or_else(|| "failed to load font into shaper".to_string())?;
+
+    let bold_key = variants
+        .bold
+        .and_then(|(data, _)| shaper.load_font(data, font_size));
+    let italic_key = variants
+        .italic
+        .and_then(|(data, _)| shaper.load_font(data, font_size));
+    let bold_italic_key = variants
+        .bold_italic
+        .and_then(|(data, _)| shaper.load_font(data, font_size));
+
+    debug!(
+        ?font_key,
+        ?bold_key,
+        ?italic_key,
+        ?bold_italic_key,
+        "font variants loaded"
+    );
 
     Ok(FontState {
         shaper,
         font_key,
+        bold_key,
+        italic_key,
+        bold_italic_key,
         atlas: AtlasPlane::new(),
         color_atlas: AtlasPlane::new(),
         color_keys: std::collections::HashSet::new(),

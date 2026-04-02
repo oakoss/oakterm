@@ -6,6 +6,12 @@ impl FontKey {
     pub(crate) fn new(id: u32) -> Self {
         Self(id)
     }
+
+    /// Return the numeric identifier for use in glyph cache keys.
+    #[must_use]
+    pub fn id(self) -> u32 {
+        self.0
+    }
 }
 
 /// A run of consecutive cells with the same font and attributes.
