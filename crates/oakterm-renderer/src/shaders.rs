@@ -20,19 +20,23 @@ fn luminance(c: vec3f) -> f32 {
 /// Background pass: renders cell background colors.
 /// Reads from a storage buffer of packed RGBA colors, one per cell.
 #[must_use]
-pub fn background_shader(blending_mode: u32) -> String {
+pub fn background_shader(blending_mode: u32, p3: bool) -> String {
+    let p3_flag = u32::from(p3);
     format!(
         r"
 {COLOR_FUNCTIONS}
 
-// TODO: sRGB→P3 conversion — apply when CAMetalLayer color space is set.
-// const SRGB_TO_P3: mat3x3f = mat3x3f(
-//     vec3f(0.8225, 0.1775, 0.0000),
-//     vec3f(0.0332, 0.9668, 0.0000),
-//     vec3f(0.0171, 0.0724, 0.9105),
-// );
+// sRGB linear to Display P3 linear (W3C CSS Color 4, D65 white).
+// Applied on macOS where CAMetalLayer is set to P3 color space.
+// Column-major: each vec3f is a column of the row-major conversion matrix.
+const SRGB_TO_P3: mat3x3f = mat3x3f(
+    vec3f(0.8225, 0.0332, 0.0171),
+    vec3f(0.1775, 0.9668, 0.0724),
+    vec3f(0.0000, 0.0000, 0.9105),
+);
 
 const BLENDING_MODE: u32 = {blending_mode}u;
+const P3_ENABLED: u32 = {p3_flag}u;
 
 struct Uniforms {{
     cols: u32,
@@ -75,7 +79,10 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
 
     // Linearize sRGB for correct framebuffer output.
-    let color = srgb_to_linear3(vec3f(r, g, b));
+    var color = srgb_to_linear3(vec3f(r, g, b));
+    if P3_ENABLED != 0u {{
+        color = SRGB_TO_P3 * color;
+    }}
 
     var out: VertexOutput;
     out.position = vec4f(ndc_x, ndc_y, 0.0, 1.0);
@@ -94,12 +101,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
 /// Text pass: renders glyph quads from the atlas.
 /// Each instance is one glyph with position, atlas UV, and foreground color.
 #[must_use]
-pub fn text_shader(blending_mode: u32) -> String {
+pub fn text_shader(blending_mode: u32, p3: bool) -> String {
+    let p3_flag = u32::from(p3);
     format!(
         r"
 {COLOR_FUNCTIONS}
 
 const BLENDING_MODE: u32 = {blending_mode}u;
+const P3_ENABLED: u32 = {p3_flag}u;
+
+// sRGB linear to Display P3 linear (W3C CSS Color 4, D65 white).
+// Column-major: each vec3f is a column of the row-major conversion matrix.
+const SRGB_TO_P3: mat3x3f = mat3x3f(
+    vec3f(0.8225, 0.0332, 0.0171),
+    vec3f(0.1775, 0.9668, 0.0724),
+    vec3f(0.0000, 0.0000, 0.9105),
+);
 
 struct Uniforms {{
     cell_width: f32,
@@ -168,7 +185,15 @@ fn vs_main(@builtin(vertex_index) vi: u32, glyph: GlyphInstance) -> VertexOutput
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
     // Solid-color quad (cursor underline/bar): skip atlas sampling.
-    let fg_linear = srgb_to_linear3(in.fg_color.rgb);
+    let fg_srgb_linear = srgb_to_linear3(in.fg_color.rgb);
+    // Compute luminance in sRGB linear (matches bg_luminance from CPU).
+    let fg_lum = luminance(fg_srgb_linear);
+
+    // Convert to P3 for framebuffer output.
+    var fg_linear = fg_srgb_linear;
+    if P3_ENABLED != 0u {{
+        fg_linear = SRGB_TO_P3 * fg_srgb_linear;
+    }}
     if in.bg_luminance < -0.5 {{
         return vec4f(fg_linear, in.fg_color.a);
     }}
@@ -176,11 +201,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {{
     // Color emoji: sample from the Rgba8UnormSrgb color atlas.
     // The GPU auto-converts sRGB->linear on read, so values are linear-space.
     if in.is_color > 0.5 {{
-        return textureSample(color_atlas_texture, atlas_sampler, in.uv);
+        var emoji = textureSample(color_atlas_texture, atlas_sampler, in.uv);
+        if P3_ENABLED != 0u {{
+            emoji = vec4f(SRGB_TO_P3 * emoji.rgb, emoji.a);
+        }}
+        return emoji;
     }}
 
     let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
-    let fg_lum = luminance(fg_linear);
     let contrast_diff = abs(fg_lum - in.bg_luminance);
 
     // Text gamma compensation: font rasterizers assume sRGB-space blending,

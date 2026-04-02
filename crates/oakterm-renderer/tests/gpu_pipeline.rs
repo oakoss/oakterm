@@ -200,6 +200,7 @@ fn pipeline_creation_succeeds() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 }
 
@@ -210,6 +211,7 @@ fn render_empty_grid() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 
     // 1x1 pixel target — degenerate grid with no cells.
@@ -243,6 +245,7 @@ fn render_partial_zero_grid() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 
     let target = create_render_target(&device, 1, 1);
@@ -276,6 +279,7 @@ fn render_background_produces_correct_colors() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 
     let target = create_render_target(&device, 160, 48);
@@ -328,6 +332,7 @@ fn render_single_glyph() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 
     let target = create_render_target(&device, 160, 48);
@@ -371,6 +376,7 @@ fn render_text_produces_visible_pixels() {
         &device,
         FORMAT,
         oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED,
+        false,
     );
 
     let target = create_render_target(&device, 160, 48);

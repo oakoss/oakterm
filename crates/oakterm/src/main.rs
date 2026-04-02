@@ -119,6 +119,8 @@ struct GpuState {
     atlas_sampler: wgpu::Sampler,
     color_atlas_texture: wgpu::Texture,
     color_atlas_view: wgpu::TextureView,
+    /// Whether the surface is configured for Display P3 color space.
+    p3_active: bool,
 }
 
 /// Font and glyph state for text rendering.
@@ -1800,6 +1802,7 @@ impl App {
                     &gpu.device,
                     gpu.config.format,
                     blending_mode,
+                    gpu.p3_active,
                 );
             }
         }
@@ -2586,7 +2589,14 @@ async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, S
     };
     surface.configure(&device, &config);
 
-    let pipeline = RenderPipeline::new(&device, format, blending_mode);
+    // Set Display P3 color space on macOS for wide-gamut rendering.
+    // Only enable P3 in shaders if the layer was actually configured.
+    #[cfg(target_os = "macos")]
+    let p3_active = set_surface_p3_colorspace(&window);
+    #[cfg(not(target_os = "macos"))]
+    let p3_active = false;
+
+    let pipeline = RenderPipeline::new(&device, format, blending_mode, p3_active);
     // AtlasPlane::new() creates a 256x256 atlas — match the GPU texture.
     let (atlas_w, atlas_h) = AtlasPlane::new().size();
     let (atlas_texture, atlas_view, atlas_sampler) =
@@ -2605,7 +2615,55 @@ async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<GpuState, S
         atlas_sampler,
         color_atlas_texture,
         color_atlas_view,
+        p3_active,
     })
+}
+
+/// Set the `CAMetalLayer`'s color space to Display P3 on macOS.
+///
+/// wgpu doesn't expose color space configuration. We access the
+/// `CAMetalLayer` through the window's `NSView` layer and set it directly.
+/// Returns `true` if the layer was successfully set to P3.
+#[cfg(target_os = "macos")]
+fn set_surface_p3_colorspace(window: &Window) -> bool {
+    use objc2_core_graphics::{CGColorSpace, kCGColorSpaceDisplayP3};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        warn!("failed to get window handle for P3 color space");
+        return false;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        warn!("expected AppKit window handle on macOS");
+        return false;
+    };
+
+    // Safety: kCGColorSpaceDisplayP3 is a well-known constant string.
+    #[allow(unsafe_code)]
+    let p3_name = unsafe { kCGColorSpaceDisplayP3 };
+    let Some(p3) = CGColorSpace::with_name(Some(p3_name)) else {
+        warn!("failed to create Display P3 color space");
+        return false;
+    };
+
+    // Safety: the NSView pointer is valid for the window's lifetime.
+    // We get its layer (CAMetalLayer set by wgpu) to configure color space.
+    #[allow(unsafe_code)]
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use objc2_quartz_core::CAMetalLayer;
+
+        let ns_view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+        let layer: *mut AnyObject = msg_send![ns_view, layer];
+        if layer.is_null() {
+            warn!("NSView has no layer for P3 color space");
+            return false;
+        }
+        let metal_layer: &CAMetalLayer = &*(layer.cast::<CAMetalLayer>());
+        metal_layer.setColorspace(Some(&p3));
+    }
+    true
 }
 
 fn main() {
