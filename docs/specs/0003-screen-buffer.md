@@ -1,7 +1,7 @@
 ---
 spec: '0003'
 title: Screen Buffer
-status: implementing
+status: complete
 date: 2026-03-26
 adrs: ['0006', '0001', '0009']
 tags: [core]
