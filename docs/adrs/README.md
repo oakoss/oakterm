@@ -38,3 +38,6 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0007](0007-daemon-architecture.md)         | Daemon Architecture            | accepted | core, renderer    |
 | [0008](0008-shell-integration-timing.md)    | Shell Integration Timing       | accepted | core              |
 | [0009](0009-bidi-ligature-preparedness.md)  | BiDi and Ligature Preparedness | accepted | renderer, core    |
+| [0010](0010-layout-tree-model.md)           | Layout Tree Model              | proposed | core              |
+| [0011](0011-keybind-dispatch.md)            | Keybind Dispatch Architecture  | proposed | core              |
+| [0012](0012-copy-mode-scrollback-access.md) | Copy Mode Scrollback Access    | proposed | core              |
