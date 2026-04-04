@@ -853,11 +853,26 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     }
 
     fn push_title(&mut self) {
-        // Title stack not implemented in Phase 0. No-op.
+        let g = self.target.active_grid_mut();
+        if g.title_stack.len() < crate::grid::TITLE_STACK_MAX {
+            let current = g.title.clone().unwrap_or_default();
+            g.title_stack.push(current);
+        } else {
+            tracing::debug!(
+                max = crate::grid::TITLE_STACK_MAX,
+                "title stack full, push ignored"
+            );
+        }
     }
 
     fn pop_title(&mut self) {
-        // Title stack not implemented in Phase 0. No-op.
+        let g = self.target.active_grid_mut();
+        if let Some(title) = g.title_stack.pop() {
+            g.title = if title.is_empty() { None } else { Some(title) };
+            g.title_dirty = true;
+        } else {
+            tracing::trace!("pop_title on empty stack, no-op");
+        }
     }
 
     fn set_color(&mut self, index: usize, color: vte::ansi::Rgb) {
@@ -1014,6 +1029,54 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
     fn unset_keypad_application_mode(&mut self) {
         self.target.active_grid_mut().modes.set(66, false);
+    }
+
+    fn move_forward_tabs(&mut self, count: u16) {
+        let g = self.target.active_grid_mut();
+        let cols = g.cols as usize;
+        for _ in 0..count {
+            let start = g.cursor.col as usize + 1;
+            if start >= cols {
+                break;
+            }
+            if let Some(pos) = g.tab_stops[start..].iter().position(|&t| t) {
+                g.cursor.col = u16::try_from(start + pos).unwrap_or(g.cols - 1);
+            } else {
+                g.cursor.col = g.cols - 1;
+                break;
+            }
+        }
+    }
+
+    fn report_mode(&mut self, mode: vte::ansi::Mode) {
+        let num = mode.raw();
+        let setting = if self.target.active_grid_mut().modes.get(num) {
+            1
+        } else {
+            2
+        };
+        if let Err(e) = write!(self.writer, "\x1b[{num};{setting}$y") {
+            warn_writer_once(&e, "DECRPM");
+        }
+    }
+
+    fn report_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
+        let num = mode.raw();
+        let setting = if self.target.active_grid_mut().modes.get(num) {
+            1
+        } else {
+            2
+        };
+        if let Err(e) = write!(self.writer, "\x1b[?{num};{setting}$y") {
+            warn_writer_once(&e, "DECRPM private");
+        }
+    }
+
+    fn text_area_size_chars(&mut self) {
+        let g = self.target.active_grid_mut();
+        if let Err(e) = write!(self.writer, "\x1b[8;{};{}t", g.rows, g.cols) {
+            warn_writer_once(&e, "text area size");
+        }
     }
 }
 
@@ -2095,6 +2158,169 @@ mod tests {
         let mut grid = test_grid(10, 1);
         parse(&mut grid, b"\x1b]2;hello world\x1b\\");
         assert_eq!(grid.title.as_deref(), Some("hello world"));
+    }
+
+    // --- Title stack tests ---
+
+    #[test]
+    fn push_pop_title_round_trip() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]2;original\x1b\\");
+        grid.title_dirty = false;
+        parse(&mut grid, b"\x1b[22;0t"); // push
+        parse(&mut grid, b"\x1b]2;temporary\x1b\\");
+        assert_eq!(grid.title.as_deref(), Some("temporary"));
+        grid.title_dirty = false;
+        parse(&mut grid, b"\x1b[23;0t"); // pop
+        assert_eq!(grid.title.as_deref(), Some("original"));
+        assert!(grid.title_dirty);
+    }
+
+    #[test]
+    fn pop_empty_stack_is_noop() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]2;keep me\x1b\\");
+        grid.title_dirty = false;
+        parse(&mut grid, b"\x1b[23;0t"); // pop on empty stack
+        assert_eq!(grid.title.as_deref(), Some("keep me"));
+        assert!(!grid.title_dirty);
+    }
+
+    #[test]
+    fn push_pop_multiple_lifo() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]2;first\x1b\\");
+        parse(&mut grid, b"\x1b[22;0t"); // push "first"
+        parse(&mut grid, b"\x1b]2;second\x1b\\");
+        parse(&mut grid, b"\x1b[22;0t"); // push "second"
+        parse(&mut grid, b"\x1b]2;third\x1b\\");
+        parse(&mut grid, b"\x1b[22;0t"); // push "third"
+
+        parse(&mut grid, b"\x1b[23;0t"); // pop → "third"
+        assert_eq!(grid.title.as_deref(), Some("third"));
+        parse(&mut grid, b"\x1b[23;0t"); // pop → "second"
+        assert_eq!(grid.title.as_deref(), Some("second"));
+        parse(&mut grid, b"\x1b[23;0t"); // pop → "first"
+        assert_eq!(grid.title.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn push_respects_depth_limit() {
+        let mut grid = test_grid(10, 1);
+        for i in 0..11 {
+            parse(&mut grid, format!("\x1b]2;title{i}\x1b\\").as_bytes());
+            parse(&mut grid, b"\x1b[22;0t"); // push
+        }
+        // Only 10 entries should be stored (11th push ignored).
+        assert_eq!(grid.title_stack.len(), 10);
+
+        // Pop all 10.
+        for _ in 0..10 {
+            parse(&mut grid, b"\x1b[23;0t");
+        }
+        assert!(grid.title_stack.is_empty());
+
+        // 11th pop is a no-op.
+        grid.title_dirty = false;
+        parse(&mut grid, b"\x1b[23;0t");
+        assert!(!grid.title_dirty);
+    }
+
+    #[test]
+    fn reset_clears_title_stack() {
+        let mut grid = test_grid(10, 1);
+        parse(&mut grid, b"\x1b]2;saved\x1b\\");
+        parse(&mut grid, b"\x1b[22;0t"); // push
+        assert_eq!(grid.title_stack.len(), 1);
+
+        parse(&mut grid, b"\x1bc"); // RIS
+        assert!(grid.title_stack.is_empty());
+
+        // Pop should be no-op.
+        grid.title_dirty = false;
+        parse(&mut grid, b"\x1b[23;0t");
+        assert!(!grid.title_dirty);
+    }
+
+    #[test]
+    fn push_none_title() {
+        let mut grid = test_grid(10, 1);
+        assert!(grid.title.is_none());
+        parse(&mut grid, b"\x1b[22;0t"); // push None (stored as "")
+        parse(&mut grid, b"\x1b]2;something\x1b\\");
+        assert_eq!(grid.title.as_deref(), Some("something"));
+        parse(&mut grid, b"\x1b[23;0t"); // pop → None
+        assert!(grid.title.is_none());
+    }
+
+    // --- Forward tab, mode reporting, text area size tests ---
+
+    #[test]
+    fn move_forward_tabs() {
+        let mut grid = test_grid(80, 1);
+        // CSI 2 I — move forward 2 tab stops.
+        parse(&mut grid, b"\x1b[2I");
+        assert_cursor_at(&grid, 0, 16);
+    }
+
+    #[test]
+    fn move_forward_tabs_at_last_col() {
+        let mut grid = test_grid(80, 1);
+        grid.cursor.col = 79;
+        parse(&mut grid, b"\x1b[1I");
+        assert_cursor_at(&grid, 0, 79); // no-op at last column
+    }
+
+    #[test]
+    fn move_forward_tabs_past_last_stop() {
+        let mut grid = test_grid(80, 1);
+        grid.cursor.col = 72;
+        parse(&mut grid, b"\x1b[1I"); // no tab stop between 72 and 79
+        assert_cursor_at(&grid, 0, 79); // clamp to last column
+    }
+
+    #[test]
+    fn report_mode_set() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        grid.modes.set(4, true); // IRM (insert mode)
+        process_bytes(&mut grid, b"\x1b[4$p", &mut out);
+        assert_eq!(out, b"\x1b[4;1$y");
+    }
+
+    #[test]
+    fn report_mode_reset() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        // IRM (mode 4) is off by default.
+        process_bytes(&mut grid, b"\x1b[4$p", &mut out);
+        assert_eq!(out, b"\x1b[4;2$y");
+    }
+
+    #[test]
+    fn report_private_mode_set() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        // DECAWM (mode 7) is on by default.
+        process_bytes(&mut grid, b"\x1b[?7$p", &mut out);
+        assert_eq!(out, b"\x1b[?7;1$y");
+    }
+
+    #[test]
+    fn report_private_mode_reset() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        // Mode 25 (DECTCEM) is off by default.
+        process_bytes(&mut grid, b"\x1b[?25$p", &mut out);
+        assert_eq!(out, b"\x1b[?25;2$y");
+    }
+
+    #[test]
+    fn text_area_size_chars_report() {
+        let mut grid = test_grid(80, 24);
+        let mut out = Vec::new();
+        process_bytes(&mut grid, b"\x1b[18t", &mut out);
+        assert_eq!(out, b"\x1b[8;24;80t");
     }
 
     #[test]

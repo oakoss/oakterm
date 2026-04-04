@@ -76,6 +76,9 @@ pub enum ScreenId {
     Alternate,
 }
 
+/// Maximum title stack depth (matches xterm).
+pub(crate) const TITLE_STACK_MAX: usize = 10;
+
 /// The visible terminal screen.
 pub struct Grid {
     pub lines: Vec<Row>,
@@ -106,6 +109,8 @@ pub struct Grid {
     pub dynamic_bg: Option<Rgb>,
     pub dynamic_cursor: Option<Rgb>,
     pub title: Option<String>,
+    /// Title stack for CSI 22/23 t (XTWINOPS push/pop). Capped at [`TITLE_STACK_MAX`].
+    pub title_stack: Vec<String>,
     /// Set by handler when BEL (0x07) is received. Cleared by daemon after sending.
     pub bell_pending: bool,
     /// Set by handler when title changes. Cleared by daemon after sending.
@@ -160,6 +165,7 @@ impl Grid {
             dynamic_bg: None,
             dynamic_cursor: None,
             title: None,
+            title_stack: Vec::new(),
             bell_pending: false,
             title_dirty: false,
         }
