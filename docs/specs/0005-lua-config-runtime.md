@@ -106,6 +106,7 @@ The following tables and functions are registered into Lua's global scope before
 oakterm = {
     config = { ... },   -- Config fields (see below)
     action = { ... },   -- Action constructors (see below)
+    layout = { ... },   -- Layout definitions (see Layout API below)
 }
 
 --- Register a keybinding.
@@ -153,6 +154,14 @@ oakterm.config.check_for_updates = "off"
 oakterm.config.padding = { top = 8, bottom = 8, left = 12, right = 12 }
 oakterm.config.window_decorations = "full"
 oakterm.config.confirm_close_process = true
+
+-- Phase 1: Multiplexer config (ADR-0011, Spec-0007, Spec-0008, Spec-0010)
+oakterm.config.oak_mod = "ctrl+shift"       -- Linux default; "super" on macOS (super = Cmd key)
+oakterm.config.leader = nil                  -- optional: { key = "ctrl+b", timeout = 1000 }
+oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic"
+oakterm.config.status_bar = true
+oakterm.config.status_bar_position = "bottom" -- "top" or "bottom"
+oakterm.config.restartable_commands = {}     -- list of command prefixes to restore on session load
 ```
 
 The `oakterm.config` table is implemented as a **proxy table**: an empty table with `__newindex` and `__index` on its metatable, backed by a hidden storage table. This means `rawset(oakterm.config, key, value)` writes to the empty proxy (discarded), not the backing store. The metatable has `__metatable` set to a string, preventing `getmetatable`/`setmetatable` from inspecting or replacing the protection.
@@ -179,26 +188,72 @@ oakterm.action.send_string("\x1b[A") -- raw escape sequence
 oakterm.action.show_command_palette()
 oakterm.action.toggle_fullscreen()
 oakterm.action.reload_config()
+
+-- Phase 1: Multiplexer actions (Spec-0007, Spec-0008, Spec-0009)
+oakterm.action.enter_copy_mode()
+oakterm.action.enter_resize_mode()
+oakterm.action.toggle_floating_pane()
+oakterm.action.zoom_pane()               -- toggle pane fullscreen within tab
+oakterm.action.next_tab()
+oakterm.action.previous_tab()
+oakterm.action.switch_tab(1)             -- switch to tab by index
+oakterm.action.rename_tab("name")
+oakterm.action.new_workspace("name")
+oakterm.action.switch_workspace("name")
+oakterm.action.promote_to_floating()     -- tiled → floating
+oakterm.action.demote_to_tiled()         -- floating → tiled
+oakterm.action.swap_pane(pane_id)        -- swap focused pane with target
+oakterm.action.move_tab(to_index)        -- reorder tab within workspace
+oakterm.action.close_workspace()
+oakterm.action.rename_workspace("name")
+oakterm.action.load_layout("name")       -- apply a named layout (see Layout API)
 ```
 
 #### Events
 
 Events registered via `oakterm.on(event, callback)`:
 
-| Event                | Callback Signature                                        | When Fired                                     |
-| -------------------- | --------------------------------------------------------- | ---------------------------------------------- |
-| `config.loaded`      | `function()`                                              | After config evaluation completes successfully |
-| `config.reloaded`    | `function()`                                              | After hot-reload succeeds                      |
-| `window.created`     | `function(window_id: number)`                             | New GUI window opened                          |
-| `window.focused`     | `function(window_id: number)`                             | Window gains focus                             |
-| `window.resized`     | `function(window_id: number, cols: number, rows: number)` | Window resized                                 |
-| `pane.created`       | `function(pane_id: number)`                               | New pane spawned                               |
-| `pane.focused`       | `function(pane_id: number)`                               | Pane gains focus                               |
-| `pane.closed`        | `function(pane_id: number, exit_code: number)`            | Pane's process exited                          |
-| `pane.title_changed` | `function(pane_id: number, title: string)`                | Pane title updated                             |
-| `pane.cwd_changed`   | `function(pane_id: number, cwd: string)`                  | Working directory changed (OSC 7)              |
+| Event                | Callback Signature                                        | When Fired                                                 |
+| -------------------- | --------------------------------------------------------- | ---------------------------------------------------------- |
+| `config.loaded`      | `function()`                                              | After config evaluation completes successfully             |
+| `config.reloaded`    | `function()`                                              | After hot-reload succeeds                                  |
+| `window.created`     | `function(window_id: number)`                             | New GUI window opened                                      |
+| `window.focused`     | `function(window_id: number)`                             | Window gains focus                                         |
+| `window.resized`     | `function(window_id: number, cols: number, rows: number)` | Window resized                                             |
+| `pane.created`       | `function(pane_id: number)`                               | New pane spawned                                           |
+| `pane.focused`       | `function(pane_id: number)`                               | Pane gains focus                                           |
+| `pane.closed`        | `function(pane_id: number, exit_code: number)`            | Pane's process exited                                      |
+| `pane.title_changed` | `function(pane_id: number, title: string)`                | Pane title updated                                         |
+| `pane.cwd_changed`   | `function(pane_id: number, cwd: string)`                  | Working directory changed (OSC 7)                          |
+| `tab.created`        | `function(tab_id: number)`                                | New tab created                                            |
+| `tab.closed`         | `function(tab_id: number)`                                | Tab closed                                                 |
+| `tab.switched`       | `function(tab_id: number)`                                | Active tab changed                                         |
+| `workspace.created`  | `function(workspace_id: number, name: string)`            | New workspace created                                      |
+| `workspace.switched` | `function(workspace_id: number, name: string)`            | Active workspace changed                                   |
+| `mode.changed`       | `function(pane_id: number, mode: string)`                 | Mode changed ("normal", "copy", "resize") for focused pane |
 
 Multiple handlers can be registered for the same event. Handlers fire in registration order. A handler returning `false` cancels subsequent handlers for that event.
+
+#### Layout API
+
+Declarative layout definitions. Layouts can be loaded by name from the command palette (`# layout_name`) or via `oakterm.action.load_layout("name")`.
+
+```lua
+oakterm.layout.define("dev", {
+    tabs = {
+        { name = "code", panes = {
+            { command = "nvim", split = "left", size = 0.65 },
+            { split = "right", children = {
+                { command = "npm run dev", split = "top" },
+                { split = "bottom" },
+            }},
+        }},
+        { name = "git", panes = { { command = "lazygit" } } },
+    },
+})
+```
+
+Each `panes` list maps to a container's children in the layout tree (Spec-0007). `split` indicates the child's position within its parent container: `"left"` / `"right"` create horizontal containers, `"top"` / `"bottom"` create vertical containers. `size` is the proportional weight as a float (0.0-1.0); omitted children share remaining weight equally. The idea doc uses `"65%"` string syntax, which is accepted as sugar for `0.65`. `children` nests a sub-container. `command` is optional (default: shell).
 
 ### Custom `require()`
 

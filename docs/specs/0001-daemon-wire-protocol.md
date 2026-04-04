@@ -128,7 +128,7 @@ Error codes 0 and 7-255 are reserved. Codes 256+ are available for future use.
 | `0x66`   | Resize     | C→D       | Push (0) | `pane_id: u32`, `cols: u16`, `rows: u16`, `pixel_width: u16`, `pixel_height: u16`   |
 | `0x67`   | Detach     | C→D       | Push (0) | Empty. Client is disconnecting cleanly.                                             |
 
-#### GUI Protocol — Rendering (0x70-0x7F)
+#### GUI Protocol — Rendering & Search (0x70-0x7F)
 
 | msg_type | Name            | Direction | Serial   | Payload                                                                          |
 | -------- | --------------- | --------- | -------- | -------------------------------------------------------------------------------- |
@@ -198,7 +198,39 @@ Cell size: 16 bytes fixed + variable extra. The `extra` field keeps the common c
 | `0x83`   | PaneExited    | D→C       | Push (0) | `pane_id: u32`, `exit_code: i32`                                      |
 | `0x84`   | ConfigChanged | D→C       | Push (0) | `config_data_len: u32`, `config_data: bytes`                          |
 
-#### GUI Protocol — Pane Management (0x90-0x9F)
+#### GUI Protocol — Search (0x77-0x7B)
+
+| msg_type | Name             | Direction | Serial   | Payload                                                                                                                                                                        |
+| -------- | ---------------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0x77`   | SearchScrollback | C→D       | Request  | `pane_id: u32`, `flags: u8`, `query_len: u16`, `query: UTF-8`                                                                                                                  |
+| `0x78`   | SearchResults    | D→C       | Response | `pane_id: u32`, `total_matches: u32`, `active_index: u32` (0xFFFFFFFF = none), `active_row_offset: i64`, `capped: u8`, `visible_count: u16`, `visible_matches: [VisibleMatch]` |
+| `0x79`   | SearchNext       | C→D       | Request  | `pane_id: u32`                                                                                                                                                                 |
+| `0x7A`   | SearchPrev       | C→D       | Request  | `pane_id: u32`                                                                                                                                                                 |
+| `0x7B`   | SearchClose      | C→D       | Push (0) | `pane_id: u32`                                                                                                                                                                 |
+
+**SearchScrollback flags:**
+
+| Bit | Name           | Meaning                                                |
+| --- | -------------- | ------------------------------------------------------ |
+| 0   | REGEX          | Treat query as regex (default: literal)                |
+| 1   | CASE_SENSITIVE | Match case exactly (default: smart case for literal)   |
+| 2   | WRAP           | Wrap around at buffer boundaries (not yet implemented) |
+| 3-7 | reserved       | Must be 0                                              |
+
+**VisibleMatch:**
+
+```text
+Field              Type        Notes
+─────────────────  ──────────  ──────────────────────────────────
+row                u16 LE      Viewport row (0 = top of viewport)
+col_start          u16 LE      Column of match start
+col_end            u16 LE      Column of match end (exclusive)
+is_active          u8          1 if this is the currently selected match, 0 otherwise
+```
+
+`SearchNext` and `SearchPrev` advance the active match index forward or backward and return a new `SearchResults` response. `SearchClose` clears search highlights and state for the pane.
+
+#### GUI Protocol — Pane Management (0x90-0x96)
 
 | msg_type | Name               | Direction | Serial   | Payload                                                                                                      |
 | -------- | ------------------ | --------- | -------- | ------------------------------------------------------------------------------------------------------------ |
@@ -225,6 +257,43 @@ exit_code          i32 LE      -1 if still running
 cwd_len            u16 LE
 cwd                UTF-8       Current working directory (from OSC 7, empty if unknown)
 ```
+
+#### GUI Protocol — Copy Mode (0x97-0x9A)
+
+See Spec-0008 for full copy mode behavior.
+
+| msg_type | Name          | Direction | Serial   | Payload                                                                                                                                       |
+| -------- | ------------- | --------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0x97`   | EnterCopyMode | C→D       | Push (0) | `pane_id: u32`. Pins the pane's viewport offset for this client. New PTY output continues but does not scroll the pinned viewport.            |
+| `0x98`   | ExitCopyMode  | C→D       | Push (0) | `pane_id: u32`. Unpins the viewport. Scroll position jumps to follow live output.                                                             |
+| `0x99`   | YankSelection | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `start_col: u16`, `end_row: i64`, `end_col: u16`, `selection_type: u8` (0=character, 1=line, 2=block)       |
+| `0x9A`   | YankResponse  | D→C       | Response | `text_len: u32`, `text: UTF-8`. The extracted text for the requested selection range, resolved across hot buffer and disk archive boundaries. |
+
+The daemon tracks which clients have pinned viewports per pane (a set of client IDs, not a boolean). Scroll-on-output is suppressed per-client while its ID is in the set. See ADR-0012.
+
+#### GUI Protocol — Split Topology (0xA0-0xAF)
+
+See Spec-0007 for the layout tree model.
+
+| msg_type | Name              | Direction | Serial   | Payload                                                                                                                                                                        |
+| -------- | ----------------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0xA0`   | SplitPane         | C→D       | Request  | `pane_id: u32`, `direction: u8` (0=horizontal: children left-to-right, 1=vertical: children top-to-bottom), `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8` |
+| `0xA1`   | SplitPaneResponse | D→C       | Response | `new_pane_id: u32`                                                                                                                                                             |
+| `0xA2`   | ResizePane        | C→D       | Push (0) | `pane_id: u32`, `neighbor_pane_id: u32`, `delta: i16` (positive = grow pane_id, negative = shrink). Error if panes are not adjacent siblings.                                  |
+| `0xA3`   | SwapPane          | C→D       | Request  | `pane_id_a: u32`, `pane_id_b: u32`                                                                                                                                             |
+| `0xA4`   | SwapPaneResponse  | D→C       | Response | Empty. Confirms swap completed.                                                                                                                                                |
+| `0xA5`   | GetLayoutTree     | C→D       | Request  | `workspace_id: u32`, `tab_id: u32`                                                                                                                                             |
+| `0xA6`   | LayoutTree        | D→C       | Response | `tree_len: u32`, `tree: bytes` (JSON-encoded layout tree, see below)                                                                                                           |
+| `0xA7`   | NewTab            | C→D       | Request  | `workspace_id: u32`, `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8`                                                                                        |
+| `0xA8`   | NewTabResponse    | D→C       | Response | `tab_id: u32`, `pane_id: u32`                                                                                                                                                  |
+| `0xA9`   | CloseTab          | C→D       | Request  | `tab_id: u32`                                                                                                                                                                  |
+| `0xAA`   | CloseTabResponse  | D→C       | Response | Empty. Confirms tab closed.                                                                                                                                                    |
+| `0xAB`   | SwitchTab         | C→D       | Push (0) | `tab_id: u32`                                                                                                                                                                  |
+| `0xAC`   | NewWorkspace      | C→D       | Request  | `name_len: u16`, `name: UTF-8`                                                                                                                                                 |
+| `0xAD`   | NewWorkspaceResp  | D→C       | Response | `workspace_id: u32`, `tab_id: u32`, `pane_id: u32`                                                                                                                             |
+| `0xAE`   | SwitchWorkspace   | C→D       | Push (0) | `workspace_id: u32`                                                                                                                                                            |
+
+**GetLayoutTree response:** The `tree` payload is a JSON-encoded layout tree for a single tab. Based on Spec-0010's `SavedLayoutNode` structure but with live `pane_id: u32` at each leaf instead of `SavedPane`. This gives the GUI the pane IDs it needs to correlate with render updates. JSON is used because layout tree queries are infrequent (on tab switch, not per frame) and the tree is small (~1-5 KB).
 
 #### Control Protocol (0xC8-0xDF)
 
