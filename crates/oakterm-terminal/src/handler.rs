@@ -7,19 +7,9 @@
 //! The handler is generic over `TermTarget`: tests pass a bare `Grid`,
 //! while the daemon passes a `ScreenSet` for alternate screen support.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crate::grid::cell::{self, CellFlags, WideState};
 use crate::grid::row::Row;
 use crate::grid::{Grid, ScreenId, ScreenSet};
-
-/// Log a VT response write failure at most once (broken writer is permanent).
-fn warn_writer_once(e: &std::io::Error, response: &str) {
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, Ordering::Relaxed) {
-        tracing::warn!(error = %e, response, "failed to write VT response");
-    }
-}
 
 /// Abstraction over `Grid` and `ScreenSet` for the handler.
 ///
@@ -29,6 +19,14 @@ fn warn_writer_once(e: &std::io::Error, response: &str) {
 /// single-screen contexts (tests).
 pub trait TermTarget {
     fn active_grid_mut(&mut self) -> &mut Grid;
+    /// Mode flags from the primary grid. Alt-screen modes (47/1047/1049)
+    /// are stored on the primary grid before switching, so DECRPM queries
+    /// must read from primary to report them correctly.
+    fn primary_mode_flags(&self) -> &crate::grid::ModeFlags;
+    /// Session-scoped write-failure flag. Always reads from the primary
+    /// grid so that switching between primary/alternate screens does not
+    /// re-trigger the warning.
+    fn writer_warned_mut(&mut self) -> &mut bool;
     fn enter_alternate(&mut self) {}
     fn exit_alternate(&mut self) {}
     /// Push rows that scrolled off the visible area into scrollback.
@@ -50,11 +48,23 @@ impl TermTarget for Grid {
     fn active_grid_mut(&mut self) -> &mut Grid {
         self
     }
+    fn primary_mode_flags(&self) -> &crate::grid::ModeFlags {
+        &self.modes
+    }
+    fn writer_warned_mut(&mut self) -> &mut bool {
+        &mut self.writer_warned
+    }
 }
 
 impl TermTarget for ScreenSet {
     fn active_grid_mut(&mut self) -> &mut Grid {
         ScreenSet::active_grid_mut(self)
+    }
+    fn primary_mode_flags(&self) -> &crate::grid::ModeFlags {
+        &self.primary().modes
+    }
+    fn writer_warned_mut(&mut self) -> &mut bool {
+        &mut self.primary_mut().writer_warned
     }
     fn enter_alternate(&mut self) {
         ScreenSet::enter_alternate(self);
@@ -86,6 +96,18 @@ pub struct Terminal<'a, T: TermTarget, W: std::io::Write> {
 impl<'a, T: TermTarget, W: std::io::Write> Terminal<'a, T, W> {
     pub fn new(target: &'a mut T, writer: &'a mut W) -> Self {
         Self { target, writer }
+    }
+
+    /// Log a VT response write failure once at warn level per session.
+    /// Subsequent failures drop to trace to avoid spam.
+    fn warn_writer(&mut self, e: &std::io::Error, response: &str) {
+        let warned = self.target.writer_warned_mut();
+        if *warned {
+            tracing::trace!(error = %e, response, "repeated VT response write failure");
+        } else {
+            *warned = true;
+            tracing::warn!(error = %e, response, "failed to write VT response");
+        }
     }
 }
 
@@ -947,7 +969,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             self.writer,
             "\x1b]{prefix};rgb:{r:04x}/{green:04x}/{b:04x}{terminator}"
         ) {
-            warn_writer_once(&e, "OSC color report");
+            self.warn_writer(&e, "OSC color report");
         }
     }
 
@@ -966,13 +988,13 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             // DA1 (CSI c): report VT220 with ANSI color.
             None => {
                 if let Err(e) = self.writer.write_all(b"\x1b[?62;22c") {
-                    warn_writer_once(&e, "DA1");
+                    self.warn_writer(&e, "DA1");
                 }
             }
             // DA2 (CSI > c): report version.
             Some('>') => {
                 if let Err(e) = self.writer.write_all(b"\x1b[>0;0;0c") {
-                    warn_writer_once(&e, "DA2");
+                    self.warn_writer(&e, "DA2");
                 }
             }
             _ => {}
@@ -984,7 +1006,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             5 => {
                 // DSR: device status — report "OK".
                 if let Err(e) = self.writer.write_all(b"\x1b[0n") {
-                    warn_writer_once(&e, "DSR status");
+                    self.warn_writer(&e, "DSR status");
                 }
             }
             6 => {
@@ -993,7 +1015,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                 let row = g.cursor.row + 1;
                 let col = g.cursor.col + 1;
                 if let Err(e) = write!(self.writer, "\x1b[{row};{col}R") {
-                    warn_writer_once(&e, "DSR/CPR");
+                    self.warn_writer(&e, "DSR/CPR");
                 }
             }
             _ => {}
@@ -1049,33 +1071,56 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     }
 
     fn report_mode(&mut self, mode: vte::ansi::Mode) {
+        // Only report modes we semantically handle. set_mode/unset_mode
+        // store all mode numbers via catch-all, but storing a bit does not
+        // mean the mode is implemented. Reporting 0 (not recognized) is
+        // more accurate than reporting a stored-but-unimplemented flag.
         let num = mode.raw();
-        let setting = if self.target.active_grid_mut().modes.get(num) {
-            1
-        } else {
-            2
+        let setting = match num {
+            4 | 20 => {
+                if self.target.active_grid_mut().modes.get(num) {
+                    1
+                } else {
+                    2
+                }
+            }
+            _ => 0, // not recognized
         };
         if let Err(e) = write!(self.writer, "\x1b[{num};{setting}$y") {
-            warn_writer_once(&e, "DECRPM");
+            self.warn_writer(&e, "DECRPM");
         }
     }
 
     fn report_private_mode(&mut self, mode: vte::ansi::PrivateMode) {
         let num = mode.raw();
-        let setting = if self.target.active_grid_mut().modes.get(num) {
-            1
-        } else {
-            2
+        let setting = match num {
+            // Alt-screen modes are stored on the primary grid.
+            47 | 1047 | 1049 => {
+                if self.target.primary_mode_flags().get(num) {
+                    1
+                } else {
+                    2
+                }
+            }
+            1 | 6 | 7 | 12 | 25 | 66 | 1000 | 1002 | 1003 | 1004 | 1005 | 1006 | 1007 | 2004
+            | 2026 => {
+                if self.target.active_grid_mut().modes.get(num) {
+                    1
+                } else {
+                    2
+                }
+            }
+            _ => 0, // not recognized
         };
         if let Err(e) = write!(self.writer, "\x1b[?{num};{setting}$y") {
-            warn_writer_once(&e, "DECRPM private");
+            self.warn_writer(&e, "DECRPM private");
         }
     }
 
     fn text_area_size_chars(&mut self) {
         let g = self.target.active_grid_mut();
         if let Err(e) = write!(self.writer, "\x1b[8;{};{}t", g.rows, g.cols) {
-            warn_writer_once(&e, "text area size");
+            self.warn_writer(&e, "text area size");
         }
     }
 }
@@ -2313,6 +2358,57 @@ mod tests {
         // Mode 25 (DECTCEM) is off by default.
         process_bytes(&mut grid, b"\x1b[?25$p", &mut out);
         assert_eq!(out, b"\x1b[?25;2$y");
+    }
+
+    #[test]
+    fn report_private_mode_unrecognized() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        // Mode 9999 is not recognized — should report 0.
+        process_bytes(&mut grid, b"\x1b[?9999$p", &mut out);
+        assert_eq!(out, b"\x1b[?9999;0$y");
+    }
+
+    #[test]
+    fn report_mode_unrecognized() {
+        let mut grid = test_grid(10, 1);
+        let mut out = Vec::new();
+        // Mode 99 is not recognized — should report 0.
+        process_bytes(&mut grid, b"\x1b[99$p", &mut out);
+        assert_eq!(out, b"\x1b[99;0$y");
+    }
+
+    #[test]
+    fn report_alt_screen_mode_from_alternate() {
+        let mut screen = test_screen(10, 3);
+        let mut out = Vec::new();
+        // Enter alt screen via mode 1049.
+        process_bytes(&mut screen, b"\x1b[?1049h", &mut out);
+        out.clear();
+        // Query mode 1049 while on alternate — should report 1 (set).
+        process_bytes(&mut screen, b"\x1b[?1049$p", &mut out);
+        assert_eq!(out, b"\x1b[?1049;1$y");
+    }
+
+    #[test]
+    fn report_alt_screen_mode_47_from_alternate() {
+        let mut screen = test_screen(10, 3);
+        let mut out = Vec::new();
+        process_bytes(&mut screen, b"\x1b[?47h", &mut out);
+        out.clear();
+        process_bytes(&mut screen, b"\x1b[?47$p", &mut out);
+        assert_eq!(out, b"\x1b[?47;1$y");
+    }
+
+    #[test]
+    fn report_alt_screen_mode_reset_after_exit() {
+        let mut screen = test_screen(10, 3);
+        let mut out = Vec::new();
+        process_bytes(&mut screen, b"\x1b[?1049h", &mut out);
+        process_bytes(&mut screen, b"\x1b[?1049l", &mut out);
+        out.clear();
+        process_bytes(&mut screen, b"\x1b[?1049$p", &mut out);
+        assert_eq!(out, b"\x1b[?1049;2$y");
     }
 
     #[test]

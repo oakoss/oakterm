@@ -115,6 +115,9 @@ pub struct Grid {
     pub bell_pending: bool,
     /// Set by handler when title changes. Cleared by daemon after sending.
     pub title_dirty: bool,
+    /// Set after the first VT response write failure is logged.
+    /// Prevents log spam when the PTY writer is permanently broken.
+    pub writer_warned: bool,
 }
 
 impl Grid {
@@ -168,6 +171,7 @@ impl Grid {
             title_stack: Vec::new(),
             bell_pending: false,
             title_dirty: false,
+            writer_warned: false,
         }
     }
 
