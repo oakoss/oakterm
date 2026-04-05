@@ -269,6 +269,15 @@ fn do_tab(g: &mut Grid) {
     g.cursor.col = (cols - 1) as u16;
 }
 
+/// Scroll region top and bottom rows. Returns (0, rows-1) when no region is set.
+fn scroll_bounds(g: &Grid) -> (u16, u16) {
+    let top = g.scroll_region.map_or(0, |r| r.top);
+    let bottom = g
+        .scroll_region
+        .map_or(g.rows.saturating_sub(1), |r| r.bottom);
+    (top, bottom)
+}
+
 fn save_cursor(g: &mut Grid) {
     g.saved_cursor = g.cursor;
     g.saved_attr = g.current_attr;
@@ -276,6 +285,7 @@ fn save_cursor(g: &mut Grid) {
     g.saved_bg = g.current_bg;
     g.saved_underline_style = g.current_underline_style;
     g.saved_underline_color = g.current_underline_color;
+    g.saved_origin_mode = g.modes.get(6);
 }
 
 fn restore_cursor(g: &mut Grid) {
@@ -285,6 +295,16 @@ fn restore_cursor(g: &mut Grid) {
     g.current_bg = g.saved_bg;
     g.current_underline_style = g.saved_underline_style;
     g.current_underline_color = g.saved_underline_color;
+    g.modes.set(6, g.saved_origin_mode);
+
+    // Clamp restored cursor to grid dimensions (resize may have shrunk).
+    g.cursor.row = g.cursor.row.min(g.rows.saturating_sub(1));
+    g.cursor.col = g.cursor.col.min(g.cols.saturating_sub(1));
+    // Under DECOM, further clamp to the current scroll region.
+    if g.saved_origin_mode {
+        let (top, bottom) = scroll_bounds(g);
+        g.cursor.row = g.cursor.row.clamp(top, bottom);
+    }
 }
 
 fn clear_grid(g: &mut Grid) {
@@ -407,17 +427,29 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
     #[allow(clippy::cast_sign_loss)] // clamped to >= 0
     fn goto(&mut self, line: i32, col: usize) {
         let g = self.target.active_grid_mut();
-        let max_row = g.rows.saturating_sub(1);
         let max_col = g.cols.saturating_sub(1);
-        g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        if g.modes.get(6) {
+            let (top, bottom) = scroll_bounds(g);
+            let row = sat_u16(line.max(0) as usize).saturating_add(top);
+            g.cursor.row = row.clamp(top, bottom);
+        } else {
+            let max_row = g.rows.saturating_sub(1);
+            g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        }
         g.cursor.col = sat_u16(col).min(max_col);
     }
 
     #[allow(clippy::cast_sign_loss)] // clamped to >= 0
     fn goto_line(&mut self, line: i32) {
         let g = self.target.active_grid_mut();
-        let max_row = g.rows.saturating_sub(1);
-        g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        if g.modes.get(6) {
+            let (top, bottom) = scroll_bounds(g);
+            let row = sat_u16(line.max(0) as usize).saturating_add(top);
+            g.cursor.row = row.clamp(top, bottom);
+        } else {
+            let max_row = g.rows.saturating_sub(1);
+            g.cursor.row = sat_u16(line.max(0) as usize).min(max_row);
+        }
     }
 
     fn goto_col(&mut self, col: usize) {
@@ -428,13 +460,22 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
     fn move_up(&mut self, count: usize) {
         let g = self.target.active_grid_mut();
-        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count));
+        let floor = if g.modes.get(6) {
+            scroll_bounds(g).0
+        } else {
+            0
+        };
+        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count)).max(floor);
     }
 
     fn move_down(&mut self, count: usize) {
         let g = self.target.active_grid_mut();
-        let max_row = g.rows.saturating_sub(1);
-        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(max_row);
+        let ceiling = if g.modes.get(6) {
+            scroll_bounds(g).1
+        } else {
+            g.rows.saturating_sub(1)
+        };
+        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(ceiling);
     }
 
     fn move_forward(&mut self, col: usize) {
@@ -450,14 +491,23 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
 
     fn move_down_and_cr(&mut self, count: usize) {
         let g = self.target.active_grid_mut();
-        let max_row = g.rows.saturating_sub(1);
-        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(max_row);
+        let ceiling = if g.modes.get(6) {
+            scroll_bounds(g).1
+        } else {
+            g.rows.saturating_sub(1)
+        };
+        g.cursor.row = g.cursor.row.saturating_add(sat_u16(count)).min(ceiling);
         g.cursor.col = 0;
     }
 
     fn move_up_and_cr(&mut self, count: usize) {
         let g = self.target.active_grid_mut();
-        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count));
+        let floor = if g.modes.get(6) {
+            scroll_bounds(g).0
+        } else {
+            0
+        };
+        g.cursor.row = g.cursor.row.saturating_sub(sat_u16(count)).max(floor);
         g.cursor.col = 0;
     }
 
@@ -679,9 +729,12 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
         } else {
             g.scroll_region = None;
         }
-        // DECSTBM homes the cursor. Under DECOM (origin mode, TREK-27),
-        // home means scroll_region.top; for now always (0,0).
-        g.cursor.row = 0;
+        // DECSTBM homes the cursor. Under DECOM, home is scroll_region.top.
+        g.cursor.row = if g.modes.get(6) {
+            g.scroll_region.map_or(0, |r| r.top)
+        } else {
+            0
+        };
         g.cursor.col = 0;
     }
 
@@ -720,6 +773,13 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                 self.target.enter_alternate();
                 clear_grid(self.target.active_grid_mut());
             }
+            // DECOM: setting origin mode homes cursor to scroll region top.
+            6 => {
+                let g = self.target.active_grid_mut();
+                g.modes.set(6, true);
+                g.cursor.row = g.scroll_region.map_or(0, |r| r.top);
+                g.cursor.col = 0;
+            }
             25 => {
                 let g = self.target.active_grid_mut();
                 g.modes.set(num, true);
@@ -754,6 +814,13 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                 self.target.active_grid_mut().modes.set(1049, false);
                 restore_cursor(self.target.active_grid_mut());
                 self.target.active_grid_mut().touch_all();
+            }
+            // DECOM: resetting origin mode homes cursor to (0,0).
+            6 => {
+                let g = self.target.active_grid_mut();
+                g.modes.set(6, false);
+                g.cursor.row = 0;
+                g.cursor.col = 0;
             }
             25 => {
                 let g = self.target.active_grid_mut();
@@ -1011,8 +1078,14 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             }
             6 => {
                 // DSR: cursor position report (1-based).
+                // Under DECOM, row is relative to scroll region top.
                 let g = self.target.active_grid_mut();
-                let row = g.cursor.row + 1;
+                let origin = if g.modes.get(6) {
+                    g.scroll_region.map_or(0, |r| r.top)
+                } else {
+                    0
+                };
+                let row = g.cursor.row.saturating_sub(origin) + 1;
                 let col = g.cursor.col + 1;
                 if let Err(e) = write!(self.writer, "\x1b[{row};{col}R") {
                     self.warn_writer(&e, "DSR/CPR");
@@ -1958,6 +2031,168 @@ mod tests {
         assert!(grid.modes.get(1049));
         parse(&mut grid, b"\x1b[?1049l");
         assert!(!grid.modes.get(1049));
+    }
+
+    // --- DECOM (origin mode) tests ---
+
+    #[test]
+    fn decom_goto_relative_to_region() {
+        let mut grid = test_grid(80, 24);
+        // Set scroll region rows 5-15 (1-based: 6-16), enable DECOM.
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // CUP row 1 (1-based) should land at screen row 5 (0-based).
+        parse(&mut grid, b"\x1b[1;1H");
+        assert_cursor_at(&grid, 5, 0);
+        // CUP row 3 should land at screen row 7.
+        parse(&mut grid, b"\x1b[3;1H");
+        assert_cursor_at(&grid, 7, 0);
+    }
+
+    #[test]
+    fn decom_goto_clamps_to_region() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // CUP row 99 should clamp to region bottom (row 15).
+        parse(&mut grid, b"\x1b[99;1H");
+        assert_cursor_at(&grid, 15, 0);
+    }
+
+    #[test]
+    fn decom_move_up_clamps_at_region_top() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // Position at row 5 (region top), move up 10 — should stay at 5.
+        parse(&mut grid, b"\x1b[1;1H\x1b[10A");
+        assert_cursor_at(&grid, 5, 0);
+    }
+
+    #[test]
+    fn decom_move_down_clamps_at_region_bottom() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // Position at region top, move down 99 — should clamp to row 15.
+        parse(&mut grid, b"\x1b[1;1H\x1b[99B");
+        assert_cursor_at(&grid, 15, 0);
+    }
+
+    #[test]
+    fn decom_set_homes_cursor() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r");
+        grid.cursor.row = 10;
+        grid.cursor.col = 5;
+        // Enabling DECOM homes cursor to region top.
+        parse(&mut grid, b"\x1b[?6h");
+        assert_cursor_at(&grid, 5, 0);
+    }
+
+    #[test]
+    fn decom_reset_homes_cursor() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        grid.cursor.row = 10;
+        grid.cursor.col = 5;
+        // Disabling DECOM homes cursor to (0,0).
+        parse(&mut grid, b"\x1b[?6l");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn decom_decstbm_homes_to_region() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[?6h");
+        // Setting scroll region while DECOM is active homes to region top.
+        parse(&mut grid, b"\x1b[11;20r");
+        assert_cursor_at(&grid, 10, 0);
+    }
+
+    #[test]
+    fn decom_cpr_reports_relative() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // CUP to row 3 in region (absolute row 7).
+        parse(&mut grid, b"\x1b[3;5H");
+        let mut out = Vec::new();
+        process_bytes(&mut grid, b"\x1b[6n", &mut out);
+        // CPR should report row 3, col 5 (region-relative, 1-based).
+        assert_eq!(out, b"\x1b[3;5R");
+    }
+
+    #[test]
+    fn decom_off_goto_is_absolute() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r");
+        // DECOM off (default). CUP row 1 should be screen row 0.
+        parse(&mut grid, b"\x1b[1;1H");
+        assert_cursor_at(&grid, 0, 0);
+    }
+
+    #[test]
+    fn decom_no_region_is_full_screen() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[?6h");
+        // No scroll region = full screen. CUP row 1 = screen row 0.
+        parse(&mut grid, b"\x1b[1;1H");
+        assert_cursor_at(&grid, 0, 0);
+        // CUP row 24 = screen row 23.
+        parse(&mut grid, b"\x1b[24;1H");
+        assert_cursor_at(&grid, 23, 0);
+    }
+
+    #[test]
+    fn decom_save_restore_preserves_origin_mode() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        assert!(grid.modes.get(6));
+        // DECSC saves origin mode.
+        parse(&mut grid, b"\x1b7");
+        // Disable DECOM.
+        parse(&mut grid, b"\x1b[?6l");
+        assert!(!grid.modes.get(6));
+        // DECRC restores origin mode.
+        parse(&mut grid, b"\x1b8");
+        assert!(grid.modes.get(6));
+    }
+
+    #[test]
+    fn decom_goto_line_relative() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        // VPA row 3 (1-based) should land at screen row 7.
+        parse(&mut grid, b"\x1b[3d");
+        assert_cursor_at(&grid, 7, 0);
+    }
+
+    #[test]
+    fn decom_cnl_clamps_at_region_bottom() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        parse(&mut grid, b"\x1b[1;5H"); // row 5(region), col 5
+        // CNL 99 — clamp at region bottom, col to 0.
+        parse(&mut grid, b"\x1b[99E");
+        assert_cursor_at(&grid, 15, 0);
+    }
+
+    #[test]
+    fn decom_cpl_clamps_at_region_top() {
+        let mut grid = test_grid(80, 24);
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h");
+        parse(&mut grid, b"\x1b[5;5H"); // row 5 in region
+        // CPL 99 — clamp at region top, col to 0.
+        parse(&mut grid, b"\x1b[99F");
+        assert_cursor_at(&grid, 5, 0);
+    }
+
+    #[test]
+    fn decom_restore_clamps_to_changed_region() {
+        let mut grid = test_grid(80, 24);
+        // Set region 5-15, enable DECOM, move to row 5, save.
+        parse(&mut grid, b"\x1b[6;16r\x1b[?6h\x1b[1;1H\x1b7");
+        assert_cursor_at(&grid, 5, 0);
+        // Change region to 10-20, restore — cursor should clamp to new top.
+        parse(&mut grid, b"\x1b[11;21r\x1b8");
+        assert!(grid.cursor.row >= 10);
+        assert!(grid.cursor.row <= 20);
     }
 
     // --- Alternate screen tests ---

@@ -80,6 +80,7 @@ pub enum ScreenId {
 pub(crate) const TITLE_STACK_MAX: usize = 10;
 
 /// The visible terminal screen.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Grid {
     pub lines: Vec<Row>,
     pub cols: u16,
@@ -91,6 +92,7 @@ pub struct Grid {
     pub saved_bg: Color,
     pub saved_underline_style: cell::UnderlineStyle,
     pub saved_underline_color: Option<Color>,
+    pub saved_origin_mode: bool,
     pub active_charset: CharsetIndex,
     pub charsets: [StandardCharset; 4],
     pub current_attr: CellFlags,
@@ -145,6 +147,7 @@ impl Grid {
             saved_bg: Color::Default,
             saved_underline_style: cell::UnderlineStyle::None,
             saved_underline_color: None,
+            saved_origin_mode: false,
             active_charset: CharsetIndex::default(),
             charsets: [StandardCharset::default(); 4],
             current_attr: CellFlags::empty(),
