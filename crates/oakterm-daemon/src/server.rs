@@ -56,9 +56,55 @@ pub struct ArchiveConfig {
     pub max_bytes: u64,
 }
 
+/// Per-pane state: screen buffer, PTY lifecycle, and dirty tracking.
+struct PaneState {
+    screens: ScreenSet,
+    pty_state: PtyState,
+    /// Sequence number of the last VT parse; clients compare to detect changes.
+    dirty_seqno: u64,
+}
+
+/// Tracks all panes with monotonic ID assignment.
+pub struct PaneManager {
+    panes: std::collections::HashMap<u32, PaneState>,
+    next_id: u32,
+}
+
+impl PaneManager {
+    fn new() -> Self {
+        Self {
+            panes: std::collections::HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    /// Create a pane with the given grid dimensions. Returns the assigned ID.
+    fn create(&mut self, cols: u16, rows: u16) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.panes.insert(
+            id,
+            PaneState {
+                screens: ScreenSet::new(cols, rows),
+                pty_state: PtyState::NotSpawned,
+                dirty_seqno: 0,
+            },
+        );
+        id
+    }
+
+    fn get(&self, id: u32) -> Option<&PaneState> {
+        self.panes.get(&id)
+    }
+
+    fn get_mut(&mut self, id: u32) -> Option<&mut PaneState> {
+        self.panes.get_mut(&id)
+    }
+}
+
 /// Daemon state shared across tasks.
 pub struct Daemon {
-    screens: Arc<Mutex<ScreenSet>>,
+    panes: Arc<Mutex<PaneManager>>,
     dirty_tx: watch::Sender<u64>,
     dirty_rx: watch::Receiver<u64>,
     socket_path: std::path::PathBuf,
@@ -82,8 +128,10 @@ impl Daemon {
     #[must_use]
     pub fn with_socket_path(cols: u16, rows: u16, socket_path: std::path::PathBuf) -> Self {
         let (dirty_tx, dirty_rx) = watch::channel(0u64);
+        let mut mgr = PaneManager::new();
+        mgr.create(cols, rows); // default pane 0
         Self {
-            screens: Arc::new(Mutex::new(ScreenSet::new(cols, rows))),
+            panes: Arc::new(Mutex::new(mgr)),
             dirty_tx,
             dirty_rx,
             socket_path,
@@ -130,8 +178,13 @@ impl Daemon {
                 config.max_bytes,
             ) {
                 Ok(mgr) => {
-                    self.screens.lock().await.set_archive(mgr);
-                    info!("scrollback archive enabled");
+                    let mut pm = self.panes.lock().await;
+                    if let Some(pane) = pm.get_mut(0) {
+                        pane.screens.set_archive(mgr);
+                        info!("scrollback archive enabled");
+                    } else {
+                        error!("scrollback archive created but pane 0 missing");
+                    }
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to create scrollback archive, continuing without");
@@ -151,8 +204,6 @@ impl Daemon {
             std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o700))?;
         }
 
-        let pty_state = Arc::new(Mutex::new(PtyState::NotSpawned));
-
         // Phase 0: counts all clients. ADR-0007 says "last window closes" —
         // when control clients exist, filter by ClientType::Gui.
         let client_count = Arc::new(AtomicUsize::new(0));
@@ -166,10 +217,9 @@ impl Daemon {
                     let (stream, _) = result?;
                     let conn_id = next_conn_id;
                     next_conn_id += 1;
-                    let screens = Arc::clone(&self.screens);
+                    let panes = Arc::clone(&self.panes);
                     let dirty_rx = self.dirty_rx.clone();
                     let dirty_tx = self.dirty_tx.clone();
-                    let pty = Arc::clone(&pty_state);
                     let count = Arc::clone(&client_count);
                     let tx = shutdown_tx.clone();
 
@@ -177,7 +227,7 @@ impl Daemon {
                     info!(conn_id, "client connected");
 
                     tokio::spawn(async move {
-                        handle_client(conn_id, stream, screens, dirty_rx, dirty_tx, pty).await;
+                        handle_client(conn_id, stream, panes, dirty_rx, dirty_tx).await;
                         let remaining = count.fetch_sub(1, Ordering::AcqRel) - 1;
                         info!(conn_id, remaining, "client disconnected");
                         if remaining == 0 && !persist {
@@ -192,20 +242,22 @@ impl Daemon {
             }
         }
 
-        // Shut down the archive if configured.
-        if let Some(archive) = self.screens.lock().await.archive_mut() {
-            let parent = archive
-                .session_dir()
-                .parent()
-                .map(std::path::Path::to_path_buf);
-            if let Err(e) = archive.shutdown() {
-                warn!(error = %e, "archive shutdown failed");
-            }
-            // Parent should be empty after shutdown removed the scrollback subdirectory.
-            if let Some(p) = parent {
-                if let Err(e) = std::fs::remove_dir(&p) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        warn!(error = %e, path = %p.display(), "failed to remove session directory");
+        // Shut down archives for all panes.
+        let mut pm = self.panes.lock().await;
+        for pane in pm.panes.values_mut() {
+            if let Some(archive) = pane.screens.archive_mut() {
+                let parent = archive
+                    .session_dir()
+                    .parent()
+                    .map(std::path::Path::to_path_buf);
+                if let Err(e) = archive.shutdown() {
+                    warn!(error = %e, "archive shutdown failed");
+                }
+                if let Some(p) = parent {
+                    if let Err(e) = std::fs::remove_dir(&p) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            warn!(error = %e, path = %p.display(), "failed to remove session directory");
+                        }
                     }
                 }
             }
@@ -231,12 +283,12 @@ impl Drop for Daemon {
     }
 }
 
-/// Read PTY output, feed to VT parser, update Grid.
+/// Read PTY output, feed to VT parser, update the pane's screen buffer.
 async fn pty_read_loop(
     pty: oakterm_pty::Pty,
-    screens: Arc<Mutex<ScreenSet>>,
+    panes: Arc<Mutex<PaneManager>>,
+    pane_id: u32,
     dirty_tx: watch::Sender<u64>,
-    pty_state: Arc<Mutex<PtyState>>,
 ) {
     use tokio::io::unix::AsyncFd;
 
@@ -264,7 +316,7 @@ async fn pty_read_loop(
         return;
     };
 
-    debug!(pid, "PTY read loop started");
+    debug!(pid, pane_id, "PTY read loop started");
     let mut buf = [0u8; 4096];
 
     let exit_reason = loop {
@@ -280,33 +332,39 @@ async fn pty_read_loop(
         }) {
             Ok(Ok(0)) => break "EOF",
             Ok(Ok(n)) => {
-                let mut s = screens.lock().await;
+                let mut pm = panes.lock().await;
+                let Some(pane) = pm.get_mut(pane_id) else {
+                    warn!(pane_id, "pane removed while PTY read loop active, exiting");
+                    drop(pm);
+                    break "pane removed";
+                };
                 let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
                 let mut pty_writer = FdWriter(borrowed_wr);
-                s.process_bytes(&buf[..n], &mut pty_writer);
-                let seqno = s.active_grid().seqno;
-                drop(s);
-                let _ = dirty_tx.send(seqno);
+                pane.screens.process_bytes(&buf[..n], &mut pty_writer);
+                pane.dirty_seqno = pane.screens.active_grid().seqno;
+                drop(pm);
+                let _ = dirty_tx.send(pane_id.into());
             }
             Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
             Ok(Err(e)) => {
-                warn!(error = %e, "PTY read error");
+                warn!(error = %e, pane_id, "PTY read error");
                 break "read error";
             }
             Err(_would_block) => {}
         }
     };
 
-    // Transition to Exited state. Exit code 0 is a placeholder — the real
-    // status is lost in Pty::drop which calls child.kill() + child.wait()
-    // but discards the result. Phase 1 should wait(2) before drop for the
-    // real exit code.
     let exit_code = 0;
-    info!(pid, exit_reason, exit_code, "PTY read loop ended");
-    *pty_state.lock().await = PtyState::Exited { exit_code };
+    info!(pid, pane_id, exit_reason, exit_code, "PTY read loop ended");
+    let mut pm = panes.lock().await;
+    if let Some(pane) = pm.get_mut(pane_id) {
+        pane.pty_state = PtyState::Exited { exit_code };
+    } else {
+        warn!(pane_id, exit_code, "PTY exited but pane already removed");
+    }
+    drop(pm);
 
-    // Bump dirty seqno so handle_client wakes, detects the Exited state,
-    // and sends a PaneExited frame to the connected client.
+    // Bump dirty so clients wake and detect the Exited state.
     let _ = dirty_tx.send(u64::MAX);
 }
 
@@ -315,10 +373,9 @@ async fn pty_read_loop(
 async fn handle_client(
     conn_id: u64,
     mut stream: UnixStream,
-    screens: Arc<Mutex<ScreenSet>>,
+    panes: Arc<Mutex<PaneManager>>,
     mut dirty_rx: watch::Receiver<u64>,
     dirty_tx: watch::Sender<u64>,
-    pty_state: Arc<Mutex<PtyState>>,
 ) {
     let mut codec = FrameCodec;
     let mut read_buf = BytesMut::with_capacity(4096);
@@ -398,7 +455,9 @@ async fn handle_client(
     }
 
     // Main client loop.
-    let mut pane_exit_sent = false;
+    // Per-pane last-seen seqno for this client, to avoid redundant DirtyNotify.
+    let mut pane_exit_sent = std::collections::HashSet::new();
+    let mut last_seen: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
     'outer: loop {
         tokio::select! {
             result = dirty_rx.changed() => {
@@ -406,81 +465,91 @@ async fn handle_client(
                     break;
                 }
 
-                // Check if PTY exited and send PaneExited once.
-                if !pane_exit_sent {
-                    let state = pty_state.lock().await;
-                    if let PtyState::Exited { exit_code } = *state {
-                        drop(state);
-                        pane_exit_sent = true;
-                        debug!(conn_id, exit_code, "sending PaneExited to client");
-                        let msg = PaneExited { pane_id: 0, exit_code };
-                        match msg.to_frame() {
-                            Ok(f) => {
-                                if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
-                                    break;
-                                }
+                // Collect per-pane notifications while holding the lock.
+                let mut exit_msgs = Vec::new();
+                let mut title_msgs = Vec::new();
+                let mut bell_msgs = Vec::new();
+                let mut dirty_pane_ids = Vec::new();
+                {
+                    let mut pm = panes.lock().await;
+                    for (&id, pane) in &mut pm.panes {
+                        // PaneExited (once per pane).
+                        if !pane_exit_sent.contains(&id) {
+                            if let PtyState::Exited { exit_code } = pane.pty_state {
+                                pane_exit_sent.insert(id);
+                                exit_msgs.push(PaneExited { pane_id: id, exit_code });
                             }
-                            Err(e) => {
-                                error!(conn_id, error = %e, "failed to encode PaneExited frame");
-                                break;
-                            }
+                        }
+                        // Title/bell.
+                        // NOTE: flags are per-grid, not per-client. First client
+                        // to wake clears them; others miss the event. Phase 1
+                        // needs per-client notification queues.
+                        let g = pane.screens.active_grid_mut();
+                        if g.title_dirty {
+                            g.title_dirty = false;
+                            title_msgs.push(TitleChanged {
+                                pane_id: id,
+                                title: g.title.clone().unwrap_or_default(),
+                            });
+                        }
+                        if g.bell_pending {
+                            g.bell_pending = false;
+                            bell_msgs.push(Bell { pane_id: id });
+                        }
+                        // Only notify if this pane's seqno advanced since last seen.
+                        let prev = last_seen.entry(id).or_insert(0);
+                        if pane.dirty_seqno > *prev {
+                            *prev = pane.dirty_seqno;
+                            dirty_pane_ids.push(id);
                         }
                     }
                 }
 
-                // Collect title/bell notifications while holding the lock,
-                // then send after releasing. Both can fire in the same cycle.
-                // NOTE: Phase 0 single-client only. With multiple clients,
-                // the first to lock clears the flags; others miss the event.
-                // Phase 1 needs per-client notification queues.
-                let (title_msg, bell_msg) = {
-                    let mut s = screens.lock().await;
-                    let g = s.active_grid_mut();
-                    let t = if g.title_dirty {
-                        g.title_dirty = false;
-                        Some(TitleChanged {
-                            pane_id: 0,
-                            title: g.title.clone().unwrap_or_default(),
-                        })
-                    } else {
-                        None
-                    };
-                    let b = if g.bell_pending {
-                        g.bell_pending = false;
-                        Some(Bell { pane_id: 0 })
-                    } else {
-                        None
-                    };
-                    (t, b)
-                };
-                if let Some(msg) = title_msg {
+                for msg in exit_msgs {
+                    debug!(conn_id, pane_id = msg.pane_id, exit_code = msg.exit_code, "sending PaneExited");
                     match msg.to_frame() {
                         Ok(f) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
-                                break;
+                                break 'outer;
+                            }
+                        }
+                        Err(e) => {
+                            error!(conn_id, error = %e, "failed to encode PaneExited frame");
+                            break 'outer;
+                        }
+                    }
+                }
+                for msg in title_msgs {
+                    match msg.to_frame() {
+                        Ok(f) => {
+                            if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
+                                break 'outer;
                             }
                         }
                         Err(e) => warn!(conn_id, error = %e, "failed to encode TitleChanged frame"),
                     }
                 }
-                if let Some(msg) = bell_msg {
+                for msg in bell_msgs {
                     match msg.to_frame() {
                         Ok(f) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, f).await.is_err() {
-                                break;
+                                break 'outer;
                             }
                         }
                         Err(e) => warn!(conn_id, error = %e, "failed to encode Bell frame"),
                     }
                 }
 
-                let notify = DirtyNotify { pane_id: 0 };
-                let Ok(frame) = Frame::new(MSG_DIRTY_NOTIFY, 0, notify.encode()) else {
-                    error!(conn_id, "failed to create DirtyNotify frame");
-                    continue;
-                };
-                if write_frame(&mut stream, &mut codec, &mut write_buf, frame).await.is_err() {
-                    break;
+                // Send DirtyNotify for each pane.
+                for pane_id in dirty_pane_ids {
+                    let notify = DirtyNotify { pane_id };
+                    let Ok(frame) = Frame::new(MSG_DIRTY_NOTIFY, 0, notify.encode()) else {
+                        error!(conn_id, pane_id, "failed to create DirtyNotify frame");
+                        continue;
+                    };
+                    if write_frame(&mut stream, &mut codec, &mut write_buf, frame).await.is_err() {
+                        break 'outer;
+                    }
                 }
             }
             result = read_frame(&mut stream, &mut read_buf) => {
@@ -488,7 +557,7 @@ async fn handle_client(
                     break;
                 }
                 while let Ok(Some(frame)) = codec.decode(&mut read_buf) {
-                    match handle_request(conn_id, &frame, &screens, &pty_state, &dirty_tx).await {
+                    match handle_request(conn_id, &frame, &panes, &dirty_tx).await {
                         RequestResult::Response(response) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
                                 break 'outer;
@@ -518,8 +587,7 @@ enum RequestResult {
 async fn handle_request(
     conn_id: u64,
     frame: &Frame,
-    screens: &Arc<Mutex<ScreenSet>>,
-    pty_state: &Arc<Mutex<PtyState>>,
+    panes: &Arc<Mutex<PaneManager>>,
     dirty_tx: &watch::Sender<u64>,
 ) -> RequestResult {
     match frame.msg_type {
@@ -533,10 +601,18 @@ async fn handle_request(
                     "malformed KeyInput",
                 );
             };
-            let state = pty_state.lock().await;
-            match *state {
+            let pm = panes.lock().await;
+            let Some(pane) = pm.get(msg.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            match pane.pty_state {
                 PtyState::Running(fd) => {
-                    drop(state);
+                    drop(pm);
                     if !msg.key_data.is_empty() {
                         let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
                         if let Err(e) = rustix::io::write(borrowed, &msg.key_data) {
@@ -563,25 +639,27 @@ async fn handle_request(
                     "malformed MouseInput",
                 );
             };
-            let state = pty_state.lock().await;
-            if let PtyState::Running(fd) = *state {
-                drop(state);
-
-                // Read all needed mode/screen state while holding the lock.
-                let s = screens.lock().await;
-                let g = s.active_grid();
+            let pm = panes.lock().await;
+            let Some(pane) = pm.get(msg.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            if let PtyState::Running(fd) = pane.pty_state {
+                let g = pane.screens.active_grid();
                 let sgr = g.modes.get(1006);
                 let click = g.modes.get(1000);
                 let cell_motion = g.modes.get(1002);
                 let all_motion = g.modes.get(1003);
                 let alt_scroll = g.modes.get(1007);
                 let decckm = g.modes.get(1);
-                let on_alt = s.active_screen() == ScreenId::Alternate;
-                drop(s);
+                let on_alt = pane.screens.active_screen() == ScreenId::Alternate;
+                drop(pm);
 
                 let mouse_reporting = click || cell_motion || all_motion;
-                // Shift (bit 2) bypasses mouse tracking — don't forward to PTY.
-                // Defense-in-depth: the GUI also filters Shift events.
                 let shift_held = msg.modifiers & 4 != 0;
                 let should_send = if shift_held {
                     false
@@ -602,7 +680,6 @@ async fn handle_request(
                         }
                     }
                 } else if (msg.event_type == 3 || msg.event_type == 4) && on_alt && alt_scroll {
-                    // Mode 1007: convert wheel to arrow keys on alternate screen.
                     let arrow: &[u8] = match (msg.event_type, decckm) {
                         (3, true) => b"\x1bOA",
                         (3, false) => b"\x1b[A",
@@ -630,16 +707,28 @@ async fn handle_request(
                     "malformed Resize",
                 );
             };
-            let mut state = pty_state.lock().await;
-            match *state {
+            let mut pm = panes.lock().await;
+            let Some(pane) = pm.get_mut(msg.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            match pane.pty_state {
                 PtyState::NotSpawned => {
-                    info!(conn_id, cols = msg.cols, rows = msg.rows, "spawning PTY");
-                    // First Resize from any client: spawn PTY at these dimensions.
-                    // WinSize omits pixel dimensions (set_winsize uses 0); fine
-                    // until sixel/kitty graphics need them (Phase 0.4).
                     // Note: spawn_shell blocks briefly (~1-5ms for fork/exec)
-                    // while holding the async Mutex. Acceptable for Phase 0;
-                    // use spawn_blocking if this becomes a contention issue.
+                    // while holding the PaneManager mutex. Acceptable for now;
+                    // use spawn_blocking if this becomes a contention issue
+                    // with many concurrent panes.
+                    info!(
+                        conn_id,
+                        pane_id = msg.pane_id,
+                        cols = msg.cols,
+                        rows = msg.rows,
+                        "spawning PTY"
+                    );
                     match oakterm_pty::spawn_shell(oakterm_pty::WinSize {
                         cols: msg.cols,
                         rows: msg.rows,
@@ -647,25 +736,20 @@ async fn handle_request(
                         Ok(pty) => {
                             let fd = pty.master_raw_fd();
                             let pid = pty.child_pid();
-                            *state = PtyState::Running(fd);
-                            drop(state);
+                            pane.pty_state = PtyState::Running(fd);
+                            pane.screens.resize_all(msg.cols, msg.rows);
+                            let pane_id = msg.pane_id;
+                            drop(pm);
 
-                            info!(pid, "PTY spawned");
+                            info!(pid, pane_id, "PTY spawned");
 
-                            {
-                                let mut s = screens.lock().await;
-                                s.resize_all(msg.cols, msg.rows);
-                            }
-
-                            let screens_clone = Arc::clone(screens);
+                            let panes_clone = Arc::clone(panes);
                             let dtx = dirty_tx.clone();
-                            let pty_clone = Arc::clone(pty_state);
-                            tokio::spawn(pty_read_loop(pty, screens_clone, dtx, pty_clone));
+                            tokio::spawn(pty_read_loop(pty, panes_clone, pane_id, dtx));
                         }
                         Err(e) => {
                             error!(conn_id, error = %e, "failed to spawn PTY");
-                            *state = PtyState::Failed(e.to_string());
-                            drop(state);
+                            pane.pty_state = PtyState::Failed(e.to_string());
                             return make_error_response(
                                 conn_id,
                                 frame.serial,
@@ -676,7 +760,6 @@ async fn handle_request(
                     }
                 }
                 PtyState::Running(fd) => {
-                    drop(state);
                     let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
                     if let Err(e) = oakterm_pty::resize_fd(
                         borrowed,
@@ -687,8 +770,7 @@ async fn handle_request(
                     ) {
                         warn!(conn_id, error = %e, "PTY resize failed");
                     } else {
-                        let mut s = screens.lock().await;
-                        s.resize_all(msg.cols, msg.rows);
+                        pane.screens.resize_all(msg.cols, msg.rows);
                     }
                 }
                 PtyState::Failed(ref reason) => {
@@ -723,8 +805,16 @@ async fn handle_request(
                     "malformed GetRenderUpdate",
                 );
             };
-            let s = screens.lock().await;
-            let g = s.active_grid();
+            let pm = panes.lock().await;
+            let Some(pane) = pm.get(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            let g = pane.screens.active_grid();
             let dirty_indices = g.dirty_rows(req.since_seqno);
 
             let dirty_rows: Vec<DirtyRow> = dirty_indices
@@ -787,10 +877,16 @@ async fn handle_request(
                     "malformed GetScrollback",
                 );
             };
-            let s = screens.lock().await;
-            let buf = s.scrollback();
-            // Convert negative start_row to buffer index.
-            // SAFETY: buf.len() fits in i64 — HotBuffer is capped at 50MB (~250K rows).
+            let pm = panes.lock().await;
+            let Some(pane) = pm.get(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            let buf = pane.screens.scrollback();
             #[allow(clippy::cast_possible_wrap)]
             let buf_len = buf.len() as i64;
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -801,8 +897,7 @@ async fn handle_request(
             let rows: Vec<DirtyRow> = (start_idx..end_idx)
                 .filter_map(|i| {
                     let row = buf.get(i)?;
-                    // row_index is 0 for scrollback; client uses positional order.
-                    Some(row_to_wire(row, 0, &s.active_grid().palette))
+                    Some(row_to_wire(row, 0, &pane.screens.active_grid().palette))
                 })
                 .collect();
 
@@ -847,9 +942,17 @@ async fn handle_request(
                     "malformed FindPrompt",
                 );
             };
-            let s = screens.lock().await;
+            let pm = panes.lock().await;
+            let Some(pane) = pm.get(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
             let found_offset =
-                find_prompt_in_buffer(s.scrollback(), req.from_offset, req.direction);
+                find_prompt_in_buffer(pane.screens.scrollback(), req.from_offset, req.direction);
             let response = PromptPosition {
                 pane_id: req.pane_id,
                 offset: found_offset,
@@ -896,10 +999,18 @@ async fn handle_request(
                     );
                 }
             };
-            let mut s = screens.lock().await;
-            s.set_search(engine);
-            s.run_search();
-            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+            let mut pm = panes.lock().await;
+            let Some(pane) = pm.get_mut(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            pane.screens.set_search(engine);
+            pane.screens.run_search();
+            build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
         }
         MSG_SEARCH_NEXT => {
             let Ok(req) = SearchNav::decode(&frame.payload) else {
@@ -911,13 +1022,21 @@ async fn handle_request(
                     "malformed SearchNext",
                 );
             };
-            let mut s = screens.lock().await;
-            if let Some(engine) = s.search_mut() {
+            let mut pm = panes.lock().await;
+            let Some(pane) = pm.get_mut(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            if let Some(engine) = pane.screens.search_mut() {
                 engine.next();
             } else {
                 warn!(conn_id, "SearchNext with no active search");
             }
-            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+            build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
         }
         MSG_SEARCH_PREV => {
             let Ok(req) = SearchNav::decode(&frame.payload) else {
@@ -929,17 +1048,28 @@ async fn handle_request(
                     "malformed SearchPrev",
                 );
             };
-            let mut s = screens.lock().await;
-            if let Some(engine) = s.search_mut() {
+            let mut pm = panes.lock().await;
+            let Some(pane) = pm.get_mut(req.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            if let Some(engine) = pane.screens.search_mut() {
                 engine.prev();
             } else {
                 warn!(conn_id, "SearchPrev with no active search");
             }
-            build_search_response(conn_id, &s, req.pane_id, frame.serial)
+            build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
         }
         MSG_SEARCH_CLOSE => {
-            // Idempotent, no payload — fire and forget.
-            screens.lock().await.clear_search();
+            // Idempotent — close search on all panes (no pane_id in payload).
+            let mut pm = panes.lock().await;
+            for pane in pm.panes.values_mut() {
+                pane.screens.clear_search();
+            }
             RequestResult::NoResponse
         }
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
