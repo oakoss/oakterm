@@ -1,5 +1,6 @@
 mod render_grid;
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,7 @@ use oakterm_protocol::message::{
     MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO,
     MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, SearchDirection, TitleChanged,
 };
-use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
+use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 
 use oakterm_renderer::atlas::AtlasPlane;
 use oakterm_renderer::font;
@@ -173,7 +174,8 @@ struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
     font: Option<FontState>,
-    grid: Option<ClientGrid>,
+    grids: HashMap<u32, ClientGrid>,
+    focused_pane: u32,
     daemon: Option<DaemonWriter>,
     proxy: EventLoopProxy<UserEvent>,
     daemon_process: Option<std::process::Child>,
@@ -240,7 +242,8 @@ impl App {
             window: None,
             gpu: None,
             font: None,
-            grid: None,
+            grids: HashMap::new(),
+            focused_pane: 0,
             daemon: None,
             proxy,
             daemon_process: None,
@@ -274,9 +277,9 @@ impl App {
 
     /// Request scrollback rows from the daemon for the current viewport offset.
     fn request_scrollback(&self) {
-        if let (Some(daemon), Some(grid)) = (&self.daemon, &self.grid) {
+        if let (Some(daemon), Some(grid)) = (&self.daemon, self.grids.get(&self.focused_pane)) {
             let req = GetScrollback {
-                pane_id: 0,
+                pane_id: self.focused_pane,
                 start_row: -i64::from(self.viewport_offset),
                 count: u32::from(grid.rows),
             };
@@ -296,7 +299,7 @@ impl App {
     fn request_find_prompt(&self, direction: SearchDirection) {
         if let Some(daemon) = &self.daemon {
             let req = FindPrompt {
-                pane_id: 0,
+                pane_id: self.focused_pane,
                 from_offset: -i64::from(self.viewport_offset),
                 direction,
             };
@@ -315,7 +318,7 @@ impl App {
     /// negative = down (toward live). Handles enter/exit scrollback.
     fn scroll_viewport(&mut self, lines: i32) {
         if lines > 0 {
-            if let Some(grid) = &mut self.grid {
+            if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                 if !grid.is_scrolled() {
                     grid.enter_scrollback();
                 }
@@ -338,13 +341,13 @@ impl App {
     /// Return to live view from scrollback.
     fn return_to_live(&mut self) {
         self.viewport_offset = 0;
-        if let Some(grid) = &mut self.grid {
+        if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
             grid.exit_scrollback();
         }
         // Request a full refresh to ensure live view is current.
         if let Some(daemon) = &self.daemon {
             let req = GetRenderUpdate {
-                pane_id: 0,
+                pane_id: self.focused_pane,
                 since_seqno: 0,
             };
             match Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()) {
@@ -399,7 +402,7 @@ impl App {
         match self.click_count {
             2 => {
                 // Semantic (word) selection.
-                if let Some(grid) = &self.grid {
+                if let Some(grid) = self.grids.get(&self.focused_pane) {
                     if row < grid.rows {
                         let text: Vec<char> = grid.row_text(row).chars().collect();
                         // Click past end of text: no word to select.
@@ -451,7 +454,7 @@ impl App {
         if !self.config.cursor_blink || !self.focused {
             return false;
         }
-        let Some(grid) = &self.grid else {
+        let Some(grid) = self.grids.get(&self.focused_pane) else {
             return false;
         };
         if !grid.cursor_visible || grid.is_scrolled() {
@@ -576,7 +579,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.gpu = Some(gpu);
         self.font = Some(font_state);
-        self.grid = Some(grid);
+        self.grids.insert(self.focused_pane, grid);
         self.config = config;
         self.config_error = cr.error;
         self.event_registry = cr.registry;
@@ -632,7 +635,9 @@ impl ApplicationHandler<UserEvent> for App {
                         self.viewport_offset = 0;
 
                         #[allow(clippy::cast_possible_truncation)]
-                        if let (Some(font), Some(grid)) = (&self.font, &mut self.grid) {
+                        if let (Some(font), Some(grid)) =
+                            (&self.font, self.grids.get_mut(&self.focused_pane))
+                        {
                             let (cols, rows) =
                                 window_to_grid_dims(size, &font.metrics, &self.config.padding);
                             let dims_changed = grid.rows != rows || grid.cols != cols;
@@ -684,7 +689,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.last_sent_dims = (cols, rows);
                                 if let Some(daemon) = &mut self.daemon {
                                     let msg = Resize {
-                                        pane_id: 0,
+                                        pane_id: self.focused_pane,
                                         cols,
                                         rows,
                                         pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
@@ -787,7 +792,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let bytes = key_to_bytes(&logical_key, text.as_deref());
                 if let (Some(daemon), Some(bytes)) = (&mut self.daemon, bytes) {
                     let msg = KeyInput {
-                        pane_id: 0,
+                        pane_id: self.focused_pane,
                         key_data: bytes,
                     };
                     match msg.to_frame() {
@@ -834,7 +839,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(sel) = &mut self.selection {
                             if sel.ty == SelectionType::Semantic {
                                 // Snap drag to word boundaries.
-                                if let Some(grid) = &self.grid {
+                                if let Some(grid) = self.grids.get(&self.focused_pane) {
                                     if row < grid.rows {
                                         let text: Vec<char> = grid.row_text(row).chars().collect();
                                         if (col as usize) < text.len() {
@@ -904,7 +909,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 ElementState::Released => 1,
                             };
                             let msg = MouseInput {
-                                pane_id: 0,
+                                pane_id: self.focused_pane,
                                 event_type,
                                 x,
                                 y,
@@ -948,7 +953,7 @@ impl ApplicationHandler<UserEvent> for App {
                         let mods = encode_mouse_modifiers(self.modifiers);
                         for _ in 0..count.min(5) {
                             let msg = MouseInput {
-                                pane_id: 0,
+                                pane_id: self.focused_pane,
                                 event_type,
                                 x,
                                 y,
@@ -978,16 +983,18 @@ impl ApplicationHandler<UserEvent> for App {
                 // initial Resize that triggers PTY spawn on the daemon side.
                 if !self.initial_resize_sent {
                     #[allow(clippy::cast_possible_truncation)]
-                    if let (Some(font), Some(_), Some(daemon)) =
-                        (&self.font, &self.grid, &mut self.daemon)
-                    {
+                    if let (Some(font), Some(_), Some(daemon)) = (
+                        &self.font,
+                        self.grids.get(&self.focused_pane),
+                        &mut self.daemon,
+                    ) {
                         let size =
                             winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
                         let (cols, rows) =
                             window_to_grid_dims(size, &font.metrics, &self.config.padding);
                         self.last_sent_dims = (cols, rows);
                         let msg = Resize {
-                            pane_id: 0,
+                            pane_id: self.focused_pane,
                             cols,
                             rows,
                             pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
@@ -1035,7 +1042,7 @@ impl ApplicationHandler<UserEvent> for App {
                 });
 
                 let (bg_colors, glyph_instances) = if let (Some(grid), Some(font)) =
-                    (&self.grid, &mut self.font)
+                    (self.grids.get(&self.focused_pane), &mut self.font)
                 {
                     // Effective cursor visibility: hidden during blink-off phase.
                     let cursor_vis = grid.cursor_visible
@@ -1087,8 +1094,8 @@ impl ApplicationHandler<UserEvent> for App {
                 };
 
                 let (cols, rows) = self
-                    .grid
-                    .as_ref()
+                    .grids
+                    .get(&self.focused_pane)
                     .map_or((0u32, 0u32), |g| (u32::from(g.cols), u32::from(g.rows)));
 
                 let (atlas_w, atlas_h) = self
@@ -1126,15 +1133,18 @@ impl ApplicationHandler<UserEvent> for App {
                     pad: 0.0,
                 };
 
-                let clear_color = self.grid.as_ref().map_or(wgpu::Color::BLACK, |g| {
-                    let [r, g, b] = g.bg_color;
-                    wgpu::Color {
-                        r: f64::from(r) / 255.0,
-                        g: f64::from(g) / 255.0,
-                        b: f64::from(b) / 255.0,
-                        a: 1.0,
-                    }
-                });
+                let clear_color =
+                    self.grids
+                        .get(&self.focused_pane)
+                        .map_or(wgpu::Color::BLACK, |g| {
+                            let [r, g, b] = g.bg_color;
+                            wgpu::Color {
+                                r: f64::from(r) / 255.0,
+                                g: f64::from(g) / 255.0,
+                                b: f64::from(b) / 255.0,
+                                a: 1.0,
+                            }
+                        });
 
                 gpu.pipeline.render(
                     &gpu.device,
@@ -1169,7 +1179,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // then send it via adapter after the grid borrow ends.
                 let mut a11y_update: Option<accesskit::TreeUpdate> = None;
 
-                if let Some(grid) = &mut self.grid {
+                let is_focused = update.pane_id == self.focused_pane;
+                if let Some(grid) = self.grids.get_mut(&update.pane_id) {
                     if grid.is_scrolled() {
                         grid.apply_update_while_scrolled(&update);
                     } else {
@@ -1262,12 +1273,14 @@ impl ApplicationHandler<UserEvent> for App {
                             a11y_update = Some(oakterm_a11y::build_incremental_update(&input));
                         }
 
-                        // Restart blink — cursor style may have changed.
-                        if self.blink_deadline.is_none() && self.should_blink() {
-                            self.reset_blink();
-                        }
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
+                        if is_focused {
+                            // Restart blink — cursor style may have changed.
+                            if self.blink_deadline.is_none() && self.should_blink() {
+                                self.reset_blink();
+                            }
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
                         }
                     }
                 }
@@ -1280,14 +1293,17 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ScrollbackData(data) => {
                 if self.viewport_offset > 0 {
                     // Clamp offset if we reached the top of scrollback.
-                    let requested = self.grid.as_ref().map_or(24usize, |g| usize::from(g.rows));
+                    let requested = self
+                        .grids
+                        .get(&self.focused_pane)
+                        .map_or(24usize, |g| usize::from(g.rows));
                     if data.rows.len() < requested && !data.has_more {
                         #[allow(clippy::cast_possible_truncation)]
                         let actual = data.rows.len() as u32;
                         self.viewport_offset = self.viewport_offset.min(actual);
                     }
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
-                    if let Some(grid) = &mut self.grid {
+                    if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                         #[allow(clippy::cast_possible_truncation)]
                         let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
                         grid.apply_scrollback(&data.rows, offset);
@@ -1346,7 +1362,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.return_to_live();
                     } else {
                         self.viewport_offset = new_offset;
-                        if let Some(grid) = &mut self.grid {
+                        if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                             if !grid.is_scrolled() {
                                 grid.enter_scrollback();
                             }
@@ -1370,7 +1386,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     Err(e) => warn!(error = %e, "a11y: mutex poisoned on title change"),
                 }
-                if let (Some(grid), Some(adapter)) = (&self.grid, &mut self.accesskit) {
+                if let (Some(grid), Some(adapter)) =
+                    (self.grids.get(&self.focused_pane), &mut self.accesskit)
+                {
                     let current_title = self
                         .a11y_state
                         .lock()
@@ -1400,7 +1418,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Bell => {
                 // Announce bell to screen readers (assertive = interrupts).
-                if let (Some(grid), Some(adapter)) = (&self.grid, &mut self.accesskit) {
+                if let (Some(grid), Some(adapter)) =
+                    (self.grids.get(&self.focused_pane), &mut self.accesskit)
+                {
                     let cursor_row_text = grid.row_text(grid.cursor_y);
                     let title = self
                         .a11y_state
@@ -1447,11 +1467,17 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     accesskit::Action::ScrollUp => {
-                        let page = self.grid.as_ref().map_or(24, |g| i32::from(g.rows));
+                        let page = self
+                            .grids
+                            .get(&self.focused_pane)
+                            .map_or(24, |g| i32::from(g.rows));
                         self.scroll_viewport(page);
                     }
                     accesskit::Action::ScrollDown => {
-                        let page = self.grid.as_ref().map_or(24, |g| i32::from(g.rows));
+                        let page = self
+                            .grids
+                            .get(&self.focused_pane)
+                            .map_or(24, |g| i32::from(g.rows));
                         self.scroll_viewport(-page);
                     }
                     accesskit::Action::SetScrollOffset => {
@@ -1461,7 +1487,7 @@ impl ApplicationHandler<UserEvent> for App {
                             if target == 0 {
                                 self.return_to_live();
                             } else {
-                                if let Some(grid) = &mut self.grid {
+                                if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                                     if !grid.is_scrolled() {
                                         grid.enter_scrollback();
                                     }
@@ -1546,7 +1572,7 @@ impl App {
 
         match action_desc {
             ActionDesc::ScrollUp(lines) => {
-                if let Some(grid) = &mut self.grid {
+                if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                     if !grid.is_scrolled() {
                         grid.enter_scrollback();
                     }
@@ -1565,7 +1591,9 @@ impl App {
                     return false; // Not scrolled; let key pass through to PTY.
                 }
                 let amount = if lines == 0 {
-                    self.grid.as_ref().map_or(24, |g| u32::from(g.rows))
+                    self.grids
+                        .get(&self.focused_pane)
+                        .map_or(24, |g| u32::from(g.rows))
                 } else {
                     lines
                 };
@@ -1584,7 +1612,7 @@ impl App {
                     SearchDirection::Newer
                 };
                 if dir == SearchDirection::Older {
-                    if let Some(grid) = &mut self.grid {
+                    if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
                         if !grid.is_scrolled() {
                             grid.enter_scrollback();
                         }
@@ -1598,7 +1626,7 @@ impl App {
             ActionDesc::SendString(bytes) => {
                 if let Some(daemon) = &mut self.daemon {
                     let msg = KeyInput {
-                        pane_id: 0,
+                        pane_id: self.focused_pane,
                         key_data: bytes,
                     };
                     match msg.to_frame() {
@@ -1667,7 +1695,9 @@ impl App {
                 true
             }
             ActionDesc::Copy => {
-                if let (Some(sel), Some(grid)) = (&self.selection, &self.grid) {
+                if let (Some(sel), Some(grid)) =
+                    (&self.selection, self.grids.get(&self.focused_pane))
+                {
                     let text = grid.extract_selection_text(sel, self.viewport_offset);
                     if !text.is_empty() {
                         match arboard::Clipboard::new() {
@@ -1699,7 +1729,7 @@ impl App {
                                     normalized.into_bytes()
                                 };
                                 let msg = oakterm_protocol::input::KeyInput {
-                                    pane_id: 0,
+                                    pane_id: self.focused_pane,
                                     key_data,
                                 };
                                 match msg.to_frame() {
@@ -1776,7 +1806,8 @@ impl App {
                 };
 
                 #[allow(clippy::cast_possible_truncation)]
-                if let (Some(gpu), Some(grid)) = (&self.gpu, &mut self.grid) {
+                if let (Some(gpu), Some(grid)) = (&self.gpu, self.grids.get_mut(&self.focused_pane))
+                {
                     let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
                     let (cols, rows) =
                         window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
@@ -1787,7 +1818,7 @@ impl App {
 
                     if let Some(daemon) = &self.daemon {
                         let msg = Resize {
-                            pane_id: 0,
+                            pane_id: self.focused_pane,
                             cols,
                             rows,
                             pixel_width: phys.width.min(u32::from(u16::MAX)) as u16,
@@ -2430,15 +2461,17 @@ fn daemon_reader(
     writer: &DaemonWriter,
     proxy: &EventLoopProxy<UserEvent>,
 ) {
-    let mut seqno: u64 = 0;
+    let mut seqnos: HashMap<u32, u64> = HashMap::new();
 
     loop {
         match read_frame(&mut read_stream) {
             Ok(frame) => match frame.msg_type {
                 MSG_DIRTY_NOTIFY => {
+                    let pane_id = DirtyNotify::decode(&frame.payload).map_or(0, |n| n.pane_id);
+                    let seqno = seqnos.entry(pane_id).or_insert(0);
                     let req = GetRenderUpdate {
-                        pane_id: 0,
-                        since_seqno: seqno,
+                        pane_id,
+                        since_seqno: *seqno,
                     };
                     let payload = req.encode();
                     let req_frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, payload)
@@ -2451,7 +2484,7 @@ fn daemon_reader(
                 }
                 MSG_RENDER_UPDATE => match RenderUpdate::decode(&frame.payload) {
                     Ok(update) => {
-                        seqno = update.seqno;
+                        seqnos.insert(update.pane_id, update.seqno);
                         let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
                     }
                     Err(e) => {
