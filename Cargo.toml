@@ -44,13 +44,13 @@ mlua = { version = "0.11.6", features = ["lua54", "vendored", "send"] }
 strsim = "0.11.1"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
 bytes = "1.11.1"
 
 # Structured logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Wire protocol
 prost = "0.14.3"
@@ -91,7 +91,7 @@ rustix = { version = "1.1.4", features = [
 ] }
 
 # Search
-regex = "1"
+regex = "1.12.3"
 
 # VT parser
 vte = { version = "0.15.0", features = ["ansi"] }

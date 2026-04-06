@@ -1,6 +1,6 @@
 [tools]
 rust = "stable"
-node = "25.8.2"
+node = "25.9.0"
 "npm:prettier" = "3.8.1"
 "npm:markdownlint-cli2" = "0.22.0"
 lefthook = "2.1.4"
