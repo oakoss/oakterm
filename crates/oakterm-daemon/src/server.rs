@@ -6,12 +6,13 @@ use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
     Bell, ClientHello, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
-    FindPrompt, GetScrollback, HandshakeStatus, MSG_CLIENT_HELLO, MSG_CLOSE_PANE,
-    MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT,
-    MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG,
-    MSG_RENDER_UPDATE, MSG_RESIZE, MSG_SCROLLBACK_DATA, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT,
-    MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK, PaneExited, PromptPosition, ScrollbackData,
-    SearchDirection, SearchNav, SearchResults, SearchScrollback, ServerHello, TitleChanged,
+    FindPrompt, FocusPane, GetScrollback, HandshakeStatus, ListPanesResponse, MSG_CLIENT_HELLO,
+    MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE, MSG_DETACH, MSG_DIRTY_NOTIFY,
+    MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT,
+    MSG_LIST_PANES, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE, MSG_RESIZE,
+    MSG_SCROLLBACK_DATA, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT, MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK,
+    PaneExited, PaneInfo, PromptPosition, ScrollbackData, SearchDirection, SearchNav,
+    SearchResults, SearchScrollback, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::cell::{Color, Rgb};
@@ -42,8 +43,9 @@ const ALT_SCROLL_LINES: usize = 3;
 enum PtyState {
     /// Waiting for first client Resize to determine dimensions.
     NotSpawned,
-    /// Master fd for writes and resizes. The `Pty` struct is owned by the read loop.
-    Running(RawFd),
+    /// Master fd for writes and resizes, plus child PID for status reporting.
+    /// The `Pty` struct is owned by the read loop.
+    Running { fd: RawFd, pid: u32 },
     /// PTY spawn failed; terminal state. The error string is returned to any
     /// client that sends a subsequent Resize.
     Failed(String),
@@ -76,6 +78,7 @@ struct PaneState {
 pub struct PaneManager {
     panes: std::collections::HashMap<u32, PaneState>,
     next_id: u32,
+    focused_pane: Option<u32>,
 }
 
 impl PaneManager {
@@ -83,6 +86,7 @@ impl PaneManager {
         Self {
             panes: std::collections::HashMap::new(),
             next_id: 0,
+            focused_pane: None,
         }
     }
 
@@ -100,6 +104,10 @@ impl PaneManager {
                 cwd,
             },
         );
+        // Auto-focus the first pane created.
+        if self.focused_pane.is_none() {
+            self.focused_pane = Some(id);
+        }
         id
     }
 
@@ -629,7 +637,7 @@ async fn handle_request(
                 );
             };
             match pane.pty_state {
-                PtyState::Running(fd) => {
+                PtyState::Running { fd, .. } => {
                     drop(pm);
                     if !msg.key_data.is_empty() {
                         let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
@@ -666,7 +674,7 @@ async fn handle_request(
                     "unknown pane",
                 );
             };
-            if let PtyState::Running(fd) = pane.pty_state {
+            if let PtyState::Running { fd, .. } = pane.pty_state {
                 let g = pane.screens.active_grid();
                 let sgr = g.modes.get(1006);
                 let click = g.modes.get(1000);
@@ -754,7 +762,7 @@ async fn handle_request(
                         Ok(pty) => {
                             let fd = pty.master_raw_fd();
                             let pid = pty.child_pid();
-                            pane.pty_state = PtyState::Running(fd);
+                            pane.pty_state = PtyState::Running { fd, pid };
                             pane.screens.resize_all(msg.cols, msg.rows);
                             let pane_id = msg.pane_id;
                             drop(pm);
@@ -777,7 +785,7 @@ async fn handle_request(
                         }
                     }
                 }
-                PtyState::Running(fd) => {
+                PtyState::Running { fd, .. } => {
                     let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
                     if let Err(e) = oakterm_pty::resize_fd(
                         borrowed,
@@ -1146,8 +1154,12 @@ async fn handle_request(
                     "unknown pane",
                 );
             };
+            // Reset focus if the closed pane was focused.
+            if pm.focused_pane == Some(msg.pane_id) {
+                pm.focused_pane = pm.panes.keys().next().copied();
+            }
             drop(pm);
-            if let PtyState::Running(_) = removed.pty_state {
+            if let PtyState::Running { .. } = removed.pty_state {
                 info!(
                     conn_id,
                     pane_id = msg.pane_id,
@@ -1167,6 +1179,72 @@ async fn handle_request(
                         frame.serial,
                         ErrorCode::InternalError,
                         "ClosePaneResponse frame error",
+                    )
+                }
+            }
+        }
+        MSG_FOCUS_PANE => {
+            let Ok(msg) = FocusPane::decode(&frame.payload) else {
+                warn!(conn_id, "malformed FocusPane payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed FocusPane",
+                );
+            };
+            let mut pm = panes.lock().await;
+            if pm.get(msg.pane_id).is_none() {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            }
+            pm.focused_pane = Some(msg.pane_id);
+            debug!(conn_id, pane_id = msg.pane_id, "focus changed");
+            // FocusPane is a push message (serial 0) per Spec-0001.
+            RequestResult::NoResponse
+        }
+        MSG_LIST_PANES => {
+            let pm = panes.lock().await;
+            let infos: Vec<PaneInfo> = pm
+                .panes
+                .iter()
+                .map(|(&id, pane)| {
+                    let g = pane.screens.active_grid();
+                    let (pid, exit_code) = match &pane.pty_state {
+                        PtyState::Running { pid, .. } => (*pid, -1),
+                        PtyState::Exited { exit_code } => (0, *exit_code),
+                        PtyState::NotSpawned => (0, -1),
+                        PtyState::Failed(reason) => {
+                            debug!(pane_id = id, reason, "listing pane in failed state");
+                            (0, -1)
+                        }
+                    };
+                    PaneInfo {
+                        pane_id: id,
+                        title: g.title.clone().unwrap_or_default(),
+                        cols: g.cols,
+                        rows: g.rows,
+                        pid,
+                        exit_code,
+                        cwd: pane.cwd.clone(),
+                    }
+                })
+                .collect();
+            drop(pm);
+            let resp = ListPanesResponse { panes: infos };
+            match resp.to_frame(frame.serial) {
+                Ok(f) => RequestResult::Response(f),
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to encode ListPanesResponse");
+                    make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::InternalError,
+                        "ListPanesResponse encode error",
                     )
                 }
             }

@@ -790,4 +790,77 @@ mod tests {
     fn close_pane_too_short() {
         assert!(ClosePane::decode(&[0; 2]).is_err());
     }
+
+    // --- FocusPane / ListPanes ---
+
+    #[test]
+    fn focus_pane_roundtrip() {
+        let msg = FocusPane { pane_id: 3 };
+        let encoded = msg.encode();
+        let decoded = FocusPane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn pane_info_roundtrip() {
+        let info = PaneInfo {
+            pane_id: 1,
+            title: "bash".into(),
+            cols: 80,
+            rows: 24,
+            pid: 12345,
+            exit_code: -1,
+            cwd: "/home/user".into(),
+        };
+        let encoded = info.encode().unwrap();
+        let (decoded, consumed) = PaneInfo::decode(&encoded).unwrap();
+        assert_eq!(decoded, info);
+        assert_eq!(consumed, encoded.len());
+    }
+
+    #[test]
+    fn list_panes_response_roundtrip() {
+        let resp = ListPanesResponse {
+            panes: vec![
+                PaneInfo {
+                    pane_id: 0,
+                    title: "zsh".into(),
+                    cols: 120,
+                    rows: 40,
+                    pid: 100,
+                    exit_code: -1,
+                    cwd: String::new(),
+                },
+                PaneInfo {
+                    pane_id: 1,
+                    title: String::new(),
+                    cols: 80,
+                    rows: 24,
+                    pid: 0,
+                    exit_code: 0,
+                    cwd: "/tmp".into(),
+                },
+            ],
+        };
+        let encoded = resp.encode().unwrap();
+        let decoded = ListPanesResponse::decode(&encoded).unwrap();
+        assert_eq!(decoded, resp);
+    }
+
+    #[test]
+    fn list_panes_response_empty() {
+        let resp = ListPanesResponse { panes: vec![] };
+        let encoded = resp.encode().unwrap();
+        assert_eq!(encoded.len(), 2);
+        let decoded = ListPanesResponse::decode(&encoded).unwrap();
+        assert_eq!(decoded.panes.len(), 0);
+    }
+
+    #[test]
+    fn list_panes_response_as_frame() {
+        let resp = ListPanesResponse { panes: vec![] };
+        let frame = resp.to_frame(42).unwrap();
+        assert_eq!(frame.msg_type, MSG_LIST_PANES_RESPONSE);
+        assert_eq!(frame.serial, 42);
+    }
 }

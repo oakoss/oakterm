@@ -1006,3 +1006,192 @@ impl ClosePane {
         })
     }
 }
+
+/// `FocusPane` (0x94): client sets the focused pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusPane {
+    pub pane_id: u32,
+}
+
+impl FocusPane {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "FocusPane too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+}
+
+/// Per-pane metadata returned by `ListPanesResponse`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneInfo {
+    pub pane_id: u32,
+    pub title: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub pid: u32,
+    pub exit_code: i32,
+    pub cwd: String,
+}
+
+impl PaneInfo {
+    /// # Errors
+    /// Returns an error if strings exceed u16 length.
+    #[allow(clippy::similar_names)]
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let title_bytes = self.title.as_bytes();
+        let cwd_bytes = self.cwd.as_bytes();
+        let tlen: u16 = title_bytes
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "title too long"))?;
+        let cwdlen: u16 = cwd_bytes
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "cwd too long"))?;
+        let mut buf = Vec::with_capacity(18 + title_bytes.len() + cwd_bytes.len());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&tlen.to_le_bytes());
+        buf.extend_from_slice(title_bytes);
+        buf.extend_from_slice(&self.cols.to_le_bytes());
+        buf.extend_from_slice(&self.rows.to_le_bytes());
+        buf.extend_from_slice(&self.pid.to_le_bytes());
+        buf.extend_from_slice(&self.exit_code.to_le_bytes());
+        buf.extend_from_slice(&cwdlen.to_le_bytes());
+        buf.extend_from_slice(cwd_bytes);
+        Ok(buf)
+    }
+
+    /// Decode a `PaneInfo` from `data`, returning the struct and bytes consumed.
+    ///
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    #[allow(clippy::similar_names)]
+    pub fn decode(data: &[u8]) -> io::Result<(Self, usize)> {
+        if data.len() < 6 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PaneInfo too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let tlen = u16::from_le_bytes([data[4], data[5]]) as usize;
+        let fixed = 6 + tlen;
+        if data.len() < fixed + 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PaneInfo truncated",
+            ));
+        }
+        let title = String::from_utf8(data[6..6 + tlen].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("title: {e}")))?;
+        let cols = u16::from_le_bytes([data[fixed], data[fixed + 1]]);
+        let rows = u16::from_le_bytes([data[fixed + 2], data[fixed + 3]]);
+        let pid = u32::from_le_bytes([
+            data[fixed + 4],
+            data[fixed + 5],
+            data[fixed + 6],
+            data[fixed + 7],
+        ]);
+        let exit_code = i32::from_le_bytes([
+            data[fixed + 8],
+            data[fixed + 9],
+            data[fixed + 10],
+            data[fixed + 11],
+        ]);
+        let cwd_off = fixed + 12;
+        if data.len() < cwd_off + 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PaneInfo cwd length truncated",
+            ));
+        }
+        let cwdlen = u16::from_le_bytes([data[cwd_off], data[cwd_off + 1]]) as usize;
+        let cwd_start = cwd_off + 2;
+        if data.len() < cwd_start + cwdlen {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "PaneInfo cwd truncated",
+            ));
+        }
+        let cwd = String::from_utf8(data[cwd_start..cwd_start + cwdlen].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("cwd: {e}")))?;
+        let total = cwd_start + cwdlen;
+        Ok((
+            Self {
+                pane_id,
+                title,
+                cols,
+                rows,
+                pid,
+                exit_code,
+                cwd,
+            },
+            total,
+        ))
+    }
+}
+
+/// `ListPanesResponse` (0x96): daemon returns all pane metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListPanesResponse {
+    pub panes: Vec<PaneInfo>,
+}
+
+impl ListPanesResponse {
+    /// # Errors
+    /// Returns an error if encoding fails.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let count: u16 = self
+            .panes
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many panes"))?;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&count.to_le_bytes());
+        for pane in &self.panes {
+            buf.extend_from_slice(&pane.encode()?);
+        }
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ListPanesResponse too short",
+            ));
+        }
+        let count = u16::from_le_bytes([data[0], data[1]]) as usize;
+        let mut panes = Vec::with_capacity(count);
+        let mut offset = 2;
+        for _ in 0..count {
+            let (info, consumed) = PaneInfo::decode(&data[offset..])?;
+            panes.push(info);
+            offset += consumed;
+        }
+        Ok(Self { panes })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_LIST_PANES_RESPONSE, serial, self.encode()?)
+    }
+}
