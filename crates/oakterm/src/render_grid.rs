@@ -135,11 +135,39 @@ impl ClientGrid {
         }
     }
 
-    /// Resize the client grid, clearing all cells and exiting scrollback.
+    /// Resize the client grid, preserving existing live cell content in its
+    /// original positions. Exits scrollback before resizing so that cells
+    /// reflect the live terminal buffer, not a scrollback page.
+    ///
+    /// Preserving content avoids a black flash during window drag while
+    /// the daemon's authoritative update is in flight. Cells outside the
+    /// old bounds are left as default.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            tracing::warn!(
+                cols,
+                rows,
+                "ClientGrid::resize called with zero dimension, ignoring"
+            );
+            return;
+        }
+        // Restore live cells from the snapshot if scrolled, so we preserve
+        // the live buffer rather than the scrollback page.
+        self.exit_scrollback();
+        let new_cells_len = usize::from(cols) * usize::from(rows);
+        let mut new_cells = vec![RenderCell::default(); new_cells_len];
+        let copy_cols = self.cols.min(cols) as usize;
+        let copy_rows = self.rows.min(rows) as usize;
+        let old_stride = self.cols as usize;
+        let new_stride = cols as usize;
+        for row in 0..copy_rows {
+            for col in 0..copy_cols {
+                new_cells[row * new_stride + col] = self.cells[row * old_stride + col].clone();
+            }
+        }
         self.cols = cols;
         self.rows = rows;
-        self.cells = vec![RenderCell::default(); usize::from(cols) * usize::from(rows)];
+        self.cells = new_cells;
         self.live_snapshot = None;
     }
 
@@ -836,14 +864,27 @@ mod tests {
     }
 
     #[test]
-    fn resize_clears_grid() {
+    fn resize_preserves_content() {
         let mut grid = ClientGrid::new(4, 2);
         grid.cells[0].codepoint = u32::from(b'A');
+        grid.cells[5].codepoint = u32::from(b'B'); // row 1, col 1
         grid.resize(10, 5);
         assert_eq!(grid.cols, 10);
         assert_eq!(grid.rows, 5);
         assert_eq!(grid.cells.len(), 50);
-        assert!(grid.cells.iter().all(|c| c.codepoint == 0));
+        // Old cells preserved at their original positions.
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'A'));
+        assert_eq!(grid.cells[10 + 1].codepoint, u32::from(b'B'));
+    }
+
+    #[test]
+    fn resize_shrink_truncates() {
+        let mut grid = ClientGrid::new(10, 5);
+        grid.cells[0].codepoint = u32::from(b'A');
+        grid.cells[9].codepoint = u32::from(b'X'); // last col of row 0
+        grid.resize(4, 2);
+        assert_eq!(grid.cells.len(), 8);
+        assert_eq!(grid.cells[0].codepoint, u32::from(b'A'));
     }
 
     #[test]

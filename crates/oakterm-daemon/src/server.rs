@@ -367,7 +367,10 @@ async fn pty_read_loop(
                 let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
                 let mut pty_writer = FdWriter(borrowed_wr);
                 pane.screens.process_bytes(&buf[..n], &mut pty_writer);
-                pane.dirty_seqno = pane.screens.active_grid().seqno;
+                // Monotonic counter: screen switches (alt/primary) reset the
+                // active grid's seqno space, but dirty_seqno must keep
+                // increasing so clients know state changed.
+                pane.dirty_seqno = pane.dirty_seqno.max(pane.screens.active_grid().seqno) + 1;
                 drop(pm);
                 let _ = dirty_tx.send(pane_id.into());
             }
@@ -797,6 +800,11 @@ async fn handle_request(
                         warn!(conn_id, error = %e, "PTY resize failed");
                     } else {
                         pane.screens.resize_all(msg.cols, msg.rows);
+                        pane.dirty_seqno =
+                            pane.dirty_seqno.max(pane.screens.active_grid().seqno) + 1;
+                        // Notify clients so they fetch the resized grid immediately,
+                        // without waiting for the child process to produce output.
+                        let _ = dirty_tx.send(u64::from(msg.pane_id));
                     }
                 }
                 PtyState::Failed(ref reason) => {
@@ -841,7 +849,22 @@ async fn handle_request(
                 );
             };
             let g = pane.screens.active_grid();
-            let dirty_indices = g.dirty_rows(req.since_seqno);
+            // If since_seqno > g.seqno, the client is tracking a seqno from
+            // a different grid (e.g., the alternate buffer before switching
+            // back to primary). The seqno comparison is invalid — return all
+            // rows for a full refresh. Fires once per grid transition.
+            let dirty_indices: Vec<u16> = if req.since_seqno > g.seqno {
+                debug!(
+                    conn_id,
+                    pane_id = req.pane_id,
+                    since_seqno = req.since_seqno,
+                    grid_seqno = g.seqno,
+                    "since_seqno exceeds grid seqno; returning full refresh"
+                );
+                (0..u16::try_from(g.lines.len()).unwrap_or(u16::MAX)).collect()
+            } else {
+                g.dirty_rows(req.since_seqno)
+            };
 
             let dirty_rows: Vec<DirtyRow> = dirty_indices
                 .iter()

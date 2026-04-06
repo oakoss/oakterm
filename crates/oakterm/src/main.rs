@@ -627,11 +627,15 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu {
                     if size.width > 0 && size.height > 0 {
-                        gpu.config.width = size.width;
-                        gpu.config.height = size.height;
-                        gpu.surface.configure(&gpu.device, &gpu.config);
+                        let pixel_dims_changed =
+                            gpu.config.width != size.width || gpu.config.height != size.height;
+                        if pixel_dims_changed {
+                            gpu.config.width = size.width;
+                            gpu.config.height = size.height;
+                            gpu.surface.configure(&gpu.device, &gpu.config);
+                        }
 
-                        // Resize exits scrollback (grid.resize clears snapshot).
+                        // Resize exits scrollback for the focused pane.
                         self.viewport_offset = 0;
 
                         #[allow(clippy::cast_possible_truncation)]
@@ -641,7 +645,13 @@ impl ApplicationHandler<UserEvent> for App {
                             let (cols, rows) =
                                 window_to_grid_dims(size, &font.metrics, &self.config.padding);
                             let dims_changed = grid.rows != rows || grid.cols != cols;
-                            grid.resize(cols, rows);
+                            if dims_changed {
+                                grid.resize(cols, rows);
+                            } else {
+                                // Dims unchanged but viewport_offset was reset;
+                                // still need to exit scrollback mode.
+                                grid.exit_scrollback();
+                            }
 
                             // Full a11y tree rebuild on resize (row count changed).
                             if dims_changed {
