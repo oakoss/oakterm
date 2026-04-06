@@ -20,7 +20,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
 
 [build-dependencies]
 vergen = { workspace = true }

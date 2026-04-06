@@ -20,7 +20,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }
-tempfile = "3"
+tempfile = "3.27.0"
 
 [[bench]]
 name = "vt_parser"
