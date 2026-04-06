@@ -729,4 +729,65 @@ mod tests {
     fn search_nav_too_short() {
         assert!(SearchNav::decode(&[0; 2]).is_err());
     }
+
+    // --- CreatePane / ClosePane ---
+
+    #[test]
+    fn create_pane_roundtrip() {
+        let msg = CreatePane {
+            command: "bash".into(),
+            cwd: "/home/user".into(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = CreatePane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn create_pane_empty_fields() {
+        let msg = CreatePane {
+            command: String::new(),
+            cwd: String::new(),
+        };
+        let encoded = msg.encode().unwrap();
+        assert_eq!(encoded.len(), 4);
+        let decoded = CreatePane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn create_pane_too_short() {
+        assert!(CreatePane::decode(&[0; 2]).is_err());
+    }
+
+    #[test]
+    fn create_pane_response_roundtrip() {
+        let msg = CreatePaneResponse { pane_id: 42 };
+        let encoded = msg.encode();
+        let decoded = CreatePaneResponse::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn create_pane_response_as_frame() {
+        let msg = CreatePaneResponse { pane_id: 7 };
+        let frame = msg.to_frame(123).unwrap();
+        assert_eq!(frame.msg_type, MSG_CREATE_PANE_RESPONSE);
+        assert_eq!(frame.serial, 123);
+        let decoded = CreatePaneResponse::decode(&frame.payload).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn close_pane_roundtrip() {
+        let msg = ClosePane { pane_id: 5 };
+        let encoded = msg.encode();
+        let decoded = ClosePane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn close_pane_too_short() {
+        assert!(ClosePane::decode(&[0; 2]).is_err());
+    }
 }

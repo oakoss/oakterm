@@ -5,12 +5,13 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    Bell, ClientHello, ErrorCode, ErrorMessage, FindPrompt, GetScrollback, HandshakeStatus,
-    MSG_CLIENT_HELLO, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE,
-    MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RENDER_UPDATE,
-    MSG_RESIZE, MSG_SCROLLBACK_DATA, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT, MSG_SEARCH_PREV,
-    MSG_SEARCH_SCROLLBACK, PaneExited, PromptPosition, ScrollbackData, SearchDirection, SearchNav,
-    SearchResults, SearchScrollback, ServerHello, TitleChanged,
+    Bell, ClientHello, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
+    FindPrompt, GetScrollback, HandshakeStatus, MSG_CLIENT_HELLO, MSG_CLOSE_PANE,
+    MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE, MSG_DETACH, MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT,
+    MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_MOUSE_INPUT, MSG_PING, MSG_PONG,
+    MSG_RENDER_UPDATE, MSG_RESIZE, MSG_SCROLLBACK_DATA, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT,
+    MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK, PaneExited, PromptPosition, ScrollbackData,
+    SearchDirection, SearchNav, SearchResults, SearchScrollback, ServerHello, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpdate, WireCell};
 use oakterm_terminal::grid::cell::{Color, Rgb};
@@ -62,6 +63,13 @@ struct PaneState {
     pty_state: PtyState,
     /// Sequence number of the last VT parse; clients compare to detect changes.
     dirty_seqno: u64,
+    /// Shell command for PTY spawn. Empty = default shell.
+    /// Used by `spawn_shell` when PTY is created on first Resize.
+    #[allow(dead_code)]
+    command: String,
+    /// Working directory for PTY spawn. Empty = inherit.
+    #[allow(dead_code)]
+    cwd: String,
 }
 
 /// Tracks all panes with monotonic ID assignment.
@@ -79,7 +87,7 @@ impl PaneManager {
     }
 
     /// Create a pane with the given grid dimensions. Returns the assigned ID.
-    fn create(&mut self, cols: u16, rows: u16) -> u32 {
+    fn create(&mut self, cols: u16, rows: u16, command: String, cwd: String) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.panes.insert(
@@ -88,9 +96,15 @@ impl PaneManager {
                 screens: ScreenSet::new(cols, rows),
                 pty_state: PtyState::NotSpawned,
                 dirty_seqno: 0,
+                command,
+                cwd,
             },
         );
         id
+    }
+
+    fn len(&self) -> usize {
+        self.panes.len()
     }
 
     fn get(&self, id: u32) -> Option<&PaneState> {
@@ -99,6 +113,10 @@ impl PaneManager {
 
     fn get_mut(&mut self, id: u32) -> Option<&mut PaneState> {
         self.panes.get_mut(&id)
+    }
+
+    fn remove(&mut self, id: u32) -> Option<PaneState> {
+        self.panes.remove(&id)
     }
 }
 
@@ -129,7 +147,7 @@ impl Daemon {
     pub fn with_socket_path(cols: u16, rows: u16, socket_path: std::path::PathBuf) -> Self {
         let (dirty_tx, dirty_rx) = watch::channel(0u64);
         let mut mgr = PaneManager::new();
-        mgr.create(cols, rows); // default pane 0
+        mgr.create(cols, rows, String::new(), String::new()); // default pane 0
         Self {
             panes: Arc::new(Mutex::new(mgr)),
             dirty_tx,
@@ -1071,6 +1089,87 @@ async fn handle_request(
                 pane.screens.clear_search();
             }
             RequestResult::NoResponse
+        }
+        MSG_CREATE_PANE => {
+            let Ok(msg) = CreatePane::decode(&frame.payload) else {
+                warn!(conn_id, "malformed CreatePane payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed CreatePane",
+                );
+            };
+            // Create the pane at a default size; GUI sends Resize immediately.
+            let mut pm = panes.lock().await;
+            let pane_id = pm.create(80, 24, msg.command.clone(), msg.cwd.clone());
+            drop(pm);
+            info!(conn_id, pane_id, command = %msg.command, cwd = %msg.cwd, "pane created");
+            let resp = CreatePaneResponse { pane_id };
+            match resp.to_frame(frame.serial) {
+                Ok(f) => RequestResult::Response(f),
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to encode CreatePaneResponse");
+                    make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::InternalError,
+                        "CreatePaneResponse encode error",
+                    )
+                }
+            }
+        }
+        MSG_CLOSE_PANE => {
+            let Ok(msg) = ClosePane::decode(&frame.payload) else {
+                warn!(conn_id, "malformed ClosePane payload");
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::MalformedPayload,
+                    "malformed ClosePane",
+                );
+            };
+            let mut pm = panes.lock().await;
+            if pm.len() <= 1 {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::InternalError,
+                    "cannot close the last pane",
+                );
+            }
+            let Some(removed) = pm.remove(msg.pane_id) else {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::UnknownPane,
+                    "unknown pane",
+                );
+            };
+            drop(pm);
+            if let PtyState::Running(_) = removed.pty_state {
+                info!(
+                    conn_id,
+                    pane_id = msg.pane_id,
+                    "pane closed (PTY running, read loop will clean up)"
+                );
+            } else {
+                info!(conn_id, pane_id = msg.pane_id, "pane closed");
+            }
+            // The pty_read_loop will detect the pane is gone and exit.
+            // Empty response confirms closure.
+            match Frame::new(MSG_CLOSE_PANE_RESPONSE, frame.serial, vec![]) {
+                Ok(f) => RequestResult::Response(f),
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to create ClosePaneResponse frame");
+                    make_error_response(
+                        conn_id,
+                        frame.serial,
+                        ErrorCode::InternalError,
+                        "ClosePaneResponse frame error",
+                    )
+                }
+            }
         }
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
             Ok(f) => RequestResult::Response(f),

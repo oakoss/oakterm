@@ -877,3 +877,132 @@ impl SearchNav {
         })
     }
 }
+
+// --- Pane management messages (0x90-0x93) ---
+
+/// `CreatePane` (0x90): client requests a new pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePane {
+    /// Shell command to run. Empty = default shell.
+    pub command: String,
+    /// Working directory. Empty = inherit from daemon.
+    pub cwd: String,
+}
+
+impl CreatePane {
+    /// # Errors
+    /// Returns an error if command or cwd exceed u16 length.
+    #[allow(clippy::similar_names)]
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let cmd = self.command.as_bytes();
+        let cwd = self.cwd.as_bytes();
+        let cmd_len: u16 = cmd
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "command too long"))?;
+        let cwd_len: u16 = cwd
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "cwd too long"))?;
+        let mut buf = Vec::with_capacity(4 + cmd.len() + cwd.len());
+        buf.extend_from_slice(&cmd_len.to_le_bytes());
+        buf.extend_from_slice(cmd);
+        buf.extend_from_slice(&cwd_len.to_le_bytes());
+        buf.extend_from_slice(cwd);
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    #[allow(clippy::similar_names)]
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePane too short",
+            ));
+        }
+        let cmd_len = u16::from_le_bytes([data[0], data[1]]) as usize;
+        if data.len() < 2 + cmd_len + 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePane command truncated",
+            ));
+        }
+        let command = String::from_utf8(data[2..2 + cmd_len].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("command: {e}")))?;
+        let off = 2 + cmd_len;
+        let cwd_len = u16::from_le_bytes([data[off], data[off + 1]]) as usize;
+        if data.len() < off + 2 + cwd_len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePane cwd truncated",
+            ));
+        }
+        let cwd = String::from_utf8(data[off + 2..off + 2 + cwd_len].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("cwd: {e}")))?;
+        Ok(Self { command, cwd })
+    }
+}
+
+/// `CreatePaneResponse` (0x91): daemon returns the new pane's ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePaneResponse {
+    pub pane_id: u32,
+}
+
+impl CreatePaneResponse {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CreatePaneResponse too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_CREATE_PANE_RESPONSE, serial, self.encode())
+    }
+}
+
+/// `ClosePane` (0x92): client requests pane closure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosePane {
+    pub pane_id: u32,
+}
+
+impl ClosePane {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ClosePane too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+}
