@@ -90,6 +90,10 @@ pub struct ClientGrid {
     pub seqno: u64,
     /// Dynamic background color from daemon (OSC 11 or default).
     pub bg_color: [u8; 3],
+    /// Whether the daemon's active grid for this pane is the alternate
+    /// screen (smcup). Drives wheel routing: alt → forward to app,
+    /// primary → host scrollback.
+    pub alt_screen: bool,
     /// Saved live state while viewport is scrolled up.
     live_snapshot: Option<LiveSnapshot>,
 }
@@ -107,6 +111,7 @@ impl ClientGrid {
             cursor_style: 0,
             seqno: 0,
             bg_color: [0, 0, 0],
+            alt_screen: false,
             live_snapshot: None,
         }
     }
@@ -118,6 +123,7 @@ impl ClientGrid {
         self.cursor_visible = update.cursor_visible;
         self.cursor_style = update.cursor_style;
         self.bg_color = [update.bg_r, update.bg_g, update.bg_b];
+        self.alt_screen = update.alt_screen;
         self.seqno = update.seqno;
 
         for row in &update.dirty_rows {
@@ -208,6 +214,7 @@ impl ClientGrid {
     pub fn apply_update_while_scrolled(&mut self, update: &RenderUpdate) {
         self.seqno = update.seqno;
         self.bg_color = [update.bg_r, update.bg_g, update.bg_b];
+        self.alt_screen = update.alt_screen;
         let Some(snap) = &mut self.live_snapshot else {
             return;
         };
@@ -746,6 +753,7 @@ mod tests {
     #[test]
     fn apply_update_sets_cells() {
         let mut grid = ClientGrid::new(4, 2);
+        assert!(!grid.alt_screen, "starts on primary");
 
         let update = RenderUpdate {
             pane_id: 0,
@@ -758,6 +766,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: true,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![
@@ -800,6 +809,10 @@ mod tests {
         assert_eq!(colors[1], pack_bg_color([0, 0, 0]), "second cell black bg");
         assert_eq!(grid.cells[0].codepoint, u32::from(b'H'));
         assert_eq!(grid.cells[1].codepoint, u32::from(b'i'));
+        assert!(
+            grid.alt_screen,
+            "alt_screen flag must propagate from update"
+        );
     }
 
     #[test]
@@ -816,6 +829,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: false,
             dirty_rows: vec![],
         };
         grid.apply_update(&update);
@@ -839,6 +853,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: false,
             dirty_rows: vec![DirtyRow {
                 row_index: 99,
                 cells: vec![WireCell {
@@ -1024,6 +1039,7 @@ mod tests {
         let mut grid = ClientGrid::new(4, 2);
         grid.cells[0].codepoint = u32::from(b'O');
         grid.enter_scrollback();
+        assert!(!grid.alt_screen);
 
         let update = RenderUpdate {
             pane_id: 0,
@@ -1036,6 +1052,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: true,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);
@@ -1044,6 +1061,9 @@ mod tests {
         assert_eq!(grid.cells[0].codepoint, u32::from(b'O'));
         // Seqno updated.
         assert_eq!(grid.seqno, 10);
+        // alt_screen flag must propagate even while scrolled, so wheel
+        // routing reflects the daemon's current grid.
+        assert!(grid.alt_screen);
 
         // Exit scrollback — should restore the updated snapshot.
         grid.exit_scrollback();
@@ -1115,6 +1135,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: false,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);

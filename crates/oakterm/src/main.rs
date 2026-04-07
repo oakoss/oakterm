@@ -169,6 +169,66 @@ enum ActionDesc {
     Stub,
 }
 
+/// Outcome of clamping the host scrollback viewport offset against the
+/// daemon's reported buffer length.
+#[derive(Debug, PartialEq, Eq)]
+enum ScrollbackClampOutcome {
+    /// Clamped to a non-zero offset; stay in scrollback.
+    Clamp(u32),
+    /// Buffer is empty (or smaller than 1); leave scrollback mode entirely.
+    ReturnToLive,
+}
+
+/// Clamp `current` viewport offset to the daemon's actual scrollback length.
+/// Returns `ReturnToLive` when the clamp lands at zero, signalling the caller
+/// should call `return_to_live()` instead of painting a "[0 lines]" indicator.
+fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
+    let clamped = current.min(total);
+    if clamped == 0 {
+        ScrollbackClampOutcome::ReturnToLive
+    } else {
+        ScrollbackClampOutcome::Clamp(clamped)
+    }
+}
+
+/// Convert a winit `MouseScrollDelta` into integer "wheel notches" (1 notch =
+/// 1 line). `LineDelta` is truncated and clears any pending pixel residue.
+/// `PixelDelta` is accumulated in `accum` and drained one notch per `cell_h`
+/// pixels so macOS smooth-scroll's 60-120Hz event stream doesn't flood the
+/// downstream consumer. Direction reversal mid-stream resets the accumulator
+/// to kill inertia/rubber-band bounce.
+///
+/// Returns 0 when no whole notch has accumulated yet, or when `cell_h <= 0.0`
+/// (degenerate font state).
+fn drain_wheel_notches(delta: winit::event::MouseScrollDelta, cell_h: f64, accum: &mut f64) -> i32 {
+    use winit::event::MouseScrollDelta;
+    #[allow(clippy::cast_possible_truncation)]
+    match delta {
+        MouseScrollDelta::LineDelta(_, v) => {
+            *accum = 0.0;
+            if v == 0.0 {
+                return 0;
+            }
+            v.trunc() as i32
+        }
+        MouseScrollDelta::PixelDelta(p) => {
+            if p.y == 0.0 || cell_h <= 0.0 {
+                return 0;
+            }
+            if p.y.signum() != accum.signum() && *accum != 0.0 {
+                *accum = 0.0;
+            }
+            *accum += p.y;
+            let n = (*accum / cell_h).trunc();
+            if n == 0.0 {
+                return 0;
+            }
+            *accum -= n * cell_h;
+            n as i32
+        }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 struct App {
     window: Option<Arc<Window>>,
@@ -234,6 +294,10 @@ struct App {
     last_click_pos: (u16, u16),
     /// Last known mouse position in pixel coordinates.
     last_mouse_pixel: (f64, f64),
+    /// Accumulated `PixelDelta` wheel-y, in pixels. Drained one notch per
+    /// `cell_height` pixels so high-frequency macOS smooth-scroll events
+    /// don't flood the daemon with arrow keys.
+    wheel_accum_y: f64,
 }
 
 impl App {
@@ -272,6 +336,7 @@ impl App {
             last_click_time: None,
             last_click_pos: (0, 0),
             last_mouse_pixel: (0.0, 0.0),
+            wheel_accum_y: 0.0,
         }
     }
 
@@ -759,6 +824,9 @@ impl ApplicationHandler<UserEvent> for App {
                     // Show solid cursor when unfocused.
                     self.blink_visible = true;
                     self.blink_deadline = None;
+                    // Drop any pending wheel pixels so they don't apply to a
+                    // future scroll in a different pane / window state.
+                    self.wheel_accum_y = 0.0;
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -941,46 +1009,60 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let (scroll_up, count) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, v) => (v > 0.0, v.abs() as u32),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.y > 0.0, 1u32),
-                };
+                let cell_h = self
+                    .font
+                    .as_ref()
+                    .map_or(16.0_f64, |f| f64::from(f.metrics.cell_height));
+                let notches = drain_wheel_notches(delta, cell_h, &mut self.wheel_accum_y);
+                if notches == 0 {
+                    return;
+                }
+                let scroll_up = notches > 0;
+                #[allow(clippy::cast_sign_loss)]
+                let count = notches.unsigned_abs();
                 #[allow(clippy::cast_possible_wrap)]
                 let scroll_lines = (3 * count) as i32;
 
                 let shift = self.modifiers.state().shift_key();
+                let alt_screen = self
+                    .grids
+                    .get(&self.focused_pane)
+                    .is_some_and(|g| g.alt_screen);
 
-                if scroll_up {
-                    self.scroll_viewport(scroll_lines);
-                } else if self.viewport_offset > 0 {
-                    self.scroll_viewport(-scroll_lines);
-                } else if !shift {
-                    // Forward to daemon only when Shift is not held.
-                    if let Some(daemon) = &mut self.daemon {
-                        let (x, y) = self.last_mouse_cell;
-                        let event_type = if scroll_up { 3u8 } else { 4u8 };
-                        let mods = encode_mouse_modifiers(self.modifiers);
-                        for _ in 0..count.min(5) {
-                            let msg = MouseInput {
-                                pane_id: self.focused_pane,
-                                event_type,
-                                x,
-                                y,
-                                modifiers: mods,
-                                button: 0,
-                            };
-                            match msg.to_frame() {
-                                Ok(frame) => {
-                                    if let Err(e) = daemon.send_frame(&frame) {
-                                        error!(error = %e, "daemon write failed");
-                                        self.daemon = None;
-                                        event_loop.exit();
-                                        return;
-                                    }
+                // Routing (matches alacritty/kitty/wezterm):
+                // - Already in host scrollback: keep scrolling host until offset == 0.
+                // - Shift held, or primary screen: host scrollback.
+                // - Alt screen with no Shift: forward to daemon (mouse mode / 1007 alt-scroll).
+                let delta = if scroll_up {
+                    scroll_lines
+                } else {
+                    -scroll_lines
+                };
+                if self.viewport_offset > 0 || shift || !alt_screen {
+                    self.scroll_viewport(delta);
+                } else if let Some(daemon) = &mut self.daemon {
+                    let (x, y) = self.last_mouse_cell;
+                    let event_type = if scroll_up { 3u8 } else { 4u8 };
+                    let mods = encode_mouse_modifiers(self.modifiers);
+                    for _ in 0..count.min(5) {
+                        let msg = MouseInput {
+                            pane_id: self.focused_pane,
+                            event_type,
+                            x,
+                            y,
+                            modifiers: mods,
+                            button: 0,
+                        };
+                        match msg.to_frame() {
+                            Ok(frame) => {
+                                if let Err(e) = daemon.send_frame(&frame) {
+                                    error!(error = %e, "daemon write failed");
+                                    self.daemon = None;
+                                    event_loop.exit();
+                                    return;
                                 }
-                                Err(e) => error!(error = %e, "failed to encode mouse wheel"),
                             }
+                            Err(e) => error!(error = %e, "failed to encode mouse wheel"),
                         }
                     }
                 }
@@ -1302,15 +1384,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::ScrollbackData(data) => {
                 if self.viewport_offset > 0 {
-                    // Clamp offset if we reached the top of scrollback.
-                    let requested = self
-                        .grids
-                        .get(&self.focused_pane)
-                        .map_or(24usize, |g| usize::from(g.rows));
-                    if data.rows.len() < requested && !data.has_more {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let actual = data.rows.len() as u32;
-                        self.viewport_offset = self.viewport_offset.min(actual);
+                    match clamp_viewport(self.viewport_offset, data.total_rows) {
+                        ScrollbackClampOutcome::ReturnToLive => {
+                            self.return_to_live();
+                            return;
+                        }
+                        ScrollbackClampOutcome::Clamp(clamped) => {
+                            self.viewport_offset = clamped;
+                        }
                     }
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
@@ -2856,5 +2937,137 @@ fn version_string() -> String {
     match channel {
         "dev" => format!("oakterm {version}-dev+{short_sha} ({channel}, {source})"),
         _ => format!("oakterm {version} ({channel}, {source})"),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
+mod tests {
+    use super::{ScrollbackClampOutcome, clamp_viewport, drain_wheel_notches};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta;
+
+    // --- clamp_viewport ---
+
+    #[test]
+    fn clamp_below_total_keeps_offset() {
+        assert_eq!(clamp_viewport(10, 100), ScrollbackClampOutcome::Clamp(10));
+    }
+
+    #[test]
+    fn clamp_above_total_clamps_to_total() {
+        assert_eq!(clamp_viewport(2412, 50), ScrollbackClampOutcome::Clamp(50));
+    }
+
+    #[test]
+    fn clamp_total_zero_returns_to_live() {
+        assert_eq!(clamp_viewport(10, 0), ScrollbackClampOutcome::ReturnToLive);
+    }
+
+    #[test]
+    fn clamp_current_zero_returns_to_live() {
+        assert_eq!(clamp_viewport(0, 100), ScrollbackClampOutcome::ReturnToLive);
+    }
+
+    // --- drain_wheel_notches: LineDelta ---
+
+    #[test]
+    fn line_delta_truncates_and_clears_residue() {
+        let mut accum = 7.5;
+        let n = drain_wheel_notches(MouseScrollDelta::LineDelta(0.0, 2.7), 16.0, &mut accum);
+        assert_eq!(n, 2);
+        assert_eq!(accum, 0.0, "LineDelta must clear pixel residue");
+    }
+
+    #[test]
+    fn line_delta_zero_is_noop() {
+        let mut accum = 5.0;
+        let n = drain_wheel_notches(MouseScrollDelta::LineDelta(0.0, 0.0), 16.0, &mut accum);
+        assert_eq!(n, 0);
+        // LineDelta unconditionally clears even when value is zero.
+        assert_eq!(accum, 0.0);
+    }
+
+    #[test]
+    fn line_delta_negative_truncates_toward_zero() {
+        let mut accum = 0.0;
+        let n = drain_wheel_notches(MouseScrollDelta::LineDelta(0.0, -2.7), 16.0, &mut accum);
+        assert_eq!(n, -2);
+    }
+
+    // --- drain_wheel_notches: PixelDelta accumulation ---
+
+    fn px(y: f64) -> MouseScrollDelta {
+        MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y))
+    }
+
+    #[test]
+    fn pixel_delta_sub_cell_accumulates_no_notch() {
+        let mut accum = 0.0;
+        for _ in 0..3 {
+            assert_eq!(drain_wheel_notches(px(4.0), 16.0, &mut accum), 0);
+        }
+        // Fourth event reaches 16px → 1 notch.
+        assert_eq!(drain_wheel_notches(px(4.0), 16.0, &mut accum), 1);
+        assert_eq!(accum, 0.0, "residue should be drained");
+    }
+
+    #[test]
+    fn pixel_delta_exact_cell_one_notch() {
+        let mut accum = 0.0;
+        assert_eq!(drain_wheel_notches(px(16.0), 16.0, &mut accum), 1);
+        assert_eq!(accum, 0.0);
+    }
+
+    #[test]
+    fn pixel_delta_multi_notch_single_event_keeps_residue() {
+        let mut accum = 0.0;
+        // 40px on 16px cell → 2 notches, 8px residue.
+        assert_eq!(drain_wheel_notches(px(40.0), 16.0, &mut accum), 2);
+        assert_eq!(accum, 8.0);
+    }
+
+    #[test]
+    fn pixel_delta_negative_truncates_toward_zero() {
+        let mut accum = 0.0;
+        // -40px on 16px cell → -2 notches, residue -8.
+        assert_eq!(drain_wheel_notches(px(-40.0), 16.0, &mut accum), -2);
+        assert_eq!(accum, -8.0);
+    }
+
+    #[test]
+    fn pixel_delta_direction_reversal_resets_accum() {
+        let mut accum = 0.0;
+        // Build up positive residue.
+        let _ = drain_wheel_notches(px(8.0), 16.0, &mut accum);
+        assert_eq!(accum, 8.0);
+        // Reverse direction: should reset, then accumulate negative.
+        let n = drain_wheel_notches(px(-4.0), 16.0, &mut accum);
+        assert_eq!(n, 0);
+        assert_eq!(accum, -4.0, "reset must occur before applying new delta");
+    }
+
+    #[test]
+    fn pixel_delta_zero_y_is_noop() {
+        let mut accum = 5.0;
+        assert_eq!(drain_wheel_notches(px(0.0), 16.0, &mut accum), 0);
+        assert_eq!(accum, 5.0, "zero delta must not touch accumulator");
+    }
+
+    #[test]
+    fn pixel_delta_zero_cell_height_is_noop() {
+        let mut accum = 5.0;
+        assert_eq!(drain_wheel_notches(px(100.0), 0.0, &mut accum), 0);
+        assert_eq!(accum, 5.0, "zero cell_h must not touch accumulator");
+    }
+
+    #[test]
+    fn line_delta_after_pixel_delta_clears_residue() {
+        let mut accum = 0.0;
+        let _ = drain_wheel_notches(px(8.0), 16.0, &mut accum);
+        assert_eq!(accum, 8.0);
+        let n = drain_wheel_notches(MouseScrollDelta::LineDelta(0.0, 1.0), 16.0, &mut accum);
+        assert_eq!(n, 1);
+        assert_eq!(accum, 0.0, "LineDelta must purge pending pixel residue");
     }
 }

@@ -247,6 +247,10 @@ pub struct RenderUpdate {
     pub bg_b: u8,
     /// Whether the terminal has DECSET 2004 (bracketed paste) active.
     pub bracketed_paste: bool,
+    /// Whether the active grid is the alternate screen (smcup).
+    /// Used by clients to decide wheel routing: alt screen → forward to app,
+    /// primary screen → host scrollback.
+    pub alt_screen: bool,
     pub dirty_rows: Vec<DirtyRow>,
 }
 
@@ -268,6 +272,7 @@ impl RenderUpdate {
         buf.push(self.bg_g);
         buf.push(self.bg_b);
         buf.push(u8::from(self.bracketed_paste));
+        buf.push(u8::from(self.alt_screen));
         buf.extend_from_slice(&row_count.to_le_bytes());
         for row in &self.dirty_rows {
             buf.extend_from_slice(&row.encode()?);
@@ -278,7 +283,7 @@ impl RenderUpdate {
     /// # Errors
     /// Returns an error if the payload is malformed.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 24 {
+        if data.len() < 25 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "RenderUpdate too short",
@@ -296,9 +301,10 @@ impl RenderUpdate {
         let bg_g = data[19];
         let bg_b = data[20];
         let bracketed_paste = data[21] != 0;
-        let dirty_row_count = u16::from_le_bytes([data[22], data[23]]) as usize;
+        let alt_screen = data[22] != 0;
+        let dirty_row_count = u16::from_le_bytes([data[23], data[24]]) as usize;
 
-        let mut offset = 24;
+        let mut offset = 25;
         let mut dirty_rows = Vec::with_capacity(dirty_row_count);
         for _ in 0..dirty_row_count {
             let (row, consumed) = DirtyRow::decode(&data[offset..])?;
@@ -317,6 +323,7 @@ impl RenderUpdate {
             bg_g,
             bg_b,
             bracketed_paste,
+            alt_screen,
             dirty_rows,
         })
     }

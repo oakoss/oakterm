@@ -293,7 +293,8 @@ mod tests {
             bg_r: 0,
             bg_g: 0,
             bg_b: 0,
-            bracketed_paste: false,
+            bracketed_paste: true,
+            alt_screen: true,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![WireCell {
@@ -331,6 +332,7 @@ mod tests {
             bg_g: 0,
             bg_b: 0,
             bracketed_paste: false,
+            alt_screen: false,
             dirty_rows: vec![],
         };
         let encoded = update.encode().unwrap();
@@ -499,6 +501,7 @@ mod tests {
             pane_id: 0,
             start_row: -10,
             has_more: false,
+            total_rows: 0,
             rows: vec![],
         };
         let encoded = msg.encode().unwrap();
@@ -512,6 +515,7 @@ mod tests {
             pane_id: 1,
             start_row: -5,
             has_more: true,
+            total_rows: 100,
             rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![WireCell {

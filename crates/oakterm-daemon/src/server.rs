@@ -848,6 +848,7 @@ async fn handle_request(
                     "unknown pane",
                 );
             };
+            let alt_screen = pane.screens.active_screen() == ScreenId::Alternate;
             let g = pane.screens.active_grid();
             // If since_seqno > g.seqno, the client is tracking a seqno from
             // a different grid (e.g., the alternate buffer before switching
@@ -889,6 +890,7 @@ async fn handle_request(
                 bg_g,
                 bg_b,
                 bracketed_paste: g.modes.get(2004),
+                alt_screen,
                 dirty_rows,
             };
 
@@ -950,10 +952,12 @@ async fn handle_request(
                 })
                 .collect();
 
+            let total_rows = u32::try_from(buf.len()).unwrap_or(u32::MAX);
             let data = ScrollbackData {
                 pane_id: req.pane_id,
                 start_row: req.start_row,
                 has_more,
+                total_rows,
                 rows,
             };
 

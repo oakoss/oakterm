@@ -493,6 +493,9 @@ pub struct ScrollbackData {
     pub pane_id: u32,
     pub start_row: i64,
     pub has_more: bool,
+    /// Total number of rows currently in the daemon's hot scrollback buffer.
+    /// Lets the client clamp `viewport_offset` to a valid range.
+    pub total_rows: u32,
     pub rows: Vec<crate::render::DirtyRow>,
 }
 
@@ -508,6 +511,7 @@ impl ScrollbackData {
         buf.extend_from_slice(&self.pane_id.to_le_bytes());
         buf.extend_from_slice(&self.start_row.to_le_bytes());
         buf.push(u8::from(self.has_more));
+        buf.extend_from_slice(&self.total_rows.to_le_bytes());
         buf.extend_from_slice(&row_count.to_le_bytes());
         for row in &self.rows {
             buf.extend_from_slice(&row.encode()?);
@@ -518,7 +522,7 @@ impl ScrollbackData {
     /// # Errors
     /// Returns an error if the payload is malformed.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 17 {
+        if data.len() < 21 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "ScrollbackData too short",
@@ -529,7 +533,8 @@ impl ScrollbackData {
             data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
         let has_more = data[12] != 0;
-        let row_count_raw = u32::from_le_bytes([data[13], data[14], data[15], data[16]]);
+        let total_rows = u32::from_le_bytes([data[13], data[14], data[15], data[16]]);
+        let row_count_raw = u32::from_le_bytes([data[17], data[18], data[19], data[20]]);
         // Cap allocation to prevent OOM from malicious wire data.
         if row_count_raw > 10_000 {
             return Err(io::Error::new(
@@ -539,7 +544,7 @@ impl ScrollbackData {
         }
         let row_count = row_count_raw as usize;
 
-        let mut offset = 17;
+        let mut offset = 21;
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
             let (row, consumed) = crate::render::DirtyRow::decode(&data[offset..])?;
@@ -551,6 +556,7 @@ impl ScrollbackData {
             pane_id,
             start_row,
             has_more,
+            total_rows,
             rows,
         })
     }
