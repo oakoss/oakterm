@@ -313,16 +313,59 @@ fn resize_grow_no_scrollback() {
 }
 
 #[test]
-fn resize_alt_screen_respects_flag() {
+fn resize_alt_screen_discards_by_default() {
     let mut ss = ScreenSet::new(10, 5);
     ss.enter_alternate();
-    ss.set_save_alternate_scrollback(false);
     ss.resize_all(10, 3);
-    // Primary rows captured, alt rows discarded.
+    // Default: alt rows discarded; only primary's 2 truncated rows captured.
     assert_eq!(
         ss.scrollback().len(),
         2,
-        "only primary rows should be captured"
+        "default behavior should discard alt rows"
+    );
+}
+
+#[test]
+fn resize_alt_screen_opt_in_captures() {
+    let mut ss = ScreenSet::new(10, 5);
+    ss.enter_alternate();
+    ss.set_save_alternate_scrollback(true);
+    ss.resize_all(10, 3);
+    // Opt-in: both primary (2) and alt (2) truncated rows captured.
+    assert_eq!(
+        ss.scrollback().len(),
+        4,
+        "opt-in should capture alt rows too"
+    );
+}
+
+#[test]
+fn save_alternate_scrollback_defaults_to_false() {
+    let ss = ScreenSet::new(10, 5);
+    assert!(!ss.save_alternate_scrollback());
+}
+
+#[test]
+fn push_scrollback_on_alt_screen_is_gated_by_default() {
+    use crate::handler::TermTarget;
+    // Regression for TREK-136: with nvim-style alt screen activity, the
+    // primary scrollback must remain untouched.
+    let mut ss = ScreenSet::new(10, 5);
+    // Seed primary scrollback with known content.
+    let mut seed = Row::new(10);
+    seed.cells[0].codepoint = 'A';
+    ss.scrollback_mut().push(seed);
+    let baseline_len = ss.scrollback().len();
+
+    // Switch to alt screen and simulate scroll-off rows entering push_scrollback.
+    ss.enter_alternate();
+    let alt_rows = vec![Row::new(10), Row::new(10), Row::new(10)];
+    ss.push_scrollback(alt_rows);
+
+    assert_eq!(
+        ss.scrollback().len(),
+        baseline_len,
+        "alt-screen scroll-off must not append to primary scrollback"
     );
 }
 

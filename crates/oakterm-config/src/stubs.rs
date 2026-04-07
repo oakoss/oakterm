@@ -115,7 +115,7 @@ function ActionModule.show_command_palette() end
 ---@field cursor_style oakterm.CursorStyle Cursor visual style (default: "block")
 ---@field cursor_blink boolean Cursor blink enabled (default: true)
 ---@field scrollback_limit integer|string Scrollback size in bytes or "50MB" (default: "50MB")
----@field save_alternate_scrollback boolean Save alternate screen content (default: true)
+---@field save_alternate_scrollback boolean Save alt-screen scroll-off into primary scrollback (default: false; matches xterm/alacritty/kitty)
 ---@field scroll_indicator boolean Show scroll position indicator (default: true)
 ---@field padding oakterm.Padding Window padding in pixels
 ---@field theme string Theme name (default: built-in)
@@ -201,7 +201,7 @@ pub(crate) const CONFIG_TEMPLATE: &str = r#"-- OakTerm configuration
 
 -- Scrollback
 -- oakterm.config.scrollback_limit = "50MB"
--- oakterm.config.save_alternate_scrollback = true
+-- oakterm.config.save_alternate_scrollback = false
 -- oakterm.config.scrollback_archive = true
 -- oakterm.config.scrollback_archive_limit = "1GB"
 

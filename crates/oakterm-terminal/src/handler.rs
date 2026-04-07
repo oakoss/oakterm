@@ -2782,25 +2782,28 @@ mod tests {
     }
 
     #[test]
-    fn alt_screen_scrollback_enabled_by_default() {
+    fn alt_screen_scrollback_discarded_by_default() {
         let mut screen = test_screen(10, 3);
         // Enter alt screen (mode 1049), fill and scroll.
         parse_screen(&mut screen, b"\x1b[?1049h");
         parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
-        // Default: alt screen rows go to primary scrollback.
-        assert_eq!(screen.scrollback().len(), 1);
+        // Default: alt screen rows are discarded (matches xterm/alacritty/kitty).
+        assert_eq!(screen.scrollback().len(), 0);
+        // Exiting the alt screen must not flush alt rows into primary scrollback either.
+        parse_screen(&mut screen, b"\x1b[?1049l");
+        assert_eq!(screen.scrollback().len(), 0);
     }
 
     #[test]
-    fn alt_screen_scrollback_disabled() {
+    fn alt_screen_scrollback_opt_in() {
         let mut screen = test_screen(10, 3);
-        screen.set_save_alternate_scrollback(false);
+        screen.set_save_alternate_scrollback(true);
         parse_screen(&mut screen, b"\x1b[?1049h");
         parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
         assert_eq!(
             screen.scrollback().len(),
-            0,
-            "alt screen scrollback should be discarded when disabled"
+            1,
+            "opt-in flag should capture alt screen scroll-off"
         );
     }
 

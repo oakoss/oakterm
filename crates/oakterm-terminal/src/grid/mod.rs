@@ -289,7 +289,7 @@ impl ScreenSet {
             primary: Grid::new(cols, rows),
             alternate: None,
             scrollback: HotBuffer::default(),
-            save_alternate_scrollback: true,
+            save_alternate_scrollback: false,
             archive: None,
             processor: vte::ansi::Processor::new(),
             search: None,

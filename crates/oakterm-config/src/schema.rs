@@ -166,7 +166,7 @@ impl Default for ConfigValues {
             cursor_style: CursorStyle::default(),
             cursor_blink: true,
             scrollback_limit: 50 * 1024 * 1024,
-            save_alternate_scrollback: true,
+            save_alternate_scrollback: false,
             scroll_indicator: true,
             padding: Padding::default(),
             theme: String::new(),
