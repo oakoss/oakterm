@@ -130,13 +130,13 @@ Error codes 0 and 7-255 are reserved. Codes 256+ are available for future use.
 
 #### GUI Protocol — Rendering & Search (0x70-0x7F)
 
-| msg_type | Name            | Direction | Serial   | Payload                                                                          |
-| -------- | --------------- | --------- | -------- | -------------------------------------------------------------------------------- |
-| `0x70`   | DirtyNotify     | D→C       | Push (0) | `pane_id: u32`. Daemon signals that pane content has changed.                    |
-| `0x71`   | GetRenderUpdate | C→D       | Request  | `pane_id: u32`, `since_seqno: u64`                                               |
-| `0x72`   | RenderUpdate    | D→C       | Response | See RenderUpdate payload below                                                   |
-| `0x73`   | GetScrollback   | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `count: u32`                                   |
-| `0x74`   | ScrollbackData  | D→C       | Response | `pane_id: u32`, `start_row: i64`, `rows_len: u32`, `has_more: u8`, `rows: bytes` |
+| msg_type | Name            | Direction | Serial   | Payload                                                                                             |
+| -------- | --------------- | --------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `0x70`   | DirtyNotify     | D→C       | Push (0) | `pane_id: u32`. Daemon signals that pane content has changed.                                       |
+| `0x71`   | GetRenderUpdate | C→D       | Request  | `pane_id: u32`, `since_seqno: u64`                                                                  |
+| `0x72`   | RenderUpdate    | D→C       | Response | See RenderUpdate payload below                                                                      |
+| `0x73`   | GetScrollback   | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `count: u32`                                                      |
+| `0x74`   | ScrollbackData  | D→C       | Response | `pane_id: u32`, `start_row: i64`, `has_more: u8`, `total_rows: u32`, `rows_len: u32`, `rows: bytes` |
 
 **RenderUpdate payload (0x72):**
 
@@ -149,6 +149,14 @@ cursor_x           u16 LE      Cursor column
 cursor_y           u16 LE      Cursor row
 cursor_style       u8          0=block, 1=underline, 2=bar, 3=hidden
 cursor_visible     u8          0=hidden, 1=visible
+bg_r               u8          Dynamic background red (OSC 11 or default)
+bg_g               u8          Dynamic background green
+bg_b               u8          Dynamic background blue
+bracketed_paste    u8          1 if DECSET 2004 is active
+alt_screen         u8          1 if the active grid is the alternate screen
+                               (smcup). Clients use this to route wheel
+                               events: alt → forward to app, primary →
+                               host scrollback.
 dirty_row_count    u16 LE      Number of dirty row entries
 dirty_rows         [DirtyRow]  Array of dirty row data (see below)
 ```
@@ -325,7 +333,7 @@ The daemon does not push screen content to GUI clients. Instead:
 
 **Multiple panes:** Each pane has its own sequence number space. The GUI subscribes to panes by sending the first `GetRenderUpdate` for each pane. `DirtyNotify` is per-pane.
 
-**Scrollback:** Scrollback data is not included in `RenderUpdate`. When the user scrolls up, the GUI sends `GetScrollback { pane_id, start_row, count }` to fetch archived rows on demand. If the requested range exceeds the max frame payload (16 MiB), the daemon returns as many rows as fit in a single frame with `has_more=1`. The client requests the next chunk using `start_row + rows_len` as the new `start_row`.
+**Scrollback:** Scrollback data is not included in `RenderUpdate`. When the user scrolls up, the GUI sends `GetScrollback { pane_id, start_row, count }` to fetch archived rows on demand. If the requested range exceeds the max frame payload (16 MiB), the daemon returns as many rows as fit in a single frame with `has_more=1`. The client requests the next chunk using `start_row + rows_len` as the new `start_row`. Every response includes `total_rows`, the current size of the daemon's hot scrollback buffer, which the client uses to clamp its viewport offset to a valid range.
 
 ## Behavior
 
