@@ -172,6 +172,27 @@ If an agent tries a denied action, the terminal can prompt the user:
 
 "Allow Always" updates the pane's permission config for this session.
 
+### Risk Scoring
+
+Rather than treating all escalations equally, actions can be scored across risk dimensions to determine whether they need explicit approval or can auto-approve within a permission class.
+
+| Dimension       | Low (0-3)                    | High (7-10)                      |
+| --------------- | ---------------------------- | -------------------------------- |
+| Destructiveness | Read-only, status updates    | Delete files, kill processes     |
+| Scope           | Current pane only            | All panes, system-wide           |
+| Reversibility   | Can undo (close a new pane)  | Cannot undo (sent input, rm -rf) |
+| Privilege       | Own pane metadata            | Other pane I/O, sidebar          |
+| Externality     | No side effects outside term | Network calls, filesystem writes |
+| Concurrency     | No contention                | Races with user or other agents  |
+
+A composite score (max 60 across 6 dimensions) determines the governance action. Thresholds are skewed toward caution; an action only needs to average ~5/10 per dimension to require explicit approval:
+
+- **Low risk (0-15)**: auto-approve if the permission class is granted
+- **Medium risk (16-30)**: approve with constraints (e.g., log the action, sandbox)
+- **High risk (31+)**: require explicit user approval regardless of permission config
+
+An agent with `pane_create = true` can open a floating pane without a prompt, but opening 10 panes in rapid succession (high concurrency score) still triggers approval. The scoring is heuristic and conservative; when in doubt, ask.
+
 ## Environment Variables
 
 Every pane gets these environment variables automatically:

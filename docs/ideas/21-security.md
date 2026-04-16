@@ -100,6 +100,35 @@ Everything secure by default, relaxable when needed:
 | Plugin network access  | Per-plugin approval | Yes            |
 | Lua sandbox (no os/io) | On                  | No (hardcoded) |
 
+## Agent Action Audit Trail
+
+Every action taken by an agent (or on behalf of an agent) is logged to a structured audit trail. When something goes wrong, you can trace exactly what happened, what was allowed, and who approved it.
+
+Each entry records:
+
+- **Timestamp** and **pane ID** (which agent)
+- **Action** attempted (e.g., `pane_create`, `pane_input`, `notify`)
+- **Risk score** (from the escalation risk scoring — see [Agent Control API](32-agent-control-api.md))
+- **Verdict**: auto-approved, user-approved, approved-with-constraints, or denied
+- **Who approved** (auto, user prompt, "Allow Always" policy)
+- **Context**: command arguments, target pane, rationale if provided
+
+```text
+:audit agents
+
+┌──────────────────────────────────────────────────────────────────┐
+│  Agent Audit Trail (last 1h)                                     │
+├──────────────────────────────────────────────────────────────────┤
+│  14:32:01  feat/auth   pane_create (floating)    auto-approved   │
+│  14:32:15  feat/auth   self set-status working   auto-approved   │
+│  14:35:22  feat/auth   pane_read dev-server      user-approved   │
+│  14:36:01  feat/auth   pane_input dev-server     denied          │
+│  14:41:00  fix/typo    notify "done"             auto-approved   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+The audit trail is kept for the current session in memory and optionally persisted to disk (`$OAKTERM_STATE_DIR/audit.log`) for post-session review. The log is append-only and not modifiable by plugins or agents.
+
 ## Auditing
 
 `:debug security` shows the current security state:

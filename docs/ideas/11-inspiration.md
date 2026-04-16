@@ -20,6 +20,7 @@ tags:
     'rio',
     'wave',
     'harpoon',
+    'tamux',
   ]
 ---
 
@@ -88,6 +89,11 @@ What we took from each terminal and tool — and what we deliberately left out.
 
 **Took:** Proves users want inline file previews and that a terminal can embed non-terminal content in panes
 **Left:** Drag-and-drop workspace model, built-in editor, too many concerns in one app
+
+### Tamux
+
+**Took:** Validates daemon-first architecture with broadcast channel fan-out for multi-client attach, transport-generic IPC via `Framed` over any async stream. WELES governance agent (command-level safety interception) inspired our risk scoring design. Per-provider LLM fallback inspired our circuit breaker idea.
+**Left:** Monolithic daemon (everything in-process including full LLM pipeline), no IDL (Rust enum variants ARE the protocol, changes require rebuilding both sides), non-modular code organization (`include!()` for splitting large functions), tightly coupled agent system
 
 ### iTerm2
 
