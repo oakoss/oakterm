@@ -13,6 +13,7 @@ oakterm-protocol = { path = "../oakterm-protocol" }
 oakterm-pty = { path = "../oakterm-pty" }
 oakterm-terminal = { path = "../oakterm-terminal" }
 rustix = { workspace = true }
+shlex = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 bytes = { workspace = true }

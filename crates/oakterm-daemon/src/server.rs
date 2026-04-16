@@ -18,8 +18,10 @@ use oakterm_protocol::render::{DirtyNotify, DirtyRow, GetRenderUpdate, RenderUpd
 use oakterm_terminal::grid::cell::{Color, Rgb};
 use oakterm_terminal::grid::row::{MarkMetadata, SemanticMark};
 use oakterm_terminal::grid::{ScreenId, ScreenSet};
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::io::RawFd;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -66,12 +68,39 @@ struct PaneState {
     /// Sequence number of the last VT parse; clients compare to detect changes.
     dirty_seqno: u64,
     /// Shell command for PTY spawn. Empty = default shell.
-    /// Used by `spawn_shell` when PTY is created on first Resize.
-    #[allow(dead_code)]
+    /// Shlex-split into program + args at spawn time (first Resize).
     command: String,
-    /// Working directory for PTY spawn. Empty = inherit.
-    #[allow(dead_code)]
+    /// Working directory for PTY spawn. Empty = inherit daemon's cwd.
     cwd: String,
+}
+
+/// Convert the wire-protocol `command` (single shell-style string) and `cwd`
+/// into a [`oakterm_pty::CommandSpec`].
+///
+/// `command == ""` means default shell. Non-empty `command` is shlex-split:
+/// `"htop --tree"` becomes `program=htop, args=["--tree"]`. Malformed quoting
+/// returns `Err` so the daemon can surface the parse failure to the client
+/// instead of silently spawning a default shell.
+fn build_command_spec(command: &str, cwd: &str) -> Result<oakterm_pty::CommandSpec, String> {
+    let cwd = (!cwd.is_empty()).then(|| PathBuf::from(cwd));
+    if command.is_empty() {
+        return Ok(oakterm_pty::CommandSpec::new(None, vec![], cwd));
+    }
+    let parts = shlex::split(command).ok_or_else(|| format!("shlex parse failed: {command:?}"))?;
+    let mut iter = parts.into_iter();
+    // Reject empty program tokens (e.g., command = "''" expands to a single
+    // empty string). Without this, Command::new("") fails downstream with a
+    // generic spawn error and the wrong error code.
+    let program = iter
+        .next()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| format!("empty program token after shlex split: {command:?}"))?;
+    let args: Vec<OsString> = iter.map(OsString::from).collect();
+    Ok(oakterm_pty::CommandSpec::new(
+        Some(PathBuf::from(program)),
+        args,
+        cwd,
+    ))
 }
 
 /// Tracks all panes with monotonic ID assignment.
@@ -747,21 +776,46 @@ async fn handle_request(
             };
             match pane.pty_state {
                 PtyState::NotSpawned => {
-                    // Note: spawn_shell blocks briefly (~1-5ms for fork/exec)
-                    // while holding the PaneManager mutex. Acceptable for now;
-                    // use spawn_blocking if this becomes a contention issue
-                    // with many concurrent panes.
+                    // Note: spawn blocks briefly (~1-5ms for fork/exec) while
+                    // holding the PaneManager mutex. Acceptable for now; use
+                    // spawn_blocking if this becomes a contention issue with
+                    // many concurrent panes.
+                    let spec = match build_command_spec(&pane.command, &pane.cwd) {
+                        Ok(s) => s,
+                        Err(reason) => {
+                            error!(
+                                conn_id,
+                                pane_id = msg.pane_id,
+                                error = %reason,
+                                "malformed pane command"
+                            );
+                            let response_msg = format!("malformed command: {reason}");
+                            pane.pty_state = PtyState::Failed(reason);
+                            return make_error_response(
+                                conn_id,
+                                frame.serial,
+                                ErrorCode::MalformedPayload,
+                                &response_msg,
+                            );
+                        }
+                    };
                     info!(
                         conn_id,
                         pane_id = msg.pane_id,
                         cols = msg.cols,
                         rows = msg.rows,
+                        program = ?spec.program,
+                        args = ?spec.args,
+                        cwd = ?spec.cwd,
                         "spawning PTY"
                     );
-                    match oakterm_pty::spawn_shell(oakterm_pty::WinSize {
-                        cols: msg.cols,
-                        rows: msg.rows,
-                    }) {
+                    match oakterm_pty::spawn_command(
+                        spec,
+                        oakterm_pty::WinSize {
+                            cols: msg.cols,
+                            rows: msg.rows,
+                        },
+                    ) {
                         Ok(pty) => {
                             let fd = pty.master_raw_fd();
                             let pid = pty.child_pid();
@@ -1678,5 +1732,75 @@ mod tests {
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(0);
         assert_eq!(viewport, 50);
+    }
+
+    #[test]
+    fn build_command_spec_empty_command_default_shell() {
+        let spec = build_command_spec("", "").expect("default spec");
+        assert!(spec.program.is_none());
+        assert!(spec.args.is_empty());
+        assert!(spec.cwd.is_none());
+    }
+
+    #[test]
+    fn build_command_spec_empty_command_with_cwd() {
+        let spec = build_command_spec("", "/tmp").expect("default shell with cwd");
+        assert!(spec.program.is_none());
+        assert!(spec.args.is_empty());
+        assert_eq!(spec.cwd, Some(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn build_command_spec_program_only() {
+        let spec = build_command_spec("htop", "").expect("htop spec");
+        assert_eq!(spec.program, Some(PathBuf::from("htop")));
+        assert!(spec.args.is_empty());
+    }
+
+    #[test]
+    fn build_command_spec_program_with_args() {
+        let spec = build_command_spec("htop --tree -d 5", "").expect("htop with args");
+        assert_eq!(spec.program, Some(PathBuf::from("htop")));
+        let args: Vec<String> = spec
+            .args
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["--tree", "-d", "5"]);
+    }
+
+    #[test]
+    fn build_command_spec_quoted_args() {
+        let spec = build_command_spec("vim 'with spaces.txt'", "").expect("vim with quoted arg");
+        assert_eq!(spec.program, Some(PathBuf::from("vim")));
+        let args: Vec<String> = spec
+            .args
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["with spaces.txt"]);
+    }
+
+    #[test]
+    fn build_command_spec_malformed_quotes_errors() {
+        let result = build_command_spec("echo 'unclosed", "");
+        assert!(result.is_err(), "malformed shlex should return Err");
+    }
+
+    #[test]
+    fn build_command_spec_quoted_empty_program_errors() {
+        // shlex::split("''") returns Some([""]); the first token is an empty
+        // program name, which would later fail with a generic spawn error.
+        // Reject at the parse boundary so clients get MalformedPayload.
+        let result = build_command_spec("''", "");
+        assert!(
+            result.is_err(),
+            "empty quoted program should return Err, got: {result:?}"
+        );
+        let result = build_command_spec("\"\"", "");
+        assert!(
+            result.is_err(),
+            "empty double-quoted program should return Err, got: {result:?}"
+        );
     }
 }

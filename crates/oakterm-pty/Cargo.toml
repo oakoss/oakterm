@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+libc = { workspace = true }
 rustix = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

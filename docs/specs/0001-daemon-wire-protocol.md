@@ -250,6 +250,18 @@ is_active          u8          1 if this is the currently selected match, 0 othe
 | `0x95`   | ListPanes          | C→D       | Request  | Empty                                                                                                        |
 | `0x96`   | ListPanesResponse  | D→C       | Response | `pane_count: u16`, `panes: [PaneInfo]`                                                                       |
 
+`CreatePane.command` is a single shell-style string. The daemon shlex-splits
+it into program + args at PTY spawn time (e.g., `"htop --tree"` becomes
+`program=htop`, `args=["--tree"]`). Malformed quoting (unclosed quote, etc.)
+produces an `ErrorMessage` (0x05) with `ErrorCode::MalformedPayload` —
+client error, not a daemon fault. When `SplitPane` (0xA0) and `NewTab`
+(0xA7) are implemented, the same parsing rule will apply to their `command`
+fields.
+
+`CreatePane.cwd` is a UTF-8 path. If the directory doesn't exist at spawn
+time, the daemon falls back to `$HOME` → `/` and logs a warning; the spawn
+still succeeds.
+
 **PaneInfo:**
 
 ```text
