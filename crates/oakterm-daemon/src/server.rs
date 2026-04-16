@@ -47,7 +47,16 @@ enum PtyState {
     NotSpawned,
     /// Master fd for writes and resizes, plus child PID for status reporting.
     /// The `Pty` struct is owned by the read loop.
-    Running { fd: RawFd, pid: u32 },
+    ///
+    /// `cancel` signals the read loop to exit promptly on `ClosePane`. Drop
+    /// or send `()`; the loop's select sees it, breaks out, drops the `Pty`,
+    /// and `Pty::Drop` kills + reaps the child. Without this, an idle shell
+    /// (no output) leaves the loop blocked on `readable()` indefinitely.
+    Running {
+        fd: RawFd,
+        pid: u32,
+        cancel: tokio::sync::oneshot::Sender<()>,
+    },
     /// PTY spawn failed; terminal state. The error string is returned to any
     /// client that sends a subsequent Resize.
     Failed(String),
@@ -339,11 +348,18 @@ impl Drop for Daemon {
 }
 
 /// Read PTY output, feed to VT parser, update the pane's screen buffer.
+///
+/// Exits when any of: the PTY hits EOF or a fatal read error; the pane is
+/// removed and a subsequent read detects it; or `cancel_rx` fires (typically
+/// from `ClosePane`). On exit, dropping `pty` runs `Pty::Drop`, which kills
+/// and reaps the child. `cancel_rx` is the prompt-shutdown path for idle
+/// shells that would otherwise leave the loop blocked on `readable()`.
 async fn pty_read_loop(
     pty: oakterm_pty::Pty,
     panes: Arc<Mutex<PaneManager>>,
     pane_id: u32,
     dirty_tx: watch::Sender<u64>,
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     use tokio::io::unix::AsyncFd;
 
@@ -375,7 +391,18 @@ async fn pty_read_loop(
     let mut buf = [0u8; 4096];
 
     let exit_reason = loop {
-        let Ok(mut guard) = async_fd.readable().await else {
+        // `biased` so a rapid close-after-spawn always wins over a pending
+        // read — avoids one last guaranteed-stale read after cancellation.
+        // Both branches are cancellation-safe: `oneshot::Receiver` and
+        // `AsyncFd::readable` both document drop-safety.
+        let read_ready = async_fd.readable();
+        let read_outcome = tokio::select! {
+            biased;
+            _ = &mut cancel_rx => break "cancelled",
+            ready = read_ready => ready,
+        };
+
+        let Ok(mut guard) = read_outcome else {
             break "readable poll failed";
         };
 
@@ -417,8 +444,19 @@ async fn pty_read_loop(
     let mut pm = panes.lock().await;
     if let Some(pane) = pm.get_mut(pane_id) {
         pane.pty_state = PtyState::Exited { exit_code };
+    } else if exit_reason == "cancelled" {
+        // Expected on every successful ClosePane: the handler removes the
+        // pane from PaneManager *before* signalling cancel, so by the time
+        // the loop wakes and reaches this cleanup, get_mut returns None.
+        debug!(
+            pane_id,
+            "PTY read loop exited via cancel; pane already removed"
+        );
     } else {
-        warn!(pane_id, exit_code, "PTY exited but pane already removed");
+        warn!(
+            pane_id,
+            exit_code, exit_reason, "PTY exited but pane already removed"
+        );
     }
     drop(pm);
 
@@ -819,7 +857,12 @@ async fn handle_request(
                         Ok(pty) => {
                             let fd = pty.master_raw_fd();
                             let pid = pty.child_pid();
-                            pane.pty_state = PtyState::Running { fd, pid };
+                            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                            pane.pty_state = PtyState::Running {
+                                fd,
+                                pid,
+                                cancel: cancel_tx,
+                            };
                             pane.screens.resize_all(msg.cols, msg.rows);
                             let pane_id = msg.pane_id;
                             drop(pm);
@@ -828,7 +871,7 @@ async fn handle_request(
 
                             let panes_clone = Arc::clone(panes);
                             let dtx = dirty_tx.clone();
-                            tokio::spawn(pty_read_loop(pty, panes_clone, pane_id, dtx));
+                            tokio::spawn(pty_read_loop(pty, panes_clone, pane_id, dtx, cancel_rx));
                         }
                         Err(e) => {
                             error!(conn_id, error = %e, "failed to spawn PTY");
@@ -1240,16 +1283,26 @@ async fn handle_request(
                 pm.focused_pane = pm.panes.keys().next().copied();
             }
             drop(pm);
-            if let PtyState::Running { .. } = removed.pty_state {
+            // Signal the read loop to exit promptly. Without this, an idle
+            // shell (no output) would leave the loop blocked on readable()
+            // forever; the loop only notices a removed pane on its next
+            // successful read. Once the loop exits, dropping the Pty kills
+            // and reaps the child via Pty::Drop.
+            if let PtyState::Running { pid, cancel, .. } = removed.pty_state {
                 info!(
                     conn_id,
                     pane_id = msg.pane_id,
-                    "pane closed (PTY running, read loop will clean up)"
+                    pid,
+                    "pane closed, signalling PTY read loop"
                 );
+                // Best-effort: receiver is already gone if the loop exited
+                // on its own (EOF, read error, or early-return during
+                // AsyncFd setup). cancel_tx is uniquely owned by this
+                // handler, so there's no other sender to race against.
+                let _ = cancel.send(());
             } else {
                 info!(conn_id, pane_id = msg.pane_id, "pane closed");
             }
-            // The pty_read_loop will detect the pane is gone and exit.
             // Empty response confirms closure.
             match Frame::new(MSG_CLOSE_PANE_RESPONSE, frame.serial, vec![]) {
                 Ok(f) => RequestResult::Response(f),
