@@ -1,6 +1,30 @@
 # Default: detect text vs binary automatically.
 * text=auto
 
-# Bench fixtures and any other captured byte streams. Without this, git's
-# autocrlf on Windows checkouts will silently mangle the bytes.
-*.bin binary
+# Pin source/config files to LF so cross-platform clones don't drift even
+# under non-default core.autocrlf settings.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.lua   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+
+# Bench fixtures and other captured byte streams. Without this override,
+# the `* text=auto` rule above lets git classify these as text and
+# normalize line endings on checkout, which corrupts PTY captures whose
+# \r\n bytes are intentional. Most commonly bites Windows users (Git
+# for Windows defaults core.autocrlf=true), but the same risk exists on
+# any platform with autocrlf configured.
+*.bin   binary
+
+# Common binary asset extensions, pre-listed for future fixtures/assets.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary

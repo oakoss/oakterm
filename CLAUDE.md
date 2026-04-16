@@ -70,7 +70,7 @@ Conventional commits: `type(scope): short description`
 
 Types: `docs`, `chore`, `feat`, `fix`, `refactor`, `test`, `perf`, `ci`
 
-Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`, `core`, `setup`, `renderer`, `ci`
+Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`, `core`, `setup`, `renderer`, `ci`, `repo`
 
 Task references go in the commit footer as a bare `TREK-XX`, not in the subject line:
 

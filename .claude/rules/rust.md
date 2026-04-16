@@ -35,12 +35,12 @@ let len: u16 = data.len().try_into().map_err(|_| {
 
 ## Bench Fixtures
 
-Benches in `crates/*/benches/` should generate input synthetically by default — see `crates/oakterm-terminal/benches/vt_parser.rs` for the pattern (`make_plain_ascii`, `make_sgr_color`, etc.). Synthetic data lives in code, not in the repo as data, and stays trivially regeneratable.
+Benches in `crates/*/benches/` should generate input synthetically by default — see `crates/oakterm-terminal/benches/vt_parser.rs` for the pattern (`make_plain_ascii`, `make_sgr_color`, etc.). Synthetic data lives in code, stays regeneratable, and doesn't bloat git history.
 
-Commit a captured byte-stream fixture under `benches/fixtures/` only when synthetic generation can't reproduce the failure mode the bench guards against — e.g. real `tree -C` output captures escape distributions and Unicode patterns that are hard to fake.
+Commit a captured byte-stream fixture under `benches/fixtures/` only when synthetic generation can't reproduce the failure mode the bench guards against — e.g. real `tree -C` output captures SGR-per-line density and Unicode in real filenames that are hard to fake.
 
 When committing a fixture:
 
-- Trim aggressively. Target ~50 KB unless the failure mode genuinely needs more.
-- Document the capture command + justification in `benches/fixtures/README.md`.
-- Mark binary fixtures in `.gitattributes` so git's autocrlf doesn't munge them on Windows checkouts.
+- Trim aggressively. ~100 KB target; up to ~250 KB if the failure mode genuinely needs more samples for stable measurement.
+- Document the capture command, the size, and explicitly why synthetic doesn't suffice in `benches/fixtures/README.md`.
+- Confirm the file's extension is marked `binary` in `.gitattributes` so the workspace's `* text=auto` rule doesn't classify the capture as text and normalize line endings on checkout (the failure mode autocrlf creates on any platform with it configured, most commonly bites Windows).

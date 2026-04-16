@@ -1,41 +1,41 @@
 # Bench Fixtures
 
-Captured byte streams used by the criterion benches in this directory. All
-fixtures are checked in so benches are reproducible across machines and CI;
-they should stay small (hundreds of KB, not MB).
+Captured byte streams used by the criterion benches in this directory.
 
 ## Policy
 
-**Synthetic by default.** Bench input should be generated in code (see
-`vt_parser.rs::make_plain_ascii` and friends for the pattern) so it lives
-in the repo as code rather than data, stays regeneratable, and doesn't
-bloat git history.
+**Synthetic by default** — see `vt_parser.rs::make_plain_ascii` and the
+other generators in that file for the pattern. Full policy and rationale
+live in [`.claude/rules/rust.md`](../../../../.claude/rules/rust.md)
+(under "Bench Fixtures"). Anything committed here must:
 
-Commit a captured fixture here **only when synthetic generation can't
-reproduce the failure mode** the bench guards against. Realistic SGR
-distributions, Unicode in real filenames, and the chaotic structure of
-actual command output are the cases that justify a real capture.
+- Trim aggressively (~100 KB target; up to ~250 KB if needed).
+- Include a section below documenting the capture command and **why
+  synthetic doesn't suffice**.
+- Be marked `binary` in `.gitattributes` (extension already covered by
+  `*.bin`).
 
-When you do commit one:
-
-- Trim aggressively (target ~50 KB unless the failure mode genuinely
-  needs more).
-- Add a section here documenting the capture command and why synthetic
-  wouldn't suffice.
-- Confirm `.gitattributes` marks the file's extension as `binary` so
-  git's autocrlf doesn't munge it on Windows checkouts.
-
-## `tree_output.bin`
+## `tree_output.bin` (~200 KB)
 
 Used by: `benches/tree_replay.rs`
 
 A `tree -C` output of a populated `~/.cargo/registry/src` (~7,500 dirs,
-41k files), captured via `script(1)` so the byte stream matches what the
-VT parser sees in production. `tree -C` itself forces SGR through pipes,
-so this particular fixture would survive a plain redirect, but the
-`script(1)` capture path is the right pattern for any future fixture
-from a command that gates color on `isatty` (e.g. `ls --color=auto`).
-Trimmed to ~200 KB at a newline boundary.
+41k files), captured via `script(1)`. Trimmed to ~200 KB at a newline
+boundary.
+
+**Why not synthetic:** the existing synthetic generators in `vt_parser.rs`
+(`make_sgr_color`, `make_mixed_realistic`) cover SGR throughput in
+isolation but don't reproduce the line-by-line SGR-reset density of real
+file listings or the Unicode in real crate names — both of which exercise
+the row dirty-tracking + cell-encoding paths the TREK-141 round-trip
+storm hit. The slightly-over-target size buys stable bench numbers; the
+fixture is loaded once at compile time via `include_bytes!`, so larger
+input doesn't slow individual iterations.
+
+`tree -C` itself forces SGR through pipes, so the `script(1)` capture
+isn't strictly necessary for _this_ fixture — but it's the right pattern
+for any future capture from a command that gates color on `isatty`
+(e.g. `ls --color=auto`, `git -c color.ui=auto`).
 
 To regenerate:
 
@@ -53,5 +53,6 @@ open('crates/oakterm-terminal/benches/fixtures/tree_output.bin', 'wb').write(tri
 "
 ```
 
-The exact registry contents don't matter — any large directory works. The
-goal is realistic SGR + box-drawing density, not a specific byte sequence.
+The exact registry contents don't matter — any large directory works.
+The goal is realistic SGR + box-drawing density, not a specific byte
+sequence.
