@@ -4,6 +4,27 @@ Captured byte streams used by the criterion benches in this directory. All
 fixtures are checked in so benches are reproducible across machines and CI;
 they should stay small (hundreds of KB, not MB).
 
+## Policy
+
+**Synthetic by default.** Bench input should be generated in code (see
+`vt_parser.rs::make_plain_ascii` and friends for the pattern) so it lives
+in the repo as code rather than data, stays regeneratable, and doesn't
+bloat git history.
+
+Commit a captured fixture here **only when synthetic generation can't
+reproduce the failure mode** the bench guards against. Realistic SGR
+distributions, Unicode in real filenames, and the chaotic structure of
+actual command output are the cases that justify a real capture.
+
+When you do commit one:
+
+- Trim aggressively (target ~50 KB unless the failure mode genuinely
+  needs more).
+- Add a section here documenting the capture command and why synthetic
+  wouldn't suffice.
+- Confirm `.gitattributes` marks the file's extension as `binary` so
+  git's autocrlf doesn't munge it on Windows checkouts.
+
 ## `tree_output.bin`
 
 Used by: `benches/tree_replay.rs`

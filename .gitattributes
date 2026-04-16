@@ -1,0 +1,6 @@
+# Default: detect text vs binary automatically.
+* text=auto
+
+# Bench fixtures and any other captured byte streams. Without this, git's
+# autocrlf on Windows checkouts will silently mangle the bytes.
+*.bin binary
