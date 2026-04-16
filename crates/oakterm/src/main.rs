@@ -1,6 +1,6 @@
 mod render_grid;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -2546,37 +2546,159 @@ fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Re
     Ok(())
 }
 
+/// Per-pane bookkeeping for the daemon read loop's request/response
+/// debounce. I/O-free: every method mutates only `self` and returns the
+/// action the caller must perform, so the transition table is testable
+/// without sockets, threads, or the event-loop proxy.
+#[derive(Debug, Default)]
+struct ReaderState {
+    /// Last `seqno` we observed in a `RenderUpdate` for each pane. Used as
+    /// the `since_seqno` cursor on the next `GetRenderUpdate`.
+    seqnos: HashMap<u32, u64>,
+    /// Panes with an outstanding `GetRenderUpdate` request.
+    in_flight: HashSet<u32>,
+    /// Panes that received a `DirtyNotify` while a request was already in
+    /// flight; the next `RenderUpdate` for each will fire one follow-up.
+    pending: HashSet<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyOutcome {
+    /// Caller should send a `GetRenderUpdate` with this `since_seqno`.
+    Send(u64),
+    /// A request is already in flight; this notify was coalesced.
+    Coalesce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateOutcome {
+    /// No follow-up needed.
+    Done,
+    /// Caller should send a follow-up `GetRenderUpdate` with this seqno.
+    SendFollowUp(u64),
+}
+
+impl ReaderState {
+    fn on_dirty_notify(&mut self, pane_id: u32) -> DirtyOutcome {
+        if self.in_flight.contains(&pane_id) {
+            self.pending.insert(pane_id);
+            DirtyOutcome::Coalesce
+        } else {
+            let since_seqno = self.seqnos.get(&pane_id).copied().unwrap_or(0);
+            self.in_flight.insert(pane_id);
+            DirtyOutcome::Send(since_seqno)
+        }
+    }
+
+    fn on_render_update(&mut self, pane_id: u32, seqno: u64) -> UpdateOutcome {
+        self.seqnos.insert(pane_id, seqno);
+        self.in_flight.remove(&pane_id);
+        if self.pending.remove(&pane_id) {
+            // Re-mark in-flight for the follow-up. The daemon's
+            // GetRenderUpdate handler returns rows with seqno > since_seqno,
+            // so passing the freshly-bumped seqno here covers every row that
+            // changed during the in-flight window — no matter how many
+            // DirtyNotify arrivals we coalesced.
+            self.in_flight.insert(pane_id);
+            UpdateOutcome::SendFollowUp(self.seqnos.get(&pane_id).copied().unwrap_or(0))
+        } else {
+            UpdateOutcome::Done
+        }
+    }
+
+    /// Drop all bookkeeping for `pane_id`. Currently unused — `daemon_reader`
+    /// has no `MSG_PANE_EXITED` arm, so per-pane state leaks until the
+    /// daemon connection closes. TREK-157 will add the arm and call this.
+    #[allow(dead_code)] // TREK-157
+    fn on_pane_exit(&mut self, pane_id: u32) {
+        self.seqnos.remove(&pane_id);
+        self.in_flight.remove(&pane_id);
+        self.pending.remove(&pane_id);
+    }
+}
+
+/// Send `UserEvent::Disconnected` to the GUI event loop. Logs at `warn` if
+/// the event loop has already shut down (the reader is on its way out
+/// either way; the user just won't see the disconnect notification).
+fn notify_disconnected(proxy: &EventLoopProxy<UserEvent>) {
+    if let Err(e) = proxy.send_event(UserEvent::Disconnected) {
+        warn!(error = %e, "event loop closed before Disconnected delivered");
+    }
+}
+
+/// Send a `GetRenderUpdate` for `pane_id`. Caller passes the `since_seqno`
+/// from `ReaderState` so this helper has no map-lookup responsibility.
+fn send_get_render_update(
+    pane_id: u32,
+    since_seqno: u64,
+    writer: &DaemonWriter,
+) -> std::io::Result<()> {
+    let req = GetRenderUpdate {
+        pane_id,
+        since_seqno,
+    };
+    let frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode())
+        .expect("GetRenderUpdate payload fits in frame");
+    writer.send_frame(&frame)
+}
+
 /// Background thread: read frames, request render updates on `DirtyNotify`.
+///
+/// Per pane, at most one `GetRenderUpdate` is in flight at a time; subsequent
+/// `DirtyNotify` arrivals collapse into a single follow-up after the response
+/// lands. Without this, fast PTY output (e.g. `tree` flooding) produces one
+/// round-trip per PTY chunk and the daemon's per-update serialization plus
+/// the client's per-update decode/apply work pin the UI. See `ReaderState`
+/// for the transition table.
 fn daemon_reader(
     mut read_stream: UnixStream,
     writer: &DaemonWriter,
     proxy: &EventLoopProxy<UserEvent>,
 ) {
-    let mut seqnos: HashMap<u32, u64> = HashMap::new();
+    let mut state = ReaderState::default();
 
     loop {
         match read_frame(&mut read_stream) {
             Ok(frame) => match frame.msg_type {
                 MSG_DIRTY_NOTIFY => {
-                    let pane_id = DirtyNotify::decode(&frame.payload).map_or(0, |n| n.pane_id);
-                    let seqno = seqnos.entry(pane_id).or_insert(0);
-                    let req = GetRenderUpdate {
-                        pane_id,
-                        since_seqno: *seqno,
+                    let pane_id = match DirtyNotify::decode(&frame.payload) {
+                        Ok(n) => n.pane_id,
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                payload_len = frame.payload.len(),
+                                "failed to decode DirtyNotify, dropping"
+                            );
+                            continue;
+                        }
                     };
-                    let payload = req.encode();
-                    let req_frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, payload)
-                        .expect("GetRenderUpdate payload fits in frame");
-                    if let Err(e) = writer.send_frame(&req_frame) {
-                        error!(error = %e, "daemon write error");
-                        let _ = proxy.send_event(UserEvent::Disconnected);
-                        break;
+                    match state.on_dirty_notify(pane_id) {
+                        DirtyOutcome::Send(since_seqno) => {
+                            if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
+                                error!(error = %e, "daemon write error");
+                                notify_disconnected(proxy);
+                                break;
+                            }
+                        }
+                        DirtyOutcome::Coalesce => {
+                            debug!(pane_id, "render request coalesced");
+                        }
                     }
                 }
                 MSG_RENDER_UPDATE => match RenderUpdate::decode(&frame.payload) {
                     Ok(update) => {
-                        seqnos.insert(update.pane_id, update.seqno);
+                        let pane_id = update.pane_id;
+                        let seqno = update.seqno;
                         let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
+                        if let UpdateOutcome::SendFollowUp(since_seqno) =
+                            state.on_render_update(pane_id, seqno)
+                        {
+                            if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
+                                error!(error = %e, "daemon write error");
+                                notify_disconnected(proxy);
+                                break;
+                            }
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -2584,7 +2706,7 @@ fn daemon_reader(
                             payload_len = frame.payload.len(),
                             "failed to decode RenderUpdate, disconnecting"
                         );
-                        let _ = proxy.send_event(UserEvent::Disconnected);
+                        notify_disconnected(proxy);
                         break;
                     }
                 },
@@ -2624,7 +2746,7 @@ fn daemon_reader(
             },
             Err(e) => {
                 error!(error = %e, "daemon read error");
-                let _ = proxy.send_event(UserEvent::Disconnected);
+                notify_disconnected(proxy);
                 break;
             }
         }
@@ -2943,9 +3065,103 @@ fn version_string() -> String {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{ScrollbackClampOutcome, clamp_viewport, drain_wheel_notches};
+    use super::{
+        DirtyOutcome, ReaderState, ScrollbackClampOutcome, UpdateOutcome, clamp_viewport,
+        drain_wheel_notches,
+    };
     use winit::dpi::PhysicalPosition;
     use winit::event::MouseScrollDelta;
+
+    // --- ReaderState (PTY render request debounce) ---
+
+    #[test]
+    fn dirty_notify_with_no_in_flight_sends() {
+        let mut s = ReaderState::default();
+        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Send(0));
+        assert!(s.in_flight.contains(&1));
+        assert!(!s.pending.contains(&1));
+    }
+
+    #[test]
+    fn dirty_notify_uses_last_seen_seqno() {
+        let mut s = ReaderState::default();
+        s.seqnos.insert(1, 42);
+        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Send(42));
+    }
+
+    #[test]
+    fn dirty_notify_while_in_flight_coalesces() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Coalesce);
+        assert!(s.pending.contains(&1));
+    }
+
+    #[test]
+    fn many_coalesced_dirty_collapse_to_single_followup() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        for _ in 0..100 {
+            assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Coalesce);
+        }
+        assert_eq!(s.on_render_update(1, 5), UpdateOutcome::SendFollowUp(5));
+        // Follow-up re-marks in_flight; pending was drained by the take.
+        assert!(s.in_flight.contains(&1));
+        assert!(!s.pending.contains(&1));
+    }
+
+    #[test]
+    fn render_update_without_pending_is_done() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        assert_eq!(s.on_render_update(1, 5), UpdateOutcome::Done);
+        assert!(!s.in_flight.contains(&1));
+    }
+
+    #[test]
+    fn render_update_with_pending_fires_followup_with_new_seqno() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        s.on_dirty_notify(1); // sets pending
+        // Follow-up uses the seqno we just observed, not the previous one.
+        assert_eq!(s.on_render_update(1, 99), UpdateOutcome::SendFollowUp(99));
+        assert!(s.in_flight.contains(&1));
+        assert!(!s.pending.contains(&1));
+    }
+
+    #[test]
+    fn cross_pane_state_is_independent() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        s.on_dirty_notify(2);
+        assert!(s.in_flight.contains(&1));
+        assert!(s.in_flight.contains(&2));
+        // Render for pane 1 must not touch pane 2.
+        s.on_render_update(1, 10);
+        assert!(!s.in_flight.contains(&1));
+        assert!(s.in_flight.contains(&2));
+    }
+
+    #[test]
+    fn render_for_unknown_pane_is_safe() {
+        // Spurious update for a pane we never requested. Server bug or
+        // stale frame after disconnect; must not panic or fire follow-up.
+        let mut s = ReaderState::default();
+        assert_eq!(s.on_render_update(99, 1), UpdateOutcome::Done);
+        assert!(!s.in_flight.contains(&99));
+        assert!(!s.pending.contains(&99));
+    }
+
+    #[test]
+    fn pane_exit_clears_all_per_pane_state() {
+        let mut s = ReaderState::default();
+        s.on_dirty_notify(1);
+        s.on_dirty_notify(1); // sets pending
+        s.on_pane_exit(1);
+        assert!(!s.in_flight.contains(&1));
+        assert!(!s.pending.contains(&1));
+        assert!(!s.seqnos.contains_key(&1));
+    }
 
     // --- clamp_viewport ---
 
