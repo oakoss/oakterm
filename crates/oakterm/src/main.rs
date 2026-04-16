@@ -2675,6 +2675,10 @@ fn daemon_reader(
                     match state.on_dirty_notify(pane_id) {
                         DirtyOutcome::Send(since_seqno) => {
                             if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
+                                // state.in_flight has the phantom entry from
+                                // on_dirty_notify above; safe only because we
+                                // break and drop `state`. Any future retry
+                                // path here must roll the state mutation back.
                                 error!(error = %e, "daemon write error");
                                 notify_disconnected(proxy);
                                 break;
@@ -2689,11 +2693,18 @@ fn daemon_reader(
                     Ok(update) => {
                         let pane_id = update.pane_id;
                         let seqno = update.seqno;
+                        // Paint first; bookkeeping after. The reader thread is
+                        // single-threaded, so the event loop can't race against
+                        // the state mutation — but the user-visible repaint
+                        // lands ASAP this way.
                         let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
                         if let UpdateOutcome::SendFollowUp(since_seqno) =
                             state.on_render_update(pane_id, seqno)
                         {
                             if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
+                                // Same phantom-in_flight caveat as the
+                                // DirtyNotify arm above; safe only because we
+                                // break.
                                 error!(error = %e, "daemon write error");
                                 notify_disconnected(proxy);
                                 break;
