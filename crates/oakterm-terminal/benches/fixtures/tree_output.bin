@@ -1,0 +1,3937 @@
+^D[01;34m/Users/jacebabin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f[0m
+├── [01;34mab_glyph_rasterizer-0.1.10[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mgeometry.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mnostd_float.rs[0m
+│   │   └── [00mraster.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00missues.rs[0m
+├── [01;34mab_glyph-0.2.32[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcodepoint_ids.rs[0m
+│       ├── [00merr.rs[0m
+│       ├── [00mfont_arc.rs[0m
+│       ├── [00mfont.rs[0m
+│       ├── [00mglyph.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnostd_float.rs[0m
+│       ├── [00moutlined.rs[0m
+│       ├── [00mscale.rs[0m
+│       ├── [01;34mttfp[0m
+│       │   ├── [00moutliner.rs[0m
+│       │   └── [00mvariable.rs[0m
+│       ├── [00mttfp.rs[0m
+│       └── [00mvariable.rs[0m
+├── [01;34maccesskit_atspi_common-0.18.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00maction.rs[0m
+│       ├── [00madapter.rs[0m
+│       ├── [00mcallback.rs[0m
+│       ├── [00mcontext.rs[0m
+│       ├── [00merror.rs[0m
+│       ├── [00mevents.rs[0m
+│       ├── [00mfilters.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnode.rs[0m
+│       ├── [00mrect.rs[0m
+│       ├── [00msimplified.rs[0m
+│       ├── [00mtext_attributes.rs[0m
+│       └── [00mutil.rs[0m
+├── [01;34maccesskit_consumer-0.35.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mfilters.rs[0m
+│       ├── [00miterators.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnode.rs[0m
+│       ├── [00mtext.rs[0m
+│       └── [00mtree.rs[0m
+├── [01;34maccesskit_macos-0.26.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00madapter.rs[0m
+│       ├── [00mcontext.rs[0m
+│       ├── [00mevent.rs[0m
+│       ├── [00mfilters.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnode.rs[0m
+│       ├── [00mpatch.rs[0m
+│       ├── [00msubclass.rs[0m
+│       └── [00mutil.rs[0m
+├── [01;34maccesskit_unix-0.21.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00madapter.rs[0m
+│       ├── [01;34matspi[0m
+│       │   ├── [00mbus.rs[0m
+│       │   ├── [01;34minterfaces[0m
+│       │   │   ├── [00maccessible.rs[0m
+│       │   │   ├── [00maction.rs[0m
+│       │   │   ├── [00mapplication.rs[0m
+│       │   │   ├── [00mcomponent.rs[0m
+│       │   │   ├── [00mhyperlink.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mselection.rs[0m
+│       │   │   ├── [00mtext.rs[0m
+│       │   │   └── [00mvalue.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mobject_address.rs[0m
+│       │   └── [00mobject_id.rs[0m
+│       ├── [00mcontext.rs[0m
+│       ├── [00mexecutor.rs[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mutil.rs[0m
+├── [01;34maccesskit_windows-0.32.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mhello_world.rs[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00madapter.rs[0m
+│       ├── [00mcontext.rs[0m
+│       ├── [00mfilters.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnode.rs[0m
+│       ├── [00msubclass.rs[0m
+│       ├── [01;34mtests[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00msimple.rs[0m
+│       │   └── [00msubclassed.rs[0m
+│       ├── [00mtext.rs[0m
+│       ├── [00mutil.rs[0m
+│       └── [00mwindow_handle.rs[0m
+├── [01;34maccesskit_winit-0.32.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mmixed_handlers.rs[0m
+│   │   ├── [00msimple.rs[0m
+│   │   └── [01;34mutil[0m
+│   │       └── [00mfill.rs[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [01;34mplatform_impl[0m
+│           ├── [00mandroid.rs[0m
+│           ├── [00mmacos.rs[0m
+│           ├── [00mmod.rs[0m
+│           ├── [00mnull.rs[0m
+│           ├── [00munix.rs[0m
+│           └── [00mwindows.rs[0m
+├── [01;34maccesskit-0.24.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mgeometry.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34madler2-2.0.1[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mbench.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-0BSD[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mRELEASE_PROCESS.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00malgo.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mahash-0.8.12[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mFAQ.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00maes_hash.rs[0m
+│   │   ├── [00mconvert.rs[0m
+│   │   ├── [00mfallback_hash.rs[0m
+│   │   ├── [00mhash_map.rs[0m
+│   │   ├── [00mhash_quality_test.rs[0m
+│   │   ├── [00mhash_set.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00moperations.rs[0m
+│   │   ├── [00mrandom_state.rs[0m
+│   │   └── [00mspecialize.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mbench.rs[0m
+│       ├── [00mmap_tests.rs[0m
+│       └── [00mnopanic.rs[0m
+├── [01;34maho-corasick-1.1.3[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCOPYING[0m
+│   ├── [00mDESIGN.md[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mahocorasick.rs[0m
+│   │   ├── [00mautomaton.rs[0m
+│   │   ├── [00mdfa.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [01;34mnfa[0m
+│   │   │   ├── [00mcontiguous.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mnoncontiguous.rs[0m
+│   │   ├── [01;34mpacked[0m
+│   │   │   ├── [00mapi.rs[0m
+│   │   │   ├── [00mext.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mpattern.rs[0m
+│   │   │   ├── [00mrabinkarp.rs[0m
+│   │   │   ├── [01;34mteddy[0m
+│   │   │   │   ├── [00mbuilder.rs[0m
+│   │   │   │   ├── [00mgeneric.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mREADME.md[0m
+│   │   │   ├── [00mtests.rs[0m
+│   │   │   └── [00mvector.rs[0m
+│   │   ├── [00mtests.rs[0m
+│   │   ├── [00mtransducer.rs[0m
+│   │   └── [01;34mutil[0m
+│   │       ├── [00malphabet.rs[0m
+│   │       ├── [00mbuffer.rs[0m
+│   │       ├── [00mbyte_frequencies.rs[0m
+│   │       ├── [00mdebug.rs[0m
+│   │       ├── [00merror.rs[0m
+│   │       ├── [00mint.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       ├── [00mprefilter.rs[0m
+│   │       ├── [00mprimitives.rs[0m
+│   │       ├── [00mremapper.rs[0m
+│   │       ├── [00msearch.rs[0m
+│   │       └── [00mspecial.rs[0m
+│   └── [00mUNLICENSE[0m
+├── [01;34maho-corasick-1.1.4[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCOPYING[0m
+│   ├── [00mDESIGN.md[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mahocorasick.rs[0m
+│   │   ├── [00mautomaton.rs[0m
+│   │   ├── [00mdfa.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [01;34mnfa[0m
+│   │   │   ├── [00mcontiguous.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mnoncontiguous.rs[0m
+│   │   ├── [01;34mpacked[0m
+│   │   │   ├── [00mapi.rs[0m
+│   │   │   ├── [00mext.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mpattern.rs[0m
+│   │   │   ├── [00mrabinkarp.rs[0m
+│   │   │   ├── [01;34mteddy[0m
+│   │   │   │   ├── [00mbuilder.rs[0m
+│   │   │   │   ├── [00mgeneric.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mREADME.md[0m
+│   │   │   ├── [00mtests.rs[0m
+│   │   │   └── [00mvector.rs[0m
+│   │   ├── [00mtests.rs[0m
+│   │   ├── [00mtransducer.rs[0m
+│   │   └── [01;34mutil[0m
+│   │       ├── [00malphabet.rs[0m
+│   │       ├── [00mbuffer.rs[0m
+│   │       ├── [00mbyte_frequencies.rs[0m
+│   │       ├── [00mdebug.rs[0m
+│   │       ├── [00merror.rs[0m
+│   │       ├── [00mint.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       ├── [00mprefilter.rs[0m
+│   │       ├── [00mprimitives.rs[0m
+│   │       ├── [00mremapper.rs[0m
+│   │       ├── [00msearch.rs[0m
+│   │       └── [00mspecial.rs[0m
+│   └── [00mUNLICENSE[0m
+├── [01;34malloca-0.4.0[0m
+│   ├── [00malloca.c[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmain.rs[0m
+│       └── [00mtests.rs[0m
+├── [01;34mallocator-api2-0.2.21[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mnightly.rs[0m
+│       └── [01;34mstable[0m
+│           ├── [01;34malloc[0m
+│           │   ├── [00mglobal.rs[0m
+│           │   ├── [00mmod.rs[0m
+│           │   └── [00msystem.rs[0m
+│           ├── [00mboxed.rs[0m
+│           ├── [00mmacros.rs[0m
+│           ├── [00mmod.rs[0m
+│           ├── [00mraw_vec.rs[0m
+│           ├── [00mslice.rs[0m
+│           ├── [00munique.rs[0m
+│           └── [01;34mvec[0m
+│               ├── [00mdrain.rs[0m
+│               ├── [00minto_iter.rs[0m
+│               ├── [00mmod.rs[0m
+│               ├── [00mpartial_eq.rs[0m
+│               ├── [00mset_len_on_drop.rs[0m
+│               └── [00msplice.rs[0m
+├── [01;34mandroid_system_properties-0.1.5[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCONTRIBUTING.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mtime_zone.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mandroid-activity-0.6.1[0m
+│   ├── [01;34mandroid-games-sdk[0m
+│   │   ├── [01;34mgame-activity[0m
+│   │   │   └── [01;34mprefab-src[0m
+│   │   │       ├── [01;34mmodules[0m
+│   │   │       │   └── [01;34mgame-activity[0m
+│   │   │       │       ├── [01;34minclude[0m
+│   │   │       │       │   └── [01;34mgame-activity[0m
+│   │   │       │       │       ├── [00mGameActivity.h[0m
+│   │   │       │       │       ├── [00mGameActivityEvents.h[0m
+│   │   │       │       │       ├── [00mGameActivityLog.h[0m
+│   │   │       │       │       └── [01;34mnative_app_glue[0m
+│   │   │       │       │           └── [00mandroid_native_app_glue.h[0m
+│   │   │       │       ├── [00mmodule.json[0m
+│   │   │       │       └── [01;34msrc[0m
+│   │   │       │           └── [01;34mgame-activity[0m
+│   │   │       │               ├── [00mGameActivity.cpp[0m
+│   │   │       │               ├── [00mGameActivityEvents_internal.h[0m
+│   │   │       │               ├── [00mGameActivityEvents.cpp[0m
+│   │   │       │               └── [01;34mnative_app_glue[0m
+│   │   │       │                   └── [00mandroid_native_app_glue.c[0m
+│   │   │       └── [00mprefab.json[0m
+│   │   ├── [01;34mgame-text-input[0m
+│   │   │   └── [01;34mprefab-src[0m
+│   │   │       ├── [01;34mmodules[0m
+│   │   │       │   └── [01;34mgame-text-input[0m
+│   │   │       │       ├── [01;34minclude[0m
+│   │   │       │       │   └── [01;34mgame-text-input[0m
+│   │   │       │       │       └── [00mgametextinput.h[0m
+│   │   │       │       ├── [00mmodule.json[0m
+│   │   │       │       └── [01;34msrc[0m
+│   │   │       │           └── [01;34mgame-text-input[0m
+│   │   │       │               └── [00mgametextinput.cpp[0m
+│   │   │       └── [00mprefab.json[0m
+│   │   ├── [01;32mimport-games-sdk.sh[0m
+│   │   ├── [01;34minclude[0m
+│   │   │   └── [01;34mcommon[0m
+│   │   │       └── [00mgamesdk_common.h[0m
+│   │   ├── [00mREADME.md[0m
+│   │   └── [01;34msrc[0m
+│   │       └── [01;34mcommon[0m
+│   │           ├── [00msystem_utils.cpp[0m
+│   │           └── [00msystem_utils.h[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mconfig.rs[0m
+│       ├── [00merror.rs[0m
+│       ├── [01;34mgame_activity[0m
+│       │   ├── [00mffi_aarch64.rs[0m
+│       │   ├── [00mffi_arm.rs[0m
+│       │   ├── [00mffi_i686.rs[0m
+│       │   ├── [00mffi_x86_64.rs[0m
+│       │   ├── [00mffi.rs[0m
+│       │   ├── [00minput.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00minit.rs[0m
+│       ├── [01;34minput[0m
+│       │   └── [00msdk.rs[0m
+│       ├── [00minput.rs[0m
+│       ├── [00mjni_utils.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmain_callbacks.rs[0m
+│       ├── [01;34mnative_activity[0m
+│       │   ├── [00mglue.rs[0m
+│       │   ├── [00minput.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00msdk.rs[0m
+│       ├── [00mutil.rs[0m
+│       └── [00mwaker.rs[0m
+├── [01;34mandroid-properties-0.2.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mproperty_foreach.rs[0m
+│   │   ├── [00mproperty_get.rs[0m
+│   │   ├── [00mproperty_refresh.rs[0m
+│   │   └── [00mproperty_set.rs[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [01;34mandroid[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [01;34mmock[0m
+│   │       └── [00mmod.rs[0m
+│   └── [00mworkspace.code-workspace[0m
+├── [01;34manes-0.1.6[0m
+│   ├── [01;34mbenches[0m
+│   │   ├── [00mbench_main.rs[0m
+│   │   └── [01;34mbenchmarks[0m
+│   │       ├── [00mmod.rs[0m
+│   │       └── [00mparser.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mexecute.rs[0m
+│   │   ├── [00mparser.rs[0m
+│   │   ├── [00mqueue.rs[0m
+│   │   ├── [00msequence.rs[0m
+│   │   ├── [00mstdout.rs[0m
+│   │   └── [00mstring.rs[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [01;34mparser[0m
+│   │   │   ├── [00mengine.rs[0m
+│   │   │   ├── [00mparsers.rs[0m
+│   │   │   └── [00mtypes.rs[0m
+│   │   ├── [00mparser.rs[0m
+│   │   ├── [01;34msequences[0m
+│   │   │   ├── [00mattribute.rs[0m
+│   │   │   ├── [00mbuffer.rs[0m
+│   │   │   ├── [00mcolor.rs[0m
+│   │   │   ├── [00mcursor.rs[0m
+│   │   │   └── [00mterminal.rs[0m
+│   │   └── [00msequences.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34mparser[0m
+│       │   ├── [00mcursor.rs[0m
+│       │   ├── [00mkey.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [01;34mmouse[0m
+│       │       ├── [00mmod.rs[0m
+│       │       ├── [00mrxvt.rs[0m
+│       │       └── [00mxterm.rs[0m
+│       └── [00mtests.rs[0m
+├── [01;34manstream-0.6.21[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mdump-stream.rs[0m
+│   │   └── [00mquery-stream.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00m_macros.rs[0m
+│       ├── [01;34madapter[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mstrip.rs[0m
+│       │   └── [00mwincon.rs[0m
+│       ├── [00mauto.rs[0m
+│       ├── [00mbuffer.rs[0m
+│       ├── [00mfmt.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mstream.rs[0m
+│       ├── [00mstrip.rs[0m
+│       └── [00mwincon.rs[0m
+├── [01;34manstyle-1.0.13[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mdump-style.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcolor.rs[0m
+│       ├── [00meffect.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       ├── [00mreset.rs[0m
+│       └── [00mstyle.rs[0m
+├── [01;34manstyle-1.0.14[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mdump-style.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcolor.rs[0m
+│       ├── [00meffect.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       ├── [00mreset.rs[0m
+│       └── [00mstyle.rs[0m
+├── [01;34manstyle-parse-0.2.7[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mparselog.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mparams.rs[0m
+│       └── [01;34mstate[0m
+│           ├── [00mcodegen.rs[0m
+│           ├── [00mdefinitions.rs[0m
+│           ├── [00mmod.rs[0m
+│           └── [00mtable.rs[0m
+├── [01;34manstyle-query-1.1.4[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mquery.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mwindows.rs[0m
+├── [01;34manstyle-query-1.1.5[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mquery.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mwindows.rs[0m
+├── [01;34manyhow-1.0.100[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrust-toolchain.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mbacktrace.rs[0m
+│   │   ├── [00mchain.rs[0m
+│   │   ├── [00mcontext.rs[0m
+│   │   ├── [00mensure.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [00mfmt.rs[0m
+│   │   ├── [00mkind.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [00mnightly.rs[0m
+│   │   ├── [00mptr.rs[0m
+│   │   └── [00mwrapper.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34mcommon[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mcompiletest.rs[0m
+│       ├── [01;34mdrop[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mtest_autotrait.rs[0m
+│       ├── [00mtest_backtrace.rs[0m
+│       ├── [00mtest_boxed.rs[0m
+│       ├── [00mtest_chain.rs[0m
+│       ├── [00mtest_context.rs[0m
+│       ├── [00mtest_convert.rs[0m
+│       ├── [00mtest_downcast.rs[0m
+│       ├── [00mtest_ensure.rs[0m
+│       ├── [00mtest_ffi.rs[0m
+│       ├── [00mtest_fmt.rs[0m
+│       ├── [00mtest_macros.rs[0m
+│       ├── [00mtest_repr.rs[0m
+│       ├── [00mtest_source.rs[0m
+│       └── [01;34mui[0m
+│           ├── [00mchained-comparison.rs[0m
+│           ├── [00mchained-comparison.stderr[0m
+│           ├── [00mempty-ensure.rs[0m
+│           ├── [00mempty-ensure.stderr[0m
+│           ├── [00mensure-nonbool.rs[0m
+│           ├── [00mensure-nonbool.stderr[0m
+│           ├── [00mmust-use.rs[0m
+│           ├── [00mmust-use.stderr[0m
+│           ├── [00mno-impl.rs[0m
+│           ├── [00mno-impl.stderr[0m
+│           ├── [00mtemporary-value.rs[0m
+│           ├── [00mtemporary-value.stderr[0m
+│           ├── [00mwrong-interpolation.rs[0m
+│           └── [00mwrong-interpolation.stderr[0m
+├── [01;34manyhow-1.0.102[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrust-toolchain.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mbacktrace.rs[0m
+│   │   ├── [00mchain.rs[0m
+│   │   ├── [00mcontext.rs[0m
+│   │   ├── [00mensure.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [00mfmt.rs[0m
+│   │   ├── [00mkind.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [00mnightly.rs[0m
+│   │   ├── [00mptr.rs[0m
+│   │   └── [00mwrapper.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34mcommon[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mcompiletest.rs[0m
+│       ├── [01;34mdrop[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mtest_autotrait.rs[0m
+│       ├── [00mtest_backtrace.rs[0m
+│       ├── [00mtest_boxed.rs[0m
+│       ├── [00mtest_chain.rs[0m
+│       ├── [00mtest_context.rs[0m
+│       ├── [00mtest_convert.rs[0m
+│       ├── [00mtest_downcast.rs[0m
+│       ├── [00mtest_ensure.rs[0m
+│       ├── [00mtest_ffi.rs[0m
+│       ├── [00mtest_fmt.rs[0m
+│       ├── [00mtest_macros.rs[0m
+│       ├── [00mtest_repr.rs[0m
+│       ├── [00mtest_source.rs[0m
+│       └── [01;34mui[0m
+│           ├── [00mchained-comparison.rs[0m
+│           ├── [00mchained-comparison.stderr[0m
+│           ├── [00mempty-ensure.rs[0m
+│           ├── [00mempty-ensure.stderr[0m
+│           ├── [00mensure-nonbool.rs[0m
+│           ├── [00mensure-nonbool.stderr[0m
+│           ├── [00mmust-use.rs[0m
+│           ├── [00mmust-use.stderr[0m
+│           ├── [00mno-impl.rs[0m
+│           ├── [00mno-impl.stderr[0m
+│           ├── [00mtemporary-value.rs[0m
+│           ├── [00mtemporary-value.stderr[0m
+│           ├── [00mwrong-interpolation.rs[0m
+│           └── [00mwrong-interpolation.stderr[0m
+├── [01;34marboard-3.6.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mdaemonize.rs[0m
+│   │   ├── [00mget_image.rs[0m
+│   │   ├── [00mhello_world.rs[0m
+│   │   ├── [00mset_get_html.rs[0m
+│   │   └── [00mset_image.rs[0m
+│   ├── [00mLICENSE-APACHE.txt[0m
+│   ├── [00mLICENSE-MIT.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mcommon.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [01;34mplatform[0m
+│   │       ├── [01;34mlinux[0m
+│   │       │   ├── [00mmod.rs[0m
+│   │       │   ├── [00mwayland.rs[0m
+│   │       │   └── [00mx11.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       ├── [00mosx.rs[0m
+│   │       └── [00mwindows.rs[0m
+│   └── [01;34mtools[0m
+│       ├── [00mdebugger.entitlements[0m
+│       └── [01;32mrun_with_leaks.sh[0m
+├── [01;34marrayref-0.3.9[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00marray_refs_with_const.rs[0m
+│   │   ├── [00marray_refs.rs[0m
+│   │   └── [00msimple-case.rs[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34marrayvec-0.7.6[0m
+│   ├── [01;34mbenches[0m
+│   │   ├── [00marraystring.rs[0m
+│   │   └── [00mextend.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00marray_string.rs[0m
+│   │   ├── [00marrayvec_impl.rs[0m
+│   │   ├── [00marrayvec.rs[0m
+│   │   ├── [00mchar.rs[0m
+│   │   ├── [00merrors.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [00mutils.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mborsh.rs[0m
+│       ├── [00mserde.rs[0m
+│       └── [00mtests.rs[0m
+├── [01;34mas-raw-xcb-connection-1.0.1[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mash-0.38.0+1.3.281[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdevice.rs[0m
+│   │   ├── [00mentry.rs[0m
+│   │   ├── [01;34mextensions[0m
+│   │   │   ├── [01;34mamd[0m
+│   │   │   │   ├── [00mbuffer_marker.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mshader_info.rs[0m
+│   │   │   ├── [01;34mamdx[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mshader_enqueue.rs[0m
+│   │   │   ├── [01;34mandroid[0m
+│   │   │   │   ├── [00mexternal_memory_android_hardware_buffer.rs[0m
+│   │   │   │   └── [00mmod.rs[0m
+│   │   │   ├── [01;34mext[0m
+│   │   │   │   ├── [00macquire_drm_display.rs[0m
+│   │   │   │   ├── [00mbuffer_device_address.rs[0m
+│   │   │   │   ├── [00mcalibrated_timestamps.rs[0m
+│   │   │   │   ├── [01;32mdebug_marker.rs[0m
+│   │   │   │   ├── [01;32mdebug_report.rs[0m
+│   │   │   │   ├── [01;32mdebug_utils.rs[0m
+│   │   │   │   ├── [00mdescriptor_buffer.rs[0m
+│   │   │   │   ├── [00mextended_dynamic_state.rs[0m
+│   │   │   │   ├── [00mextended_dynamic_state2.rs[0m
+│   │   │   │   ├── [00mextended_dynamic_state3.rs[0m
+│   │   │   │   ├── [00mfull_screen_exclusive.rs[0m
+│   │   │   │   ├── [00mhdr_metadata.rs[0m
+│   │   │   │   ├── [00mheadless_surface.rs[0m
+│   │   │   │   ├── [00mhost_image_copy.rs[0m
+│   │   │   │   ├── [00mimage_compression_control.rs[0m
+│   │   │   │   ├── [00mimage_drm_format_modifier.rs[0m
+│   │   │   │   ├── [00mmesh_shader.rs[0m
+│   │   │   │   ├── [00mmetal_surface.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mpipeline_properties.rs[0m
+│   │   │   │   ├── [00mprivate_data.rs[0m
+│   │   │   │   ├── [00msample_locations.rs[0m
+│   │   │   │   ├── [00mshader_object.rs[0m
+│   │   │   │   ├── [00mswapchain_maintenance1.rs[0m
+│   │   │   │   ├── [00mtooling_info.rs[0m
+│   │   │   │   └── [00mvertex_input_dynamic_state.rs[0m
+│   │   │   ├── [01;34mgoogle[0m
+│   │   │   │   ├── [00mdisplay_timing.rs[0m
+│   │   │   │   └── [00mmod.rs[0m
+│   │   │   ├── [01;34mkhr[0m
+│   │   │   │   ├── [00macceleration_structure.rs[0m
+│   │   │   │   ├── [01;32mandroid_surface.rs[0m
+│   │   │   │   ├── [00mbuffer_device_address.rs[0m
+│   │   │   │   ├── [00mcalibrated_timestamps.rs[0m
+│   │   │   │   ├── [00mcooperative_matrix.rs[0m
+│   │   │   │   ├── [00mcopy_commands2.rs[0m
+│   │   │   │   ├── [00mcreate_renderpass2.rs[0m
+│   │   │   │   ├── [00mdeferred_host_operations.rs[0m
+│   │   │   │   ├── [00mdevice_group_creation.rs[0m
+│   │   │   │   ├── [00mdevice_group.rs[0m
+│   │   │   │   ├── [01;32mdisplay_swapchain.rs[0m
+│   │   │   │   ├── [01;32mdisplay.rs[0m
+│   │   │   │   ├── [00mdraw_indirect_count.rs[0m
+│   │   │   │   ├── [00mdynamic_rendering_local_read.rs[0m
+│   │   │   │   ├── [00mdynamic_rendering.rs[0m
+│   │   │   │   ├── [00mexternal_fence_fd.rs[0m
+│   │   │   │   ├── [00mexternal_fence_win32.rs[0m
+│   │   │   │   ├── [00mexternal_memory_fd.rs[0m
+│   │   │   │   ├── [00mexternal_memory_win32.rs[0m
+│   │   │   │   ├── [00mexternal_semaphore_fd.rs[0m
+│   │   │   │   ├── [00mexternal_semaphore_win32.rs[0m
+│   │   │   │   ├── [00mget_memory_requirements2.rs[0m
+│   │   │   │   ├── [00mget_physical_device_properties2.rs[0m
+│   │   │   │   ├── [00mget_surface_capabilities2.rs[0m
+│   │   │   │   ├── [00mline_rasterization.rs[0m
+│   │   │   │   ├── [00mmaintenance1.rs[0m
+│   │   │   │   ├── [00mmaintenance3.rs[0m
+│   │   │   │   ├── [00mmaintenance4.rs[0m
+│   │   │   │   ├── [00mmaintenance5.rs[0m
+│   │   │   │   ├── [00mmaintenance6.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mperformance_query.rs[0m
+│   │   │   │   ├── [00mpipeline_executable_properties.rs[0m
+│   │   │   │   ├── [00mpresent_wait.rs[0m
+│   │   │   │   ├── [00mpush_descriptor.rs[0m
+│   │   │   │   ├── [00mray_tracing_maintenance1.rs[0m
+│   │   │   │   ├── [00mray_tracing_pipeline.rs[0m
+│   │   │   │   ├── [00msampler_ycbcr_conversion.rs[0m
+│   │   │   │   ├── [01;32msurface.rs[0m
+│   │   │   │   ├── [01;32mswapchain.rs[0m
+│   │   │   │   ├── [00msynchronization2.rs[0m
+│   │   │   │   ├── [00mtimeline_semaphore.rs[0m
+│   │   │   │   ├── [01;32mwayland_surface.rs[0m
+│   │   │   │   ├── [01;32mwin32_surface.rs[0m
+│   │   │   │   ├── [01;32mxcb_surface.rs[0m
+│   │   │   │   └── [01;32mxlib_surface.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [01;34mmvk[0m
+│   │   │   │   ├── [01;32mios_surface.rs[0m
+│   │   │   │   ├── [01;32mmacos_surface.rs[0m
+│   │   │   │   └── [00mmod.rs[0m
+│   │   │   ├── [01;34mnn[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mvi_surface.rs[0m
+│   │   │   └── [01;34mnv[0m
+│   │   │       ├── [00mcopy_memory_indirect.rs[0m
+│   │   │       ├── [00mcoverage_reduction_mode.rs[0m
+│   │   │       ├── [00mcuda_kernel_launch.rs[0m
+│   │   │       ├── [00mdevice_diagnostic_checkpoints.rs[0m
+│   │   │       ├── [00mdevice_generated_commands_compute.rs[0m
+│   │   │       ├── [00mlow_latency2.rs[0m
+│   │   │       ├── [00mmemory_decompression.rs[0m
+│   │   │       ├── [01;32mmesh_shader.rs[0m
+│   │   │       ├── [00mmod.rs[0m
+│   │   │       └── [01;32mray_tracing.rs[0m
+│   │   ├── [00mextensions_generated.rs[0m
+│   │   ├── [00minstance.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mprelude.rs[0m
+│   │   ├── [00mtables.rs[0m
+│   │   ├── [00mutil.rs[0m
+│   │   ├── [01;34mvk[0m
+│   │   │   ├── [00maliases.rs[0m
+│   │   │   ├── [00mbitflags.rs[0m
+│   │   │   ├── [00mconst_debugs.rs[0m
+│   │   │   ├── [00mconstants.rs[0m
+│   │   │   ├── [00mdefinitions.rs[0m
+│   │   │   ├── [00menums.rs[0m
+│   │   │   ├── [00mextensions.rs[0m
+│   │   │   ├── [00mfeature_extensions.rs[0m
+│   │   │   ├── [00mfeatures.rs[0m
+│   │   │   ├── [00mmacros.rs[0m
+│   │   │   ├── [00mnative.rs[0m
+│   │   │   ├── [00mplatform_types.rs[0m
+│   │   │   └── [00mprelude.rs[0m
+│   │   └── [00mvk.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mconstant_size_arrays.rs[0m
+│       └── [00mdisplay.rs[0m
+├── [01;34masync-broadcast-0.7.2[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mbroadcast_bench.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mtest.rs[0m
+├── [01;34masync-channel-2.5.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mbounded.rs[0m
+│       └── [00munbounded.rs[0m
+├── [01;34masync-executor-1.14.0[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mexecutor.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mlimit.rs[0m
+│   │   └── [00mpriority.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [00mstatic_executors.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mdifferent_executors.rs[0m
+│       ├── [00mdrop.rs[0m
+│       ├── [00mlarger_tasks.rs[0m
+│       ├── [00mlocal_queue.rs[0m
+│       ├── [00mpanic_prop.rs[0m
+│       └── [00mspawn_many.rs[0m
+├── [01;34masync-io-2.6.0[0m
+│   ├── [01;34mbenches[0m
+│   │   ├── [00mio.rs[0m
+│   │   └── [00mtimer.rs[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mkqueue-process.rs[0m
+│   │   ├── [00mlinux-inotify.rs[0m
+│   │   ├── [00mlinux-timerfd.rs[0m
+│   │   ├── [00munix-signal.rs[0m
+│   │   ├── [00mwindows-command.rs[0m
+│   │   └── [00mwindows-uds.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdriver.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34mos[0m
+│   │   │   ├── [00mkqueue.rs[0m
+│   │   │   ├── [00munix.rs[0m
+│   │   │   └── [00mwindows.rs[0m
+│   │   ├── [00mos.rs[0m
+│   │   ├── [01;34mreactor[0m
+│   │   │   ├── [00mkqueue.rs[0m
+│   │   │   ├── [00munix.rs[0m
+│   │   │   └── [00mwindows.rs[0m
+│   │   └── [00mreactor.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00masync.rs[0m
+│       ├── [00mblock_on.rs[0m
+│       ├── [00missue_182.rs[0m
+│       └── [00mtimer.rs[0m
+├── [01;34masync-lock-3.4.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mbarrier.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmutex.rs[0m
+│   │   ├── [00monce_cell.rs[0m
+│   │   ├── [01;34mrwlock[0m
+│   │   │   ├── [00mfutures.rs[0m
+│   │   │   └── [00mraw.rs[0m
+│   │   ├── [00mrwlock.rs[0m
+│   │   └── [00msemaphore.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mbarrier.rs[0m
+│       ├── [01;34mcommon[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mloom.rs[0m
+│       ├── [00mmutex.rs[0m
+│       ├── [00mrwlock.rs[0m
+│       └── [00msemaphore.rs[0m
+├── [01;34masync-process-2.5.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mtimeout.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34mreaper[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00msignal.rs[0m
+│   │   │   └── [00mwait.rs[0m
+│   │   ├── [00munix.rs[0m
+│   │   └── [00mwindows.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00msleep.rs[0m
+│       └── [00mstd.rs[0m
+├── [01;34masync-recursion-1.1.1[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mexpand.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [00mparse.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00margs_sync.rs[0m
+│       ├── [00mcompiletest.rs[0m
+│       ├── [00mcore_module.rs[0m
+│       ├── [01;34mexpand[0m
+│       │   ├── [00margs_not_send.expanded.rs[0m
+│       │   ├── [00margs_not_send.rs[0m
+│       │   ├── [00margs_punctuated.expanded.rs[0m
+│       │   ├── [00margs_punctuated.rs[0m
+│       │   ├── [00margs_sync.expanded.rs[0m
+│       │   ├── [00margs_sync.rs[0m
+│       │   ├── [00mcore_module.expanded.rs[0m
+│       │   ├── [00mcore_module.rs[0m
+│       │   ├── [00mfibonacci.expanded.rs[0m
+│       │   ├── [00mfibonacci.rs[0m
+│       │   ├── [00mgeneric_parameter_no_send.expanded.rs[0m
+│       │   ├── [00mgeneric_parameter_no_send.rs[0m
+│       │   ├── [00mgeneric_parameter.expanded.rs[0m
+│       │   ├── [00mgeneric_parameter.rs[0m
+│       │   ├── [00mlifetimes_explicit_async_recursion_bound.expanded.rs[0m
+│       │   ├── [00mlifetimes_explicit_async_recursion_bound.rs[0m
+│       │   ├── [00mlifetimes_multiple.expanded.rs[0m
+│       │   ├── [00mlifetimes_multiple.rs[0m
+│       │   ├── [00mlifetimes_nested_reference.expanded.rs[0m
+│       │   ├── [00mlifetimes_nested_reference.rs[0m
+│       │   ├── [00mlifetimes_no_send_bound.expanded.rs[0m
+│       │   ├── [00mlifetimes_no_send_bound.rs[0m
+│       │   ├── [00mmacros_nested.expanded.rs[0m
+│       │   ├── [00mmacros_nested.rs[0m
+│       │   ├── [00mstruct_methods.expanded.rs[0m
+│       │   └── [00mstruct_methods.rs[0m
+│       ├── [00mfibonacci.rs[0m
+│       ├── [00mgeneric_parameters.rs[0m
+│       ├── [00mlifetimes.rs[0m
+│       ├── [00mmacros_all_the_way_down.rs[0m
+│       ├── [00mstruct_methods.rs[0m
+│       └── [01;34mui[0m
+│           ├── [00marg_not_sync.rs[0m
+│           ├── [00marg_not_sync.stderr[0m
+│           ├── [00margs_invalid.rs[0m
+│           ├── [00margs_invalid.stderr[0m
+│           ├── [00margs_repeated.rs[0m
+│           ├── [00margs_repeated.stderr[0m
+│           ├── [00mmust_use.rs[0m
+│           ├── [00mmust_use.stderr[0m
+│           ├── [00mnot_async.rs[0m
+│           └── [00mnot_async.stderr[0m
+├── [01;34masync-signal-0.2.13[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mprint.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mchannel.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mpipe.rs[0m
+│   │   └── [00mwindows_registry.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00msigint.rs[0m
+│       └── [00munix_signals.rs[0m
+├── [01;34masync-signal-0.2.14[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mprint.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mchannel.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mpipe.rs[0m
+│   │   └── [00mwindows_registry.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00msigint.rs[0m
+│       └── [00munix_signals.rs[0m
+├── [01;34masync-task-4.7.1[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mspawn.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mspawn-local.rs[0m
+│   │   ├── [00mspawn-on-thread.rs[0m
+│   │   ├── [00mspawn.rs[0m
+│   │   └── [00mwith-metadata.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mheader.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mraw.rs[0m
+│   │   ├── [00mrunnable.rs[0m
+│   │   ├── [00mstate.rs[0m
+│   │   ├── [00mtask.rs[0m
+│   │   └── [00mutils.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mbasic.rs[0m
+│       ├── [00mcancel.rs[0m
+│       ├── [00mjoin.rs[0m
+│       ├── [00mmetadata.rs[0m
+│       ├── [00mpanic.rs[0m
+│       ├── [00mready.rs[0m
+│       ├── [00mwaker_panic.rs[0m
+│       ├── [00mwaker_pending.rs[0m
+│       └── [00mwaker_ready.rs[0m
+├── [01;34masync-trait-0.1.89[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00margs.rs[0m
+│   │   ├── [00mbound.rs[0m
+│   │   ├── [00mexpand.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mlifetime.rs[0m
+│   │   ├── [00mparse.rs[0m
+│   │   ├── [00mreceiver.rs[0m
+│   │   └── [00mverbatim.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mcompiletest.rs[0m
+│       ├── [01;34mexecutor[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mtest.rs[0m
+│       └── [01;34mui[0m
+│           ├── [00marg-implementation-detail.rs[0m
+│           ├── [00marg-implementation-detail.stderr[0m
+│           ├── [00mbare-trait-object.rs[0m
+│           ├── [00mbare-trait-object.stderr[0m
+│           ├── [00mconsider-restricting.rs[0m
+│           ├── [00mconsider-restricting.stderr[0m
+│           ├── [00mdelimiter-span.rs[0m
+│           ├── [00mdelimiter-span.stderr[0m
+│           ├── [00mlifetime-defined-here.rs[0m
+│           ├── [00mlifetime-defined-here.stderr[0m
+│           ├── [00mlifetime-span.rs[0m
+│           ├── [00mlifetime-span.stderr[0m
+│           ├── [00mmissing-async-in-impl.rs[0m
+│           ├── [00mmissing-async-in-impl.stderr[0m
+│           ├── [00mmissing-async-in-trait.rs[0m
+│           ├── [00mmissing-async-in-trait.stderr[0m
+│           ├── [00mmissing-body.rs[0m
+│           ├── [00mmissing-body.stderr[0m
+│           ├── [00mmust-use.rs[0m
+│           ├── [00mmust-use.stderr[0m
+│           ├── [00mno-attribute-macro.rs[0m
+│           ├── [00mno-attribute-macro.stderr[0m
+│           ├── [00mself-span.rs[0m
+│           ├── [00mself-span.stderr[0m
+│           ├── [00msend-not-implemented.rs[0m
+│           ├── [00msend-not-implemented.stderr[0m
+│           ├── [00mtype-mismatch.rs[0m
+│           ├── [00mtype-mismatch.stderr[0m
+│           ├── [00munreachable.rs[0m
+│           ├── [00munreachable.stderr[0m
+│           ├── [00munsupported-self.rs[0m
+│           └── [00munsupported-self.stderr[0m
+├── [01;34matomic-waker-1.1.2[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mwaker.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mLICENSE-THIRD-PARTY[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mbasic.rs[0m
+├── [01;34matspi-0.29.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE2.txt[0m
+│   ├── [00mLICENSE-MIT.txt[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34matspi-common-0.13.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE2.txt[0m
+│   ├── [00mLICENSE-MIT.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00maction.rs[0m
+│   │   ├── [00mcache.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [01;34mevents[0m
+│   │   │   ├── [00mcache.rs[0m
+│   │   │   ├── [00mdocument.rs[0m
+│   │   │   ├── [00mevent_body.rs[0m
+│   │   │   ├── [00mevent_wrappers.rs[0m
+│   │   │   ├── [00mfocus.rs[0m
+│   │   │   ├── [00mkeyboard.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mmouse.rs[0m
+│   │   │   ├── [00mobject.rs[0m
+│   │   │   ├── [00mregistry.rs[0m
+│   │   │   ├── [00mterminal.rs[0m
+│   │   │   ├── [00mtraits.rs[0m
+│   │   │   └── [00mwindow.rs[0m
+│   │   ├── [00minterface.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [00mobject_match.rs[0m
+│   │   ├── [00mobject_ref.rs[0m
+│   │   ├── [00moperation.rs[0m
+│   │   ├── [00mrelation_type.rs[0m
+│   │   ├── [00mrole.rs[0m
+│   │   └── [00mstate.rs[0m
+│   └── [01;34mxml[0m
+│       ├── [00mAccessible.xml[0m
+│       ├── [00mAction.xml[0m
+│       ├── [00mApplication.xml[0m
+│       ├── [00mCache.xml[0m
+│       ├── [00mCollection.xml[0m
+│       ├── [00mComponent.xml[0m
+│       ├── [00mDeviceEventController.xml[0m
+│       ├── [00mDeviceEventListener.xml[0m
+│       ├── [00mDocument.xml[0m
+│       ├── [00mEditableText.xml[0m
+│       ├── [00mEvent.xml[0m
+│       ├── [00mgenerate-introspection.py[0m
+│       ├── [00mHyperlink.xml[0m
+│       ├── [00mHypertext.xml[0m
+│       ├── [00mImage.xml[0m
+│       ├── [00mRegistry.xml[0m
+│       ├── [01;34mschemas[0m
+│       │   ├── [00mDBus.xsd[0m
+│       │   ├── [00mTypes.xml[0m
+│       │   └── [00mXMLSchema.xsd[0m
+│       ├── [00mSelection.xml[0m
+│       ├── [00mSocket.xml[0m
+│       ├── [00mTable.xml[0m
+│       ├── [00mTableCell.xml[0m
+│       ├── [00mText.xml[0m
+│       └── [00mValue.xml[0m
+├── [01;34matspi-proxies-0.13.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE2.txt[0m
+│   ├── [00mLICENSE-MIT.txt[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00maccessible.rs[0m
+│       ├── [00maction.rs[0m
+│       ├── [00mapplication.rs[0m
+│       ├── [00mbus.rs[0m
+│       ├── [00mcache.rs[0m
+│       ├── [00mcollection.rs[0m
+│       ├── [00mcomponent.rs[0m
+│       ├── [00mdevice_event_controller.rs[0m
+│       ├── [00mdevice_event_listener.rs[0m
+│       ├── [00mdocument.rs[0m
+│       ├── [00meditable_text.rs[0m
+│       ├── [00mhyperlink.rs[0m
+│       ├── [00mhypertext.rs[0m
+│       ├── [00mimage.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mproxy_ext.rs[0m
+│       ├── [00mregistry.rs[0m
+│       ├── [00mresult.rs[0m
+│       ├── [00mselection.rs[0m
+│       ├── [00msocket.rs[0m
+│       ├── [00mtable_cell.rs[0m
+│       ├── [00mtable.rs[0m
+│       ├── [00mtext.rs[0m
+│       └── [00mvalue.rs[0m
+├── [01;34mautocfg-1.5.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mintegers.rs[0m
+│   │   ├── [00mnightly.rs[0m
+│   │   ├── [00mpaths.rs[0m
+│   │   ├── [00mtraits.rs[0m
+│   │   └── [00mversions.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mrustc.rs[0m
+│   │   ├── [00mtests.rs[0m
+│   │   └── [00mversion.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mno_std.rs[0m
+│       ├── [00mrustflags.rs[0m
+│       ├── [01;34msupport[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mtests.rs[0m
+│       ├── [01;32mwrap_ignored[0m
+│       └── [00mwrappers.rs[0m
+├── [01;34mbit-set-0.9.1[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mbench.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mRELEASES.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mbit-vec-0.9.1[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mbench.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mRELEASES.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mbitflags-1.3.2[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mCODE_OF_CONDUCT.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mexample_generated.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mbasic.rs[0m
+│       ├── [01;34mcompile-fail[0m
+│       │   ├── [01;34mimpls[0m
+│       │   │   ├── [00mcopy.rs[0m
+│       │   │   ├── [00mcopy.stderr.beta[0m
+│       │   │   ├── [00meq.rs[0m
+│       │   │   └── [00meq.stderr.beta[0m
+│       │   ├── [01;34mnon_integer_base[0m
+│       │   │   ├── [00mall_defined.rs[0m
+│       │   │   ├── [00mall_defined.stderr.beta[0m
+│       │   │   ├── [00mall_missing.rs[0m
+│       │   │   └── [00mall_missing.stderr.beta[0m
+│       │   └── [01;34mvisibility[0m
+│       │       ├── [00mprivate_field.rs[0m
+│       │       ├── [00mprivate_field.stderr.beta[0m
+│       │       ├── [00mprivate_flags.rs[0m
+│       │       ├── [00mprivate_flags.stderr.beta[0m
+│       │       ├── [00mpub_const.rs[0m
+│       │       └── [00mpub_const.stderr.beta[0m
+│       ├── [01;34mcompile-pass[0m
+│       │   ├── [01;34mimpls[0m
+│       │   │   ├── [00mconvert.rs[0m
+│       │   │   ├── [00mdefault.rs[0m
+│       │   │   └── [00minherent_methods.rs[0m
+│       │   ├── [01;34mredefinition[0m
+│       │   │   ├── [00mcore.rs[0m
+│       │   │   └── [00mstringify.rs[0m
+│       │   ├── [01;34mrepr[0m
+│       │   │   ├── [00mc.rs[0m
+│       │   │   └── [00mtransparent.rs[0m
+│       │   └── [01;34mvisibility[0m
+│       │       ├── [00mbits_field.rs[0m
+│       │       └── [00mpub_in.rs[0m
+│       └── [00mcompile.rs[0m
+├── [01;34mbitflags-2.11.0[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mparse.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mCODE_OF_CONDUCT.md[0m
+│   ├── [00mCONTRIBUTING.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcustom_bits_type.rs[0m
+│   │   ├── [00mcustom_derive.rs[0m
+│   │   ├── [00mfmt.rs[0m
+│   │   ├── [00mmacro_free.rs[0m
+│   │   └── [00mserde.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mSECURITY.md[0m
+│   ├── [00mspec.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mexample_generated.rs[0m
+│       ├── [01;34mexternal[0m
+│       │   ├── [00marbitrary.rs[0m
+│       │   ├── [00mbytemuck.rs[0m
+│       │   └── [00mserde.rs[0m
+│       ├── [00mexternal.rs[0m
+│       ├── [00minternal.rs[0m
+│       ├── [00miter.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mparser.rs[0m
+│       ├── [00mpublic.rs[0m
+│       ├── [01;34mtests[0m
+│       │   ├── [00mall.rs[0m
+│       │   ├── [00mbitflags_match.rs[0m
+│       │   ├── [00mbits.rs[0m
+│       │   ├── [00mclear.rs[0m
+│       │   ├── [00mcomplement.rs[0m
+│       │   ├── [00mcontains.rs[0m
+│       │   ├── [00mdifference.rs[0m
+│       │   ├── [00mempty.rs[0m
+│       │   ├── [00meq.rs[0m
+│       │   ├── [00mextend.rs[0m
+│       │   ├── [00mflags.rs[0m
+│       │   ├── [00mfmt.rs[0m
+│       │   ├── [00mfrom_bits_retain.rs[0m
+│       │   ├── [00mfrom_bits_truncate.rs[0m
+│       │   ├── [00mfrom_bits.rs[0m
+│       │   ├── [00mfrom_name.rs[0m
+│       │   ├── [00minsert.rs[0m
+│       │   ├── [00mintersection.rs[0m
+│       │   ├── [00mintersects.rs[0m
+│       │   ├── [00mis_all.rs[0m
+│       │   ├── [00mis_empty.rs[0m
+│       │   ├── [00miter.rs[0m
+│       │   ├── [00mknown_bits.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   ├── [00mremove.rs[0m
+│       │   ├── [00msymmetric_difference.rs[0m
+│       │   ├── [00mtruncate.rs[0m
+│       │   ├── [00munion.rs[0m
+│       │   ├── [00munknown_bits.rs[0m
+│       │   └── [00munknown.rs[0m
+│       ├── [00mtests.rs[0m
+│       └── [00mtraits.rs[0m
+├── [01;34mbitflags-2.9.4[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mparse.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mCODE_OF_CONDUCT.md[0m
+│   ├── [00mCONTRIBUTING.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcustom_bits_type.rs[0m
+│   │   ├── [00mcustom_derive.rs[0m
+│   │   ├── [00mfmt.rs[0m
+│   │   ├── [00mmacro_free.rs[0m
+│   │   └── [00mserde.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mSECURITY.md[0m
+│   ├── [00mspec.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mexample_generated.rs[0m
+│       ├── [01;34mexternal[0m
+│       │   ├── [00marbitrary.rs[0m
+│       │   ├── [00mbytemuck.rs[0m
+│       │   └── [00mserde.rs[0m
+│       ├── [00mexternal.rs[0m
+│       ├── [00minternal.rs[0m
+│       ├── [00miter.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mparser.rs[0m
+│       ├── [00mpublic.rs[0m
+│       ├── [01;34mtests[0m
+│       │   ├── [00mall.rs[0m
+│       │   ├── [00mbitflags_match.rs[0m
+│       │   ├── [00mbits.rs[0m
+│       │   ├── [00mclear.rs[0m
+│       │   ├── [00mcomplement.rs[0m
+│       │   ├── [00mcontains.rs[0m
+│       │   ├── [00mdifference.rs[0m
+│       │   ├── [00mempty.rs[0m
+│       │   ├── [00meq.rs[0m
+│       │   ├── [00mextend.rs[0m
+│       │   ├── [00mflags.rs[0m
+│       │   ├── [00mfmt.rs[0m
+│       │   ├── [00mfrom_bits_retain.rs[0m
+│       │   ├── [00mfrom_bits_truncate.rs[0m
+│       │   ├── [00mfrom_bits.rs[0m
+│       │   ├── [00mfrom_name.rs[0m
+│       │   ├── [00minsert.rs[0m
+│       │   ├── [00mintersection.rs[0m
+│       │   ├── [00mintersects.rs[0m
+│       │   ├── [00mis_all.rs[0m
+│       │   ├── [00mis_empty.rs[0m
+│       │   ├── [00miter.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   ├── [00mremove.rs[0m
+│       │   ├── [00msymmetric_difference.rs[0m
+│       │   ├── [00mtruncate.rs[0m
+│       │   ├── [00munion.rs[0m
+│       │   └── [00munknown.rs[0m
+│       ├── [00mtests.rs[0m
+│       └── [00mtraits.rs[0m
+├── [01;34mblock-buffer-0.10.4[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [00msealed.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mmod.rs[0m
+├── [01;34mblock2-0.5.1[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mabi.rs[0m
+│       ├── [00mblock.rs[0m
+│       ├── [00mdebug.rs[0m
+│       ├── [00mffi.rs[0m
+│       ├── [00mglobal.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mrc_block.rs[0m
+│       ├── [00mstack.rs[0m
+│       └── [00mtraits.rs[0m
+├── [01;34mblock2-0.6.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mabi.rs[0m
+│   │   ├── [00mblock.rs[0m
+│   │   ├── [00mdebug.rs[0m
+│   │   ├── [00mencoding.rs[0m
+│   │   ├── [00mffi.rs[0m
+│   │   ├── [00mglobal.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mrc_block.rs[0m
+│   │   ├── [00mstack.rs[0m
+│   │   └── [00mtraits.rs[0m
+│   └── [00mtranslation-config.toml[0m
+├── [01;34mblocking-1.6.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mls.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00munblock.rs[0m
+├── [01;34mbstr-1.12.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCOPYING[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mgraphemes-std.rs[0m
+│   │   ├── [00mgraphemes.rs[0m
+│   │   ├── [00mlines-std.rs[0m
+│   │   ├── [00mlines.rs[0m
+│   │   ├── [00muppercase-std.rs[0m
+│   │   ├── [00muppercase.rs[0m
+│   │   ├── [00mwords-std.rs[0m
+│   │   └── [00mwords.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   └── [01;34msrc[0m
+│       ├── [00mascii.rs[0m
+│       ├── [00mbstr.rs[0m
+│       ├── [00mbstring.rs[0m
+│       ├── [01;34mbyteset[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mscalar.rs[0m
+│       ├── [00mescape_bytes.rs[0m
+│       ├── [00mext_slice.rs[0m
+│       ├── [00mext_vec.rs[0m
+│       ├── [00mimpls.rs[0m
+│       ├── [00mio.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mtests.rs[0m
+│       ├── [01;34municode[0m
+│       │   ├── [01;34mfsm[0m
+│       │   │   ├── [00mgrapheme_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_fwd.littleendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_fwd.rs[0m
+│       │   │   ├── [00mgrapheme_break_rev.bigendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_rev.littleendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_rev.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mregional_indicator_rev.bigendian.dfa[0m
+│       │   │   ├── [00mregional_indicator_rev.littleendian.dfa[0m
+│       │   │   ├── [00mregional_indicator_rev.rs[0m
+│       │   │   ├── [00msentence_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00msentence_break_fwd.littleendian.dfa[0m
+│       │   │   ├── [00msentence_break_fwd.rs[0m
+│       │   │   ├── [00msimple_word_fwd.bigendian.dfa[0m
+│       │   │   ├── [00msimple_word_fwd.littleendian.dfa[0m
+│       │   │   ├── [00msimple_word_fwd.rs[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.littleendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.rs[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.bigendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.littleendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.rs[0m
+│       │   │   ├── [00mword_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mword_break_fwd.littleendian.dfa[0m
+│       │   │   └── [00mword_break_fwd.rs[0m
+│       │   ├── [00mgrapheme.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00msentence.rs[0m
+│       │   ├── [00mwhitespace.rs[0m
+│       │   └── [00mword.rs[0m
+│       └── [00mutf8.rs[0m
+├── [01;34mbstr-1.12.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCOPYING[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mgraphemes-std.rs[0m
+│   │   ├── [00mgraphemes.rs[0m
+│   │   ├── [00mlines-std.rs[0m
+│   │   ├── [00mlines.rs[0m
+│   │   ├── [00muppercase-std.rs[0m
+│   │   ├── [00muppercase.rs[0m
+│   │   ├── [00mwords-std.rs[0m
+│   │   └── [00mwords.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   └── [01;34msrc[0m
+│       ├── [00mascii.rs[0m
+│       ├── [00mbstr.rs[0m
+│       ├── [00mbstring.rs[0m
+│       ├── [01;34mbyteset[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mscalar.rs[0m
+│       ├── [00mescape_bytes.rs[0m
+│       ├── [00mext_slice.rs[0m
+│       ├── [00mext_vec.rs[0m
+│       ├── [00mimpls.rs[0m
+│       ├── [00mio.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mtests.rs[0m
+│       ├── [01;34municode[0m
+│       │   ├── [01;34mfsm[0m
+│       │   │   ├── [00mgrapheme_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_fwd.littleendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_fwd.rs[0m
+│       │   │   ├── [00mgrapheme_break_rev.bigendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_rev.littleendian.dfa[0m
+│       │   │   ├── [00mgrapheme_break_rev.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mregional_indicator_rev.bigendian.dfa[0m
+│       │   │   ├── [00mregional_indicator_rev.littleendian.dfa[0m
+│       │   │   ├── [00mregional_indicator_rev.rs[0m
+│       │   │   ├── [00msentence_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00msentence_break_fwd.littleendian.dfa[0m
+│       │   │   ├── [00msentence_break_fwd.rs[0m
+│       │   │   ├── [00msimple_word_fwd.bigendian.dfa[0m
+│       │   │   ├── [00msimple_word_fwd.littleendian.dfa[0m
+│       │   │   ├── [00msimple_word_fwd.rs[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.littleendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_fwd.rs[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.bigendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.littleendian.dfa[0m
+│       │   │   ├── [00mwhitespace_anchored_rev.rs[0m
+│       │   │   ├── [00mword_break_fwd.bigendian.dfa[0m
+│       │   │   ├── [00mword_break_fwd.littleendian.dfa[0m
+│       │   │   └── [00mword_break_fwd.rs[0m
+│       │   ├── [00mgrapheme.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00msentence.rs[0m
+│       │   ├── [00mwhitespace.rs[0m
+│       │   └── [00mword.rs[0m
+│       └── [00mutf8.rs[0m
+├── [01;34mbumpalo-3.20.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00malloc.rs[0m
+│       ├── [00mboxed.rs[0m
+│       ├── [01;34mcollections[0m
+│       │   ├── [00mcollect_in.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mraw_vec.rs[0m
+│       │   ├── [01;34mstr[0m
+│       │   │   ├── [00mlossy.rs[0m
+│       │   │   └── [00mmod.rs[0m
+│       │   ├── [00mstring.rs[0m
+│       │   └── [00mvec.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mbytemuck_derive-1.10.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mchangelog.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mLICENSE-ZLIB[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [00mtraits.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mbasic.rs[0m
+├── [01;34mbytemuck-1.25.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mchangelog.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mLICENSE-ZLIB[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mallocation.rs[0m
+│   │   ├── [00manybitpattern.rs[0m
+│   │   ├── [00mchecked.rs[0m
+│   │   ├── [00mcontiguous.rs[0m
+│   │   ├── [00mderive.rs[0m
+│   │   ├── [00minternal.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmust.rs[0m
+│   │   ├── [00mno_uninit.rs[0m
+│   │   ├── [00moffset_of.rs[0m
+│   │   ├── [00mpod_in_option.rs[0m
+│   │   ├── [00mpod.rs[0m
+│   │   ├── [00mtransparent.rs[0m
+│   │   ├── [00mzeroable_in_option.rs[0m
+│   │   └── [00mzeroable.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00marray_tests.rs[0m
+│       ├── [00mcast_slice_tests.rs[0m
+│       ├── [00mchecked_tests.rs[0m
+│       ├── [00mderive.rs[0m
+│       ├── [00mdoc_tests.rs[0m
+│       ├── [00moffset_of_tests.rs[0m
+│       ├── [00mstd_tests.rs[0m
+│       ├── [00mtransparent.rs[0m
+│       └── [00mwrapper_forgets.rs[0m
+├── [01;34mbyteorder-1.5.0[0m
+│   ├── [01;34mbenches[0m
+│   │   └── [00mbench.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mCOPYING[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mio.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [00mUNLICENSE[0m
+├── [01;34mbyteorder-lite-0.1.0[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mio.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [00mUNLICENSE[0m
+├── [01;34mbytes-1.11.1[0m
+│   ├── [01;34mbenches[0m
+│   │   ├── [00mbuf.rs[0m
+│   │   ├── [00mbytes_mut.rs[0m
+│   │   └── [00mbytes.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mci[0m
+│   │   ├── [01;32mmiri.sh[0m
+│   │   ├── [01;32mpanic-abort.sh[0m
+│   │   ├── [01;32mtest-stable.sh[0m
+│   │   └── [01;32mtsan.sh[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mSECURITY.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [01;34mbuf[0m
+│   │   │   ├── [00mbuf_impl.rs[0m
+│   │   │   ├── [00mbuf_mut.rs[0m
+│   │   │   ├── [00mchain.rs[0m
+│   │   │   ├── [00miter.rs[0m
+│   │   │   ├── [00mlimit.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mreader.rs[0m
+│   │   │   ├── [00mtake.rs[0m
+│   │   │   ├── [00muninit_slice.rs[0m
+│   │   │   ├── [00mvec_deque.rs[0m
+│   │   │   └── [00mwriter.rs[0m
+│   │   ├── [00mbytes_mut.rs[0m
+│   │   ├── [00mbytes.rs[0m
+│   │   ├── [01;34mfmt[0m
+│   │   │   ├── [00mdebug.rs[0m
+│   │   │   ├── [00mhex.rs[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mloom.rs[0m
+│   │   └── [00mserde.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mtest_buf_mut.rs[0m
+│       ├── [00mtest_buf.rs[0m
+│       ├── [00mtest_bytes_odd_alloc.rs[0m
+│       ├── [00mtest_bytes_vec_alloc.rs[0m
+│       ├── [00mtest_bytes.rs[0m
+│       ├── [00mtest_chain.rs[0m
+│       ├── [00mtest_debug.rs[0m
+│       ├── [00mtest_iter.rs[0m
+│       ├── [00mtest_limit.rs[0m
+│       ├── [00mtest_reader.rs[0m
+│       ├── [00mtest_serde.rs[0m
+│       └── [00mtest_take.rs[0m
+├── [01;34mcalloop-0.13.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mhigh_precision.rs[0m
+│   │   └── [00mtimer.rs[0m
+│   ├── [00mLICENSE.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mREADME.tpl[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [00mio.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mlist.rs[0m
+│   │   ├── [00mloop_logic.rs[0m
+│   │   ├── [00mmacros.rs[0m
+│   │   ├── [01;34msources[0m
+│   │   │   ├── [00mchannel.rs[0m
+│   │   │   ├── [00mfutures.rs[0m
+│   │   │   ├── [00mgeneric.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [01;34mping[0m
+│   │   │   │   ├── [00meventfd.rs[0m
+│   │   │   │   ├── [00miocp.rs[0m
+│   │   │   │   └── [00mpipe.rs[0m
+│   │   │   ├── [00mping.rs[0m
+│   │   │   ├── [00msignals.rs[0m
+│   │   │   ├── [00mtimer.rs[0m
+│   │   │   └── [00mtransient.rs[0m
+│   │   ├── [00msys.rs[0m
+│   │   └── [00mtoken.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00msignals.rs[0m
+├── [01;34mcalloop-wayland-source-0.3.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00msimplest-window.rs[0m
+│   ├── [00mLICENSE.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrustfmt.toml[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mcamino-1.2.2[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.lock.rust161[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [00mrelease.toml[0m
+│   ├── [00mrustfmt.toml[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mproptest_impls.rs[0m
+│   │   ├── [00mserde_impls.rs[0m
+│   │   └── [00mtests.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mintegration_tests.rs[0m
+├── [01;34mcargo_metadata-0.19.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdependency.rs[0m
+│   │   ├── [00mdiagnostic.rs[0m
+│   │   ├── [00merrors.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mlibtest.rs[0m
+│   │   └── [00mmessages.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mselftest.rs[0m
+│       └── [00mtest_samples.rs[0m
+├── [01;34mcargo_metadata-0.23.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdependency.rs[0m
+│   │   ├── [00mdiagnostic.rs[0m
+│   │   ├── [00merrors.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mlibtest.rs[0m
+│   │   └── [00mmessages.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mselftest.rs[0m
+│       └── [00mtest_samples.rs[0m
+├── [01;34mcargo-platform-0.1.9[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mmatches.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mcfg.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mtest_cfg.rs[0m
+├── [01;34mcargo-platform-0.3.2[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mmatches.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mcfg.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mtest_cfg.rs[0m
+├── [01;34mcast-0.3.0[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mtest.rs[0m
+├── [01;34mcc-1.2.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcommand_helpers.rs[0m
+│       ├── [00mdetect_compiler_family.c[0m
+│       ├── [00mlib.rs[0m
+│       ├── [01;34mparallel[0m
+│       │   ├── [00masync_executor.rs[0m
+│       │   ├── [00mjob_token.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mstderr.rs[0m
+│       ├── [01;34mtarget[0m
+│       │   ├── [00mapple.rs[0m
+│       │   ├── [00mgenerated.rs[0m
+│       │   ├── [00mllvm.rs[0m
+│       │   └── [00mparser.rs[0m
+│       ├── [00mtarget.rs[0m
+│       ├── [00mtempfile.rs[0m
+│       ├── [00mtool.rs[0m
+│       ├── [00mutilities.rs[0m
+│       └── [01;34mwindows[0m
+│           ├── [00mcom.rs[0m
+│           ├── [00mfind_tools.rs[0m
+│           ├── [00mmod.rs[0m
+│           ├── [00mregistry.rs[0m
+│           ├── [00msetup_config.rs[0m
+│           ├── [00mvs_instances.rs[0m
+│           ├── [00mwinapi.rs[0m
+│           ├── [00mwindows_sys.rs[0m
+│           └── [00mwindows_targets.rs[0m
+├── [01;34mcc-1.2.41[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcommand_helpers.rs[0m
+│       ├── [00mdetect_compiler_family.c[0m
+│       ├── [00mflags.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [01;34mparallel[0m
+│       │   ├── [00masync_executor.rs[0m
+│       │   ├── [00mcommand_runner.rs[0m
+│       │   ├── [00mjob_token.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mstderr.rs[0m
+│       ├── [01;34mtarget[0m
+│       │   ├── [00mapple.rs[0m
+│       │   ├── [00mgenerated.rs[0m
+│       │   ├── [00mllvm.rs[0m
+│       │   └── [00mparser.rs[0m
+│       ├── [00mtarget.rs[0m
+│       ├── [00mtempfile.rs[0m
+│       ├── [00mtool.rs[0m
+│       └── [00mutilities.rs[0m
+├── [01;34mcc-1.2.56[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcommand_helpers.rs[0m
+│       ├── [00mdetect_compiler_family.c[0m
+│       ├── [00mflags.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [01;34mparallel[0m
+│       │   ├── [00masync_executor.rs[0m
+│       │   ├── [00mcommand_runner.rs[0m
+│       │   ├── [00mjob_token.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mstderr.rs[0m
+│       ├── [01;34mtarget[0m
+│       │   ├── [00mapple.rs[0m
+│       │   ├── [00mgenerated.rs[0m
+│       │   ├── [00mllvm.rs[0m
+│       │   └── [00mparser.rs[0m
+│       ├── [00mtarget.rs[0m
+│       ├── [00mtempfile.rs[0m
+│       ├── [00mtool.rs[0m
+│       └── [00mutilities.rs[0m
+├── [01;34mcc-1.2.58[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcommand_helpers.rs[0m
+│       ├── [00mdetect_compiler_family.c[0m
+│       ├── [00mflags.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [01;34mparallel[0m
+│       │   ├── [00masync_executor.rs[0m
+│       │   ├── [00mcommand_runner.rs[0m
+│       │   ├── [00mjob_token.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mstderr.rs[0m
+│       ├── [01;34mtarget[0m
+│       │   ├── [00mapple.rs[0m
+│       │   ├── [00mgenerated.rs[0m
+│       │   ├── [00mllvm.rs[0m
+│       │   └── [00mparser.rs[0m
+│       ├── [00mtarget.rs[0m
+│       ├── [00mtempfile.rs[0m
+│       ├── [00mtool.rs[0m
+│       └── [00mutilities.rs[0m
+├── [01;34mcc-1.2.59[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mclippy.toml[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mcommand_helpers.rs[0m
+│       ├── [00mdetect_compiler_family.c[0m
+│       ├── [00mflags.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [01;34mparallel[0m
+│       │   ├── [00masync_executor.rs[0m
+│       │   ├── [00mcommand_runner.rs[0m
+│       │   ├── [00mjob_token.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mstderr.rs[0m
+│       ├── [01;34mtarget[0m
+│       │   ├── [00mapple.rs[0m
+│       │   ├── [00mgenerated.rs[0m
+│       │   ├── [00mllvm.rs[0m
+│       │   └── [00mparser.rs[0m
+│       ├── [00mtarget.rs[0m
+│       ├── [00mtempfile.rs[0m
+│       ├── [00mtool.rs[0m
+│       └── [00mutilities.rs[0m
+├── [01;34mcfg_aliases-0.2.1[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mNOTICES.md[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mtest.rs[0m
+├── [01;34mcfg-if-1.0.4[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mxcrate.rs[0m
+├── [01;34mchrono-0.4.42[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCITATION.cff[0m
+│   ├── [00mLICENSE.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdate.rs[0m
+│   │   ├── [01;34mdatetime[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mserde.rs[0m
+│   │   │   └── [00mtests.rs[0m
+│   │   ├── [01;34mformat[0m
+│   │   │   ├── [00mformatting.rs[0m
+│   │   │   ├── [00mlocales.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mparse.rs[0m
+│   │   │   ├── [00mparsed.rs[0m
+│   │   │   ├── [00mscan.rs[0m
+│   │   │   └── [00mstrftime.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmonth.rs[0m
+│   │   ├── [01;34mnaive[0m
+│   │   │   ├── [01;34mdate[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mtests.rs[0m
+│   │   │   ├── [01;34mdatetime[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mserde.rs[0m
+│   │   │   │   └── [00mtests.rs[0m
+│   │   │   ├── [00minternals.rs[0m
+│   │   │   ├── [00misoweek.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [01;34mtime[0m
+│   │   │       ├── [00mmod.rs[0m
+│   │   │       ├── [00mserde.rs[0m
+│   │   │       └── [00mtests.rs[0m
+│   │   ├── [01;34moffset[0m
+│   │   │   ├── [00mfixed.rs[0m
+│   │   │   ├── [01;34mlocal[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mtz_data.rs[0m
+│   │   │   │   ├── [01;34mtz_info[0m
+│   │   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   │   ├── [00mparser.rs[0m
+│   │   │   │   │   ├── [00mrule.rs[0m
+│   │   │   │   │   └── [00mtimezone.rs[0m
+│   │   │   │   ├── [00munix.rs[0m
+│   │   │   │   ├── [00mwin_bindings.rs[0m
+│   │   │   │   ├── [00mwin_bindings.txt[0m
+│   │   │   │   └── [00mwindows.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mutc.rs[0m
+│   │   ├── [00mround.rs[0m
+│   │   ├── [00mtime_delta.rs[0m
+│   │   ├── [00mtraits.rs[0m
+│   │   ├── [00mweekday_set.rs[0m
+│   │   └── [00mweekday.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mdateutils.rs[0m
+│       ├── [00mwasm.rs[0m
+│       └── [00mwin_bindings.rs[0m
+├── [01;34mchrono-0.4.44[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCITATION.cff[0m
+│   ├── [00mLICENSE.txt[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdate.rs[0m
+│   │   ├── [01;34mdatetime[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mserde.rs[0m
+│   │   │   └── [00mtests.rs[0m
+│   │   ├── [01;34mformat[0m
+│   │   │   ├── [00mformatting.rs[0m
+│   │   │   ├── [00mlocales.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mparse.rs[0m
+│   │   │   ├── [00mparsed.rs[0m
+│   │   │   ├── [00mscan.rs[0m
+│   │   │   └── [00mstrftime.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmonth.rs[0m
+│   │   ├── [01;34mnaive[0m
+│   │   │   ├── [01;34mdate[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   └── [00mtests.rs[0m
+│   │   │   ├── [01;34mdatetime[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mserde.rs[0m
+│   │   │   │   └── [00mtests.rs[0m
+│   │   │   ├── [00minternals.rs[0m
+│   │   │   ├── [00misoweek.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [01;34mtime[0m
+│   │   │       ├── [00mmod.rs[0m
+│   │   │       ├── [00mserde.rs[0m
+│   │   │       └── [00mtests.rs[0m
+│   │   ├── [01;34moffset[0m
+│   │   │   ├── [00mfixed.rs[0m
+│   │   │   ├── [01;34mlocal[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mtz_data.rs[0m
+│   │   │   │   ├── [01;34mtz_info[0m
+│   │   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   │   ├── [00mparser.rs[0m
+│   │   │   │   │   ├── [00mrule.rs[0m
+│   │   │   │   │   └── [00mtimezone.rs[0m
+│   │   │   │   ├── [00munix.rs[0m
+│   │   │   │   ├── [00mwin_bindings.rs[0m
+│   │   │   │   └── [00mwindows.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mutc.rs[0m
+│   │   ├── [00mround.rs[0m
+│   │   ├── [00mtime_delta.rs[0m
+│   │   ├── [00mtraits.rs[0m
+│   │   ├── [00mweekday_set.rs[0m
+│   │   └── [00mweekday.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mdateutils.rs[0m
+│       ├── [00mwasm.rs[0m
+│       └── [00mwin_bindings.rs[0m
+├── [01;34mchrono-tz-0.9.0[0m
+│   ├── [00mbuild.rs[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mbinary_search.rs[0m
+│   │   ├── [00mdirectory.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mserde.rs[0m
+│   │   ├── [00mtimezone_impl.rs[0m
+│   │   └── [00mtimezones.rs[0m
+│   ├── [01;34mtests[0m
+│   │   └── [00mnumberphile.rs[0m
+│   └── [01;34mtz[0m
+│       ├── [00mafrica[0m
+│       ├── [00mantarctica[0m
+│       ├── [00masia[0m
+│       ├── [00maustralasia[0m
+│       ├── [00mbackward[0m
+│       ├── [00metcetera[0m
+│       ├── [00meurope[0m
+│       ├── [00mLICENSE[0m
+│       ├── [00mNEWS[0m
+│       ├── [00mnorthamerica[0m
+│       └── [00msouthamerica[0m
+├── [01;34mchrono-tz-build-0.3.0[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mciborium-0.2.2[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [01;34mde[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34mser[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [00mtag.rs[0m
+│   │   └── [01;34mvalue[0m
+│   │       ├── [00mcanonical.rs[0m
+│   │       ├── [00mde.rs[0m
+│   │       ├── [00merror.rs[0m
+│   │       ├── [00minteger.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       └── [00mser.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mcanonical.rs[0m
+│       ├── [00mcodec.rs[0m
+│       ├── [00merror.rs[0m
+│       ├── [00mfuzz.rs[0m
+│       ├── [00mmacro.rs[0m
+│       ├── [00mno_std.rs[0m
+│       ├── [00mrecursion.rs[0m
+│       └── [00mtag.rs[0m
+├── [01;34mciborium-io-0.2.2[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mciborium-ll-0.2.2[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mdec.rs[0m
+│       ├── [00menc.rs[0m
+│       ├── [00mhdr.rs[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mseg.rs[0m
+├── [01;34mclap_builder-4.5.49[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [01;34mbuilder[0m
+│       │   ├── [00maction.rs[0m
+│       │   ├── [00mapp_settings.rs[0m
+│       │   ├── [00marg_group.rs[0m
+│       │   ├── [00marg_predicate.rs[0m
+│       │   ├── [00marg_settings.rs[0m
+│       │   ├── [00marg.rs[0m
+│       │   ├── [00mcommand.rs[0m
+│       │   ├── [00mdebug_asserts.rs[0m
+│       │   ├── [00mext.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mos_str.rs[0m
+│       │   ├── [00mpossible_value.rs[0m
+│       │   ├── [00mrange.rs[0m
+│       │   ├── [00mresettable.rs[0m
+│       │   ├── [00mstr.rs[0m
+│       │   ├── [00mstyled_str.rs[0m
+│       │   ├── [00mstyling.rs[0m
+│       │   ├── [00mtests.rs[0m
+│       │   ├── [00mvalue_hint.rs[0m
+│       │   └── [00mvalue_parser.rs[0m
+│       ├── [00mderive.rs[0m
+│       ├── [01;34merror[0m
+│       │   ├── [00mcontext.rs[0m
+│       │   ├── [00mformat.rs[0m
+│       │   ├── [00mkind.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       ├── [00mmkeymap.rs[0m
+│       ├── [01;34moutput[0m
+│       │   ├── [00mfmt.rs[0m
+│       │   ├── [00mhelp_template.rs[0m
+│       │   ├── [00mhelp.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [01;34mtextwrap[0m
+│       │   │   ├── [00mcore.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mword_separators.rs[0m
+│       │   │   └── [00mwrap_algorithms.rs[0m
+│       │   └── [00musage.rs[0m
+│       ├── [01;34mparser[0m
+│       │   ├── [00marg_matcher.rs[0m
+│       │   ├── [00merror.rs[0m
+│       │   ├── [01;34mfeatures[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00msuggestions.rs[0m
+│       │   ├── [01;34mmatches[0m
+│       │   │   ├── [00marg_matches.rs[0m
+│       │   │   ├── [00mmatched_arg.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00mvalue_source.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   └── [00mvalidator.rs[0m
+│       └── [01;34mutil[0m
+│           ├── [00many_value.rs[0m
+│           ├── [00mcolor.rs[0m
+│           ├── [00mflat_map.rs[0m
+│           ├── [00mflat_set.rs[0m
+│           ├── [00mgraph.rs[0m
+│           ├── [00mid.rs[0m
+│           ├── [00mmod.rs[0m
+│           └── [00mstr_to_bool.rs[0m
+├── [01;34mclap_builder-4.5.60[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [01;34mbuilder[0m
+│       │   ├── [00maction.rs[0m
+│       │   ├── [00mapp_settings.rs[0m
+│       │   ├── [00marg_group.rs[0m
+│       │   ├── [00marg_predicate.rs[0m
+│       │   ├── [00marg_settings.rs[0m
+│       │   ├── [00marg.rs[0m
+│       │   ├── [00mcommand.rs[0m
+│       │   ├── [00mdebug_asserts.rs[0m
+│       │   ├── [00mext.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mos_str.rs[0m
+│       │   ├── [00mpossible_value.rs[0m
+│       │   ├── [00mrange.rs[0m
+│       │   ├── [00mresettable.rs[0m
+│       │   ├── [00mstr.rs[0m
+│       │   ├── [00mstyled_str.rs[0m
+│       │   ├── [00mstyling.rs[0m
+│       │   ├── [00mtests.rs[0m
+│       │   ├── [00mvalue_hint.rs[0m
+│       │   └── [00mvalue_parser.rs[0m
+│       ├── [00mderive.rs[0m
+│       ├── [01;34merror[0m
+│       │   ├── [00mcontext.rs[0m
+│       │   ├── [00mformat.rs[0m
+│       │   ├── [00mkind.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       ├── [00mmkeymap.rs[0m
+│       ├── [01;34moutput[0m
+│       │   ├── [00mfmt.rs[0m
+│       │   ├── [00mhelp_template.rs[0m
+│       │   ├── [00mhelp.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [01;34mtextwrap[0m
+│       │   │   ├── [00mcore.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mword_separators.rs[0m
+│       │   │   └── [00mwrap_algorithms.rs[0m
+│       │   └── [00musage.rs[0m
+│       ├── [01;34mparser[0m
+│       │   ├── [00marg_matcher.rs[0m
+│       │   ├── [00merror.rs[0m
+│       │   ├── [01;34mfeatures[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00msuggestions.rs[0m
+│       │   ├── [01;34mmatches[0m
+│       │   │   ├── [00marg_matches.rs[0m
+│       │   │   ├── [00mmatched_arg.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00mvalue_source.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   └── [00mvalidator.rs[0m
+│       └── [01;34mutil[0m
+│           ├── [00many_value.rs[0m
+│           ├── [00mcolor.rs[0m
+│           ├── [00mescape.rs[0m
+│           ├── [00mflat_map.rs[0m
+│           ├── [00mflat_set.rs[0m
+│           ├── [00mgraph.rs[0m
+│           ├── [00mid.rs[0m
+│           ├── [00mmod.rs[0m
+│           └── [00mstr_to_bool.rs[0m
+├── [01;34mclap_builder-4.6.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [01;34mbuilder[0m
+│       │   ├── [00maction.rs[0m
+│       │   ├── [00mapp_settings.rs[0m
+│       │   ├── [00marg_group.rs[0m
+│       │   ├── [00marg_predicate.rs[0m
+│       │   ├── [00marg_settings.rs[0m
+│       │   ├── [00marg.rs[0m
+│       │   ├── [00mcommand.rs[0m
+│       │   ├── [00mdebug_asserts.rs[0m
+│       │   ├── [00mext.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mos_str.rs[0m
+│       │   ├── [00mpossible_value.rs[0m
+│       │   ├── [00mrange.rs[0m
+│       │   ├── [00mresettable.rs[0m
+│       │   ├── [00mstr.rs[0m
+│       │   ├── [00mstyled_str.rs[0m
+│       │   ├── [00mstyling.rs[0m
+│       │   ├── [00mtests.rs[0m
+│       │   ├── [00mvalue_hint.rs[0m
+│       │   └── [00mvalue_parser.rs[0m
+│       ├── [00mderive.rs[0m
+│       ├── [01;34merror[0m
+│       │   ├── [00mcontext.rs[0m
+│       │   ├── [00mformat.rs[0m
+│       │   ├── [00mkind.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       ├── [00mmkeymap.rs[0m
+│       ├── [01;34moutput[0m
+│       │   ├── [00mfmt.rs[0m
+│       │   ├── [00mhelp_template.rs[0m
+│       │   ├── [00mhelp.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [01;34mtextwrap[0m
+│       │   │   ├── [00mcore.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   ├── [00mword_separators.rs[0m
+│       │   │   └── [00mwrap_algorithms.rs[0m
+│       │   └── [00musage.rs[0m
+│       ├── [01;34mparser[0m
+│       │   ├── [00marg_matcher.rs[0m
+│       │   ├── [00merror.rs[0m
+│       │   ├── [01;34mfeatures[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00msuggestions.rs[0m
+│       │   ├── [01;34mmatches[0m
+│       │   │   ├── [00marg_matches.rs[0m
+│       │   │   ├── [00mmatched_arg.rs[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00mvalue_source.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   └── [00mvalidator.rs[0m
+│       └── [01;34mutil[0m
+│           ├── [00many_value.rs[0m
+│           ├── [00mcolor.rs[0m
+│           ├── [00mescape.rs[0m
+│           ├── [00mflat_map.rs[0m
+│           ├── [00mflat_set.rs[0m
+│           ├── [00mgraph.rs[0m
+│           ├── [00mid.rs[0m
+│           ├── [00mmod.rs[0m
+│           └── [00mstr_to_bool.rs[0m
+├── [01;34mclap_complete_nushell-4.5.10[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mnushell_completion.rs[0m
+│   │   ├── [00msub_subcommands.rs[0m
+│   │   └── [00mtest.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap_complete_nushell-4.5.9[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mnushell_completion.rs[0m
+│   │   ├── [00msub_subcommands.rs[0m
+│   │   └── [00mtest.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap_complete-4.5.59[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcompletion-derive.rs[0m
+│   │   ├── [00mcompletion.rs[0m
+│   │   ├── [00mdynamic.rs[0m
+│   │   └── [00mexhaustive.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [01;34maot[0m
+│       │   ├── [01;34mgenerator[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00mutils.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [01;34mshells[0m
+│       │       ├── [00mbash.rs[0m
+│       │       ├── [00melvish.rs[0m
+│       │       ├── [00mfish.rs[0m
+│       │       ├── [00mmod.rs[0m
+│       │       ├── [00mpowershell.rs[0m
+│       │       ├── [00mshell.rs[0m
+│       │       └── [00mzsh.rs[0m
+│       ├── [01;34mengine[0m
+│       │   ├── [00mcandidate.rs[0m
+│       │   ├── [00mcomplete.rs[0m
+│       │   ├── [00mcustom.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [01;34menv[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mshells.rs[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mmacros.rs[0m
+├── [01;34mclap_complete-4.5.66[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcompletion-derive.rs[0m
+│   │   ├── [00mcompletion.rs[0m
+│   │   ├── [00mdynamic.rs[0m
+│   │   └── [00mexhaustive.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [01;34maot[0m
+│       │   ├── [01;34mgenerator[0m
+│       │   │   ├── [00mmod.rs[0m
+│       │   │   └── [00mutils.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [01;34mshells[0m
+│       │       ├── [00mbash.rs[0m
+│       │       ├── [00melvish.rs[0m
+│       │       ├── [00mfish.rs[0m
+│       │       ├── [00mmod.rs[0m
+│       │       ├── [00mpowershell.rs[0m
+│       │       ├── [00mshell.rs[0m
+│       │       └── [00mzsh.rs[0m
+│       ├── [01;34mengine[0m
+│       │   ├── [00mcandidate.rs[0m
+│       │   ├── [00mcomplete.rs[0m
+│       │   ├── [00mcustom.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [01;34menv[0m
+│       │   ├── [00mmod.rs[0m
+│       │   └── [00mshells.rs[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mmacros.rs[0m
+├── [01;34mclap_derive-4.5.49[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mattr.rs[0m
+│       ├── [01;34mderives[0m
+│       │   ├── [00margs.rs[0m
+│       │   ├── [00minto_app.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   ├── [00msubcommand.rs[0m
+│       │   └── [00mvalue_enum.rs[0m
+│       ├── [00mdummies.rs[0m
+│       ├── [00mitem.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       └── [01;34mutils[0m
+│           ├── [00mdoc_comments.rs[0m
+│           ├── [00merror.rs[0m
+│           ├── [00mmod.rs[0m
+│           ├── [00mspanned.rs[0m
+│           └── [00mty.rs[0m
+├── [01;34mclap_derive-4.5.55[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mattr.rs[0m
+│       ├── [01;34mderives[0m
+│       │   ├── [00margs.rs[0m
+│       │   ├── [00minto_app.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mparser.rs[0m
+│       │   ├── [00msubcommand.rs[0m
+│       │   └── [00mvalue_enum.rs[0m
+│       ├── [00mdummies.rs[0m
+│       ├── [00mitem.rs[0m
+│       ├── [00mlib.rs[0m
+│       ├── [00mmacros.rs[0m
+│       └── [01;34mutils[0m
+│           ├── [00mdoc_comments.rs[0m
+│           ├── [00merror.rs[0m
+│           ├── [00mmod.rs[0m
+│           ├── [00mspanned.rs[0m
+│           └── [00mty.rs[0m
+├── [01;34mclap_lex-0.7.6[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mext.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap_lex-1.0.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mext.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap_lex-1.1.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mext.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap_mangen-0.2.30[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mman.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mrender.rs[0m
+├── [01;34mclap_mangen-0.2.31[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   └── [00mman.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00mlib.rs[0m
+│       └── [00mrender.rs[0m
+├── [01;34mclap-4.5.49[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcargo-example-derive.md[0m
+│   │   ├── [00mcargo-example-derive.rs[0m
+│   │   ├── [00mcargo-example.md[0m
+│   │   ├── [00mcargo-example.rs[0m
+│   │   ├── [00mdemo.md[0m
+│   │   ├── [00mdemo.rs[0m
+│   │   ├── [01;34mderive_ref[0m
+│   │   │   ├── [00maugment_args.rs[0m
+│   │   │   ├── [00maugment_subcommands.rs[0m
+│   │   │   ├── [00mflatten_hand_args.rs[0m
+│   │   │   ├── [00mhand_subcommand.rs[0m
+│   │   │   └── [00minterop_tests.md[0m
+│   │   ├── [00mescaped-positional-derive.md[0m
+│   │   ├── [00mescaped-positional-derive.rs[0m
+│   │   ├── [00mescaped-positional.md[0m
+│   │   ├── [00mescaped-positional.rs[0m
+│   │   ├── [00mfind.md[0m
+│   │   ├── [00mfind.rs[0m
+│   │   ├── [00mgit-derive.md[0m
+│   │   ├── [00mgit-derive.rs[0m
+│   │   ├── [00mgit.md[0m
+│   │   ├── [00mgit.rs[0m
+│   │   ├── [00mmulticall-busybox.md[0m
+│   │   ├── [00mmulticall-busybox.rs[0m
+│   │   ├── [00mmulticall-hostname.md[0m
+│   │   ├── [00mmulticall-hostname.rs[0m
+│   │   ├── [00mpacman.md[0m
+│   │   ├── [00mpacman.rs[0m
+│   │   ├── [00mREADME.md[0m
+│   │   ├── [00mrepl-derive.rs[0m
+│   │   ├── [00mrepl.rs[0m
+│   │   ├── [01;34mtutorial_builder[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_required.md[0m
+│   │   │   ├── [00m03_06_required.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_01_possible.md[0m
+│   │   │   ├── [00m04_01_possible.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   ├── [01;34mtutorial_derive[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands_alt.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_optional.md[0m
+│   │   │   ├── [00m03_06_optional.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   └── [01;34mtyped-derive[0m
+│   │       ├── [00mbuiltin.md[0m
+│   │       ├── [00mbuiltin.rs[0m
+│   │       ├── [00mcustom.md[0m
+│   │       ├── [00mcustom.rs[0m
+│   │       ├── [00mfn_parser.md[0m
+│   │       ├── [00mfn_parser.rs[0m
+│   │       ├── [00mforeign_crate.rs[0m
+│   │       ├── [00mimplicit.md[0m
+│   │       ├── [00mimplicit.rs[0m
+│   │       └── [00mmain.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00m_concepts.rs[0m
+│       ├── [01;34m_cookbook[0m
+│       │   ├── [00mcargo_example_derive.rs[0m
+│       │   ├── [00mcargo_example.rs[0m
+│       │   ├── [00mescaped_positional_derive.rs[0m
+│       │   ├── [00mescaped_positional.rs[0m
+│       │   ├── [00mfind.rs[0m
+│       │   ├── [00mgit_derive.rs[0m
+│       │   ├── [00mgit.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mmulticall_busybox.rs[0m
+│       │   ├── [00mmulticall_hostname.rs[0m
+│       │   ├── [00mpacman.rs[0m
+│       │   ├── [00mrepl_derive.rs[0m
+│       │   ├── [00mrepl.rs[0m
+│       │   └── [00mtyped_derive.rs[0m
+│       ├── [01;34m_derive[0m
+│       │   ├── [00m_tutorial.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00m_faq.rs[0m
+│       ├── [00m_features.rs[0m
+│       ├── [00m_tutorial.rs[0m
+│       ├── [01;34mbin[0m
+│       │   └── [00mstdio-fixture.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap-4.5.60[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcargo-example-derive.md[0m
+│   │   ├── [00mcargo-example-derive.rs[0m
+│   │   ├── [00mcargo-example.md[0m
+│   │   ├── [00mcargo-example.rs[0m
+│   │   ├── [00mdemo.md[0m
+│   │   ├── [00mdemo.rs[0m
+│   │   ├── [01;34mderive_ref[0m
+│   │   │   ├── [00maugment_args.rs[0m
+│   │   │   ├── [00maugment_subcommands.rs[0m
+│   │   │   ├── [00mflatten_hand_args.rs[0m
+│   │   │   ├── [00mhand_subcommand.rs[0m
+│   │   │   └── [00minterop_tests.md[0m
+│   │   ├── [00mescaped-positional-derive.md[0m
+│   │   ├── [00mescaped-positional-derive.rs[0m
+│   │   ├── [00mescaped-positional.md[0m
+│   │   ├── [00mescaped-positional.rs[0m
+│   │   ├── [00mfind.md[0m
+│   │   ├── [00mfind.rs[0m
+│   │   ├── [00mgit-derive.md[0m
+│   │   ├── [00mgit-derive.rs[0m
+│   │   ├── [00mgit.md[0m
+│   │   ├── [00mgit.rs[0m
+│   │   ├── [00mmulticall-busybox.md[0m
+│   │   ├── [00mmulticall-busybox.rs[0m
+│   │   ├── [00mmulticall-hostname.md[0m
+│   │   ├── [00mmulticall-hostname.rs[0m
+│   │   ├── [00mpacman.md[0m
+│   │   ├── [00mpacman.rs[0m
+│   │   ├── [00mREADME.md[0m
+│   │   ├── [00mrepl-derive.rs[0m
+│   │   ├── [00mrepl.rs[0m
+│   │   ├── [01;34mtutorial_builder[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_required.md[0m
+│   │   │   ├── [00m03_06_required.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_01_possible.md[0m
+│   │   │   ├── [00m04_01_possible.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   ├── [01;34mtutorial_derive[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands_alt.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_optional.md[0m
+│   │   │   ├── [00m03_06_optional.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   └── [01;34mtyped-derive[0m
+│   │       ├── [00mbuiltin.md[0m
+│   │       ├── [00mbuiltin.rs[0m
+│   │       ├── [00mcustom.md[0m
+│   │       ├── [00mcustom.rs[0m
+│   │       ├── [00mfn_parser.md[0m
+│   │       ├── [00mfn_parser.rs[0m
+│   │       ├── [00mforeign_crate.rs[0m
+│   │       ├── [00mimplicit.md[0m
+│   │       ├── [00mimplicit.rs[0m
+│   │       └── [00mmain.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00m_concepts.rs[0m
+│       ├── [01;34m_cookbook[0m
+│       │   ├── [00mcargo_example_derive.rs[0m
+│       │   ├── [00mcargo_example.rs[0m
+│       │   ├── [00mescaped_positional_derive.rs[0m
+│       │   ├── [00mescaped_positional.rs[0m
+│       │   ├── [00mfind.rs[0m
+│       │   ├── [00mgit_derive.rs[0m
+│       │   ├── [00mgit.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mmulticall_busybox.rs[0m
+│       │   ├── [00mmulticall_hostname.rs[0m
+│       │   ├── [00mpacman.rs[0m
+│       │   ├── [00mrepl_derive.rs[0m
+│       │   ├── [00mrepl.rs[0m
+│       │   └── [00mtyped_derive.rs[0m
+│       ├── [01;34m_derive[0m
+│       │   ├── [00m_tutorial.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00m_faq.rs[0m
+│       ├── [00m_features.rs[0m
+│       ├── [00m_tutorial.rs[0m
+│       ├── [01;34mbin[0m
+│       │   └── [00mstdio-fixture.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclap-4.6.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcargo-example-derive.md[0m
+│   │   ├── [00mcargo-example-derive.rs[0m
+│   │   ├── [00mcargo-example.md[0m
+│   │   ├── [00mcargo-example.rs[0m
+│   │   ├── [00mdemo.md[0m
+│   │   ├── [00mdemo.rs[0m
+│   │   ├── [01;34mderive_ref[0m
+│   │   │   ├── [00maugment_args.rs[0m
+│   │   │   ├── [00maugment_subcommands.rs[0m
+│   │   │   ├── [00mflatten_hand_args.rs[0m
+│   │   │   ├── [00mhand_subcommand.rs[0m
+│   │   │   └── [00minterop_tests.md[0m
+│   │   ├── [00mescaped-positional-derive.md[0m
+│   │   ├── [00mescaped-positional-derive.rs[0m
+│   │   ├── [00mescaped-positional.md[0m
+│   │   ├── [00mescaped-positional.rs[0m
+│   │   ├── [00mfind.md[0m
+│   │   ├── [00mfind.rs[0m
+│   │   ├── [00mgit-derive.md[0m
+│   │   ├── [00mgit-derive.rs[0m
+│   │   ├── [00mgit.md[0m
+│   │   ├── [00mgit.rs[0m
+│   │   ├── [00mmulticall-busybox.md[0m
+│   │   ├── [00mmulticall-busybox.rs[0m
+│   │   ├── [00mmulticall-hostname.md[0m
+│   │   ├── [00mmulticall-hostname.rs[0m
+│   │   ├── [00mpacman.md[0m
+│   │   ├── [00mpacman.rs[0m
+│   │   ├── [00mREADME.md[0m
+│   │   ├── [00mrepl-derive.rs[0m
+│   │   ├── [00mrepl.rs[0m
+│   │   ├── [01;34mtutorial_builder[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_required.md[0m
+│   │   │   ├── [00m03_06_required.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_01_possible.md[0m
+│   │   │   ├── [00m04_01_possible.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   ├── [01;34mtutorial_derive[0m
+│   │   │   ├── [00m01_quick.md[0m
+│   │   │   ├── [00m01_quick.rs[0m
+│   │   │   ├── [00m02_app_settings.md[0m
+│   │   │   ├── [00m02_app_settings.rs[0m
+│   │   │   ├── [00m02_apps.md[0m
+│   │   │   ├── [00m02_apps.rs[0m
+│   │   │   ├── [00m02_crate.md[0m
+│   │   │   ├── [00m02_crate.rs[0m
+│   │   │   ├── [00m03_01_flag_bool.md[0m
+│   │   │   ├── [00m03_01_flag_bool.rs[0m
+│   │   │   ├── [00m03_01_flag_count.md[0m
+│   │   │   ├── [00m03_01_flag_count.rs[0m
+│   │   │   ├── [00m03_02_option_mult.md[0m
+│   │   │   ├── [00m03_02_option_mult.rs[0m
+│   │   │   ├── [00m03_02_option.md[0m
+│   │   │   ├── [00m03_02_option.rs[0m
+│   │   │   ├── [00m03_03_positional_mult.md[0m
+│   │   │   ├── [00m03_03_positional_mult.rs[0m
+│   │   │   ├── [00m03_03_positional.md[0m
+│   │   │   ├── [00m03_03_positional.rs[0m
+│   │   │   ├── [00m03_04_subcommands_alt.rs[0m
+│   │   │   ├── [00m03_04_subcommands.md[0m
+│   │   │   ├── [00m03_04_subcommands.rs[0m
+│   │   │   ├── [00m03_05_default_values.md[0m
+│   │   │   ├── [00m03_05_default_values.rs[0m
+│   │   │   ├── [00m03_06_optional.md[0m
+│   │   │   ├── [00m03_06_optional.rs[0m
+│   │   │   ├── [00m04_01_enum.md[0m
+│   │   │   ├── [00m04_01_enum.rs[0m
+│   │   │   ├── [00m04_02_parse.md[0m
+│   │   │   ├── [00m04_02_parse.rs[0m
+│   │   │   ├── [00m04_02_validate.md[0m
+│   │   │   ├── [00m04_02_validate.rs[0m
+│   │   │   ├── [00m04_03_relations.md[0m
+│   │   │   ├── [00m04_03_relations.rs[0m
+│   │   │   ├── [00m04_04_custom.md[0m
+│   │   │   ├── [00m04_04_custom.rs[0m
+│   │   │   └── [00m05_01_assert.rs[0m
+│   │   └── [01;34mtyped-derive[0m
+│   │       ├── [00mbuiltin.md[0m
+│   │       ├── [00mbuiltin.rs[0m
+│   │       ├── [00mcustom.md[0m
+│   │       ├── [00mcustom.rs[0m
+│   │       ├── [00mfn_parser.md[0m
+│   │       ├── [00mfn_parser.rs[0m
+│   │       ├── [00mforeign_crate.rs[0m
+│   │       ├── [00mimplicit.md[0m
+│   │       ├── [00mimplicit.rs[0m
+│   │       └── [00mmain.rs[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       ├── [00m_concepts.rs[0m
+│       ├── [01;34m_cookbook[0m
+│       │   ├── [00mcargo_example_derive.rs[0m
+│       │   ├── [00mcargo_example.rs[0m
+│       │   ├── [00mescaped_positional_derive.rs[0m
+│       │   ├── [00mescaped_positional.rs[0m
+│       │   ├── [00mfind.rs[0m
+│       │   ├── [00mgit_derive.rs[0m
+│       │   ├── [00mgit.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mmulticall_busybox.rs[0m
+│       │   ├── [00mmulticall_hostname.rs[0m
+│       │   ├── [00mpacman.rs[0m
+│       │   ├── [00mrepl_derive.rs[0m
+│       │   ├── [00mrepl.rs[0m
+│       │   └── [00mtyped_derive.rs[0m
+│       ├── [01;34m_derive[0m
+│       │   ├── [00m_tutorial.rs[0m
+│       │   └── [00mmod.rs[0m
+│       ├── [00m_faq.rs[0m
+│       ├── [00m_features.rs[0m
+│       ├── [00m_tutorial.rs[0m
+│       ├── [01;34mbin[0m
+│       │   └── [00mstdio-fixture.rs[0m
+│       └── [00mlib.rs[0m
+├── [01;34mclipboard-win-5.4.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mformats.rs[0m
+│   │   ├── [00mhtml.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [00mmonitor.rs[0m
+│   │   ├── [00moptions.rs[0m
+│   │   ├── [00mraw.rs[0m
+│   │   ├── [00msys.rs[0m
+│   │   ├── [00mtypes.rs[0m
+│   │   └── [00mutils.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [00mformats.rs[0m
+│       ├── [00mmonitor.rs[0m
+│       └── [00mtest_clip.rs[0m
+├── [01;34mcobs-0.3.0[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;32mdocs.sh[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdec.rs[0m
+│   │   ├── [00menc.rs[0m
+│   │   └── [00mlib.rs[0m
+│   └── [01;34mtests[0m
+│       └── [00mtests.rs[0m
+├── [01;34mcocogitto-6.5.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mcodecov.yaml[0m
+│   ├── [00mcog.toml[0m
+│   ├── [00mCONTRIBUTING.md[0m
+│   ├── [01;34mdocker[0m
+│   │   ├── [00mDockerfile[0m
+│   │   └── [00mgitconfig[0m
+│   ├── [01;34mdocs[0m
+│   │   ├── [01;34massets[0m
+│   │   │   ├── [00mcocogitto_logo_temp.png[0m
+│   │   │   ├── [00mcog-bot-example.png[0m
+│   │   │   └── [00mcog-bump-example.png[0m
+│   │   ├── [01;34mlogo[0m
+│   │   │   ├── [00mCOCOGITTO_LOGO_TEXT_72dpi.png[0m
+│   │   │   ├── [00mCOCOGITTO_LOGO_web_72dpi.png[0m
+│   │   │   ├── [00mCOCOGITTO_LP_LOGO_TEXT_72dpi.png[0m
+│   │   │   ├── [00mLogo.md[0m
+│   │   │   └── [00mvisual_complete_strip.png[0m
+│   │   └── [00mPackaging.md[0m
+│   ├── [00mjustfile[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [01;34mbin[0m
+│   │   │   ├── [01;34mcog[0m
+│   │   │   │   ├── [00mcommit.rs[0m
+│   │   │   │   ├── [00mmain.rs[0m
+│   │   │   │   └── [00mmangen.rs[0m
+│   │   │   └── [01;34mcog-doc[0m
+│   │   │       ├── [00mmain.rs[0m
+│   │   │       ├── [00mmarkdown.rs[0m
+│   │   │       └── [00mschema.rs[0m
+│   │   ├── [01;34mcommand[0m
+│   │   │   ├── [01;34mbump[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mmonorepo.rs[0m
+│   │   │   │   ├── [00mpackage.rs[0m
+│   │   │   │   └── [00mstandard.rs[0m
+│   │   │   ├── [00mchangelog.rs[0m
+│   │   │   ├── [00mcheck.rs[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00medit.rs[0m
+│   │   │   ├── [00mget_version.rs[0m
+│   │   │   ├── [00mgit_hooks.rs[0m
+│   │   │   ├── [00minit.rs[0m
+│   │   │   ├── [00mlog.rs[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [01;34mconventional[0m
+│   │   │   ├── [00mbump.rs[0m
+│   │   │   ├── [01;34mchangelog[0m
+│   │   │   │   ├── [00merror.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mrelease.rs[0m
+│   │   │   │   ├── [00mrenderer.rs[0m
+│   │   │   │   ├── [00mserde.rs[0m
+│   │   │   │   ├── [01;34mtemplate[0m
+│   │   │   │   │   ├── [00mfull_hash.tera[0m
+│   │   │   │   │   ├── [01;34mmacro[0m
+│   │   │   │   │   │   └── [00mmacros.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_full_hash.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_remote.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_simple.tera[0m
+│   │   │   │   │   ├── [00mpackage_full_hash.tera[0m
+│   │   │   │   │   ├── [00mpackage_remote.tera[0m
+│   │   │   │   │   ├── [00mpackage_simple.tera[0m
+│   │   │   │   │   ├── [00mremote.tera[0m
+│   │   │   │   │   ├── [00msimple.tera[0m
+│   │   │   │   │   ├── [00munified_full_hash.tera[0m
+│   │   │   │   │   ├── [00munified_remote.tera[0m
+│   │   │   │   │   └── [00munified_simple.tera[0m
+│   │   │   │   └── [00mtemplate.rs[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mversion.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [01;34mgit[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00mdiff.rs[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mhook.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mmonorepo.rs[0m
+│   │   │   ├── [00moid.rs[0m
+│   │   │   ├── [00mrepository.rs[0m
+│   │   │   ├── [01;34mrev[0m
+│   │   │   │   ├── [00mcache.rs[0m
+│   │   │   │   ├── [00mfilters.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mrevspec.rs[0m
+│   │   │   │   └── [00mrevwalk.rs[0m
+│   │   │   ├── [00mstash.rs[0m
+│   │   │   ├── [00mstatus.rs[0m
+│   │   │   └── [00mtag.rs[0m
+│   │   ├── [01;34mhook[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mparser.rs[0m
+│   │   │   └── [00mversion_dsl.pest[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34mlog[0m
+│   │   │   ├── [00mfilter.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00moutput.rs[0m
+│   │   └── [01;34msettings[0m
+│   │       ├── [00merror.rs[0m
+│   │       └── [00mmod.rs[0m
+│   ├── [01;34mtests[0m
+│   │   ├── [01;34massets[0m
+│   │   │   ├── [00mcommit_message.txt[0m
+│   │   │   ├── [00mprivkey.key[0m
+│   │   │   ├── [00mpubkey.key[0m
+│   │   │   ├── [00msshkey[0m
+│   │   │   └── [00msshkey.pub[0m
+│   │   ├── [00mcmd_help.rs[0m
+│   │   ├── [01;34mcog_tests[0m
+│   │   │   ├── [00mbump.rs[0m
+│   │   │   ├── [00mchangelog.rs[0m
+│   │   │   ├── [00mcheck.rs[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00mget_version.rs[0m
+│   │   │   ├── [00minit.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mtemplate.md[0m
+│   │   │   └── [00mverify.rs[0m
+│   │   ├── [00mcommon.rs[0m
+│   │   ├── [00mhelpers.rs[0m
+│   │   └── [01;34mlib_tests[0m
+│   │       ├── [00mbump.rs[0m
+│   │       ├── [00mchangelog.rs[0m
+│   │       ├── [00mcocogitto.rs[0m
+│   │       ├── [00minit.rs[0m
+│   │       ├── [00mlog.rs[0m
+│   │       └── [00mmod.rs[0m
+│   └── [01;34mwebsite[0m
+│       ├── [01;34mci_cd[0m
+│       │   ├── [00maction.md[0m
+│       │   ├── [00mbot.md[0m
+│       │   ├── [00mcog-bot-ko.png[0m
+│       │   ├── [00mcog-bot-ok.png[0m
+│       │   └── [00mdocker.md[0m
+│       ├── [01;34mguide[0m
+│       │   ├── [00mbump.md[0m
+│       │   ├── [00mchangelog.md[0m
+│       │   ├── [00mcheck.md[0m
+│       │   ├── [00mcommit.md[0m
+│       │   ├── [00medit.md[0m
+│       │   ├── [00mgit_hooks.md[0m
+│       │   ├── [00minit.md[0m
+│       │   ├── [00mlog.md[0m
+│       │   ├── [00mmisc.md[0m
+│       │   ├── [00mmonorepo.md[0m
+│       │   ├── [00mrecipes.md[0m
+│       │   ├── [00mtag.md[0m
+│       │   └── [00mverify.md[0m
+│       ├── [00mindex.md[0m
+│       ├── [00mpackage-lock.json[0m
+│       ├── [00mpackage.json[0m
+│       ├── [01;34mpublic[0m
+│       │   ├── [00mcog-bot-example.png[0m
+│       │   ├── [00mcog-schema.json[0m
+│       │   ├── [00mfavicon.png[0m
+│       │   ├── [00mFiraCode-Medium.woff2[0m
+│       │   ├── [00mgithub-release-changelog.png[0m
+│       │   ├── [00mlogo_no_text.png[0m
+│       │   └── [00mlogo.png[0m
+│       └── [01;34mreference[0m
+│           ├── [01;32mconfig.md[0m
+│           └── [00mtemplate.md[0m
+├── [01;34mcocogitto-7.0.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [01;34mbin[0m
+│   │   │   ├── [01;34mcog[0m
+│   │   │   │   ├── [00mcommit.rs[0m
+│   │   │   │   ├── [00mmain.rs[0m
+│   │   │   │   └── [00mmangen.rs[0m
+│   │   │   └── [01;34mcog-doc[0m
+│   │   │       ├── [00mmain.rs[0m
+│   │   │       ├── [00mmarkdown.rs[0m
+│   │   │       └── [00mschema.rs[0m
+│   │   ├── [01;34mcommand[0m
+│   │   │   ├── [01;34mbump[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mmonorepo.rs[0m
+│   │   │   │   ├── [00mpackage.rs[0m
+│   │   │   │   ├── [00mprerelease.rs[0m
+│   │   │   │   └── [00mstandard.rs[0m
+│   │   │   ├── [00mchangelog.rs[0m
+│   │   │   ├── [00mcheck.rs[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00medit.rs[0m
+│   │   │   ├── [00mget_version.rs[0m
+│   │   │   ├── [00mgit_hooks.rs[0m
+│   │   │   ├── [00minit.rs[0m
+│   │   │   ├── [00mlog.rs[0m
+│   │   │   └── [00mmod.rs[0m
+│   │   ├── [01;34mconventional[0m
+│   │   │   ├── [00mbump.rs[0m
+│   │   │   ├── [01;34mchangelog[0m
+│   │   │   │   ├── [00mcontext.rs[0m
+│   │   │   │   ├── [00merror.rs[0m
+│   │   │   │   ├── [00mfilters.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mrelease.rs[0m
+│   │   │   │   ├── [00mserde.rs[0m
+│   │   │   │   ├── [01;34mtemplate[0m
+│   │   │   │   │   ├── [00mfull_hash.tera[0m
+│   │   │   │   │   ├── [01;34mmacro[0m
+│   │   │   │   │   │   └── [00mmacros.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_full_hash.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_remote.tera[0m
+│   │   │   │   │   ├── [00mmonorepo_simple.tera[0m
+│   │   │   │   │   ├── [00mpackage_full_hash.tera[0m
+│   │   │   │   │   ├── [00mpackage_remote.tera[0m
+│   │   │   │   │   ├── [00mpackage_simple.tera[0m
+│   │   │   │   │   ├── [00mremote.tera[0m
+│   │   │   │   │   ├── [00msimple.tera[0m
+│   │   │   │   │   ├── [00munified_full_hash.tera[0m
+│   │   │   │   │   ├── [00munified_remote.tera[0m
+│   │   │   │   │   └── [00munified_simple.tera[0m
+│   │   │   │   ├── [00mtemplate.rs[0m
+│   │   │   │   └── [01;34mtests[0m
+│   │   │   │       ├── [00mfixtures.rs[0m
+│   │   │   │       └── [00mmod.rs[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00mversion.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [01;34mgit[0m
+│   │   │   ├── [00mcommit.rs[0m
+│   │   │   ├── [00mdiff.rs[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mhook.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mmonorepo.rs[0m
+│   │   │   ├── [00moid.rs[0m
+│   │   │   ├── [00mrepository.rs[0m
+│   │   │   ├── [01;34mrev[0m
+│   │   │   │   ├── [00mcache.rs[0m
+│   │   │   │   ├── [00mfilters.rs[0m
+│   │   │   │   ├── [00mmod.rs[0m
+│   │   │   │   ├── [00mrevspec.rs[0m
+│   │   │   │   └── [00mrevwalk.rs[0m
+│   │   │   ├── [00mstash.rs[0m
+│   │   │   ├── [00mstatus.rs[0m
+│   │   │   └── [00mtag.rs[0m
+│   │   ├── [01;34mhook[0m
+│   │   │   ├── [00merror.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   ├── [00mparser.rs[0m
+│   │   │   └── [00mversion_dsl.pest[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34mlog[0m
+│   │   │   ├── [00mfilter.rs[0m
+│   │   │   ├── [00mmod.rs[0m
+│   │   │   └── [00moutput.rs[0m
+│   │   └── [01;34msettings[0m
+│   │       ├── [00merror.rs[0m
+│   │       └── [00mmod.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34massets[0m
+│       │   ├── [00mcommit_message.txt[0m
+│       │   ├── [00mprivkey.key[0m
+│       │   ├── [00mpubkey.key[0m
+│       │   ├── [00msshkey[0m
+│       │   └── [00msshkey.pub[0m
+│       ├── [00mcmd_help.rs[0m
+│       ├── [01;34mcog_tests[0m
+│       │   ├── [00mbump.rs[0m
+│       │   ├── [00mchangelog.rs[0m
+│       │   ├── [00mcheck.rs[0m
+│       │   ├── [00mcommit.rs[0m
+│       │   ├── [00mget_version.rs[0m
+│       │   ├── [00minit.rs[0m
+│       │   ├── [00mmod.rs[0m
+│       │   ├── [00mresolver_integration_test.rs[0m
+│       │   ├── [00mtemplate.md[0m
+│       │   └── [00mverify.rs[0m
+│       ├── [00mcommon.rs[0m
+│       ├── [00mhelpers.rs[0m
+│       └── [01;34mlib_tests[0m
+│           ├── [00mbump.rs[0m
+│           ├── [00mchangelog.rs[0m
+│           ├── [00mcocogitto.rs[0m
+│           ├── [00minit.rs[0m
+│           ├── [00mlog.rs[0m
+│           └── [00mmod.rs[0m
+├── [01;34mcocogitto-dependency-resolver-0.1.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexample[0m
+│   │   └── [00mmaven.rs[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [01;34mresolvers[0m
+│   │       ├── [00mcargo.rs[0m
+│   │       ├── [00mmaven.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       └── [00mnpm.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34mlang[0m
+│       │   ├── [01;34mmaven_modules[0m
+│       │   │   ├── [01;34mpackage-a[0m
+│       │   │   │   ├── [00mpom.xml[0m
+│       │   │   │   ├── [01;34msrc[0m
+│       │   │   │   │   └── [01;34mmain[0m
+│       │   │   │   │       └── [01;34mjava[0m
+│       │   │   │   │           └── [01;34mcom[0m
+│       │   │   │   │               └── [01;34mexample[0m
+│       │   │   │   │                   └── [01;34mpackage-a[0m
+│       │   │   │   │                       └── [00mMain.java[0m
+│       │   │   │   └── [01;34mtarget[0m
+│       │   │   │       ├── [01;34mclasses[0m
+│       │   │   │       │   └── [00mMain.class[0m
+│       │   │   │       ├── [01;34mmaven-archiver[0m
+│       │   │   │       │   └── [00mpom.properties[0m
+│       │   │   │       ├── [01;34mmaven-status[0m
+│       │   │   │       │   └── [01;34mmaven-compiler-plugin[0m
+│       │   │   │       │       └── [01;34mcompile[0m
+│       │   │   │       │           └── [01;34mdefault-compile[0m
+│       │   │   │       │               ├── [00mcreatedFiles.lst[0m
+│       │   │   │       │               └── [00minputFiles.lst[0m
+│       │   │   │       └── [00mpackage-a-1.0.0.jar[0m
+│       │   │   ├── [01;34mpackage-b[0m
+│       │   │   │   ├── [00mpom.xml[0m
+│       │   │   │   ├── [01;34msrc[0m
+│       │   │   │   │   └── [01;34mmain[0m
+│       │   │   │   │       └── [01;34mjava[0m
+│       │   │   │   │           └── [01;34mcom[0m
+│       │   │   │   │               └── [01;34mexample[0m
+│       │   │   │   │                   └── [01;34mB[0m
+│       │   │   │   │                       └── [00mB.java[0m
+│       │   │   │   └── [01;34mtarget[0m
+│       │   │   │       ├── [01;34mclasses[0m
+│       │   │   │       │   └── [01;34mcom[0m
+│       │   │   │       │       └── [01;34mexample[0m
+│       │   │   │       │           └── [01;34mB[0m
+│       │   │   │       │               └── [00mB.class[0m
+│       │   │   │       ├── [01;34mmaven-archiver[0m
+│       │   │   │       │   └── [00mpom.properties[0m
+│       │   │   │       ├── [01;34mmaven-status[0m
+│       │   │   │       │   └── [01;34mmaven-compiler-plugin[0m
+│       │   │   │       │       └── [01;34mcompile[0m
+│       │   │   │       │           └── [01;34mdefault-compile[0m
+│       │   │   │       │               ├── [00mcreatedFiles.lst[0m
+│       │   │   │       │               └── [00minputFiles.lst[0m
+│       │   │   │       └── [00mpackage-b-1.0.0.jar[0m
+│       │   │   ├── [01;34mpackage-c[0m
+│       │   │   │   ├── [00mpom.xml[0m
+│       │   │   │   ├── [01;34msrc[0m
+│       │   │   │   │   └── [01;34mmain[0m
+│       │   │   │   │       └── [01;34mjava[0m
+│       │   │   │   │           └── [01;34mcom[0m
+│       │   │   │   │               └── [01;34mexample[0m
+│       │   │   │   │                   └── [01;34mC[0m
+│       │   │   │   │                       └── [00mC.java[0m
+│       │   │   │   └── [01;34mtarget[0m
+│       │   │   │       ├── [01;34mclasses[0m
+│       │   │   │       │   └── [01;34mcom[0m
+│       │   │   │       │       └── [01;34mexample[0m
+│       │   │   │       │           └── [01;34mC[0m
+│       │   │   │       │               └── [00mC.class[0m
+│       │   │   │       ├── [01;34mmaven-archiver[0m
+│       │   │   │       │   └── [00mpom.properties[0m
+│       │   │   │       ├── [01;34mmaven-status[0m
+│       │   │   │       │   └── [01;34mmaven-compiler-plugin[0m
+│       │   │   │       │       └── [01;34mcompile[0m
+│       │   │   │       │           └── [01;34mdefault-compile[0m
+│       │   │   │       │               ├── [00mcreatedFiles.lst[0m
+│       │   │   │       │               └── [00minputFiles.lst[0m
+│       │   │   │       └── [00mpackage-c-1.0.0.jar[0m
+│       │   │   ├── [01;34mpackage-d[0m
+│       │   │   │   ├── [00mpom.xml[0m
+│       │   │   │   ├── [01;34msrc[0m
+│       │   │   │   │   └── [01;34mmain[0m
+│       │   │   │   │       └── [01;34mjava[0m
+│       │   │   │   │           └── [01;34mcom[0m
+│       │   │   │   │               └── [01;34mexample[0m
+│       │   │   │   │                   └── [01;34mD[0m
+│       │   │   │   │                       └── [00mD.java[0m
+│       │   │   │   └── [01;34mtarget[0m
+│       │   │   │       ├── [01;34mclasses[0m
+│       │   │   │       │   └── [01;34mcom[0m
+│       │   │   │       │       └── [01;34mexample[0m
+│       │   │   │       │           └── [01;34mD[0m
+│       │   │   │       │               └── [00mD.class[0m
+│       │   │   │       ├── [01;34mmaven-archiver[0m
+│       │   │   │       │   └── [00mpom.properties[0m
+│       │   │   │       ├── [01;34mmaven-status[0m
+│       │   │   │       │   └── [01;34mmaven-compiler-plugin[0m
+│       │   │   │       │       └── [01;34mcompile[0m
+│       │   │   │       │           └── [01;34mdefault-compile[0m
+│       │   │   │       │               ├── [00mcreatedFiles.lst[0m
+│       │   │   │       │               └── [00minputFiles.lst[0m
+│       │   │   │       └── [00mpackage-d-1.0.0.jar[0m
+│       │   │   ├── [01;34mpackage-e[0m
+│       │   │   │   ├── [00mpom.xml[0m
+│       │   │   │   ├── [01;34msrc[0m
+│       │   │   │   │   └── [01;34mmain[0m
+│       │   │   │   │       └── [01;34mjava[0m
+│       │   │   │   │           └── [01;34mcom[0m
+│       │   │   │   │               └── [01;34mexample[0m
+│       │   │   │   │                   └── [01;34mE[0m
+│       │   │   │   │                       └── [00mE.java[0m
+│       │   │   │   └── [01;34mtarget[0m
+│       │   │   │       ├── [01;34mclasses[0m
+│       │   │   │       │   └── [01;34mcom[0m
+│       │   │   │       │       └── [01;34mexample[0m
+│       │   │   │       │           └── [01;34mE[0m
+│       │   │   │       │               └── [00mE.class[0m
+│       │   │   │       ├── [01;34mmaven-archiver[0m
+│       │   │   │       │   └── [00mpom.properties[0m
+│       │   │   │       ├── [01;34mmaven-status[0m
+│       │   │   │       │   └── [01;34mmaven-compiler-plugin[0m
+│       │   │   │       │       └── [01;34mcompile[0m
+│       │   │   │       │           └── [01;34mdefault-compile[0m
+│       │   │   │       │               ├── [00mcreatedFiles.lst[0m
+│       │   │   │       │               └── [00minputFiles.lst[0m
+│       │   │   │       └── [00mpackage-e-1.0.0.jar[0m
+│       │   │   └── [00mpom.xml[0m
+│       │   └── [01;34mnpm_workspace[0m
+│       │       ├── [01;34mpackage-a[0m
+│       │       │   └── [00mpackage.json[0m
+│       │       ├── [01;34mpackage-b[0m
+│       │       │   └── [00mpackage.json[0m
+│       │       ├── [01;34mpackage-c[0m
+│       │       │   └── [00mpackage.json[0m
+│       │       ├── [01;34mpackage-d[0m
+│       │       │   └── [00mpackage.json[0m
+│       │       ├── [01;34mpackage-e[0m
+│       │       │   └── [00mpackage.json[0m
+│       │       └── [00mpackage.json[0m
+│       └── [00mresolver_tests.rs[0m
+├── [01;34mcodespan-reporting-0.13.1[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mcustom_files.rs[0m
+│   │   ├── [00mpeg_calculator.rs[0m
+│   │   ├── [00mreadme_preview.rs[0m
+│   │   ├── [00mreusable_diagnostic.rs[0m
+│   │   └── [00mterm.rs[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mdiagnostic.rs[0m
+│   │   ├── [00mfiles.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   └── [01;34mterm[0m
+│   │       ├── [00mconfig.rs[0m
+│   │       ├── [00mmod.rs[0m
+│   │       ├── [00mrenderer.rs[0m
+│   │       └── [00mviews.rs[0m
+│   └── [01;34mtests[0m
+│       ├── [01;34msnapshots[0m
+│       │   ├── [00mterm__empty__medium_color.snap[0m
+│       │   ├── [00mterm__empty__medium_no_color.snap[0m
+│       │   ├── [00mterm__empty__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__empty__rich_color.snap[0m
+│       │   ├── [00mterm__empty__rich_no_color.snap[0m
+│       │   ├── [00mterm__empty__short_color.snap[0m
+│       │   ├── [00mterm__empty__short_no_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__medium_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__medium_no_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__rich_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__rich_no_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__short_color.snap[0m
+│       │   ├── [00mterm__empty_ranges__short_no_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__medium_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__medium_no_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__rich_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__rich_no_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__short_color.snap[0m
+│       │   ├── [00mterm__fizz_buzz__short_no_color.snap[0m
+│       │   ├── [00mterm__message__medium_color.snap[0m
+│       │   ├── [00mterm__message__medium_no_color.snap[0m
+│       │   ├── [00mterm__message__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__message__rich_color.snap[0m
+│       │   ├── [00mterm__message__rich_no_color.snap[0m
+│       │   ├── [00mterm__message__short_color.snap[0m
+│       │   ├── [00mterm__message__short_no_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__medium_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__medium_no_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__rich_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__rich_no_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__short_color.snap[0m
+│       │   ├── [00mterm__message_and_notes__short_no_color.snap[0m
+│       │   ├── [00mterm__message_errorcode__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__message_errorcode__rich_no_color.snap[0m
+│       │   ├── [00mterm__message_errorcode__short_no_color.snap[0m
+│       │   ├── [00mterm__multifile__medium_color.snap[0m
+│       │   ├── [00mterm__multifile__medium_no_color.snap[0m
+│       │   ├── [00mterm__multifile__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__multifile__rich_color.snap[0m
+│       │   ├── [00mterm__multifile__rich_no_color.snap[0m
+│       │   ├── [00mterm__multifile__short_color.snap[0m
+│       │   ├── [00mterm__multifile__short_no_color.snap[0m
+│       │   ├── [00mterm__multiline_omit__rich_no_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__medium_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__medium_no_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__rich_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__rich_no_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__short_color.snap[0m
+│       │   ├── [00mterm__multiline_overlapping__short_no_color.snap[0m
+│       │   ├── [00mterm__overlapping__medium_color.snap[0m
+│       │   ├── [00mterm__overlapping__medium_no_color.snap[0m
+│       │   ├── [00mterm__overlapping__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__overlapping__rich_color.snap[0m
+│       │   ├── [00mterm__overlapping__rich_no_color.snap[0m
+│       │   ├── [00mterm__overlapping__short_color.snap[0m
+│       │   ├── [00mterm__overlapping__short_no_color.snap[0m
+│       │   ├── [00mterm__position_indicator__medium_no_color.snap[0m
+│       │   ├── [00mterm__position_indicator__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__position_indicator__rich_no_color.snap[0m
+│       │   ├── [00mterm__position_indicator__short_no_color.snap[0m
+│       │   ├── [00mterm__same_line__medium_color.snap[0m
+│       │   ├── [00mterm__same_line__medium_no_color.snap[0m
+│       │   ├── [00mterm__same_line__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__same_line__rich_color.snap[0m
+│       │   ├── [00mterm__same_line__rich_no_color.snap[0m
+│       │   ├── [00mterm__same_line__short_color.snap[0m
+│       │   ├── [00mterm__same_line__short_no_color.snap[0m
+│       │   ├── [00mterm__same_ranges__medium_color.snap[0m
+│       │   ├── [00mterm__same_ranges__medium_no_color.snap[0m
+│       │   ├── [00mterm__same_ranges__rich_ascii_no_color.snap[0m
+│       │   ├── [00mterm__same_ranges__rich_color.snap[0m
+│       │   ├── [00mterm__same_ranges__rich_no_color.snap[0m
+│       │   ├── [00mterm__same_ranges__short_color.snap[0m
+│       │   ├── [00mterm__same_ranges__short_no_color.snap[0m
+│       │   ├── [00mterm__surrounding_lines__rich_no_color.snap[0m
+│       │   ├── [00mterm__tab_columns__tab_width_2_no_color.snap[0m
+│       │   ├── [00mterm__tab_columns__tab_width_3_no_color.snap[0m
+│       │   ├── [00mterm__tab_columns__tab_width_6_no_color.snap[0m
+│       │   ├── [00mterm__tab_columns__tab_width_default_no_color.snap[0m
+│       │   ├── [00mterm__tabbed__tab_width_3_no_color.snap[0m
+│       │   ├── [00mterm__tabbed__tab_width_6_no_color.snap[0m
+│       │   ├── [00mterm__tabbed__tab_width_default_no_color.snap[0m
+│       │   ├── [00mterm__unicode__medium_no_color.snap[0m
+│       │   ├── [00mterm__unicode__rich_no_color.snap[0m
+│       │   ├── [00mterm__unicode__short_no_color.snap[0m
+│       │   ├── [00mterm__unicode_spans__medium_no_color.snap[0m
+│       │   ├── [00mterm__unicode_spans__rich_no_color.snap[0m
+│       │   └── [00mterm__unicode_spans__short_no_color.snap[0m
+│       ├── [01;34msupport[0m
+│       │   ├── [00mcolor_buffer.rs[0m
+│       │   └── [00mmod.rs[0m
+│       └── [00mterm.rs[0m
+├── [01;34mcolorchoice-1.0.4[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mLICENSE-APACHE[0m
+│   ├── [00mLICENSE-MIT[0m
+│   ├── [00mREADME.md[0m
+│   └── [01;34msrc[0m
+│       └── [00mlib.rs[0m
+├── [01;34mcolored-2.2.0[0m
+│   ├── [00mCargo.lock[0m
+│   ├── [00mCargo.toml[0m
+│   ├── [00mCargo.toml.orig[0m
+│   ├── [00mCHANGELOG.md[0m
+│   ├── [00mDockerfile[0m
+│   ├── [01;34mexamples[0m
+│   │   ├── [00mas_error.rs[0m
+│   │   ├── [00mcontrol.rs[0m
+│   │   ├── [00mcustom_colors.rs[0m
+│   │   ├── [00mdynamic_colors.rs[0m
+│   │   ├── [00mmost_simple.rs[0m
+│   │   └── [00mnested_colors.rs[0m
+│   ├── [00mLICENSE[0m
+│   ├── [00mREADME.md[0m
+│   ├── [01;34msrc[0m
+│   │   ├── [00mcolor.rs[0m
+│   │   ├── [00mcontrol.rs[0m
+│   │   ├── [00mcustomcolors.rs[0m
+│   │   ├── [00merror.rs[0m
+│   │   ├── [00mformatters.rs[0m
+│   │   ├── [00mlib.rs[0m
+│   │   ├── [01;34msnapshots[0m
