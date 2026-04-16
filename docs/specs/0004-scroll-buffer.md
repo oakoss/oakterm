@@ -161,8 +161,9 @@ config.scrollback_archive = true
 -- Per-surface disk archive limit. Default: 1 GB.
 config.scrollback_archive_limit = "1GB"
 
--- Capture alternate screen lines to primary scrollback. Default: true.
-config.save_alternate_scrollback = true
+-- Capture alternate screen lines to primary scrollback. Default: false.
+-- Opt in for the iTerm2-style CLI-agent workflow; see ADR-0006.
+config.save_alternate_scrollback = false
 ```
 
 **Size parsing:** Values like `50MB`, `1GB` are parsed as byte counts. Accepted suffixes: `KB` (1024), `MB` (1024²), `GB` (1024³). No suffix = raw bytes.

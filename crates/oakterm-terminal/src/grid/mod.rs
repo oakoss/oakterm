@@ -269,8 +269,10 @@ pub struct ScreenSet {
     /// Lazily allocated on first DECSET 1049.
     alternate: Option<Grid>,
     scrollback: HotBuffer,
-    /// When true (default), rows scrolling off the alternate screen top
-    /// go to the primary scrollback buffer.
+    /// When true, rows scrolling off the alternate screen top go to the
+    /// primary scrollback buffer. Off by default (matches xterm/alacritty/
+    /// kitty/wezterm/ghostty); opt in via config for the iTerm2-style
+    /// CLI-agent workflow per ADR-0006.
     save_alternate_scrollback: bool,
     /// Cold disk archive for rows pruned from the hot buffer.
     archive: Option<crate::scroll::archive_manager::ArchiveManager>,

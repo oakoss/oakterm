@@ -69,7 +69,7 @@ No pruning, grow forever.
 
 ## Decision
 
-**Option B — two-tier buffer with disk archive, plus alternate screen scrollback capture.**
+**Option B — two-tier buffer with disk archive, plus opt-in alternate screen scrollback capture.**
 
 ### Buffer Architecture
 
@@ -82,11 +82,11 @@ The transition from hot to cold is invisible to the user — no visual stutter w
 
 ### Alternate Screen Capture
 
-Lines that scroll off the top of the alternate screen viewport are appended to the primary scrollback (iTerm2 model). This is on by default. Works with every CLI agent today without agent-side changes.
+The infrastructure exists to append alt-screen scroll-off into primary scrollback (iTerm2 model), exposed via `save_alternate_scrollback`. The default ships **off** to match xterm/alacritty/kitty/wezterm/ghostty — opting in causes full-screen TUIs like nvim to pollute the shell history with alternating stripes of repaint frames. Users who want the iTerm2 behavior for CLI-agent workflows can enable it in config.
 
 Future layers designed into the architecture but implemented later:
 
-- **Shadow buffer transcript** — a parallel VT emulator that processes all alternate screen bytes and produces a scrollable transcript.
+- **Shadow buffer transcript** — a parallel VT emulator that processes all alternate screen bytes and produces a scrollable transcript. This becomes the recommended path for agent history once built; doesn't depend on `save_alternate_scrollback`.
 - **Agent push API** — `oakterm ctl` lets agents push structured content directly to the terminal's history.
 
 ### Byte-Based Limits
@@ -95,12 +95,12 @@ Limits are byte-based, not line-count-based. A line at 200 columns costs 2.5x wh
 
 ### User-Facing Configuration
 
-| Option                      | Default  | Description                                           |
-| --------------------------- | -------- | ----------------------------------------------------- |
-| `scrollback_limit`          | `"50MB"` | Hot buffer size per surface. Byte-based.              |
-| `scrollback_archive`        | `true`   | Enable disk-backed cold archive.                      |
-| `scrollback_archive_limit`  | `"1GB"`  | Per-surface disk archive limit.                       |
-| `save_alternate_scrollback` | `true`   | Capture alternate screen lines to primary scrollback. |
+| Option                      | Default  | Description                                                                                                                                                                                                                          |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scrollback_limit`          | `"50MB"` | Hot buffer size per surface. Byte-based.                                                                                                                                                                                             |
+| `scrollback_archive`        | `true`   | Enable disk-backed cold archive.                                                                                                                                                                                                     |
+| `scrollback_archive_limit`  | `"1GB"`  | Per-surface disk archive limit.                                                                                                                                                                                                      |
+| `save_alternate_scrollback` | `false`  | Capture alternate screen lines to primary scrollback. Off by default (matches xterm/alacritty/kitty/wezterm/ghostty); enabling this causes nvim and similar full-screen TUIs to pollute the shell history with their repaint frames. |
 
 ### Internal Defaults (Not User-Configurable)
 
@@ -162,3 +162,11 @@ The original decision required "memory returned to OS on pruning." During Spec-0
 - [VTE scrollback disk security disclosure (2012)](https://seclists.org/fulldisclosure/2012/Mar/32)
 - [iTerm2 alternate screen scrollback](https://iterm2.com/documentation-preferences-profiles-terminal.html)
 - [Zstd benchmarks](https://facebook.github.io/zstd/)
+
+## Revisions
+
+### 2026-04-15 — `save_alternate_scrollback` default flipped to `false` (TREK-136)
+
+The original decision shipped capture-on-by-default per the iTerm2 model. In practice, full-screen TUIs like nvim repaint the alt screen frequently; with capture on, those repaint frames scrolled off into primary scrollback and produced alternating-stripe pollution of the shell history. Implemented in `bf7b704`; doc alignment in `72eb9fa` and `3789f9f`.
+
+The infrastructure is unchanged — `save_alternate_scrollback` remains a config option. Only the default flipped, matching xterm/alacritty/kitty/wezterm/ghostty. Users who want the iTerm2 behavior for CLI-agent workflows can opt back in.

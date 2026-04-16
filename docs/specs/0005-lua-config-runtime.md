@@ -148,7 +148,7 @@ oakterm.config.cursor_blink = true
 oakterm.config.scrollback_limit = "50MB"
 oakterm.config.scrollback_archive = true
 oakterm.config.scrollback_archive_limit = "1GB"
-oakterm.config.save_alternate_scrollback = true
+oakterm.config.save_alternate_scrollback = false  -- ADR-0006: default off; opt in for CLI-agent workflows
 oakterm.config.daemon_persist = false
 oakterm.config.check_for_updates = "off"
 oakterm.config.padding = { top = 8, bottom = 8, left = 12, right = 12 }
