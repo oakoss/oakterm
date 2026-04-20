@@ -1,9 +1,9 @@
 [tools]
 rust = "stable"
 node = "25.9.0"
-"npm:prettier" = "3.8.2"
+"npm:prettier" = "3.8.3"
 "npm:markdownlint-cli2" = "0.22.0"
-lefthook = "2.1.5"
+lefthook = "2.1.6"
 "cargo:cocogitto" = "7"
 
 [tasks.fmt]
