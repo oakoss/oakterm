@@ -1,7 +1,7 @@
 ---
 spec: '0007'
 title: Pane Tree & Layout
-status: draft
+status: accepted
 date: 2026-04-02
 adrs: ['0010']
 tags: [core]

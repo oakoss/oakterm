@@ -1,7 +1,7 @@
 ---
 spec: '0009'
 title: Command Palette & Status Bar
-status: draft
+status: accepted
 date: 2026-04-02
 adrs: ['0011']
 tags: [core]

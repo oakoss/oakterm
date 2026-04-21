@@ -2,7 +2,7 @@
 
 A GPU-accelerated, extensible terminal emulator with a plugin-driven process dashboard and context-aware shell.
 
-> **Status: Idea Phase** — Collecting and refining ideas before any implementation. Name is a placeholder.
+> **Status: Active Implementation** — Phase 0 terminal foundation is implemented; the next roadmap focus is Phase 1 multiplexer work.
 
 ## Philosophy
 

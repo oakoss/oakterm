@@ -1,7 +1,7 @@
 ---
 spec: '0008'
 title: Copy Mode
-status: draft
+status: accepted
 date: 2026-04-02
 adrs: ['0012', '0011']
 tags: [core]

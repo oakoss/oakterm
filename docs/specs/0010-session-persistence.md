@@ -1,7 +1,7 @@
 ---
 spec: '0010'
 title: Session Persistence
-status: draft
+status: accepted
 date: 2026-04-02
 adrs: ['0010']
 tags: [core]
