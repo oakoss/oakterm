@@ -8,8 +8,8 @@ use oakterm_protocol::input::Resize;
 use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
     HandshakeStatus, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE,
-    MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_SERVER_HELLO,
-    ServerHello,
+    MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
+    MSG_SERVER_HELLO, PaneExited, ServerHello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -255,6 +255,98 @@ async fn close_pane_kills_idle_child_promptly() {
     );
 }
 
+#[tokio::test]
+async fn pane_exited_reports_non_zero_child_status() {
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    let create = CreatePane {
+        command: "/bin/sh -c \"exit 7\"".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        300,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 300).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    let frame = read_push_with_msg_type(&mut stream, &mut codec, MSG_PANE_EXITED).await;
+    let exited = PaneExited::decode(&frame.payload).expect("decode PaneExited");
+    assert_eq!(exited.pane_id, pane_id);
+    assert_eq!(exited.exit_code, 7);
+}
+
+#[tokio::test]
+async fn pane_exited_reports_signal_killed_child() {
+    use rustix::process::{Pid, Signal, kill_process};
+
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    // Long sleep so the child only exits via the SIGTERM we send.
+    let create = CreatePane {
+        command: "/bin/sh -c \"sleep 30\"".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        310,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 310).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    // Wait for the daemon to fork+exec, then signal the child directly so the
+    // PTY EOFs and pty_read_loop captures status via wait().
+    let pid = poll_for_pid(&mut stream, &mut codec, pane_id).await;
+    #[allow(clippy::cast_possible_wrap)] // PID fits in i32
+    let raw_pid = pid as i32;
+    let target = Pid::from_raw(raw_pid).expect("non-zero PID");
+    kill_process(target, Signal::TERM).expect("SIGTERM child");
+
+    let frame = read_push_with_msg_type(&mut stream, &mut codec, MSG_PANE_EXITED).await;
+    let exited = PaneExited::decode(&frame.payload).expect("decode PaneExited");
+    assert_eq!(exited.pane_id, pane_id);
+    // POSIX shell convention: signal-killed children report 128 + signal.
+    assert_eq!(exited.exit_code, 128 + 15);
+}
+
 /// Connect + handshake with a chosen client type. Control clients don't
 /// receive render-update pushes, which keeps the response stream clean.
 async fn connect_and_handshake_as(client_type: ClientType) -> (UnixStream, FrameCodec, TestDaemon) {
@@ -313,6 +405,32 @@ async fn read_response_with_serial(
         assert!(
             result > 0,
             "daemon closed connection while waiting for serial {serial}"
+        );
+    }
+}
+
+/// Read pushes until one matches `msg_type`, ignoring request/response frames.
+async fn read_push_with_msg_type(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    msg_type: u16,
+) -> Frame {
+    let mut buf = BytesMut::with_capacity(4096);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Some(frame) = codec.decode(&mut buf).expect("decode") {
+            if frame.serial == 0 && frame.msg_type == msg_type {
+                return frame;
+            }
+        }
+        let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        let result = tokio::time::timeout(timeout, stream.read_buf(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for push type {msg_type:#x}"))
+            .unwrap_or_else(|e| panic!("read error waiting for push type {msg_type:#x}: {e}"));
+        assert!(
+            result > 0,
+            "daemon closed connection while waiting for push type {msg_type:#x}"
         );
     }
 }

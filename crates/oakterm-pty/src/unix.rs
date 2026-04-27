@@ -9,13 +9,14 @@ use std::ffi::CStr;
 use std::io;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use tracing::warn;
 
 /// A pseudoterminal with a master fd and child process.
 pub struct Pty {
     master: OwnedFd,
     child: Child,
+    reaped: bool,
 }
 
 impl Pty {
@@ -32,7 +33,11 @@ impl Pty {
 
         let child = spawn_child(spec, slave)?;
 
-        Ok(Self { master, child })
+        Ok(Self {
+            master,
+            child,
+            reaped: false,
+        })
     }
 
     /// Borrow the master fd for async I/O wrapping.
@@ -66,11 +71,6 @@ impl Pty {
         set_winsize(&self.master, size)
     }
 
-    /// Access the child process.
-    pub fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
-    }
-
     /// Get the child's PID.
     ///
     /// After the child exits, this PID may be recycled by the OS.
@@ -78,12 +78,53 @@ impl Pty {
     pub fn child_pid(&self) -> u32 {
         self.child.id()
     }
+
+    /// Wait for the child process to exit and return its status.
+    ///
+    /// # Errors
+    /// Returns the underlying I/O error from `waitpid(2)`; typically only
+    /// fails if the child was already reaped out-of-band.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        let status = self.child.wait()?;
+        self.reaped = true;
+        Ok(status)
+    }
+
+    /// Poll the child process without blocking.
+    ///
+    /// # Errors
+    /// Returns the underlying I/O error from `waitpid(2)`.
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.reaped = true;
+        }
+        Ok(status)
+    }
+
+    /// Send SIGKILL to the child. Idempotent: errors when the child is
+    /// already gone are intentionally swallowed.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
+
+    /// True if the child has been reaped via `wait()` / `try_wait()`.
+    #[must_use]
+    pub fn is_reaped(&self) -> bool {
+        self.reaped
+    }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
+        // Already reaped via wait()/try_wait(): nothing left for Drop to do.
+        if self.reaped {
+            return;
+        }
+
         // Closing the master fd (which happens after this Drop runs)
-        // sends SIGHUP to the child. Kill + wait ensures no zombies.
+        // sends SIGHUP to the child. Kill + wait ensures no zombies even if
+        // SIGHUP is ignored.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

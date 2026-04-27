@@ -355,7 +355,7 @@ impl Drop for Daemon {
 /// and reaps the child. `cancel_rx` is the prompt-shutdown path for idle
 /// shells that would otherwise leave the loop blocked on `readable()`.
 async fn pty_read_loop(
-    pty: oakterm_pty::Pty,
+    mut pty: oakterm_pty::Pty,
     panes: Arc<Mutex<PaneManager>>,
     pane_id: u32,
     dirty_tx: watch::Sender<u64>,
@@ -439,29 +439,113 @@ async fn pty_read_loop(
         }
     };
 
-    let exit_code = 0;
-    info!(pid, pane_id, exit_reason, exit_code, "PTY read loop ended");
-    let mut pm = panes.lock().await;
-    if let Some(pane) = pm.get_mut(pane_id) {
-        pane.pty_state = PtyState::Exited { exit_code };
-    } else if exit_reason == "cancelled" {
-        // Expected on every successful ClosePane: the handler removes the
-        // pane from PaneManager *before* signalling cancel, so by the time
-        // the loop wakes and reaches this cleanup, get_mut returns None.
-        debug!(
-            pane_id,
-            "PTY read loop exited via cancel; pane already removed"
-        );
-    } else {
-        warn!(
-            pane_id,
-            exit_code, exit_reason, "PTY exited but pane already removed"
-        );
-    }
-    drop(pm);
+    let exit_code = capture_exit_code(&mut pty, pane_id, exit_reason);
+    info!(pid, pane_id, exit_reason, ?exit_code, "PTY read loop ended");
+    record_pane_exit(&panes, pane_id, exit_reason, exit_code).await;
 
     // Bump dirty so clients wake and detect the Exited state.
     let _ = dirty_tx.send(u64::MAX);
+}
+
+/// Capture the child's exit code based on how the read loop exited.
+///
+/// `try_wait()` first: a child that already exited (the common case for
+/// EOF on a foreground command) reports its status without blocking. If
+/// the child is still alive — e.g. a daemonized subprocess that closed
+/// its stdio but kept running, or an I/O error while the child is
+/// mid-write — send SIGKILL and then `wait()`. The kill bounds the wait
+/// to the kernel's reap latency, preventing the read task from hanging
+/// indefinitely. `cancelled` and `pane removed` skip waiting entirely;
+/// the caller that signalled them owns teardown via `Pty::Drop`.
+fn capture_exit_code(pty: &mut oakterm_pty::Pty, pane_id: u32, exit_reason: &str) -> Option<i32> {
+    match exit_reason {
+        "EOF" | "read error" | "readable poll failed" => {
+            if let Some(code) = child_try_exit_code(pty, pane_id) {
+                return Some(code);
+            }
+            pty.kill();
+            child_exit_code(pty, pane_id)
+        }
+        _ => None,
+    }
+}
+
+async fn record_pane_exit(
+    panes: &Arc<Mutex<PaneManager>>,
+    pane_id: u32,
+    exit_reason: &str,
+    exit_code: Option<i32>,
+) {
+    let mut pm = panes.lock().await;
+    match (pm.get_mut(pane_id), exit_code) {
+        (Some(pane), Some(code)) => {
+            pane.pty_state = PtyState::Exited { exit_code: code };
+        }
+        (Some(pane), None) => {
+            // Reader is gone but we never got a child status. Synthesize an
+            // exit so clients aren't stuck waiting on PaneExited; -1 is
+            // outside the 0-255 / 128+signal ranges produced by
+            // exit_status_code, so it's distinguishable in logs.
+            warn!(
+                pane_id,
+                exit_reason, "PTY read loop ended without child exit status"
+            );
+            pane.pty_state = PtyState::Exited { exit_code: -1 };
+        }
+        (None, _) if exit_reason == "cancelled" || exit_reason == "pane removed" => {
+            // Expected on ClosePane and on internal pane removal: the
+            // handler removes the pane from PaneManager *before* signalling
+            // cancel, so by the time we reach this cleanup, get_mut is None.
+            debug!(
+                pane_id,
+                exit_reason, "PTY read loop ended; pane already removed"
+            );
+        }
+        (None, Some(code)) => {
+            warn!(
+                pane_id,
+                exit_code = code,
+                exit_reason,
+                "PTY exited but pane already removed"
+            );
+        }
+        (None, None) => {
+            warn!(
+                pane_id,
+                exit_reason, "PTY read loop ended; pane already removed and no exit status"
+            );
+        }
+    }
+}
+
+fn child_exit_code(pty: &mut oakterm_pty::Pty, pane_id: u32) -> Option<i32> {
+    match pty.wait() {
+        Ok(status) => Some(exit_status_code(status)),
+        Err(e) => {
+            warn!(pane_id, error = %e, "failed to wait for PTY child exit status");
+            None
+        }
+    }
+}
+
+fn child_try_exit_code(pty: &mut oakterm_pty::Pty, pane_id: u32) -> Option<i32> {
+    match pty.try_wait() {
+        Ok(Some(status)) => Some(exit_status_code(status)),
+        Ok(None) => None,
+        Err(e) => {
+            warn!(pane_id, error = %e, "failed to poll PTY child exit status");
+            None
+        }
+    }
+}
+
+fn exit_status_code(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1)
 }
 
 /// Handle a single client connection.
