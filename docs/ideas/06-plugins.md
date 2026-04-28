@@ -65,9 +65,12 @@ This is the primitive that enables a browser plugin, a markdown previewer, an im
 
 ### Context Engine
 
-- Register completion providers (per command + argument position)
-- Register project type detectors
-- Register proactive suggestion triggers
+- `context.signature(command, signature)` — register a command signature (declarative schema for positionals, options, generators)
+- `context.provider(slot, fn)` — register a dynamic provider keyed to a slot in the typed signature (e.g. `git.checkout.branch`, `docker.exec.--user`); a flat positional index can't distinguish these
+- `context.generator(name, fn)` — register a named callback that signatures reference as `Generator::Hook(name)` or as the `parse` field of `Generator::Shell`
+- `context.detect_project(fn)` — register a project type detector that returns project kind from cwd
+- `context.proactive(trigger, fn)` — register a proactive suggestion (e.g. "lockfile newer than `node_modules`")
+- See [05-context-engine.md](05-context-engine.md) for the schema, pipeline, and signature sourcing model
 
 ### Pane Query
 

@@ -12,9 +12,11 @@ Shell-aware autocomplete that understands what command you're typing and what pr
 
 ## Architecture
 
+### Sidecar daemon
+
 Sidecar daemon (Rust), separate from the renderer's hot path:
 
-```lua
+```text
 Terminal (renderer)           Context Daemon
      │                            │
      │── keystroke stream ──────→ │
@@ -26,6 +28,65 @@ Terminal (renderer)           Context Daemon
 ```
 
 If the daemon is slow, you just don't see ghost text for that keystroke. Zero degradation to typing feel.
+
+### Pipeline
+
+Inside the daemon, completion runs through three stages:
+
+1. **Tokenize** — split the input line into `Spanned<Token>` so cursor position maps to a specific token.
+2. **Parse** — recursive descent over tokens, in two passes:
+   - **Lite parse** groups tokens by `;` and `|` into pipelines and commands. No semantics.
+   - **Typed parse** matches each command against a registered signature to identify positionals, options, and arguments.
+3. **Suggest** — given the parsed token under cursor and its semantic role, ask matching providers for suggestions, then merge, dedupe, and rank.
+
+Spans flow through every stage, so the dropdown can underline the active token and the renderer highlights the same byte range. (`Spanned<T>` is also a candidate primitive for hints mode, copy-mode word jumps, and search — those subsystems don't anticipate it today and would need to opt in.)
+
+### Command signatures
+
+Each command (`git`, `cd`, `kubectl`, `pnpm`, …) is described by a **signature** — a serializable schema the typed parse stage uses to interpret tokens. The sketch below paraphrases Warp's `CommandSignature`; the final shape is decided by ADR (see [Open Questions](#open-questions)):
+
+```text
+Command    { name, aliases, description, arguments, subcommands, options, priority }
+Argument   { name, description, values, optional, arity }
+Option     { name, short, long, description, takes_value }
+Suggestion { value, display, description, priority }
+Generator  { Shell | Hook }            // dynamic suggestions (see below)
+TemplateType { Files, Folders, FilesAndFolders }
+Priority(i32)                          // clamped [-100, 100]
+```
+
+Signatures are **data, not code**: they can be authored declaratively and loaded at startup. Plugins ship signatures the way they ship themes — as static metadata, not as WASM execution.
+
+### Signature sources
+
+Signatures come from two tiers:
+
+1. **Baseline (built into the binary)** — a small set of common commands (`cd`, `ls`, `git`, `npm`/`pnpm`/`yarn`, `cargo`, `docker`, `kubectl`) so common tools complete out of the box without third-party plugin installs. Disabling the bundled `context-engine` plugin turns completion off entirely; the baseline lives inside the plugin.
+2. **Plugin-contributed** — WASM plugins register signatures via the [Context Engine plugin primitive](06-plugins.md#context-engine). This is how the catalog grows.
+
+A plugin-only model means even `cd` doesn't tab-complete until a plugin is installed. A baseline-in-core model bloats the binary with every niche tool. The split avoids both.
+
+### Generator primitive
+
+Most "dynamic" completion data comes from running a shell command and parsing its output: `git branch -l` for branches, `npm run` for scripts, `kubectl get pods -o name` for pods. Rather than each plugin reimplementing process spawning + parsing, the engine provides:
+
+```text
+Generator::Shell { script, parse: <hook> }    // run a shell command; parse is optional, default = one suggestion per stdout line
+Generator::Hook(<hook>)                       // delegate entirely to a registered plugin callback
+```
+
+`<hook>` is the name of a callback registered by a plugin via `context.generator(name, fn)`. Signatures stay serializable: callbacks are referenced by name, never embedded, so a signature file can be JSON, TOML, or any other static format. Plugins ship the callbacks separately as code.
+
+Most signatures only need `Generator::Shell { script }` and rely on the default line parser. Warp's `GeneratorFn::ShellCommand` uses the same shape with an optional `post_process` field (see [warp_completer/src/signatures/v2/mod.rs](https://github.com/warpdotdev/warp/blob/master/crates/warp_completer/src/signatures/v2/mod.rs)).
+
+## Open Questions
+
+Resolve by ADR before Phase 3 work begins:
+
+1. **Signature schema shape** — adopt [Fig's autocomplete schema](https://github.com/withfig/autocomplete) (MIT, ~600 existing specs we'd inherit), or design our own. Reuses a catalog at the cost of design control over a contract we'll have to live with.
+2. **Input classifier** — keep `?` as the sole AI affordance, or add probabilistic shell-vs-AI classification (Warp's ML-driven approach). The `?` prefix matches the "deterministic rules, no AI needed" stance from this doc; a classifier trades that for auto-routing.
+3. **Baseline location** — separate crate (`oakterm-completer-baseline`), or embedded constants in the daemon? (The command list itself belongs in a spec.)
+4. **Signature storage format** — JSON, TOML, a Lua DSL on the config side, or Rust constants compiled into the binary? Determines how users contribute signatures without writing a WASM plugin.
 
 ## Context Sources
 
@@ -109,7 +170,7 @@ plugins["context-engine"] = {
 
 ## Related Docs
 
-- [Plugin System](06-plugins.md) — `context.provider` and `shell.on_cwd_change` APIs
+- [Plugin System](06-plugins.md) — context engine primitives (`context.signature`, `context.provider`, `context.generator`, …) and `shell.on_cwd_change`
 - [Shell Integration](18-shell-integration.md) — provides cwd and prompt data
 - [Smart Keybinds](19-smart-keybinds.md) — hints mode uses similar pattern matching
 - [Configuration](09-config.md) — plugin config syntax
