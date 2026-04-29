@@ -1,6 +1,6 @@
 ---
 title: 'Context Engine'
-status: draft
+status: reviewing
 category: plugin
 description: 'Smart autocomplete, typed completions, NL commands'
 tags: ['autocomplete', 'ai', 'shell-awareness', 'project-detection']
@@ -81,12 +81,12 @@ Most signatures only need `Generator::Shell { script }` and rely on the default 
 
 ## Open Questions
 
-Resolve by ADR before Phase 3 work begins:
+Resolved by ADR (proposed, pending acceptance):
 
-1. **Signature schema shape** — adopt [Fig's autocomplete schema](https://github.com/withfig/autocomplete) (MIT, ~600 existing specs we'd inherit), or design our own. Reuses a catalog at the cost of design control over a contract we'll have to live with.
-2. **Input classifier** — keep `?` as the sole AI affordance, or add probabilistic shell-vs-AI classification (Warp's ML-driven approach). The `?` prefix matches the "deterministic rules, no AI needed" stance from this doc; a classifier trades that for auto-routing.
-3. **Baseline location** — separate crate (`oakterm-completer-baseline`), or embedded constants in the daemon? (The command list itself belongs in a spec.)
-4. **Signature storage format** — JSON, TOML, a Lua DSL on the config side, or Rust constants compiled into the binary? Determines how users contribute signatures without writing a WASM plugin.
+1. **Signature schema shape** — see [ADR-0013](../adrs/0013-fig-autocomplete-schema.md): adopt Fig's autocomplete schema with build-time conversion to JSON via a pure-Rust converter (oxc). Empirically validated against 1,484 specs.
+2. **Input classifier** — see [ADR-0014](../adrs/0014-input-classifier.md): layered approach. `?` stays as explicit override; heuristic classifier ships for ambiguous inputs; ML opt-in via community plugin.
+3. **Baseline location** — see [ADR-0013](../adrs/0013-fig-autocomplete-schema.md): separate `oakterm-completer-baseline` crate with `include_bytes!`-embedded JSON.
+4. **Signature storage format** — see [ADR-0013](../adrs/0013-fig-autocomplete-schema.md): JSON, output of build-time converter.
 
 ## Context Sources
 
