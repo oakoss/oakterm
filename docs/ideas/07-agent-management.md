@@ -133,3 +133,4 @@ Fork a workspace at its current state to try something risky. Git worktrees make
 - [Sidebar](04-sidebar.md) — where agents appear in the process dashboard
 - [Memory Management](15-memory-management.md) — child process memory attribution
 - [Shell Integration](18-shell-integration.md) — command completion notifications
+- [Agent Protocol](39-agent-protocol.md) — structured channel for ACP-aware agents (complements the lifecycle managed here)

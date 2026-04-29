@@ -174,3 +174,4 @@ plugins["context-engine"] = {
 - [Shell Integration](18-shell-integration.md) — provides cwd and prompt data
 - [Smart Keybinds](19-smart-keybinds.md) — hints mode uses similar pattern matching
 - [Configuration](09-config.md) — plugin config syntax
+- [Agent Protocol](39-agent-protocol.md) — ACP-aware agents consume context-engine output via MCP

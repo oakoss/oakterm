@@ -349,3 +349,4 @@ Plugin manifests use TOML (not Lua) because they are static package metadata tha
 - [Debugging](14-debugging.md) — plugin profiling and crash handling
 - [License](26-license.md) — registry requires open source
 - [Conventions](30-conventions.md) — plugin naming conventions
+- [Agent Protocol](39-agent-protocol.md) — ACP gives plugins a vendor-neutral wire to multiple agents

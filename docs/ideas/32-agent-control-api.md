@@ -265,3 +265,4 @@ oakterm ctl notify "Dev environment ready"
 - [Security](21-security.md) — permission model principles
 - [Remote Access](29-remote-access.md) — the daemon socket this CLI connects to
 - [Architecture](01-architecture.md) — server/client daemon model
+- [Agent Protocol](39-agent-protocol.md) — terminal → agent direction; this doc covers the inverse

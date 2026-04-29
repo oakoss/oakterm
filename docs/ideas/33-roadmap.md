@@ -206,4 +206,5 @@ Each phase is a valid stopping point. If we only ever ship Phase 1, it's still a
 - [Performance](12-performance.md) — targets that Phase 0 must meet
 - [Plugin System](06-plugins.md) — what Phase 2 delivers
 - [Agent Management](07-agent-management.md) — what Phase 3 delivers
+- [Agent Protocol](39-agent-protocol.md) — ACP integration layered on top in Phase 3
 - [Remote Access](29-remote-access.md) — what Phase 4 delivers
