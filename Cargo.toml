@@ -24,7 +24,7 @@ repository = "https://github.com/oakoss/oakterm"
 arboard = "3.6.1"
 
 # GPU rendering
-wgpu = "29.0.1"
+wgpu = "29.0.3"
 
 # macOS color space (Display P3)
 objc2 = "0.6.4"
@@ -64,7 +64,7 @@ zstd = "0.13.3"
 ring = "0.17.14"
 
 # Atlas cache
-lru = "0.17.0"
+lru = "0.18.0"
 
 # Font loading and rasterization
 ttf-parser = "0.25.1"
