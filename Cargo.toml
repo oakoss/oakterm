@@ -35,8 +35,8 @@ objc2-core-graphics = { version = "0.3.2", features = ["CGColorSpace"] }
 winit = "0.30.13"
 
 # Accessibility
-accesskit = "0.24.0"
-accesskit_winit = "0.33.0"
+accesskit = "0.24.1"
+accesskit_winit = "0.33.1"
 
 # Lua config
 gethostname = "1.1.0"
@@ -53,7 +53,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Wire protocol
-prost = "0.14.3"
+prost = "0.14.4"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
@@ -69,7 +69,7 @@ lru = "0.18.0"
 # Font loading and rasterization
 ttf-parser = "0.25.1"
 fontdb = "0.23.0"
-swash = "0.2.7"
+swash = "0.2.9"
 etagere = "0.3.0"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 
@@ -95,7 +95,7 @@ libc = "0.2.186"
 shlex = "2.0.1"
 
 # Search
-regex = "1.12.3"
+regex = "1.12.4"
 
 # VT parser
 vte = { version = "0.15.0", features = ["ansi"] }
