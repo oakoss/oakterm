@@ -56,10 +56,11 @@ Not every review needs every section. Competitive research reviews may only have
 
 ## Index
 
-| Date       | Review                                                                      | Scope                                                          |
-| ---------- | --------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| 2026-03-26 | [Idea Docs Audit](2026-03-26-140000-idea-docs-audit.md)                     | All 36 idea docs + competitive landscape                       |
-| 2026-03-28 | [Renderer Architecture](2026-03-28-160000-renderer-architecture-review.md)  | TREK-15 wgpu renderer — pipeline, atlas, color, cursor         |
-| 2026-03-29 | [Handler-Grid Architecture](2026-03-29-013200-handler-grid-architecture.md) | Alt screen patterns, community pain points, feature priorities |
-| 2026-04-28 | [Warp OSS Architecture](2026-04-28-210532-warp-architecture-review.md)      | warpdotdev/warp client — Phase 2/3 prior art, AGPL-aware       |
-| 2026-05-06 | [Herdr Agent Multiplexer](2026-05-06-164003-herdr-architecture-review.md)   | ogulcancelik/herdr — agent control API & sidebar prior art     |
+| Date       | Review                                                                                      | Scope                                                          |
+| ---------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 2026-03-26 | [Idea Docs Audit](2026-03-26-140000-idea-docs-audit.md)                                     | All 36 idea docs + competitive landscape                       |
+| 2026-03-28 | [Renderer Architecture](2026-03-28-160000-renderer-architecture-review.md)                  | TREK-15 wgpu renderer — pipeline, atlas, color, cursor         |
+| 2026-03-29 | [Handler-Grid Architecture](2026-03-29-013200-handler-grid-architecture.md)                 | Alt screen patterns, community pain points, feature priorities |
+| 2026-04-28 | [Warp OSS Architecture](2026-04-28-210532-warp-architecture-review.md)                      | warpdotdev/warp client — Phase 2/3 prior art, AGPL-aware       |
+| 2026-05-06 | [Herdr Agent Multiplexer](2026-05-06-164003-herdr-architecture-review.md)                   | ogulcancelik/herdr — agent control API & sidebar prior art     |
+| 2026-06-22 | [Ultimate Terminal Alignment Audit](2026-06-22-144218-ultimate-terminal-alignment-audit.md) | 2026 terminal landscape vs OakTerm vision — 2 ADR candidates   |
