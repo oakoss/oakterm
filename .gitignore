@@ -12,6 +12,8 @@ target/
 
 # Claude Code
 .claude/plans/
+.claude/.review-mark
+.claude/.no-review-gate
 
 # Task tracking
 .trekker/
