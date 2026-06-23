@@ -43,3 +43,5 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0012](0012-copy-mode-scrollback-access.md) | Copy Mode Scrollback Access    | proposed | core                                  |
 | [0013](0013-fig-autocomplete-schema.md)     | Fig Autocomplete Schema        | proposed | context-engine, completion, plugins   |
 | [0014](0014-input-classifier.md)            | Input Mode Classification      | proposed | context-engine, ai, shell-integration |
+| [0015](0015-command-blocks.md)              | Command Blocks UX              | proposed | renderer, shell-integration, plugins  |
+| [0016](0016-tmux-coexistence.md)            | tmux Coexistence Stance        | proposed | core, multiplexer                     |
