@@ -19,7 +19,7 @@ Both claims are individually correct but describe different tiers of the buffer.
 
 Additionally, CLI agents (Claude Code, Codex, Aider) use the alternate screen buffer, which prevents native terminal scrollback. Users cannot scroll back through long agent sessions. This is a top complaint across all terminals — Claude Code issue [#28077](https://github.com/anthropics/claude-code/issues/28077) (26 upvotes) and [#2479](https://github.com/anthropics/claude-code/issues/2479) (53 upvotes) document the pain.
 
-Ghostty experienced a catastrophic memory leak (71 GB in 20-30 minutes) caused by its arena allocator never returning memory to the OS when pruning scrollback with non-standard pages from Claude Code's heavy Unicode output. This class of bug must be prevented by design.
+Ghostty experienced a catastrophic memory leak (37 GB over ten days in one report, 71 GB on a 16 GB machine in another) caused by its arena allocator never returning memory to the OS when pruning scrollback with non-standard pages from Claude Code's heavy Unicode output. This class of bug must be prevented by design.
 
 ## Options
 
@@ -33,7 +33,7 @@ All scrollback in RAM. Fixed byte or line limit. Old lines are discarded when th
 
 **Cons:**
 
-- Unbounded memory growth without hard limits (Ghostty's 71 GB leak).
+- Unbounded memory growth without hard limits (Ghostty's scrollback leak).
 - Fixed limits mean losing old output. Ghostty's 10 MB default is too small for power users. iTerm2's "unlimited" mode can exhaust all RAM.
 - No alternate screen scrollback — CLI agents are unusable for reviewing history.
 
@@ -146,7 +146,7 @@ Correct `TIOCGWINSZ` before the first byte is written to the PTY. Send `SIGWINCH
 The original decision required "memory returned to OS on pruning." During Spec-0004 implementation, we discovered this is infeasible with the existing Row type:
 
 - Row contains `Vec<Cell>` (~4.8 KB per row at 200 columns). Each Vec is a separate heap allocation far below the system allocator's large-allocation threshold. Dropping rows does not return pages to the OS on any major platform — the allocator caches freed memory for reuse.
-- The only way to guarantee OS-level memory return is flat-packed cells in mmap pages (Ghostty's model), which requires unsafe code, a custom cell type incompatible with the visible grid's Row, and per-page arena allocators. This is the model that caused Ghostty's 71 GB memory leak.
+- The only way to guarantee OS-level memory return is flat-packed cells in mmap pages (Ghostty's model), which requires unsafe code, a custom cell type incompatible with the visible grid's Row, and per-page arena allocators. This is the model that caused Ghostty's scrollback memory leak.
 - Alacritty and WezTerm both use standard heap allocations for scrollback and have the same RSS behavior: memory grows to peak and stabilizes.
 
 **Revised position:** The ring buffer uses standard Rust allocations (`VecDeque<Row>`). RSS grows to the configured `scrollback_limit` and stabilizes there. The byte-based limit prevents unbounded growth. No arena pooling. Pruned memory is reused by the allocator for new rows. This prevents the Ghostty leak class (arena pooling) without requiring unsafe mmap-backed storage.
