@@ -28,7 +28,9 @@ impl SemanticMark {
     }
 }
 
-/// Metadata attached to a semantic mark.
+/// Per-row shell-integration metadata. Independent of `semantic_mark`:
+/// `ExitCode` accompanies an `OutputEnd` mark, but `WorkingDirectory` (OSC 7)
+/// is recorded on its row with no semantic mark of its own.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MarkMetadata {
     ExitCode(i32),

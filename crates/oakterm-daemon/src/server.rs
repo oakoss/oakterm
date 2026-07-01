@@ -1872,6 +1872,32 @@ mod tests {
     }
 
     #[test]
+    fn osc_133_prompt_marks_reach_scrollback_and_are_found() {
+        // End-to-end: an OSC 133;A prompt fed through the VT parser must be
+        // decoded onto its row, scroll into the hot buffer, and be locatable
+        // by find_prompt_in_buffer — the path scroll-to-prompt depends on.
+        use oakterm_terminal::grid::ScreenSet;
+
+        let mut ss = ScreenSet::new(80, 3);
+        let mut sink = Vec::new();
+        ss.process_bytes(b"\x1b]133;A\x07prompt$ \r\n", &mut sink);
+        // Scroll the marked prompt row off the top into scrollback.
+        for _ in 0..5 {
+            ss.process_bytes(b"output line\r\n", &mut sink);
+        }
+
+        assert!(
+            !ss.scrollback().is_empty(),
+            "prompt row should have scrolled into the hot buffer"
+        );
+        let found = find_prompt_in_buffer(ss.scrollback(), 0, SearchDirection::Older);
+        assert!(
+            found.is_some(),
+            "find_prompt_in_buffer should locate the decoded OSC 133;A mark"
+        );
+    }
+
+    #[test]
     fn build_command_spec_empty_command_default_shell() {
         let spec = build_command_spec("", "").expect("default spec");
         assert!(spec.program.is_none());

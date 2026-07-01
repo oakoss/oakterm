@@ -281,6 +281,9 @@ pub struct ScreenSet {
     /// VT parser state, persisted across PTY read chunks to avoid
     /// mid-sequence splits that leak escape fragments as literal text.
     processor: vte::ansi::Processor<vte::ansi::StdSyncHandler>,
+    /// OSC 7/133 interceptor: vte does not dispatch these, so we decode them
+    /// alongside the processor and attach marks to the row the cursor lands on.
+    shell_scanner: crate::shell_integration::ShellIntegrationScanner,
 }
 
 impl ScreenSet {
@@ -294,6 +297,7 @@ impl ScreenSet {
             save_alternate_scrollback: false,
             archive: None,
             processor: vte::ansi::Processor::new(),
+            shell_scanner: crate::shell_integration::ShellIntegrationScanner::new(),
             search: None,
         }
     }
@@ -303,14 +307,58 @@ impl ScreenSet {
     /// The parser state is preserved across calls so escape sequences
     /// that span read chunk boundaries are handled correctly.
     pub fn process_bytes(&mut self, input: &[u8], writer: &mut impl std::io::Write) {
+        use crate::shell_integration::ScanStep;
+
         // Temporarily extract the processor to avoid a double mutable borrow
         // (self is borrowed by Terminal::new, processor by advance).
         let mut processor = std::mem::replace(&mut self.processor, vte::ansi::Processor::new());
-        {
-            let mut terminal = crate::handler::Terminal::new(self, writer);
-            processor.advance(&mut terminal, input);
+        // The scanner splits the chunk at OSC 7/133 terminators so each mark
+        // lands on the row the cursor occupies after all prior bytes render.
+        for step in self.shell_scanner.scan(input) {
+            match step {
+                ScanStep::Feed { start, end } => {
+                    let mut terminal = crate::handler::Terminal::new(self, writer);
+                    processor.advance(&mut terminal, &input[start..end]);
+                }
+                ScanStep::Mark(mark) => self.apply_shell_mark(&mark),
+            }
         }
         self.processor = processor;
+    }
+
+    /// Attach a decoded shell-integration mark to the active grid's cursor row
+    /// and bump its sequence number so the row ships on the next render update.
+    fn apply_shell_mark(&mut self, mark: &crate::shell_integration::ShellMark) {
+        use crate::grid::row::{MarkMetadata, SemanticMark};
+        use crate::shell_integration::ShellMark;
+
+        let g = self.active_grid_mut();
+        let row = g.cursor.row as usize;
+        if row >= g.lines.len() {
+            tracing::debug!(
+                row,
+                lines = g.lines.len(),
+                "shell mark dropped: cursor row out of bounds"
+            );
+            return;
+        }
+        let seqno = g.next_seqno();
+        let line = &mut g.lines[row];
+        match mark {
+            ShellMark::PromptStart => line.semantic_mark = SemanticMark::PromptStart,
+            ShellMark::InputStart => line.semantic_mark = SemanticMark::InputStart,
+            ShellMark::OutputStart => line.semantic_mark = SemanticMark::OutputStart,
+            ShellMark::CommandFinished(exit) => {
+                line.semantic_mark = SemanticMark::OutputEnd;
+                // Own this row's metadata: set the exit code, or clear any stale
+                // metadata (e.g. a prior cwd) when the D mark carries no code.
+                line.mark_metadata = exit.map(MarkMetadata::ExitCode);
+            }
+            ShellMark::WorkingDirectory(path) => {
+                line.mark_metadata = Some(MarkMetadata::WorkingDirectory(path.clone()));
+            }
+        }
+        line.seqno = seqno;
     }
 
     #[must_use]
@@ -456,6 +504,7 @@ impl ScreenSet {
         self.alternate = None;
         self.primary = Grid::new(cols, rows);
         self.processor = vte::ansi::Processor::new();
+        self.shell_scanner.reset();
     }
 
     /// Resize both primary and alternate grids (if allocated).

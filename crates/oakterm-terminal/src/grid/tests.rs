@@ -1,7 +1,7 @@
 use super::*;
 use cell::{Cell, CellFlags, Color, NamedColor, UnderlineStyle, WideState};
 use cursor::CursorStyle;
-use row::{Direction, Row, RowFlags, SemanticMark};
+use row::{Direction, MarkMetadata, Row, RowFlags, SemanticMark};
 use selection::{AnchorSide, SelectionAnchor};
 
 #[test]
@@ -293,6 +293,76 @@ fn screen_set_reset_preserves_scrollback() {
     assert_eq!(ss.scrollback().len(), 2);
     ss.reset();
     assert_eq!(ss.scrollback().len(), 2, "scrollback should survive reset");
+}
+
+#[test]
+fn osc_133_prompt_marks_cursor_row() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    // "abc" + CRLF leaves the cursor on row 1; the mark must land there.
+    ss.process_bytes(b"abc\r\n\x1b]133;A\x07", &mut sink);
+    assert_eq!(ss.active_grid().lines[0].semantic_mark, SemanticMark::None);
+    assert_eq!(
+        ss.active_grid().lines[1].semantic_mark,
+        SemanticMark::PromptStart
+    );
+}
+
+#[test]
+fn osc_133_command_finished_carries_exit_code() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    ss.process_bytes(b"\x1b]133;D;7\x07", &mut sink);
+    let row = &ss.active_grid().lines[0];
+    assert_eq!(row.semantic_mark, SemanticMark::OutputEnd);
+    assert_eq!(row.mark_metadata, Some(MarkMetadata::ExitCode(7)));
+}
+
+#[test]
+fn osc_7_records_working_directory() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    ss.process_bytes(b"\x1b]7;file://myhost/home/user\x07", &mut sink);
+    assert_eq!(
+        ss.active_grid().lines[0].mark_metadata,
+        Some(MarkMetadata::WorkingDirectory("/home/user".into()))
+    );
+}
+
+#[test]
+fn osc_133_d_without_exit_clears_stale_metadata() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    // OSC 7 then OSC 133;D (no exit) on the same row: the D mark owns the
+    // metadata slot, so the stale cwd must not linger on the OutputEnd row.
+    ss.process_bytes(b"\x1b]7;file://h/tmp\x07\x1b]133;D\x07", &mut sink);
+    let row = &ss.active_grid().lines[0];
+    assert_eq!(row.semantic_mark, SemanticMark::OutputEnd);
+    assert_eq!(row.mark_metadata, None);
+}
+
+#[test]
+fn osc_133_survives_read_chunk_split() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    // The daemon reads PTY output in arbitrary chunks; a sequence split
+    // across two reads must still be decoded.
+    ss.process_bytes(b"\x1b]133;A", &mut sink);
+    ss.process_bytes(b"\x07", &mut sink);
+    assert_eq!(
+        ss.active_grid().lines[0].semantic_mark,
+        SemanticMark::PromptStart
+    );
+}
+
+#[test]
+fn osc_133_bumps_row_seqno_for_render() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    let before = ss.active_grid().seqno;
+    ss.process_bytes(b"\x1b]133;A\x07", &mut sink);
+    // The marked row must be reported dirty so the mark ships to the GUI.
+    assert!(ss.active_grid().lines[0].seqno > before);
 }
 
 #[test]
