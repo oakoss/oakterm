@@ -20,7 +20,7 @@ tags:
 
 # Multiplexer
 
-Built-in. Replaces tmux, Zellij, and screen.
+Built-in. You won't need tmux, Zellij, or screen — but if you already use them (remote SSH sessions, muscle memory), they coexist cleanly ([ADR-0016](../adrs/0016-tmux-coexistence.md)).
 
 ## Hierarchy
 
@@ -354,5 +354,5 @@ copy_mode_keybinds = "vim"     -- default
 - [Architecture](01-architecture.md) — where the multiplexer sits in the layer stack
 - [Sidebar](04-sidebar.md) — pane navigation and process dashboard
 - [Memory Management](15-memory-management.md) — scroll buffer strategy (ring + disk archive)
-- [Session persistence is part of the multiplexer, serialization format TBD]
+- [Spec 0010: Session Persistence](../specs/0010-session-persistence.md) — workspace/tab/pane serialization and restore
 - [Platform Support](20-platform-support.md) — Wayland vs X11, clipboard handling per platform

@@ -12,8 +12,10 @@ Real complaints from GitHub issues, Hacker News, and developer forums that direc
 
 ## Terminal memory explodes with AI agents
 
-**Source:** Ghostty #10289 (71 GB with Claude Code), Claude Code #11315 (129 GB), #4953 (120 GB), #32752 (18 GB/hour growth). iTerm2 routinely 3 GB+. WezTerm pre-allocates scrollback.
-**Solution:** Tiered scroll buffer — ring buffer in memory (hard ceiling), overflow to compressed disk archive. Per-pane memory budgets. Memory attribution in `:debug memory` and sidebar clearly shows terminal memory vs child process memory. Alerts when a child process grows abnormally. See `ideas/15-memory-management.md`.
+Agent workloads emit huge, heavy-Unicode output streams that push scrollback memory into double-digit gigabytes across every major terminal.
+
+**Source:** Ghostty #10289 (71 GB with Claude Code; fixed in Ghostty 1.3, Mar 2026), Claude Code #11315 (129 GB), #4953 (120 GB), #32752 (18 GB/hour growth). iTerm2 routinely 3 GB+. WezTerm pre-allocates scrollback.
+**Solution:** Bound memory by design rather than retrofit limits after a leak. A tiered scroll buffer caps in-memory scrollback at a byte ceiling and overflows to a compressed disk archive, so RSS grows to the configured limit and stabilizes there. Per-pane budgets and memory attribution in `:debug memory` and the sidebar separate terminal memory from child-process memory, with alerts when a child grows abnormally. See `ideas/15-memory-management.md`.
 
 ## Clipboard over SSH + multiplexer is universally broken
 
