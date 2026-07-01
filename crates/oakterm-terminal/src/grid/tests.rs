@@ -342,6 +342,28 @@ fn osc_133_d_without_exit_clears_stale_metadata() {
 }
 
 #[test]
+fn osc_133_prompt_sheds_stale_exit_code_but_keeps_cwd() {
+    let mut ss = ScreenSet::new(80, 24);
+    let mut sink = Vec::new();
+    // D;0 then A on the same row: the prompt mark must not inherit the exit code.
+    ss.process_bytes(b"\x1b]133;D;0\x07\x1b]133;A\x07", &mut sink);
+    let row = &ss.active_grid().lines[0];
+    assert_eq!(row.semantic_mark, SemanticMark::PromptStart);
+    assert_eq!(row.mark_metadata, None);
+
+    // OSC 7 then A on the same row: the cwd is orthogonal and must survive.
+    let mut ss2 = ScreenSet::new(80, 24);
+    let mut sink2 = Vec::new();
+    ss2.process_bytes(b"\x1b]7;file://h/tmp\x07\x1b]133;A\x07", &mut sink2);
+    let row2 = &ss2.active_grid().lines[0];
+    assert_eq!(row2.semantic_mark, SemanticMark::PromptStart);
+    assert_eq!(
+        row2.mark_metadata,
+        Some(MarkMetadata::WorkingDirectory("/tmp".into()))
+    );
+}
+
+#[test]
 fn osc_133_survives_read_chunk_split() {
     let mut ss = ScreenSet::new(80, 24);
     let mut sink = Vec::new();

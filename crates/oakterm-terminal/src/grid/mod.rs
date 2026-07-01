@@ -358,6 +358,14 @@ impl ScreenSet {
                 line.mark_metadata = Some(MarkMetadata::WorkingDirectory(path.clone()));
             }
         }
+        // An ExitCode belongs to the finished command, so it may only coexist
+        // with an OutputEnd mark. If a later prompt/input/output-start lands on
+        // the same row, shed the stale exit code (but keep a WorkingDirectory).
+        if line.semantic_mark != SemanticMark::OutputEnd
+            && matches!(line.mark_metadata, Some(MarkMetadata::ExitCode(_)))
+        {
+            line.mark_metadata = None;
+        }
         line.seqno = seqno;
     }
 
