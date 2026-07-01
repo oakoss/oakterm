@@ -313,24 +313,36 @@ fn substitute(&mut self);       // SUB: 0x1A (print replacement char)
 
 #### Shell Integration (ADR-0008)
 
-```rust
-/// OSC 133;A — prompt start. Marks current row with SemanticMark::PromptStart.
-/// Raw parameter string preserved for future use (e.g., iTerm2's `aid=` parameter).
-fn shell_prompt_start(&mut self, raw_params: &str);
+OSC 133 and OSC 7 are **not dispatched by vte 0.15's `ansi::Handler`**: its
+`osc_dispatch` routes both to `unhandled()`, and no newer vte release adds a
+callback. They are instead decoded by a dedicated interceptor
+(`ShellIntegrationScanner`) that runs alongside the VT processor at the
+`ScreenSet` boundary. The scanner finds complete OSC 7/133 sequences in the PTY
+byte stream, persisting partial-sequence state across read chunks, and splits
+each read at the sequence terminator so the mark attaches to the row the cursor
+occupies once all prior bytes have rendered. Every byte still reaches vte
+unchanged; the scanner only injects mark events between the processor feeds.
 
-/// OSC 133;B — input start. Marks current row with SemanticMark::InputStart.
-fn shell_input_start(&mut self);
+Decoded sequences map to the following row mutations:
 
-/// OSC 133;C — command output start. Marks current row with SemanticMark::OutputStart.
-fn shell_output_start(&mut self);
+| Sequence             | `SemanticMark`    | `MarkMetadata`                |
+| -------------------- | ----------------- | ----------------------------- |
+| `OSC 133;A`          | `PromptStart`     | —                             |
+| `OSC 133;B`          | `InputStart`      | —                             |
+| `OSC 133;C`          | `OutputStart`     | —                             |
+| `OSC 133;D[;<exit>]` | `OutputEnd`       | `ExitCode(<exit>)` if present |
+| `OSC 7;file://…`     | — (metadata only) | `WorkingDirectory(<path>)`    |
 
-/// OSC 133;D — command finished. Marks current row with SemanticMark::OutputEnd.
-/// `exit_code` is None if not provided.
-fn shell_command_finished(&mut self, exit_code: Option<i32>);
+`OSC 133;D` exit code is the first `;`-delimited field after `D`; absent or
+non-numeric fields yield no `ExitCode`. `OSC 7` paths are the URI component
+after the authority, percent-decoded (the hostname is dropped in Phase 0). An
+empty path is ignored. Trailing parameters on `133;A` (e.g. iTerm2's `aid=`)
+are ignored in Phase 0.
 
-/// OSC 7 — current working directory.
-fn set_working_directory(&mut self, uri: &str);
-```
+A row holds a single `mark_metadata` slot, so if an `OSC 7` cwd and an
+`OSC 133;D` exit code land on the same row the later write wins (in practice
+they occupy different rows: cwd at prompt time, `D` at command end). This
+mirrors the single-`semantic_mark` collision noted in ADR-0015.
 
 #### Kitty Graphics (ADR-0004)
 
