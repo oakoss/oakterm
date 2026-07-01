@@ -7,6 +7,7 @@ members = [
   "crates/oakterm-config",
   "crates/oakterm-ctl",
   "crates/oakterm-daemon",
+  "crates/oakterm-mux",
   "crates/oakterm-protocol",
   "crates/oakterm-pty",
   "crates/oakterm-renderer",
