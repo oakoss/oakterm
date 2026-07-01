@@ -1,6 +1,6 @@
 ---
 title: 'Configuration'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'First launch setup, settings palette, Lua config, dark/light themes'
 tags: ['config', 'lua', 'settings-palette', 'first-launch', 'dark-mode']

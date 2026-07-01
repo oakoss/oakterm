@@ -1,6 +1,6 @@
 ---
 title: 'Performance'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'Targets, budgets, CI benchmarks'
 tags: ['latency', 'memory', 'benchmarks', 'ci']

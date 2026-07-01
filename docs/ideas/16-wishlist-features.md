@@ -72,12 +72,6 @@ Native OS notification when a long-running command finishes in a background tab/
 
 **Status:** Specced in [Shell Integration](18-shell-integration.md). Uses OSC 133;D exit code + configurable duration threshold.
 
-### Process Completion Notifications
-
-Native OS notification when a long-running command finishes in a background tab/pane. Ghostty 1.3 added this.
-
-**Fits:** Shell integration + notification system
-
 ## Could Have (good ideas, lower priority)
 
 ### Semantic Zone Selection

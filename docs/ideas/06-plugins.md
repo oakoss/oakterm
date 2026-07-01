@@ -1,6 +1,6 @@
 ---
 title: 'Plugin System'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'WASM runtime, API primitives, capabilities, registry, manager'
 tags: ['wasm', 'wasmtime', 'api', 'capabilities', 'registry', 'lua']

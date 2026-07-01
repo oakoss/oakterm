@@ -1,6 +1,6 @@
 ---
 title: 'Updates'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'Every update path works, staged updates, rollback'
 tags: ['updates', 'rollback', 'release-channels', 'package-manager']
