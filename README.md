@@ -25,7 +25,7 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 - AI features are opt-in, BYOK, and work with local models.
 - Open protocols — Kitty graphics, standard escape sequences, WASM plugins.
 - Platform-native, never Electron — AppKit on macOS, GTK on Linux, WinUI on Windows. macOS and Linux ship first; Windows follows.
-- Built-in multiplexer — you won't need tmux or Zellij, but they coexist cleanly if you do.
+- Built-in multiplexer — you won't need tmux, Zellij, or screen, but they coexist cleanly if you do.
 - Memory-conscious — tiered scroll buffer, per-pane budgets, no pre-allocation.
 - MPL 2.0 licensed — core stays open source, plugins can be any license.
 
