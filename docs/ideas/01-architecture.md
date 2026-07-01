@@ -1,6 +1,6 @@
 ---
 title: 'Architecture'
-status: reviewing
+status: decided
 category: core
 description: 'Layer stack, Rust, server/client model'
 tags: ['rust', 'wgpu', 'server-client', 'layer-stack']

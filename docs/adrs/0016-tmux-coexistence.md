@@ -1,7 +1,7 @@
 ---
 adr: '0016'
 title: tmux Coexistence Stance
-status: proposed
+status: accepted
 date: 2026-06-22
 tags: [core, multiplexer]
 ---
@@ -41,19 +41,16 @@ Cons: directly contradicts "replaces, not complements"; large, ongoing maintenan
 
 ## Decision
 
-**Proposed: Option B — graceful coexistence without integration.**
+**Option B — graceful coexistence without integration.**
 
 The stance is "you won't need tmux, but if you run it, it works correctly." We commit to the correctness bar — keyboard protocol passthrough, mouse/scrollback behavior, and (in the default configuration) never leaking tmux's alternate-screen history into native scrollback/search (consistent with [ADR-0006](0006-scroll-buffer-architecture.md)) — and explicitly do not build tmux control-mode integration, which would be complementing rather than replacing. This avoids kitty's reputational failure mode while keeping the principle intact.
-
-Status is `proposed` pending acceptance.
 
 ## Consequences
 
 - Testing: add a tmux-inside-OakTerm compatibility check (keyboard protocol passthrough, alt-screen scrollback isolation, mouse).
 - Alt-screen scrollback isolation follows from [ADR-0006](0006-scroll-buffer-architecture.md) under the default `save_alternate_scrollback = false` (tmux is an alt-screen app); this ADR makes "don't leak tmux history into native search/scrollbar" an explicit, tested guarantee **in the default configuration**. If a user opts into `save_alternate_scrollback = true` they have chosen to capture alt-screen content (tmux included); whether to add a tmux-specific capture exclusion is an open question.
 - No tmux control-mode work is scoped, now or later, unless this ADR is superseded.
-- If accepted, add a short "tmux coexistence" note to [03-multiplexer.md](../ideas/03-multiplexer.md) and reconcile the README "Replaces tmux, not complements it" line with the "works correctly if you use it" qualification.
-- Candidate for `/grill-me` stress-testing before acceptance.
+- [03-multiplexer.md](../ideas/03-multiplexer.md) and the README now frame the multiplexer as "you won't need tmux/Zellij/screen — but they coexist cleanly if you do," replacing the earlier "replaces tmux, not complements it" wording.
 
 ## References
 

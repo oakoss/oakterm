@@ -1,7 +1,7 @@
 ---
 adr: '0010'
 title: Layout Tree Model
-status: proposed
+status: accepted
 date: 2026-04-02
 tags: [core]
 ---

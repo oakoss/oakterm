@@ -24,8 +24,8 @@ The terminal is the oldest developer tool that still works. It doesn't need to b
 - Zero telemetry. No login. No account. No phoning home. Ever.
 - AI features are opt-in, BYOK, and work with local models.
 - Open protocols — Kitty graphics, standard escape sequences, WASM plugins.
-- Platform-native — AppKit on macOS, GTK on Linux, WinUI on Windows. All three from day one. Not Electron.
-- Replaces tmux, not complements it.
+- Platform-native, never Electron — AppKit on macOS, GTK on Linux, WinUI on Windows. macOS and Linux ship first; Windows follows.
+- Built-in multiplexer — you won't need tmux, Zellij, or screen, but they coexist cleanly if you do.
 - Memory-conscious — tiered scroll buffer, per-pane budgets, no pre-allocation.
 - MPL 2.0 licensed — core stays open source, plugins can be any license.
 
@@ -77,7 +77,7 @@ Ideas explore possibilities. ADRs resolve questions that ideas surface. Specs fo
 | [Accessibility](docs/ideas/17-accessibility.md)         | AccessKit, screen reader, color blindness, extensible a11y API     |
 | [Theming](docs/ideas/22-theming.md)                     | Deep customization, TOML format, inheritance, live preview         |
 | [Internationalization](docs/ideas/23-i18n.md)           | Unicode rendering, locale packs via plugins                        |
-| [Platform Support](docs/ideas/20-platform-support.md)   | macOS, Linux, Windows — all first-class                            |
+| [Platform Support](docs/ideas/20-platform-support.md)   | macOS + Linux first-class; Windows following                       |
 | [Updates](docs/ideas/24-updates.md)                     | Every update path works, staged updates, rollback                  |
 | [Testing](docs/ideas/25-testing.md)                     | Unit, integration, platform, perf, security, a11y, VT compliance   |
 | [License](docs/ideas/26-license.md)                     | MPL 2.0 — core stays open, registry requires open source           |

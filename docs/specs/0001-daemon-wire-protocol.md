@@ -92,6 +92,15 @@ server_version           UTF-8 bytes       OakTerm version string (e.g., "0.1.0"
 - If `status != 0`, the server closes the connection after sending ServerHello.
 - After successful handshake, both sides may send frames freely according to the message catalog.
 
+**Versioning governance:**
+
+The negotiation rules above describe how a mismatch is _handled_; these rules define what constitutes each kind of change, so that "major = breaking" is unambiguous:
+
+- **Additive (minor bump):** a new `msg_type`. Appending a field to an existing message's payload counts as additive only when the chosen serialization tolerates unknown trailing data (protobuf does; a fixed hand-rolled binary layout does not) — otherwise a field addition is breaking. A minor bump must never change the meaning, type, order, or width of any existing field.
+- **Breaking (major bump):** removing or repurposing a `msg_type`; changing the type, order, width, or semantics of any existing field; or altering the framing or handshake layout.
+- **Retired `msg_type` numbers are never reused.** A removed message type's number is burned, not recycled, so a stale peer can never misinterpret a new message as an old one.
+- Forward compatibility within a major version rests on the unknown-`msg_type` rule (ignore the frame — see [Error Cases](#error-cases)); additive changes are only safe because of it.
+
 ### Message Catalog
 
 #### Infrastructure Messages (0x00-0x09)

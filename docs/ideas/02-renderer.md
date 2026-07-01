@@ -1,6 +1,6 @@
 ---
 title: 'Renderer'
-status: reviewing
+status: decided
 category: core
 description: 'GPU (wgpu), fonts, fallbacks, ligatures, opacity, color, images'
 tags: ['gpu', 'wgpu', 'fonts', 'ligatures', 'images', 'opacity', 'color']

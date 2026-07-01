@@ -1,7 +1,7 @@
 ---
 adr: '0012'
 title: Copy Mode Scrollback Access
-status: proposed
+status: accepted
 date: 2026-04-02
 tags: [core]
 ---

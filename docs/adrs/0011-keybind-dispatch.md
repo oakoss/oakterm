@@ -1,7 +1,7 @@
 ---
 adr: '0011'
 title: Keybind Dispatch Architecture
-status: proposed
+status: accepted
 date: 2026-04-02
 tags: [core]
 ---

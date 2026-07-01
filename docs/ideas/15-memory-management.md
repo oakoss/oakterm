@@ -1,6 +1,6 @@
 ---
 title: 'Memory Management'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'Tiered scroll buffer, per-pane budgets, memory attribution'
 tags: ['memory', 'scroll-buffer', 'ring-buffer', 'disk-archive', 'agents']

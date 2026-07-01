@@ -1,6 +1,6 @@
 ---
 title: 'Accessibility'
-status: reviewing
+status: decided
 category: cross-cutting
 description: 'AccessKit, screen reader, color blindness, extensible a11y API'
 tags: ['a11y', 'accesskit', 'screen-reader', 'voiceover', 'color-blindness']

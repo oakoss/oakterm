@@ -1,6 +1,6 @@
 ---
 title: 'Shell Integration'
-status: reviewing
+status: decided
 category: core
 description: 'Prompt markers, semantic zones, scroll-to-prompt, notifications'
 tags: ['shell', 'osc-133', 'prompt-markers', 'scroll-to-prompt']

@@ -2,7 +2,7 @@
 
 GPU-accelerated, extensible terminal emulator with a plugin-driven process dashboard and context-aware shell.
 
-**Status: Phase 0 Implementation** — core terminal foundation (renderer, VT parser, screen buffer).
+**Status: Phase 1** — Phase 0 terminal foundation (renderer, VT parser, screen buffer, daemon/client split) complete; the multiplexer is the next roadmap focus.
 
 ## Pipeline
 
