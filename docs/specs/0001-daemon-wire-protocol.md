@@ -146,6 +146,15 @@ Error codes 0 and 7-255 are reserved. Codes 256+ are available for future use.
 | `0x72`   | RenderUpdate    | D→C       | Response | See RenderUpdate payload below                                                                      |
 | `0x73`   | GetScrollback   | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `count: u32`                                                      |
 | `0x74`   | ScrollbackData  | D→C       | Response | `pane_id: u32`, `start_row: i64`, `has_more: u8`, `total_rows: u32`, `rows_len: u32`, `rows: bytes` |
+| `0x75`   | FindPrompt      | C→D       | Request  | `pane_id: u32`, `from_offset: i64`, `direction: u8` (0xFF=older, 0x01=newer)                        |
+| `0x76`   | PromptPosition  | D→C       | Response | `pane_id: u32`, `offset: i64`, `found: u8` (0=no prompt found; `offset` is 0 when `found` is 0)     |
+
+`FindPrompt` locates the next `PromptStart` mark relative to `from_offset`,
+which shares the coordinate space of `GetScrollback.start_row` (negative
+offset from the viewport bottom). `direction` searches toward older rows
+(0xFF) or newer rows (0x01). `PromptPosition.offset` is the found prompt's
+offset in that same space; when `found` is 0 no prompt exists in the search
+direction and `offset` is 0.
 
 **RenderUpdate payload (0x72):**
 

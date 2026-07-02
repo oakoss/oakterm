@@ -1,7 +1,7 @@
 ---
 spec: '0003'
 title: Screen Buffer
-status: complete
+status: implementing
 date: 2026-03-26
 adrs: ['0006', '0001', '0009']
 tags: [core]
@@ -184,8 +184,16 @@ struct Grid {
     /// Current cursor state.
     cursor: Cursor,
 
-    /// Saved cursor (DECSC / ESC 7). Restored with DECRC / ESC 8.
+    /// Saved DECSC state (ESC 7 / DECSC), restored by DECRC / ESC 8.
+    /// DECSC saves more than the cursor position: the full SGR pen and
+    /// origin mode are captured and restored alongside the cursor.
     saved_cursor: Cursor,
+    saved_attr: CellFlags,
+    saved_fg: Color,
+    saved_bg: Color,
+    saved_underline_style: UnderlineStyle,
+    saved_underline_color: Option<Color>,
+    saved_origin_mode: bool,
 
     /// Active character set indices.
     active_charset: CharsetIndex,
@@ -221,6 +229,11 @@ struct Grid {
     dynamic_fg: Option<Rgb>,
     dynamic_bg: Option<Rgb>,
     dynamic_cursor: Option<Rgb>,
+
+    /// Window title (OSC 0/2). None until set.
+    title: Option<String>,
+    /// Title stack for XTWINOPS push/pop (CSI 22/23 t). Bounded capacity.
+    title_stack: Vec<String>,
 }
 
 /// Bitset tracking active DEC private modes and ANSI modes.
@@ -270,7 +283,23 @@ The terminal maintains two grids: primary and alternate. Only one is active at a
 struct ScreenSet {
     active: ScreenId,
     primary: Grid,
-    alternate: Grid,
+    /// Lazily allocated on first alternate-screen entry (modes 47/1047/1049).
+    alternate: Option<Grid>,
+
+    /// Primary-screen scrollback (Spec-0004 HotBuffer).
+    scrollback: HotBuffer,
+    /// Cold disk archive for rows pruned from the hot buffer (Spec-0004).
+    archive: Option<ColdArchive>,
+    /// Active scrollback search, if any.
+    search: Option<SearchEngine>,
+
+    /// Capture alternate-screen scroll-off rows to the primary scrollback.
+    save_alternate_scrollback: bool,
+
+    /// VT parser state, persisted across PTY read chunks (Spec-0002).
+    processor: VtProcessor,
+    /// OSC 7/133 interceptor, decoded alongside the processor (Spec-0002).
+    shell_scanner: ShellIntegrationScanner,
 }
 
 enum ScreenId { Primary, Alternate }
@@ -385,6 +414,8 @@ When the terminal window is resized:
 4. Scroll region is reset to full screen.
 5. All rows are marked dirty (full redraw).
 6. Selection is cleared.
+
+**Reflow status:** The soft-wrap reflow described in step 2 (unwrap-on-grow, rewrap-on-shrink) is specified but not yet implemented. The current `resize()` only splits and pads rows: it clamps the row count (capturing trimmed rows for scrollback) and resizes each row to the new width, without unwrapping or rewrapping soft-wrapped lines. Cursor clamping, scroll-region reset, dirty marking, and selection clearing all behave as specified. The reflow contract stands; its implementation is deferred to a tracked task.
 
 ### Cell Write
 

@@ -60,15 +60,21 @@ struct Container {
     /// Split direction. Children are arranged along this axis.
     direction: SplitDirection,
 
-    /// Ordered list of children. Minimum 2 children
-    /// (enforced by auto-flattening).
-    children: Vec<LayoutNode>,
+    /// Ordered children, laid out first-to-last along `direction`.
+    /// Minimum 2 children (enforced by auto-flattening).
+    children: Vec<Child>,
+}
 
-    /// Proportional weights for each child, summing to 1.0.
-    /// `weights.len() == children.len()` is an invariant.
-    /// Called "sizes" in ADR-0010; renamed to "weights" to distinguish
-    /// from pixel sizes.
-    weights: Vec<f32>,
+/// A weighted child of a `Container`. Pairing the weight with the node makes a
+/// weight/child-count mismatch unrepresentable.
+struct Child {
+    /// The child subtree.
+    node: LayoutNode,
+
+    /// Proportional size of this child; a container's child weights sum to 1.0.
+    /// Called "sizes" in ADR-0010; renamed to "weight" to distinguish from
+    /// pixel sizes.
+    weight: f32,
 }
 
 enum SplitDirection {
@@ -79,10 +85,11 @@ enum SplitDirection {
 }
 ```
 
+The in-memory model pairs each child with its weight (`Vec<Child>`), so a child-count/weight-count mismatch cannot be represented. The parallel-array shape — separate `children` and `weights` arrays — is the **serialized DTO form** (`SavedLayoutNode`), used only for the wire protocol and session persistence (Spec-0010, Spec-0001), which converts to and from this tree.
+
 **Container invariants:**
 
 - `children.len() >= 2`. A container with fewer than 2 children is invalid and must be auto-flattened (see Behavior).
-- `weights.len() == children.len()`.
 - All weights are positive: `w > 0.0` for every weight.
 - Weights sum to 1.0 (within floating-point tolerance: `|sum - 1.0| < 0.001`).
 - No two adjacent containers share the same direction. If a container's child is another container with the same direction, they must be merged (see auto-flattening).
@@ -304,4 +311,5 @@ Converting weights to grid dimensions:
 - [Spec 0001: Daemon Wire Protocol](0001-daemon-wire-protocol.md) — pane management messages
 - [Spec 0003: Screen Buffer](0003-screen-buffer.md) — pane grid model
 - [Spec 0005: Lua Config Runtime](0005-lua-config-runtime.md) — layout declaration API
+- [Spec 0010: Session Persistence](0010-session-persistence.md) — `SavedLayoutNode` serialized DTO form
 - [03-multiplexer.md](../ideas/03-multiplexer.md) — pane types, layouts, workspaces

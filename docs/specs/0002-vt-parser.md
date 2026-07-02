@@ -11,20 +11,25 @@ tags: [core]
 
 ## Overview
 
-Defines the VT parser state machine, the terminal handler interface, and the supported escape sequence inventory for OakTerm Phase 0. The parser reads bytes from the PTY and dispatches parsed sequences to the handler. The handler interprets sequences and mutates the screen buffer. Together they implement the `xterm-256color` terminal type with Kitty graphics (ADR-0004) and OSC 133/7 shell integration (ADR-0008).
+Defines the VT parser state machine, the terminal handler interface, and the supported escape sequence inventory for OakTerm Phase 0. The parser reads bytes from the PTY and dispatches parsed sequences to the handler. The handler interprets sequences and mutates the screen buffer. Together they implement the `xterm-256color` terminal type and OSC 133/7 shell integration (ADR-0008). Kitty graphics (ADR-0004) is specified here but deferred past Phase 0 (see [Kitty Graphics](#kitty-graphics-adr-0004)).
 
 ## Contract
 
 ### Parser State Machine
 
-The parser implements the Paul Williams VT parser model (14 states) with one modification: APC sequences are captured instead of ignored, to support the Kitty graphics protocol.
+The `vte` crate (v0.15) owns the parser state machine — a table-driven
+implementation of the Paul Williams VT parser model (14 states). OakTerm does
+not implement or extend the state machine: it drives vte's `ansi::Processor`,
+which runs the table and invokes OakTerm's handler at sequence boundaries. The
+states below are documented for reference; they describe vte's behavior, not an
+OakTerm-owned parser.
 
 **States:**
 
 | State               | Entry Action | Purpose                                                                                         |
 | ------------------- | ------------ | ----------------------------------------------------------------------------------------------- |
 | ground              | —            | Normal operation. Prints characters, executes C0 controls.                                      |
-| escape              | clear        | Entered on ESC. Routes to escape_intermediate, csi_entry, dcs_entry, osc_string, or apc_string. |
+| escape              | clear        | Entered on ESC. Routes to escape_intermediate, csi_entry, dcs_entry, osc_string, or sos_pm_apc. |
 | escape_intermediate | —            | Collects intermediate bytes during escape sequences.                                            |
 | csi_entry           | clear        | Entered on CSI (ESC [). Routes to csi_param, csi_intermediate, or csi_ignore.                   |
 | csi_param           | —            | Accumulates numeric parameters and semicolons.                                                  |
@@ -36,60 +41,51 @@ The parser implements the Paul Williams VT parser model (14 states) with one mod
 | dcs_passthrough     | hook         | Passes bytes to device-specific handler. Exit: unhook.                                          |
 | dcs_ignore          | —            | Consumes malformed DCS.                                                                         |
 | osc_string          | osc_start    | Entered on OSC (ESC ]). Passes bytes via osc_put. Exit: osc_end.                                |
-| apc_string          | apc_start    | Entered on APC (ESC \_). Captures content for Kitty graphics. Exit: apc_end.                    |
+| sos_pm_apc_string   | —            | Entered on SOS/PM/APC. Content ignored (see Kitty Graphics, below).                             |
 
-**Modification from Paul Williams model:** The standard model lumps SOS, PM, and APC into a single `sos_pm_apc_string` state that ignores all content. OakTerm splits APC into its own state (`apc_string`) that captures content and dispatches it to the handler. SOS and PM remain ignored.
+**Paul Williams model conformance:** vte follows the standard model, which lumps
+SOS, PM, and APC into a single `sos_pm_apc_string` state that ignores all
+content. vte 0.15 exposes no callback for APC content, so the Kitty graphics
+protocol (which rides on APC) is not surfaced to the handler in Phase 0. See the
+[Kitty Graphics](#kitty-graphics-adr-0004) deferral below.
 
 **Anywhere transitions:** CAN (0x18), SUB (0x1A), and ESC cancel the current sequence from any state and return to ground (or escape for ESC).
 
-**Parser implementation:** Table-driven. A `[256][State] -> (Action, NextState)` lookup table computed at compile time. The `vte` crate (v0.15+) or equivalent provides this foundation; APC handling extends it.
+**Parser implementation:** Table-driven. A `[256][State] -> (Action, NextState)`
+lookup table computed at compile time, provided entirely by vte 0.15. OakTerm
+adds no parser tables or state extensions of its own.
 
-### Perform Trait
+### Handler Trait (`vte::ansi::Handler`)
 
-The low-level interface between the parser state machine and the handler. The parser calls these methods as it recognizes sequence boundaries.
+OakTerm implements vte's `ansi::Handler` trait directly (see
+`crates/oakterm-terminal/src/handler.rs`). vte's `ansi::Processor` owns the
+parser state machine, parses parameters, and calls the `Handler` methods as it
+recognizes sequence boundaries — there is no intervening OakTerm-owned `Perform`
+layer, `csi_dispatch`, or `apc_*` callbacks. `Terminal` (the type implementing
+`Handler`) is the only layer that depends on vte; the `Grid` it mutates uses
+OakTerm's own types.
 
-```rust
-trait Perform {
-    /// Printable character in ground state.
-    fn print(&mut self, c: char);
+The `Processor` is instantiated as
+`vte::ansi::Processor::<vte::ansi::StdSyncHandler>::new()`. The generic
+parameter is vte's synchronized-output driver: DEC mode 2026 (see
+[Synchronized Output](#synchronized-output-dec-2026)) is buffered and flushed
+**inside vte's Processor**, not by OakTerm handler code. Bytes are fed via
+`processor.advance(&mut terminal, input)`.
 
-    /// C0 or C1 control byte in ground state.
-    fn execute(&mut self, byte: u8);
+`ansi::Handler`'s methods all carry default no-op implementations, so OakTerm
+implements only the sequences it supports; unimplemented callbacks are inert.
+vte parses numeric parameters (separated by `;` or by `:` for sub-parameters
+like SGR `38:2:R:G:B`, missing parameters defaulting to 0) before invoking the
+handler.
 
-    /// CSI sequence complete. `action` is the final byte (0x40-0x7E).
-    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char);
+### Sequence Coverage
 
-    /// ESC sequence complete. `byte` is the final byte.
-    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8);
-
-    /// OSC sequence complete. `params` are semicolon-delimited byte slices.
-    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool);
-
-    /// DCS sequence started.
-    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char);
-
-    /// DCS data byte.
-    fn put(&mut self, byte: u8);
-
-    /// DCS sequence ended.
-    fn unhook(&mut self);
-
-    /// APC sequence started (Kitty graphics).
-    fn apc_start(&mut self);
-
-    /// APC data byte.
-    fn apc_put(&mut self, byte: u8);
-
-    /// APC sequence ended. Handler processes buffered APC content.
-    fn apc_end(&mut self);
-}
-```
-
-The `Params` type holds parsed numeric parameters from CSI/DCS sequences. Parameters are separated by `;` (semicolon) or `:` (colon, for sub-parameters like SGR 38:2:R:G:B). Missing parameters default to 0.
-
-### Handler Interface
-
-The high-level interface that interprets parsed sequences and mutates terminal state. Organized by category. All methods have default no-op implementations to enable incremental development.
+The sequences OakTerm's `Handler` implementation must interpret, and their
+semantics, organized by category. Method names below describe the callback
+surface and are illustrative; the authoritative signatures live in
+`crates/oakterm-terminal/src/handler.rs` (vte defines the trait, so some
+signatures differ from the sketches here — e.g. `set_title` takes an
+`Option<String>` and `identify_terminal` takes an `Option<char>`).
 
 #### Character Output
 
@@ -202,6 +198,11 @@ enum Color {
 }
 ```
 
+The cell model carries an overline flag, but SGR 53 (overline) and SGR 55
+(cancel overline) are not yet applied from sequences: vte 0.15's `Attr` enum has
+no overline variant, so setting the flag needs a custom CSI dispatch path
+(TREK-33). Until then `Overline` / `CancelOverline` are inert.
+
 #### Mode Management
 
 ```rust
@@ -270,10 +271,14 @@ fn device_status(&mut self, writer: &mut dyn Write, mode: usize);
 
 ```rust
 fn set_title(&mut self, title: &str);              // OSC 0/2
-fn set_icon_name(&mut self, name: &str);           // OSC 1
 fn push_title(&mut self);                          // CSI 22;0 t
 fn pop_title(&mut self);                           // CSI 23;0 t
 ```
+
+OSC 1 (icon name) is folded into title handling: vte does not expose a separate
+icon-name callback, so OSC 0 and OSC 2 both drive `set_title` and OSC 1 alone is
+not distinguished. Phase 0 tracks a single window title; a separate icon name is
+not modeled.
 
 #### Clipboard
 
@@ -345,6 +350,24 @@ they occupy different rows: cwd at prompt time, `D` at command end). This
 mirrors the single-`semantic_mark` collision noted in ADR-0015.
 
 #### Kitty Graphics (ADR-0004)
+
+**Deferred — not implemented in Phase 0.** Two blockers stand between this
+design and code:
+
+1. **No parser hook.** vte 0.15 collapses APC into the ignored
+   `sos_pm_apc_string` state and exposes no APC callback, so the Kitty control
+   bytes never reach the handler. No `apc_*` handling exists in
+   `crates/oakterm-terminal/src/handler.rs`.
+2. **Open transport question.** ADR-0004 puts parsing in the VT layer and
+   compositing in the renderer, but per ADR-0007 those live in different
+   processes and Spec-0001 defines no image/blob message. Image payload
+   transport and texture ownership across the daemon/GUI split are an open ADR
+   candidate (see `docs/reviews/2026-07-01-214630-decisions-architecture-audit.md`,
+   Contradictions #2). Until that ADR lands, Kitty graphics is unimplementable
+   as specced.
+
+The interface and command model below are retained as the target design for the
+phase that picks this up.
 
 ```rust
 /// APC sequence identified as Kitty graphics command.

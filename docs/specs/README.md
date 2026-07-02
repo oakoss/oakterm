@@ -32,8 +32,8 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | ------------------------------------------ | ---------------------------- | ------------ | -------------- | ------ |
 | [0001](0001-daemon-wire-protocol.md)       | Daemon Wire Protocol         | implementing | 0007           | core   |
 | [0002](0002-vt-parser.md)                  | VT Parser & Terminal Handler | implementing | 0004,0008      | core   |
-| [0003](0003-screen-buffer.md)              | Screen Buffer                | complete     | 0006,0001,0009 | core   |
-| [0004](0004-scroll-buffer.md)              | Scroll Buffer & Archive      | complete     | 0006           | core   |
+| [0003](0003-screen-buffer.md)              | Screen Buffer                | implementing | 0006,0001,0009 | core   |
+| [0004](0004-scroll-buffer.md)              | Scroll Buffer & Archive      | implementing | 0006           | core   |
 | [0005](0005-lua-config-runtime.md)         | Lua Config Runtime           | complete     | 0005           | config |
 | [0006](0006-accessibility-bridge.md)       | Accessibility Bridge         | complete     | 0001           | a11y   |
 | [0007](0007-pane-tree-layout.md)           | Pane Tree & Layout           | implementing | 0010           | core   |

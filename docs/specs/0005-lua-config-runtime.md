@@ -29,14 +29,14 @@ let lua = Lua::new_with(
 
 **Loaded libraries:**
 
-| Library   | Purpose                                                                                                                                                        |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| BASE      | `pairs`, `ipairs`, `pcall`, `xpcall`, `error`, `type`, `tostring`, `tonumber`, `select`, `assert`, `rawget`, `rawset`, `setmetatable`, `getmetatable`, `print` |
-| COROUTINE | Coroutine operations                                                                                                                                           |
-| TABLE     | `table.insert`, `table.remove`, `table.sort`, `table.concat`, `table.unpack`                                                                                   |
-| STRING    | String manipulation, pattern matching                                                                                                                          |
-| UTF8      | `utf8.char`, `utf8.codes`, `utf8.len`, `utf8.offset`                                                                                                           |
-| MATH      | Math functions                                                                                                                                                 |
+| Library   | Purpose                                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| BASE      | `pairs`, `ipairs`, `pcall`, `xpcall`, `error`, `type`, `tostring`, `tonumber`, `select`, `assert`, `setmetatable`, `getmetatable`, `print` |
+| COROUTINE | Coroutine operations                                                                                                                       |
+| TABLE     | `table.insert`, `table.remove`, `table.sort`, `table.concat`, `table.unpack`                                                               |
+| STRING    | String manipulation, pattern matching                                                                                                      |
+| UTF8      | `utf8.char`, `utf8.codes`, `utf8.len`, `utf8.offset`                                                                                       |
+| MATH      | Math functions                                                                                                                             |
 
 **Not loaded:**
 
@@ -51,12 +51,20 @@ let lua = Lua::new_with(
 
 ```rust
 let globals = lua.globals();
+// Code loading — can execute arbitrary files or strings.
 globals.set("dofile", Value::Nil)?;
 globals.set("loadfile", Value::Nil)?;
 globals.set("load", Value::Nil)?;
+// GC control — no config use case; allows disabling the collector.
+globals.set("collectgarbage", Value::Nil)?;
+// Raw table access — bypasses the proxy-table metatable protection.
+globals.set("rawset", Value::Nil)?;
+globals.set("rawget", Value::Nil)?;
+globals.set("rawequal", Value::Nil)?;
+globals.set("rawlen", Value::Nil)?;
 ```
 
-These are removed because they can load and execute arbitrary code from the filesystem, bypassing the sandboxed require.
+`dofile`/`loadfile`/`load` are removed because they can load and execute arbitrary code from the filesystem, bypassing the sandboxed require. `collectgarbage` is removed because config has no use for manual GC control and it can disable the collector. The `raw*` functions are removed because they bypass the `__newindex`/`__index` metamethods that the `oakterm.config` proxy table relies on for key validation (see below).
 
 **`print` override:** The default Lua `print` is replaced with a function that redirects output to `oakterm.log("info", ...)`. In a daemon context, stdout is not meaningful. This ensures `print()` debugging in config files produces visible output in `oakterm --log`.
 
@@ -127,6 +135,10 @@ function oakterm.os() end
 ---@return string
 function oakterm.hostname() end
 
+--- Get the current system appearance (OS dark/light mode).
+---@return "light"|"dark"
+function oakterm.appearance() end
+
 --- Log a message (appears in oakterm --log output, not in the terminal).
 ---@param level "debug"|"info"|"warn"|"error"
 ---@param message string
@@ -142,10 +154,13 @@ Config values. Writing to this table sets configuration. Unknown keys raise a Lu
 ```lua
 oakterm.config.font_family = "JetBrains Mono"
 oakterm.config.font_size = 14.0
+oakterm.config.text_blending = "linear_corrected" -- "linear" or "linear_corrected"
+oakterm.config.text_gamma = 1.7                    -- > 0 and <= 5.0; macOS default 1.7, else 1.0
 oakterm.config.theme = "catppuccin"
 oakterm.config.cursor_style = "block"
 oakterm.config.cursor_blink = true
 oakterm.config.scrollback_limit = "50MB"
+oakterm.config.scroll_indicator = true
 oakterm.config.scrollback_archive = true
 oakterm.config.scrollback_archive_limit = "1GB"
 oakterm.config.save_alternate_scrollback = false  -- ADR-0006: default off; opt in for CLI-agent workflows
@@ -156,6 +171,8 @@ oakterm.config.window_decorations = "full"
 oakterm.config.confirm_close_process = true
 
 -- Phase 1: Multiplexer config (ADR-0011, Spec-0007, Spec-0008, Spec-0010)
+-- NOT YET IMPLEMENTED. The current runtime treats unknown keys as hard errors,
+-- so setting any of the keys below raises a config error until Phase 1 lands.
 oakterm.config.oak_mod = "ctrl+shift"       -- Linux default; "super" on macOS (super = Cmd key)
 oakterm.config.leader = nil                  -- optional: { key = "ctrl+b", timeout = 1000 }
 oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic"
@@ -164,7 +181,7 @@ oakterm.config.status_bar_position = "bottom" -- "top" or "bottom"
 oakterm.config.restartable_commands = {}     -- list of command prefixes to restore on session load
 ```
 
-The `oakterm.config` table is implemented as a **proxy table**: an empty table with `__newindex` and `__index` on its metatable, backed by a hidden storage table. This means `rawset(oakterm.config, key, value)` writes to the empty proxy (discarded), not the backing store. The metatable has `__metatable` set to a string, preventing `getmetatable`/`setmetatable` from inspecting or replacing the protection.
+The `oakterm.config` table is implemented as a **proxy table**: an empty table with `__newindex` and `__index` on its metatable, backed by a hidden storage table. Every write routes through `__newindex`, which validates the key. The `raw*` functions that could bypass the metamethods (`rawset`, `rawget`, `rawequal`, `rawlen`) are removed from the sandbox (see above), so there is no way to write past the validation. The metatable has `__metatable` set to a string, preventing `getmetatable`/`setmetatable` from inspecting or replacing the protection.
 
 The `__newindex` metamethod validates keys against the known config schema. Setting an unknown key (e.g., `oakterm.config.font_szie = 14`) raises an immediate error with a "did you mean?" suggestion if a close match exists.
 
@@ -190,6 +207,8 @@ oakterm.action.toggle_fullscreen()
 oakterm.action.reload_config()
 
 -- Phase 1: Multiplexer actions (Spec-0007, Spec-0008, Spec-0009)
+-- NOT YET IMPLEMENTED. These constructors are not registered in the current
+-- runtime; referencing any of them raises a Lua error until Phase 1 lands.
 oakterm.action.enter_copy_mode()
 oakterm.action.enter_resize_mode()
 oakterm.action.toggle_floating_pane()
@@ -213,28 +232,36 @@ oakterm.action.load_layout("name")       -- apply a named layout (see Layout API
 
 Events registered via `oakterm.on(event, callback)`:
 
-| Event                | Callback Signature                                        | When Fired                                                 |
-| -------------------- | --------------------------------------------------------- | ---------------------------------------------------------- |
-| `config.loaded`      | `function()`                                              | After config evaluation completes successfully             |
-| `config.reloaded`    | `function()`                                              | After hot-reload succeeds                                  |
-| `window.created`     | `function(window_id: number)`                             | New GUI window opened                                      |
-| `window.focused`     | `function(window_id: number)`                             | Window gains focus                                         |
-| `window.resized`     | `function(window_id: number, cols: number, rows: number)` | Window resized                                             |
-| `pane.created`       | `function(pane_id: number)`                               | New pane spawned                                           |
-| `pane.focused`       | `function(pane_id: number)`                               | Pane gains focus                                           |
-| `pane.closed`        | `function(pane_id: number, exit_code: number)`            | Pane's process exited                                      |
-| `pane.title_changed` | `function(pane_id: number, title: string)`                | Pane title updated                                         |
-| `pane.cwd_changed`   | `function(pane_id: number, cwd: string)`                  | Working directory changed (OSC 7)                          |
-| `tab.created`        | `function(tab_id: number)`                                | New tab created                                            |
-| `tab.closed`         | `function(tab_id: number)`                                | Tab closed                                                 |
-| `tab.switched`       | `function(tab_id: number)`                                | Active tab changed                                         |
-| `workspace.created`  | `function(workspace_id: number, name: string)`            | New workspace created                                      |
-| `workspace.switched` | `function(workspace_id: number, name: string)`            | Active workspace changed                                   |
-| `mode.changed`       | `function(pane_id: number, mode: string)`                 | Mode changed ("normal", "copy", "resize") for focused pane |
+| Event                | Callback Signature                                        | When Fired                                        |
+| -------------------- | --------------------------------------------------------- | ------------------------------------------------- |
+| `config.loaded`      | `function()`                                              | After config evaluation completes successfully    |
+| `config.reloaded`    | `function()`                                              | After hot-reload succeeds                         |
+| `window.created`     | `function(window_id: number)`                             | New GUI window opened                             |
+| `window.focused`     | `function(window_id: number)`                             | Window gains focus                                |
+| `window.resized`     | `function(window_id: number, cols: number, rows: number)` | Window resized                                    |
+| `pane.created`       | `function(pane_id: number)`                               | New pane spawned                                  |
+| `pane.focused`       | `function(pane_id: number)`                               | Pane gains focus                                  |
+| `pane.closed`        | `function(pane_id: number, exit_code: number)`            | Pane's process exited                             |
+| `pane.title_changed` | `function(pane_id: number, title: string)`                | Pane title updated                                |
+| `pane.cwd_changed`   | `function(pane_id: number, cwd: string)`                  | Working directory changed (OSC 7)                 |
+| `appearance.changed` | `function(appearance: "light"\|"dark")`                   | OS dark/light mode changed (winit `ThemeChanged`) |
 
 Multiple handlers can be registered for the same event. Handlers fire in registration order. A handler returning `false` cancels subsequent handlers for that event.
 
+**Phase 1 events (not yet implemented):** The following are not in the current runtime's known-event set; registering a handler for any of them raises an "unknown event" error until Phase 1 lands.
+
+| Event                | Callback Signature                             | When Fired                                                 |
+| -------------------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| `tab.created`        | `function(tab_id: number)`                     | New tab created                                            |
+| `tab.closed`         | `function(tab_id: number)`                     | Tab closed                                                 |
+| `tab.switched`       | `function(tab_id: number)`                     | Active tab changed                                         |
+| `workspace.created`  | `function(workspace_id: number, name: string)` | New workspace created                                      |
+| `workspace.switched` | `function(workspace_id: number, name: string)` | Active workspace changed                                   |
+| `mode.changed`       | `function(pane_id: number, mode: string)`      | Mode changed ("normal", "copy", "resize") for focused pane |
+
 #### Layout API
+
+**NOT YET IMPLEMENTED (Phase 1).** Neither `oakterm.layout.define` nor `oakterm.action.load_layout` is registered in the current runtime; both raise a Lua error until Phase 1 lands. Documented here as the intended contract.
 
 Declarative layout definitions. Layouts can be loaded by name from the command palette (`# layout_name`) or via `oakterm.action.load_layout("name")`.
 

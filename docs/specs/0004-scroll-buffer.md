@@ -1,7 +1,7 @@
 ---
 spec: '0004'
 title: Scroll Buffer & Archive
-status: complete
+status: implementing
 date: 2026-03-26
 adrs: ['0006']
 tags: [core]
@@ -141,7 +141,7 @@ Per ADR-0006, lines that scroll off the top of the alternate screen viewport are
 **Mechanism:**
 
 1. When the alternate grid (Spec-0003 ScreenSet) scrolls up and a row exits the top of the scroll region, the daemon checks the `save_alternate_scrollback` config option.
-2. If enabled (default: true), the row is appended to the primary screen's hot ring buffer as if it were a normal scrollback line.
+2. If enabled (default: false), the row is appended to the primary screen's hot ring buffer as if it were a normal scrollback line.
 3. If the hot buffer is full, normal pruning applies (row may be archived to disk).
 4. If disabled, the row is discarded.
 
@@ -176,6 +176,8 @@ The hot buffer and cold archive are accessed by GUI clients through Spec-0001 me
 - **`GetRenderUpdate { since_seqno }`** — covers the visible grid only. Scrollback rows are not transmitted via `RenderUpdate`. The client fetches them on demand via `GetScrollback`.
 
 The daemon translates between the logical scrollback row index (negative values in Spec-0003's Selection model) and the physical storage location (hot buffer offset or archive frame index).
+
+**Archive read-path status:** The archive read path is not yet wired into the daemon: `GetScrollback` does not fall back to the cold archive for older rows, and search does not cover archived rows. Both currently operate over the hot buffer only. This is tracked as a code fix; the contract above is unchanged.
 
 ## Behavior
 
