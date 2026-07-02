@@ -270,6 +270,11 @@ mod tests {
         nodes: Vec<LayoutNode>,
         weights: Vec<f32>,
     ) -> LayoutNode {
+        assert_eq!(
+            nodes.len(),
+            weights.len(),
+            "test setup: nodes and weights must be parallel"
+        );
         let children = nodes
             .into_iter()
             .zip(weights)
