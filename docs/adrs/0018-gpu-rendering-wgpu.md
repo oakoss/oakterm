@@ -68,6 +68,7 @@ wgpu collapses three native backends into one WGSL codebase while the abstractio
 ## Consequences
 
 - A criterion benchmark comparing OakTerm frame/latency against Alacritty and Ghostty is the validation gate for this decision (tracked as a renderer spike; per [ADR-0002](0002-performance-philosophy.md)'s benchmark discipline).
+- **Gate progress (2026-07-02, TREK-166): ingest-throughput parity confirmed; frame-time and input-latency parity remain open (TREK-192).** vtebench on the same hardware put OakTerm at 1.2x of Ghostty and 1.7-2.0x of Alacritty on cell-content workloads; the one large gap (scrolling, 4-53x) reproduced headlessly with rendering removed and is a daemon-side scrollback issue (TREK-191), not wgpu overhead. Nothing measured implicates wgpu, so the raw-Metal escape hatch stays reserved and unbuilt — but the gate closes only when a keypress-to-photon comparison (which subsumes frame cost) runs against Alacritty and Ghostty. Full method and numbers: [2026-07-02 parity benchmark](../reviews/2026-07-02-114749-wgpu-parity-benchmark.md).
 - Shaders are authored in WGSL; the glyph atlas and cell compositing target the wgpu pipeline.
 - The GPU backend stays behind a trait ([13-abstraction.md](../ideas/13-abstraction.md)); a raw-Metal fallback is _reserved_ but not built unless benchmarks force it.
 - The image-compositing API ([ADR-0004](0004-kitty-graphics-in-core.md)) is expressed in terms of the wgpu pipeline.
