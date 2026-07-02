@@ -366,7 +366,7 @@ impl ArchiveManager {
                 // Dead writer: the thread (and the core it owned) are gone;
                 // delete the files directly. Wedged writer: leave both the
                 // thread and the files alone — cleanup_orphans reclaims.
-                if self.writer.as_ref().is_some_and(|w| w.thread.is_finished()) {
+                if self.writer_is_dead() {
                     self.join_writer();
                     if self.session_dir.exists() {
                         std::fs::remove_dir_all(&self.session_dir)?;
@@ -377,6 +377,14 @@ impl ArchiveManager {
                 Err(e)
             }
         }
+    }
+
+    /// Whether the writer thread has exited — distinguishes a dead writer
+    /// (joinable, its core gone) from a wedged one (alive but stuck) after
+    /// a query fails. Shared by `shutdown` and `Drop` so the two never
+    /// classify the same state differently.
+    fn writer_is_dead(&self) -> bool {
+        self.writer.as_ref().is_some_and(|w| w.thread.is_finished())
     }
 
     /// Join a writer that is known to have exited (or is about to).
@@ -454,7 +462,7 @@ impl Drop for ArchiveManager {
         // a crash-dropped archive is reclaimed by cleanup_orphans. A
         // responsive writer is joined (it exits when the channel closes);
         // a wedged one is detached rather than hanging teardown.
-        if self.stats().is_some() || self.writer.as_ref().is_some_and(|w| w.thread.is_finished()) {
+        if self.stats().is_some() || self.writer_is_dead() {
             self.join_writer();
         } else {
             self.detach_writer();

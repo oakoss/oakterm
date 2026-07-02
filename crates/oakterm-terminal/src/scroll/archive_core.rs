@@ -404,8 +404,7 @@ impl ArchiveCore {
     fn finalize_active_segment(&mut self) -> io::Result<()> {
         let ActiveSegment { id: seg_id, writer } =
             self.active.take().expect("called with active writer");
-        let nonce_start_for_segment =
-            writer.key().nonce_counter() - u64::from(writer.frame_count());
+        let nonce_start_for_segment = writer.nonce_start();
         let total_rows = writer.total_rows();
         let path = self.segment_path(seg_id);
         // BufWriter defers most IO errors to this flush point, so these
@@ -437,6 +436,16 @@ impl ArchiveCore {
         // advance the base so gaps stay visible to the read path.
         let first_row_index = self.next_first_row_index;
         self.next_first_row_index += total_rows;
+
+        // A base inside an existing segment means some loss site chose
+        // lose_finalized where lose_unfinalized was required — the
+        // misalignment the two conventions exist to prevent.
+        debug_assert!(
+            self.segments
+                .last()
+                .is_none_or(|prev| first_row_index >= prev.first_row_index + prev.row_count),
+            "archive index base regressed into an existing segment"
+        );
 
         self.segments.push(FinalizedSegment {
             path,

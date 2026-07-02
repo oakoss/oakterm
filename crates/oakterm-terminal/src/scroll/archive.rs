@@ -178,6 +178,7 @@ pub fn deserialize_seek_table(data: &[u8]) -> io::Result<Vec<SeekTableEntry>> {
 pub struct SegmentWriter<W: Write> {
     writer: W,
     key: ArchiveKey,
+    nonce_start: u64,
     seek_table: Vec<SeekTableEntry>,
     written_bytes: u64,
     total_rows: u64,
@@ -191,26 +192,29 @@ impl<W: Write> SegmentWriter<W> {
     ///
     /// Returns an error if key generation fails.
     pub fn new(writer: W) -> io::Result<Self> {
-        Ok(Self {
-            writer,
-            key: ArchiveKey::generate()?,
-            seek_table: Vec::new(),
-            written_bytes: 0,
-            total_rows: 0,
-            frame_count: 0,
-        })
+        Ok(Self::with_key(writer, ArchiveKey::generate()?))
     }
 
-    /// Create a segment writer with a provided key (for testing).
+    /// Create a segment writer with a provided key.
     pub fn with_key(writer: W, key: ArchiveKey) -> Self {
         Self {
             writer,
+            nonce_start: key.nonce_counter(),
             key,
             seek_table: Vec::new(),
             written_bytes: 0,
             total_rows: 0,
             frame_count: 0,
         }
+    }
+
+    /// Nonce counter value of this segment's first frame. The writer
+    /// vouches for it so callers never back-compute it from the frame
+    /// count — that would silently break if the writer ever encrypted
+    /// anything besides row frames.
+    #[must_use]
+    pub fn nonce_start(&self) -> u64 {
+        self.nonce_start
     }
 
     /// Write a batch of rows as one compressed+encrypted frame.
