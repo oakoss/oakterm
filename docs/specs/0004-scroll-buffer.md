@@ -188,10 +188,34 @@ The daemon translates between the logical scrollback row index (negative values 
 2. Scroll event pushes top row out of the visible grid
 3. Row enters the hot ring buffer (most recent scrollback)
 4. Hot buffer exceeds max_bytes → oldest rows pruned
-5. If archive enabled: pruned rows serialized → compressed → encrypted → written to archive
+5. If archive enabled: pruned rows handed to the archive writer thread
+   (serialized → compressed → encrypted → written, off the ingest path)
 6. If archive full (exceeds max_disk_bytes): oldest frames deleted from archive head
 7. Archive frames older than the session are cleaned up on daemon exit
 ```
+
+### Archive Overload Policy
+
+Archival runs on a dedicated writer thread behind a bounded queue so
+compression and encryption never block VT ingest (the 2026-07-02 parity
+benchmark measured synchronous archival at ~5x ingest cost under
+sustained scrolling; see
+[the benchmark review](../reviews/2026-07-02-114749-wgpu-parity-benchmark.md)).
+
+When output scrolls rows faster than the writer can compress them (a
+sustained-firehose regime far above interactive rates), pruned batches
+that find the queue full are **dropped, not blocked on**: ingest never
+waits for the archive. Dropped rows are counted (`dropped_rows`) and
+logged at debug level. The hot buffer is unaffected — only cold history
+beyond `scrollback_limit` gets gaps, which is strictly more history than
+terminals without an archive retain.
+
+Rows can also be lost on the writer side (paused for low disk space,
+abandoned after a write error); all loss channels sum into
+`lost_rows`, and every loss advances the archive's index base so
+segment indexing exposes the gap. The archive read path must treat row
+indexing as non-contiguous whenever `lost_rows > 0`; reads inside a gap
+return no rows rather than misaligned ones.
 
 ### Hot Buffer Full
 

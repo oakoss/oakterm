@@ -42,5 +42,9 @@ harness = false
 name = "tree_replay"
 harness = false
 
+[[bench]]
+name = "scroll_archive"
+harness = false
+
 [lints]
 workspace = true
