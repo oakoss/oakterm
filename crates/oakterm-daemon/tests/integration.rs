@@ -9,7 +9,7 @@ use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
     HandshakeStatus, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE,
     MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
-    MSG_SERVER_HELLO, PaneExited, ServerHello,
+    MSG_PING, MSG_PONG, MSG_SERVER_HELLO, PaneExited, ServerHello,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -61,27 +61,49 @@ async fn daemon_handshake() {
     handle.abort();
 }
 
+/// Spec-0001: an unknown `msg_type` is ignored, not errored. A subsequent
+/// Ping must still get a Pong, with no Error frame in between and the
+/// connection left open.
 #[tokio::test]
-async fn unknown_message_type_returns_error() {
+async fn unknown_message_type_is_ignored() {
     let (mut stream, mut codec, _handle) = connect_and_handshake().await;
 
-    // Send a frame with an unknown message type.
-    let frame = Frame::new(0xFFFF, 42, vec![]).expect("create frame");
+    // Non-empty payload: the frame must be skipped whole, payload included.
+    let frame = Frame::new(0xFFFF, 42, vec![0xDE, 0xAD, 0xBE, 0xEF]).expect("create frame");
     let mut buf = BytesMut::new();
     codec.encode(frame, &mut buf).expect("encode frame");
     stream.write_all(&buf).await.expect("write unknown msg");
 
-    // Read error response.
-    let mut read_buf = BytesMut::with_capacity(256);
-    let n = stream.read_buf(&mut read_buf).await.expect("read response");
-    assert!(n > 0, "should receive error response");
+    let ping = Frame::new(MSG_PING, 43, vec![]).expect("create ping");
+    let mut buf = BytesMut::new();
+    codec.encode(ping, &mut buf).expect("encode ping");
+    stream.write_all(&buf).await.expect("write ping");
 
-    let response = codec.decode(&mut read_buf).expect("decode").expect("frame");
-    assert_eq!(response.msg_type, MSG_ERROR);
-    assert_eq!(response.serial, 42);
-
-    let err = ErrorMessage::decode(&response.payload).expect("decode ErrorMessage");
-    assert_eq!(err.code, ErrorCode::InvalidMessage as u32);
+    // Read frames in order, skipping pushes (serial 0). The first
+    // serial-carrying frame must be the Pong — a buggy daemon would send
+    // an Error for serial 42 first.
+    let read_ordered = async {
+        let mut read_buf = BytesMut::with_capacity(256);
+        loop {
+            if let Some(response) = codec.decode(&mut read_buf).expect("decode") {
+                if response.serial == 0 {
+                    continue;
+                }
+                assert_ne!(
+                    response.msg_type, MSG_ERROR,
+                    "daemon must ignore unknown msg_type, not error"
+                );
+                assert_eq!(response.msg_type, MSG_PONG);
+                assert_eq!(response.serial, 43);
+                break;
+            }
+            let n = stream.read_buf(&mut read_buf).await.expect("read response");
+            assert!(n > 0, "daemon closed connection after unknown msg_type");
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read_ordered)
+        .await
+        .expect("daemon did not answer the Ping within 5s");
 }
 
 #[tokio::test]

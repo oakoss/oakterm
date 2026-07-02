@@ -100,6 +100,7 @@ The negotiation rules above describe how a mismatch is _handled_; these rules de
 - **Breaking (major bump):** removing or repurposing a `msg_type`; changing the type, order, width, or semantics of any existing field; or altering the framing or handshake layout.
 - **Retired `msg_type` numbers are never reused.** A removed message type's number is burned, not recycled, so a stale peer can never misinterpret a new message as an old one.
 - Forward compatibility within a major version rests on the unknown-`msg_type` rule (ignore the frame — see [Error Cases](#error-cases)); additive changes are only safe because of it.
+- Client obligation: gate new request types on the peer's advertised minor version, and never block waiting for a response to a `msg_type` the peer may not know — an ignored frame produces no response by design.
 
 ### Message Catalog
 

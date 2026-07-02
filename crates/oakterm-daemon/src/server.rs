@@ -1480,13 +1480,10 @@ async fn handle_request(
             }
         },
         unknown => {
-            warn!(conn_id, msg_type = unknown, "unknown message type");
-            make_error_response(
-                conn_id,
-                frame.serial,
-                ErrorCode::InvalidMessage,
-                &format!("unknown message type: 0x{unknown:04X}"),
-            )
+            // Spec-0001: ignore the frame — forward compatibility for
+            // additive minor versions rests on this.
+            debug!(conn_id, msg_type = unknown, "ignoring unknown message type");
+            RequestResult::NoResponse
         }
     }
 }
