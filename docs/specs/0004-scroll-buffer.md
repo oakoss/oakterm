@@ -212,10 +212,13 @@ terminals without an archive retain.
 
 Rows can also be lost on the writer side (paused for low disk space,
 abandoned after a write error); all loss channels sum into
-`lost_rows`, and every loss advances the archive's index base so
-segment indexing exposes the gap. The archive read path must treat row
-indexing as non-contiguous whenever `lost_rows > 0`; reads inside a gap
-return no rows rather than misaligned ones.
+`lost_rows`, and every loss of not-yet-finalized rows advances the
+archive's index base so segment indexing exposes the gap. Losing
+already-finalized rows (an era reset after key loss) does not advance
+the base — finalize already did — but their range still reads back as
+a gap because the segments are gone. The archive read path must treat
+row indexing as non-contiguous whenever `lost_rows > 0`; reads inside
+a gap return no rows rather than misaligned ones.
 
 ### Hot Buffer Full
 
