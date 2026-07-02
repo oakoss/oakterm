@@ -52,7 +52,7 @@ Status is `proposed` pending acceptance.
 
 ## Consequences
 
-- Prerequisite: this depends on OSC 133 capture actually landing per [ADR-0008](0008-shell-integration-timing.md) — the current Phase 0 code has no OSC 133 handler yet — and on row metadata carrying the needed marks (a `Row` holds a single `semantic_mark` today, so boundary derivation must handle prompt/input marks colliding on one row).
+- Prerequisite: this depends on OSC 133 capture per [ADR-0008](0008-shell-integration-timing.md) — landed with OSC 133/7 interception (#32) — and on row metadata carrying the needed marks (a `Row` holds a single `semantic_mark` today, so boundary derivation must handle prompt/input marks colliding on one row).
 - The Phase 2 plugin API must expose: command block boundaries (derived from stored OSC 133 marks), per-block text extraction, and a viewport-projection (filtered-render) primitive — folding a block must reclaim its viewport rows, not merely mask them.
 - Phase 1 scope already includes scroll-to-prompt and per-command selection; no change there.
 - The screen-buffer model is unchanged — block boundaries are derived from existing mark metadata. Folding does require a new renderer primitive (a projected/filtered viewport that can collapse row ranges); the character-grid model itself is not altered.

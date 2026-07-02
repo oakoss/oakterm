@@ -14,7 +14,7 @@ Phase 1 adds copy mode: modal navigation through scrollback with vim/emacs keybi
 
 OakTerm's daemon/GUI split (ADR-0007) creates a design question: the daemon owns scrollback (ring buffer + encrypted disk archive, Spec-0004), but the GUI owns rendering and input. Copy mode cursor movement is high-frequency (holding `j` repeats at keyboard repeat rate, ~30-60 events/second). The scrollback can be millions of lines with the disk archive enabled.
 
-The wire protocol supports chunk-based scrollback access (`GetScrollback`/`ScrollbackData`, Spec-0001). Search messages (`SearchScrollback`/`SearchResults`/`SearchNext`/`SearchPrev`) are implemented in code (0x77-0x7B) but not yet documented in the spec. Selection coordinates use `i64` row indices where negative values reference scrollback; this coordinate space is shared between the wire protocol's `GetScrollback.start_row` (Spec-0001) and the screen buffer's `SelectionAnchor` (Spec-0003).
+The wire protocol supports chunk-based scrollback access (`GetScrollback`/`ScrollbackData`, Spec-0001). Search messages (`SearchScrollback`/`SearchResults`/`SearchNext`/`SearchPrev`, 0x77-0x7B) are implemented in code and documented in Spec-0001. Selection coordinates use `i64` row indices where negative values reference scrollback; this coordinate space is shared between the wire protocol's `GetScrollback.start_row` (Spec-0001) and the screen buffer's `SelectionAnchor` (Spec-0003).
 
 Research covered tmux (fully server-side), WezTerm (single-process overlay), Zellij (server-side with editor delegation), Kitty (client-side with pager delegation), and Alacritty (fully client-side).
 
@@ -81,7 +81,7 @@ Full client-side is impractical: the GUI cannot duplicate millions of scrollback
 | State                  | Owner  | Rationale                                                                  |
 | ---------------------- | ------ | -------------------------------------------------------------------------- |
 | Scrollback rows        | Daemon | Hot buffer + disk archive, existing ownership                              |
-| Search index/results   | Daemon | Existing search messages in code (0x77-0x7B), to be added to Spec-0001     |
+| Search index/results   | Daemon | Existing search messages (0x77-0x7B, Spec-0001)                            |
 | Copy mode active set   | Both   | Daemon tracks which clients have pinned viewports; GUI activates key table |
 | Cursor position        | GUI    | High-frequency updates, no daemon involvement                              |
 | Selection anchors      | GUI    | Coordinates in daemon row-index space, resolved at yank time               |
@@ -127,12 +127,12 @@ On `ExitCopyMode`, the daemon discards the pinned offset and snaps the viewport 
 
 ## Consequences
 
-- Spec-0001 (wire protocol) needs `EnterCopyMode`, `ExitCopyMode`, and `YankSelection` messages. The existing search messages (0x77-0x7B) should also be added to the spec.
-- A future Spec-0008 (Copy Mode) will define the key tables, selection types, and viewport cache behavior.
+- Spec-0001 (wire protocol) documents `EnterCopyMode`, `ExitCopyMode`, and `YankSelection` (0x97-0x99) alongside the search messages (0x77-0x7B).
+- Spec-0008 (Copy Mode) defines the key tables, selection types, and viewport cache behavior.
 - The GUI process gains a `CopyModeState` struct per pane: cursor position, selection anchors, cached rows, search highlights.
 - The daemon gains a per-pane set of client IDs with pinned viewports. Scroll-on-output is suppressed for a client while its ID is in the set. Other clients viewing the same pane continue to see live output.
 - Multi-client: each client can be in copy mode independently on the same pane. `EnterCopyMode` adds the client ID to the set; `ExitCopyMode` removes it. Each client's pinned offset is independent.
-- The existing `GetScrollback`/`ScrollbackData` (Spec-0001) and `SearchScrollback`/`SearchResults` (implemented, not yet in spec) messages are reused without modification.
+- The existing `GetScrollback`/`ScrollbackData` and `SearchScrollback`/`SearchResults` messages (Spec-0001) are reused without modification.
 
 ## References
 

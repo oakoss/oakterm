@@ -28,7 +28,7 @@ Integrate [AccessKit](https://github.com/AccessKit/accesskit) in Phase 0. The ac
 - Competitive white space — no GPU terminal ships cross-platform screen reader support.
 - AccessKit has a dedicated `Role::Terminal` with VT-100 semantics, text selection, live regions, and scroll properties.
 - Production-proven in GPU-rendered Rust apps: egui (wgpu), Bevy (wgpu), Slint, Servo.
-- Lazy activation: `update_if_active()` is a no-op when no screen reader is attached. Target of <0.5ms/frame when active, ~0ms inactive.
+- Lazy activation: `update_if_active()` is a no-op when no screen reader is attached — near-zero cost when inactive; active cost is tracked by benchmark per [ADR-0002](0002-performance-philosophy.md).
 - Windows and macOS adapters are production-ready. Linux adapter is actively developed and functional.
 
 **Cons:**
@@ -76,7 +76,7 @@ The architectural cost of building it in from the start is low (the screen buffe
 - The renderer architecture maintains the VT parser's screen buffer as a shared data source for both GPU rendering and the AccessKit tree.
 - Screen reader support ships on Windows and macOS from the first release. Linux support follows as `accesskit_unix` matures.
 - The AccessKit tree must be updated incrementally on screen buffer changes (not full rebuilds).
-- Performance target: <0.5ms/frame when a screen reader is active, ~0ms when inactive.
+- Performance is tracked by benchmark on the a11y update path (no regression), not a fixed per-frame budget, per [ADR-0002](0002-performance-philosophy.md). Inactive cost stays ~0 via lazy activation.
 - Update [17-accessibility.md](../ideas/17-accessibility.md) to reflect Phase 0 placement.
 - Update [33-roadmap.md](../ideas/33-roadmap.md) to move accessibility from Phase 5 to Phase 0.
 
