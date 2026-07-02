@@ -166,10 +166,13 @@ If a plugin exceeds its budget, it's killed and restarted (or disabled with a no
 Every PR runs:
 
 - Valgrind / AddressSanitizer on the core
-- 24-hour soak test: open 10 panes, stream random output, verify memory stays bounded
-- "Claude Code simulation": rapid Unicode + escape sequence output for 1 hour, measure RSS delta
 - Plugin lifecycle test: load/unload plugins 1000 times, verify no growth
 - Scrollback archival test: 1M lines of output, verify memory stays at ring buffer size
+
+Nightly (see [25-testing.md](25-testing.md)):
+
+- 24-hour soak test: open 10 panes, stream random output, verify memory stays bounded
+- "Claude Code simulation": rapid Unicode + escape sequence output for 1 hour, measure RSS delta
 
 ## Related Pain Points Addressed
 

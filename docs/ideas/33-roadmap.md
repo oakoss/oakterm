@@ -10,6 +10,8 @@ tags: ['roadmap', 'mvp', 'phases', 'priorities']
 
 What gets built first and why.
 
+**Status (2026-07-01):** Phase 0 complete. Phase 1 (multiplexer) in progress.
+
 ## Guiding Principle
 
 Ship a usable terminal as fast as possible. Then add layers. Every phase produces something people can actually use — not a tech demo that becomes useful "eventually."
@@ -66,6 +68,7 @@ Tabs, splits, and session management.
 - Session persistence (serialize on quit, restore on launch)
 - Layouts (declarative, in config)
 - Copy mode (vim/emacs/basic keybinds)
+- Scroll-to-prompt, per-command output selection, process completion notifications, command duration display ([ADR-0008](../adrs/0008-shell-integration-timing.md))
 - Command palette (`:` commands, `>` actions, `@` workspaces, `#` layouts)
 - Smart Ctrl+C/V (platform-aware)
 - Keybind configuration
@@ -123,9 +126,7 @@ Smart features that know what you're doing.
 
 **What ships:**
 
-- Shell integration (bash, zsh, fish scripts + OSC 133/7 parsing)
-- Scroll-to-prompt
-- Process completion notifications
+- Shell integration scripts (bash, zsh, fish) — OSC 133/7 parsing shipped in Phase 0, UI features in Phase 1 ([ADR-0008](../adrs/0008-shell-integration-timing.md))
 - Context engine plugin (smart autocomplete, project detection, typed completions)
 - Agent management plugin (`:agent`, worktrees, sidebar status, `:merge`, `:diff`)
 - Harpoon plugin (pane bookmarks)

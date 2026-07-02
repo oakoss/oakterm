@@ -48,7 +48,7 @@ What we took from each terminal and tool — and what we deliberately left out.
 ### WezTerm
 
 **Took:** Lua config (programmable, proven), built-in multiplexer concept, SSH domain multiplexing, workspaces
-**Left:** Lua as plugin language (WASM instead), Electron-weight memory footprint
+**Left:** Lua as plugin language (WASM instead), heavier memory footprint than lighter GPU terminals
 
 ### Warp
 
@@ -62,7 +62,7 @@ What we took from each terminal and tool — and what we deliberately left out.
 
 ### Zellij
 
-**Took:** Floating panes, WASM plugin system (only shipping implementation), discoverable mode bar, declarative layouts
+**Took:** Floating panes, WASM plugin system (only terminal shipping one), discoverable mode bar, declarative layouts
 **Left:** KDL config format, high memory baseline (80MB empty)
 
 ### Foot
@@ -98,7 +98,7 @@ What we took from each terminal and tool — and what we deliberately left out.
 ### iTerm2
 
 **Took:** Smart selection (quad-click selects semantic objects), triggers (regex → action), process completion notifications, automatic profile switching per directory
-**Left:** No GPU rendering (high CPU/memory), bloated feature set, macOS-only
+**Left:** Bloated feature set, macOS-only, heavier than GPU-first terminals even with its Metal renderer
 
 ### Windows Terminal
 

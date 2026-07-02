@@ -35,7 +35,6 @@ wgpu handles the GPU abstraction across all three — Metal, Vulkan, and DX12 fr
 - AppKit window management — title bar, traffic lights, native tabs (optional)
 - Cmd keybindings (Cmd+C, Cmd+V, Cmd+N, Cmd+T) feel native
 - Secure keyboard entry support (prevents other apps from reading keystrokes)
-- Touch Bar support (if present) — show pane switcher, current branch
 - Trackpad smooth scrolling with momentum
 - Handoff / Universal Clipboard (paste from iPhone)
 - System proxy settings respected for SSH
@@ -161,7 +160,7 @@ keybinds = {
 - Same config file works on all platforms (platform-specific sections optional)
 - Same plugins work on all platforms (WASM is portable)
 - Same keybind config works everywhere (via `super` abstraction)
-- Feature parity — no platform gets a feature the others don't (except platform-specific integrations like WSL or Touch Bar)
+- Feature parity — no platform gets a feature the others don't (except platform-specific integrations like WSL)
 - CI tests on all three platforms for every PR
 - Same release cadence for all platforms
 

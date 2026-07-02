@@ -31,7 +31,7 @@ OSC 133;A ST  → prompt started
 OSC 133;B ST  → command started (user pressed enter)
 OSC 133;C ST  → command output started
 OSC 133;D;{exit_code} ST  → command finished with exit code
-OSC 7;{cwd} ST  → current working directory changed
+OSC 7;file://{hostname}/{path} ST  → current working directory changed
 ```
 
 This is the same protocol iTerm2, Ghostty, and WezTerm use. We follow the standard — no custom escape sequences.

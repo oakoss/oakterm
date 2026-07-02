@@ -50,7 +50,7 @@ Used for:
 
 ### 3. OS Notifications (system-level)
 
-Native notifications via NSUserNotification (macOS), libnotify (Linux), Windows Toast. Only used when the terminal is not focused or is minimized.
+Native notifications via UNUserNotificationCenter (macOS), libnotify (Linux), Windows Toast. Only used when the terminal is not focused or is minimized.
 
 Used for:
 

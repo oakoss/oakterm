@@ -1,6 +1,6 @@
 ---
 title: 'Multiplexer'
-status: reviewing
+status: decided
 category: core
 description: 'Workspaces, splits, floating panes, SSH domains, session persistence'
 tags:
