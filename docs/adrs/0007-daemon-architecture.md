@@ -145,17 +145,17 @@ The daemon protocol supports multiple client types:
 
 ### Crash Recovery
 
-| Scenario                             | Recovery                                                                                                          |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| GUI process crash (GPU driver, etc.) | Daemon survives. New GUI process reconnects. Running processes and scroll history are intact.                     |
-| Daemon crash                         | GUI detects disconnect. Daemon restarts and restores from disk (session persistence). GUI reconnects.             |
-| GPU device loss (soft crash)         | GUI rebuilds GPU resources in-process from CPU-side state (wgpu device-loss callback). No process restart needed. |
+| Scenario                             | Recovery                                                                                                                                                     |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GUI process crash (GPU driver, etc.) | Daemon survives. New GUI process reconnects. Running processes and scroll history are intact.                                                                |
+| Daemon crash                         | GUI detects disconnect. Daemon restarts and restores sessions from disk (Spec-0010; scrollback is not persisted, so scroll history is lost). GUI reconnects. |
+| GPU device loss (soft crash)         | GUI rebuilds GPU resources in-process from CPU-side state (wgpu device-loss callback). No process restart needed.                                            |
 
 ### Daemon Upgrade
 
-When the user installs a new version while a persistent daemon is running, the new GUI detects a version mismatch via the protocol handshake. Graceful upgrade mechanism deferred to a later ADR, but options include: daemon self-restart with state serialization, or side-by-side version coexistence. The protocol's version handshake ensures incompatible clients and daemons never silently misbehave.
+When the user installs a new version while a persistent daemon is running, the new GUI detects a version mismatch via the protocol handshake. The graceful upgrade mechanism is addressed in [ADR-0020](0020-daemon-upgrade-version-skew.md) (proposed: coordinated serialize-and-restart). The protocol's version handshake ensures incompatible clients and daemons never silently misbehave.
 
-Prior art bounds the options: tmux and WezTerm reject a mismatched client and force a manual, lossy server restart, while Zellij's fix was a versioned IPC contract decoupled from the app version so most upgrades attach cleanly. OakTerm already holds both halves of the better path — a protocol version independent of the app version with additive-minor negotiation ([Spec-0001](../specs/0001-daemon-wire-protocol.md)) and session persistence ([Spec-0010](../specs/0010-session-persistence.md)) — so a breaking (major) upgrade can serialize daemon state, relaunch on the new binary, and restore rather than drop sessions. Write the follow-up ADR when persistence lands, and decide whether a tolerated minor mismatch (a new capability silently absent against an old daemon) should be surfaced to the user rather than left invisible.
+Prior art bounds the options: tmux and WezTerm reject a mismatched client and force a manual, lossy server restart, while Zellij's fix was a versioned IPC contract decoupled from the app version so most upgrades attach cleanly. OakTerm already holds both halves of the better path — a protocol version independent of the app version with additive-minor negotiation ([Spec-0001](../specs/0001-daemon-wire-protocol.md)) and session persistence ([Spec-0010](../specs/0010-session-persistence.md)) — so a breaking (major) upgrade can serialize daemon state, relaunch on the new binary, and restore rather than drop sessions. ADR-0020 makes both calls: coordinated serialize-and-restart for major upgrades, and a passive indicator (not a modal) when a tolerated minor mismatch leaves new capabilities silently absent.
 
 ## Consequences
 
