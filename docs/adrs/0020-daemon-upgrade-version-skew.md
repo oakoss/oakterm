@@ -1,7 +1,7 @@
 ---
 adr: '0020'
 title: Daemon Upgrade and Version Skew
-status: proposed
+status: accepted
 date: 2026-07-01
 tags: [core]
 ---

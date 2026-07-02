@@ -48,4 +48,4 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0017](0017-rust-implementation-language.md) | Rust Implementation Language    | accepted | core, renderer, security              |
 | [0018](0018-gpu-rendering-wgpu.md)           | GPU Rendering via wgpu          | accepted | renderer, core, abstraction           |
 | [0019](0019-wasm-plugin-runtime-wasmtime.md) | WASM Plugin Runtime (Wasmtime)  | accepted | plugins, core, security, abstraction  |
-| [0020](0020-daemon-upgrade-version-skew.md)  | Daemon Upgrade and Version Skew | proposed | core                                  |
+| [0020](0020-daemon-upgrade-version-skew.md)  | Daemon Upgrade and Version Skew | accepted | core                                  |
