@@ -6,18 +6,12 @@
 
 use crate::grid::row::Row;
 use crate::scroll::archive::{ArchiveKey, SegmentReader, SegmentWriter};
-use std::fs;
-use std::io::{self, BufWriter};
+use crate::scroll::storage::{DiskStorage, SegmentStorage};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 /// Target uncompressed frame size in bytes.
 const FRAME_TARGET_BYTES: usize = 64 * 1024;
-
-/// Minimum free disk space (1 GB) before archiving pauses.
-const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
-
-/// Minimum free disk percentage (5%) before archiving pauses.
-const MIN_FREE_PERCENT: u64 = 5;
 
 struct FinalizedSegment {
     path: PathBuf,
@@ -41,17 +35,20 @@ pub(crate) struct ArchiveStats {
 
 /// The segment currently being filled and its id — inseparable, so a
 /// writer without an id is unrepresentable.
-struct ActiveSegment {
+struct ActiveSegment<W: Write> {
     id: u32,
-    writer: SegmentWriter<BufWriter<fs::File>>,
+    writer: SegmentWriter<W>,
 }
 
 /// Archive state: batching, segment rotation, pruning, and disk-space
-/// protection. All methods are synchronous.
-pub(crate) struct ArchiveCore {
+/// protection. All methods are synchronous. Generic over the storage
+/// seam so tests can force each error channel; production uses
+/// `DiskStorage`.
+pub(crate) struct ArchiveCore<S: SegmentStorage = DiskStorage> {
+    storage: S,
     key: Option<ArchiveKey>,
     session_dir: PathBuf,
-    active: Option<ActiveSegment>,
+    active: Option<ActiveSegment<S::Writer>>,
     segments: Vec<FinalizedSegment>,
     pending_rows: Vec<Row>,
     pending_bytes: usize,
@@ -71,15 +68,21 @@ pub(crate) struct ArchiveCore {
     lost_rows: u64,
 }
 
-impl ArchiveCore {
+impl ArchiveCore<DiskStorage> {
     pub(crate) fn new(session_dir: PathBuf, max_disk_bytes: u64) -> io::Result<Self> {
-        fs::create_dir_all(&session_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o700))?;
-        }
+        Self::with_storage(DiskStorage, session_dir, max_disk_bytes)
+    }
+}
+
+impl<S: SegmentStorage> ArchiveCore<S> {
+    pub(crate) fn with_storage(
+        storage: S,
+        session_dir: PathBuf,
+        max_disk_bytes: u64,
+    ) -> io::Result<Self> {
+        storage.init_dir(&session_dir)?;
         Ok(Self {
+            storage,
             key: Some(ArchiveKey::generate()?),
             session_dir,
             active: None,
@@ -120,7 +123,7 @@ impl ArchiveCore {
             }
         }
         self.last_disk_check = Some(std::time::Instant::now());
-        has_enough_disk_space(&self.session_dir)
+        self.storage.has_enough_space(&self.session_dir)
     }
 
     /// Account a segment that failed to finalize: its rows are lost, the
@@ -129,7 +132,7 @@ impl ArchiveCore {
     fn discard_failed_segment(&mut self, id: u32, rows: u64) {
         self.lose_unfinalized(rows);
         let path = self.segment_path(id);
-        if let Err(e) = fs::remove_file(&path) {
+        if let Err(e) = self.storage.remove_file(&path) {
             tracing::warn!(error = %e, path = %path.display(), "could not remove failed segment");
         }
         self.recompute_total();
@@ -228,7 +231,7 @@ impl ArchiveCore {
             // The torn segment's content is unreadable — drop the file so
             // untracked bytes can't accumulate past max_disk_bytes.
             let path = self.segment_path(active.id);
-            if let Err(e) = fs::remove_file(&path) {
+            if let Err(e) = self.storage.remove_file(&path) {
                 tracing::warn!(error = %e, path = %path.display(), "could not remove torn segment");
             }
         }
@@ -240,6 +243,10 @@ impl ArchiveCore {
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to regenerate archive key");
+                    // No key at all: the segments are already unreadable,
+                    // so count the loss now rather than at the next
+                    // take_key — stats must not overreport while paused.
+                    self.reset_era("archive key unrecoverable");
                 }
             }
         }
@@ -254,7 +261,7 @@ impl ArchiveCore {
         let unreadable: u64 = self.segments.iter().map(|s| s.row_count).sum();
         self.lose_finalized(unreadable);
         for seg in self.segments.drain(..) {
-            if let Err(e) = fs::remove_file(&seg.path) {
+            if let Err(e) = self.storage.remove_file(&seg.path) {
                 tracing::warn!(error = %e, path = %seg.path.display(), "could not remove stale segment");
             }
         }
@@ -328,9 +335,12 @@ impl ArchiveCore {
             self.finalize_active_segment()?;
         }
 
-        self.prune_if_needed()?;
+        // Recompute even when pruning fails partway — segments it already
+        // removed must leave the total, or stats overcount until the next
+        // successful write.
+        let pruned = self.prune_if_needed();
         self.recompute_total();
-        Ok(())
+        pruned
     }
 
     pub(crate) fn seal_active_segment(&mut self) -> io::Result<()> {
@@ -348,7 +358,7 @@ impl ArchiveCore {
         for seg in &self.segments {
             let seg_end = seg.first_row_index + seg.row_count;
             if start >= seg.first_row_index && start < seg_end {
-                let data = fs::read(&seg.path)?;
+                let data = self.storage.read(&seg.path)?;
                 let reader = SegmentReader::open(&data, key_ref, seg.nonce_start)?;
                 let local_start = start - seg.first_row_index;
                 return reader.read_rows(local_start, count);
@@ -381,9 +391,7 @@ impl ArchiveCore {
                 Err(e) => tracing::warn!(error = %e, "segment finalization failed during shutdown"),
             }
         }
-        if self.session_dir.exists() {
-            fs::remove_dir_all(&self.session_dir)?;
-        }
+        self.storage.remove_dir_all(&self.session_dir)?;
         self.segments.clear();
         self.disk_bytes = 0;
         self.total_archived_rows = 0;
@@ -393,7 +401,7 @@ impl ArchiveCore {
     fn ensure_writer(&mut self) -> io::Result<()> {
         if self.active.is_none() {
             let id = self.next_segment_id;
-            let file = BufWriter::new(fs::File::create(self.segment_path(id))?);
+            let file = self.storage.create(&self.segment_path(id))?;
             self.next_segment_id += 1;
             let writer = SegmentWriter::with_key(file, self.take_key()?);
             self.active = Some(ActiveSegment { id, writer });
@@ -420,12 +428,8 @@ impl ArchiveCore {
         // Store the key the moment it exists again — the error paths below
         // must not lose it (prior segments become unreadable without it).
         self.key = Some(key);
-        let file_size = match buf_writer
-            .into_inner()
-            .map_err(std::io::IntoInnerError::into_error)
-            .and_then(|inner| inner.metadata())
-        {
-            Ok(metadata) => metadata.len(),
+        let file_size = match self.storage.finish(buf_writer, &path) {
+            Ok(size) => size,
             Err(e) => {
                 self.discard_failed_segment(seg_id, total_rows);
                 return Err(e);
@@ -479,9 +483,7 @@ impl ArchiveCore {
         while self.disk_bytes > target && !self.segments.is_empty() {
             // Delete file first, then remove metadata. If deletion fails,
             // metadata stays consistent and the next prune attempt retries.
-            if self.segments[0].path.exists() {
-                fs::remove_file(&self.segments[0].path)?;
-            }
+            self.storage.remove_file(&self.segments[0].path)?;
             let removed = self.segments.remove(0);
             self.disk_bytes = self.disk_bytes.saturating_sub(removed.disk_bytes);
         }
@@ -494,33 +496,19 @@ fn estimate_row_bytes(row: &Row) -> usize {
     std::mem::size_of::<Row>() + row.cells.len() * std::mem::size_of::<crate::grid::cell::Cell>()
 }
 
-fn has_enough_disk_space(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use rustix::fs::statvfs;
-        let stat = match statvfs(path) {
-            Ok(stat) => stat,
-            Err(e) => {
-                tracing::warn!(error = %e, "statvfs failed; treating as low disk space");
-                return false;
-            }
-        };
-        let free_bytes = stat.f_bavail.saturating_mul(stat.f_frsize);
-        let total_bytes = stat.f_blocks.saturating_mul(stat.f_frsize);
-        let min_percent_bytes = total_bytes / 100 * MIN_FREE_PERCENT;
-        free_bytes >= MIN_FREE_BYTES.max(min_percent_bytes)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::grid::row::Row;
+    use crate::scroll::storage::fake::FakeStorage;
+
+    fn fake_core(max_disk_bytes: u64) -> (ArchiveCore<FakeStorage>, FakeStorage) {
+        let storage = FakeStorage::default();
+        let core =
+            ArchiveCore::with_storage(storage.clone(), PathBuf::from("/fake"), max_disk_bytes)
+                .unwrap();
+        (core, storage)
+    }
 
     fn make_rows(count: usize, cols: usize) -> Vec<Row> {
         (0..count)
@@ -598,5 +586,222 @@ mod tests {
         // Rate-limited disk check defers the probe, so the pause holds.
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 17);
+    }
+
+    #[test]
+    fn write_error_loses_pending_and_resets_era() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        // The frame write fails, and so does the footer during key
+        // salvage — the key is lost, forcing an era reset.
+        storage.state.borrow_mut().fail_writes = true;
+        core.archive_rows(make_rows(7, 80), 0).unwrap();
+        assert!(core.flush_pending().is_err());
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.segment_count, 0, "era reset drops finalized segments");
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 17);
+
+        // The whole pre-reset range reads back as a gap.
+        storage.state.borrow_mut().fail_writes = false;
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(5, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let stats = core.stats();
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 22);
+        assert!(core.read_rows(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn transient_write_error_salvages_key_and_keeps_prior_segments() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        // One write fails, then the salvage footer succeeds: the key
+        // survives and prior segments must NOT be era-reset.
+        storage.state.borrow_mut().fail_next_write = true;
+        core.archive_rows(make_rows(7, 80), 0).unwrap();
+        assert!(core.flush_pending().is_err());
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.segment_count, 1, "prior segment survives salvage");
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 17);
+
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(5, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let stats = core.stats();
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 22);
+        // Pre-error history is still readable under the salvaged key.
+        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
+        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn create_failure_keeps_key_and_prior_segments() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        // create() fails before take_key runs — the key never leaves
+        // the core, so no salvage and no era reset.
+        storage.state.borrow_mut().fail_create = true;
+        core.archive_rows(make_rows(7, 80), 0).unwrap();
+        assert!(core.flush_pending().is_err());
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.segment_count, 1);
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 17);
+
+        storage.state.borrow_mut().fail_create = false;
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(5, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
+        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn seal_before_pause_failure_accounts_both_losses() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        // Low disk forces the seal, and the seal itself fails: the open
+        // segment's rows and the pending rows are both lost, once each.
+        {
+            let mut flags = storage.state.borrow_mut();
+            flags.low_disk = true;
+            flags.fail_finish = true;
+        }
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(6, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.total_archived_rows, 0);
+        assert_eq!(stats.lost_rows, 16);
+
+        {
+            let mut flags = storage.state.borrow_mut();
+            flags.low_disk = false;
+            flags.fail_finish = false;
+        }
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(4, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let stats = core.stats();
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 20);
+        assert_eq!(core.read_rows(16, 4).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn finalize_failure_salvages_key_and_conserves() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        // The footer writes fine (key salvaged) but the close fails —
+        // the deferred ENOSPC/EIO case.
+        storage.state.borrow_mut().fail_finish = true;
+        assert!(core.seal_active_segment().is_err());
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.segment_count, 0);
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 10);
+
+        // Same era after healing: the salvaged key reads the new segment
+        // and the discarded range stays a gap.
+        storage.state.borrow_mut().fail_finish = false;
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(5, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let stats = core.stats();
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 15);
+        assert!(core.read_rows(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_rows(10, 5).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn low_disk_seals_open_segment_before_pausing() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        storage.state.borrow_mut().low_disk = true;
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(6, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        let stats = core.stats();
+        assert!(stats.paused);
+        assert_eq!(stats.total_archived_rows, 10);
+        assert_eq!(stats.lost_rows, 6);
+        // The open segment was sealed before the base advanced, so its
+        // stamped index still resolves.
+        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
+
+        storage.state.borrow_mut().low_disk = false;
+        core.last_disk_check = None;
+        core.archive_rows(make_rows(4, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let stats = core.stats();
+        assert_eq!(stats.total_archived_rows + stats.lost_rows, 20);
+        assert_eq!(core.read_rows(16, 4).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn prune_failure_keeps_metadata_consistent() {
+        // Any finalized segment exceeds this limit, so the next write
+        // always tries to prune.
+        let (mut core, storage) = fake_core(64);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        storage.state.borrow_mut().fail_remove = true;
+        core.archive_rows(make_rows(6, 80), 0).unwrap();
+        assert!(core.flush_pending().is_err());
+
+        // A prune error loses nothing: metadata intact, totals include
+        // the just-written rows despite the failed prune.
+        let stats = core.stats();
+        assert_eq!(stats.lost_rows, 0);
+        assert_eq!(stats.segment_count, 1);
+        assert_eq!(stats.total_archived_rows, 16);
+
+        storage.state.borrow_mut().fail_remove = false;
+        core.archive_rows(make_rows(4, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+
+        // Retry pruned the oldest segment; its rows retire (not lost).
+        let stats = core.stats();
+        assert_eq!(stats.segment_count, 0);
+        assert_eq!(stats.lost_rows, 0);
+        assert_eq!(stats.total_archived_rows, 10);
     }
 }
