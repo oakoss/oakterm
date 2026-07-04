@@ -42,15 +42,19 @@ enum WriterMsg {
     Read {
         start: u64,
         count: usize,
-        reply: SyncSender<io::Result<Vec<Row>>>,
+        reply: SyncSender<io::Result<Vec<(u64, Row)>>>,
     },
     Stats(SyncSender<ArchiveStats>),
     /// Finalize, delete all archive files, reply, and exit the loop.
     Shutdown(SyncSender<io::Result<()>>),
-    /// Block the writer until the sender side drops — deterministic
-    /// saturation for tests.
+    /// Block the writer until `gate`'s sender drops — deterministic
+    /// saturation for tests. `entered` acks that the writer is parked,
+    /// so callers know later batches can't be drained early.
     #[cfg(test)]
-    Stall(mpsc::Receiver<()>),
+    Stall {
+        entered: SyncSender<()>,
+        gate: mpsc::Receiver<()>,
+    },
     /// Kill the writer thread — deterministic dead-writer state for tests.
     #[cfg(test)]
     Panic,
@@ -70,6 +74,7 @@ pub struct ArchiveManager {
     // sound; don't relax these to atomics + `&self`.
     dropped_rows: u64,
     pending_gap: u64,
+    received_rows: u64,
 }
 
 /// Channel and thread of a running writer; both live and die together.
@@ -124,7 +129,22 @@ impl ArchiveManager {
                             count,
                             reply,
                         } => {
-                            log_if_unheard(reply.send(core.read_rows(start, count)), "read");
+                            // Seal only when the window reaches unsealed
+                            // rows, so reads of pure history don't churn
+                            // segments or risk read-triggered loss on a
+                            // failing disk. Flush and seal run
+                            // independently: a flush failure (its rows
+                            // count as lost) must not skip sealing rows
+                            // already written.
+                            if start.saturating_add(count as u64) > core.finalized_boundary() {
+                                if let Err(e) = core.flush_pending() {
+                                    tracing::warn!(error = %e, "flush before archive read failed");
+                                }
+                                if let Err(e) = core.seal_active_segment() {
+                                    tracing::warn!(error = %e, "seal before archive read failed");
+                                }
+                            }
+                            log_if_unheard(reply.send(core.read_range(start, count)), "read");
                         }
                         WriterMsg::Stats(reply) => {
                             let _ = reply.send(core.stats());
@@ -134,7 +154,8 @@ impl ArchiveManager {
                             break;
                         }
                         #[cfg(test)]
-                        WriterMsg::Stall(gate) => {
+                        WriterMsg::Stall { entered, gate } => {
+                            let _ = entered.send(());
                             let _ = gate.recv();
                         }
                         #[cfg(test)]
@@ -151,6 +172,7 @@ impl ArchiveManager {
             session_dir,
             dropped_rows: 0,
             pending_gap: 0,
+            received_rows: 0,
         })
     }
 
@@ -172,6 +194,7 @@ impl ArchiveManager {
             return Ok(());
         }
         let row_count = rows.len() as u64;
+        self.received_rows += row_count;
         match self
             .writer
             .as_ref()
@@ -268,24 +291,38 @@ impl ArchiveManager {
         self.query(WriterMsg::Seal)?
     }
 
-    /// Read archived rows by absolute row index.
-    ///
-    /// Only reads from finalized segments. Call `seal_active_segment` first
-    /// to make recently written rows available.
-    ///
-    /// Returns up to `count` rows starting from `start`. Returns an empty
-    /// vec if no segment contains the requested range.
+    /// Read archived rows in `[start, start + count)`, tagged with their
+    /// absolute indices. The writer seals before reading when the window
+    /// requires it, so every row enqueued before this call is visible —
+    /// rows whose pre-read flush or seal fails are accounted lost and
+    /// read as gaps. Indices inside gaps (dropped or lost rows) produce
+    /// no entry — align by the returned indices, never by position
+    /// (Spec-0004 overload policy).
     ///
     /// # Errors
     ///
     /// Returns an error if reading from disk fails or the writer is dead
     /// or wedged.
-    pub fn read_rows(&self, start: u64, count: usize) -> io::Result<Vec<Row>> {
+    pub fn read_range(&self, start: u64, count: usize) -> io::Result<Vec<(u64, Row)>> {
         self.query(|reply| WriterMsg::Read {
             start,
             count,
             reply,
         })?
+    }
+
+    /// Every row ever handed to `archive_rows`, whether stored, dropped,
+    /// or lost. Combined with the hot buffer length this defines the
+    /// absolute scrollback index space: archived history occupies
+    /// `[0, total_rows_received)` and the hot buffer follows it.
+    ///
+    /// Deliberately counts rows lost at enqueue (saturation drops, dead
+    /// writer): they were real pruned rows, so their indices must stay
+    /// claimed as gaps — reordering the increment after the send would
+    /// misalign every later row.
+    #[must_use]
+    pub fn total_rows_received(&self) -> u64 {
+        self.received_rows
     }
 
     /// Total rows stored across all finalized segments (excludes pending).
@@ -506,15 +543,22 @@ mod tests {
     }
 
     /// Block the writer until the returned sender drops, so the mailbox
-    /// can be filled deterministically.
+    /// can be filled deterministically. Waits for the writer to actually
+    /// park — without the rendezvous it could drain early batches before
+    /// stalling, splitting the drops mid-sequence.
     fn stall(mgr: &ArchiveManager) -> SyncSender<()> {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
         let (gate_tx, gate_rx) = mpsc::sync_channel(0);
         mgr.writer
             .as_ref()
             .expect("writer running")
             .tx
-            .send(WriterMsg::Stall(gate_rx))
+            .send(WriterMsg::Stall {
+                entered: entered_tx,
+                gate: gate_rx,
+            })
             .expect("send stall");
+        entered_rx.recv().expect("writer parked in stall");
         gate_tx
     }
 
@@ -583,9 +627,9 @@ mod tests {
         let stored = mgr.total_archived_rows();
         let pre_gap = stored - 10;
         // Indices inside the gap resolve to no rows, not misaligned rows.
-        assert!(mgr.read_rows(pre_gap, 1).unwrap().is_empty());
+        assert!(mgr.read_range(pre_gap, 1).unwrap().is_empty());
         // The post-gap batch lives at its true absolute position.
-        assert_eq!(mgr.read_rows(pre_gap + gap, 10).unwrap().len(), 10);
+        assert_eq!(mgr.read_range(pre_gap + gap, 10).unwrap().len(), 10);
     }
 
     #[test]
@@ -598,10 +642,90 @@ mod tests {
 
         mgr.seal_active_segment().unwrap();
 
-        let read_back = mgr.read_rows(0, 10).unwrap();
+        let read_back = mgr.read_range(0, 10).unwrap();
         assert_eq!(read_back.len(), 10);
-        assert_eq!(read_back[0].cells[0].codepoint, 'A');
-        assert_eq!(read_back[9].cells[0].codepoint, 'J');
+        assert_eq!(read_back[0].1.cells[0].codepoint, 'A');
+        assert_eq!(read_back[9].1.cells[0].codepoint, 'J');
+        assert_eq!(read_back[9].0, 9);
+    }
+
+    #[test]
+    fn read_range_seals_automatically() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        mgr.archive_rows(make_rows(10, 40)).unwrap();
+
+        // No explicit flush or seal: the read observes the batch anyway.
+        assert_eq!(mgr.read_range(0, 10).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn read_of_finalized_history_does_not_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        mgr.archive_rows(make_rows(10, 40)).unwrap();
+        mgr.flush_pending().unwrap();
+        mgr.seal_active_segment().unwrap();
+        mgr.archive_rows(make_rows(5, 40)).unwrap();
+
+        // A window entirely within finalized history leaves the newer
+        // rows unsealed — no read-triggered segment churn.
+        assert_eq!(mgr.read_range(0, 10).unwrap().len(), 10);
+        assert_eq!(mgr.segment_count(), 1);
+
+        // A window reaching past the boundary still seals them.
+        assert_eq!(mgr.read_range(10, 5).unwrap().len(), 5);
+        assert_eq!(mgr.segment_count(), 2);
+    }
+
+    #[test]
+    fn total_rows_received_counts_stored_and_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        let sent = 10 * STALL_BATCHES as u64;
+        {
+            let _gate = stall(&mgr);
+            for _ in 0..STALL_BATCHES {
+                mgr.archive_rows(make_rows(10, 80)).unwrap();
+            }
+        }
+        assert_eq!(mgr.total_rows_received(), sent);
+        assert!(mgr.dropped_rows() > 0, "need drops for this to mean much");
+    }
+
+    #[test]
+    fn absolute_index_space_aligns_archive_and_hot() {
+        use crate::scroll::HotBuffer;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        // Small enough that pushes prune, replicating push_to_scrollback.
+        let mut hot = HotBuffer::new(64 * 1024);
+        let mut pushed: u64 = 0;
+        while mgr.total_rows_received() == 0 || pushed < 200 {
+            let mut row = Row::new(80);
+            #[allow(clippy::cast_possible_truncation)]
+            let offset = (pushed % 26) as u8;
+            row.cells[0].codepoint = char::from(b'a' + offset);
+            let pruned = hot.push(row);
+            if !pruned.is_empty() {
+                mgr.archive_rows(pruned).unwrap();
+            }
+            pushed += 1;
+        }
+
+        // The two tiers partition the pushed history exactly.
+        let received = mgr.total_rows_received();
+        assert_eq!(received + hot.len() as u64, pushed);
+
+        // Absolute index k is the k-th pushed row on both sides of the
+        // archive/hot boundary.
+        let archived = mgr.read_range(0, 1).unwrap();
+        assert_eq!(archived[0].1.cells[0].codepoint, 'a');
+        assert_eq!(
+            hot.get(0).unwrap().cells[0].codepoint,
+            char::from(b'a' + u8::try_from(received % 26).unwrap()),
+        );
     }
 
     #[test]
@@ -615,9 +739,9 @@ mod tests {
         mgr.flush_pending().unwrap();
         mgr.seal_active_segment().unwrap();
 
-        let result = mgr.read_rows(0, 1).unwrap();
+        let result = mgr.read_range(0, 1).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], row);
+        assert_eq!(result[0].1, row);
     }
 
     #[test]

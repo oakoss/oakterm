@@ -172,12 +172,12 @@ config.save_alternate_scrollback = false
 
 The hot buffer and cold archive are accessed by GUI clients through Spec-0001 messages:
 
-- **`GetScrollback { pane_id, start_row, count }`** — client requests scrollback rows. The daemon reads from the hot buffer first, falling back to the cold archive for older rows. The response (`ScrollbackData`) may include `has_more=1` if the request exceeds the 16 MiB frame limit.
+- **`GetScrollback { pane_id, start_row, count }`** — client requests scrollback rows. The daemon reads from the hot buffer first, falling back to the cold archive for older rows. `count` is capped per request (4096 rows) so a client cannot drive unbounded archive reads. `ScrollbackData.has_more=1` means rows older than the returned window exist; `total_rows` is the combined archived + hot history, so clients page by issuing further requests.
 - **`GetRenderUpdate { since_seqno }`** — covers the visible grid only. Scrollback rows are not transmitted via `RenderUpdate`. The client fetches them on demand via `GetScrollback`.
 
-The daemon translates between the logical scrollback row index (negative values in Spec-0003's Selection model) and the physical storage location (hot buffer offset or archive frame index).
+The daemon translates between the logical scrollback row index (negative values in Spec-0003's Selection model) and the physical storage location: absolute index 0 is the oldest row ever pruned to the archive, archived history occupies `[0, rows_received)`, and the hot buffer follows it. Archive reads seal the active segment first so recently pruned rows are visible; indices inside overload-policy gaps return blank rows so responses stay positionally aligned. Rows aged out of the archive head under the disk cap read back the same way — the index anchor never moves backward. Archive read _errors_ return an error frame, never blanks: blank rows always mean permanently absent history.
 
-**Archive read-path status:** The archive read path is not yet wired into the daemon: `GetScrollback` does not fall back to the cold archive for older rows, and search does not cover archived rows. Both currently operate over the hot buffer only. This is tracked as a code fix; the contract above is unchanged.
+**Search scope (decided at TREK-171):** Search covers the hot buffer only. Archive search requires decrypt-scanning segments and is deferred to its own design — a streamed newest-first scan and, longer-term, a write-time sidecar index (TREK-196).
 
 ## Behavior
 

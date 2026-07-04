@@ -114,6 +114,14 @@ impl<S: SegmentStorage> ArchiveCore<S> {
         self.session_dir.join(format!("segment-{id:04}.bin"))
     }
 
+    /// First absolute index not yet claimed by a finalized segment or an
+    /// accounted gap. Reads entirely below it need no seal. Never exceeds
+    /// the facade's `total_rows_received`; the difference is in-flight
+    /// rows and gaps whose advance hasn't landed yet.
+    pub(crate) fn finalized_boundary(&self) -> u64 {
+        self.next_first_row_index
+    }
+
     /// Disk-space check, rate-limited to once per second — flushes can run
     /// thousands of times per second under sustained scrolling.
     fn disk_space_ok(&mut self) -> bool {
@@ -335,36 +343,84 @@ impl<S: SegmentStorage> ArchiveCore<S> {
             self.finalize_active_segment()?;
         }
 
-        // Recompute even when pruning fails partway — segments it already
-        // removed must leave the total, or stats overcount until the next
-        // successful write.
-        let pruned = self.prune_if_needed();
-        self.recompute_total();
-        pruned
+        self.prune_and_recompute();
+        Ok(())
     }
 
     pub(crate) fn seal_active_segment(&mut self) -> io::Result<()> {
         if self.active.is_some() {
             self.finalize_active_segment()?;
+            // Sealing adds the segment's bytes outside the write path's
+            // prune check — enforce the disk cap here too, or a
+            // read-triggered seal could hold the archive over it.
+            self.prune_and_recompute();
         }
         Ok(())
     }
 
-    pub(crate) fn read_rows(&self, start: u64, count: usize) -> io::Result<Vec<Row>> {
+    /// Prune to the disk cap and refresh totals. A prune failure loses
+    /// no rows and is deliberately not an error: flush/seal errors read
+    /// as data loss to callers (the gap path discards its batch on
+    /// them), and the cap retries on the next write or seal.
+    fn prune_and_recompute(&mut self) {
+        if let Err(e) = self.prune_if_needed() {
+            tracing::warn!(error = %e, "archive prune failed; disk cap will retry");
+        }
+        self.recompute_total();
+    }
+
+    /// Read rows in `[start, start + count)` across all finalized
+    /// segments, tagged with their absolute indices. Indices inside gaps
+    /// (lost or dropped rows) produce no entry rather than misaligned
+    /// rows, so callers must align by the returned indices. An unreadable
+    /// segment fails the whole read: errors must stay distinguishable
+    /// from gaps, because gaps render as permanently blank history while
+    /// errors are retryable.
+    pub(crate) fn read_range(&self, start: u64, count: usize) -> io::Result<Vec<(u64, Row)>> {
         if count == 0 {
             return Ok(Vec::new());
         }
+        let end = start.saturating_add(count as u64);
         let key_ref = self.current_key()?;
+        let mut out = Vec::new();
         for seg in &self.segments {
             let seg_end = seg.first_row_index + seg.row_count;
-            if start >= seg.first_row_index && start < seg_end {
-                let data = self.storage.read(&seg.path)?;
-                let reader = SegmentReader::open(&data, key_ref, seg.nonce_start)?;
-                let local_start = start - seg.first_row_index;
-                return reader.read_rows(local_start, count);
+            if seg_end <= start || seg.first_row_index >= end {
+                continue;
             }
+            let from = start.max(seg.first_row_index);
+            let to = end.min(seg_end);
+            let local_start = from - seg.first_row_index;
+            // to - from is bounded by count, which is a usize.
+            let n = usize::try_from(to - from).unwrap_or(count);
+            let rows = self
+                .storage
+                .read(&seg.path)
+                .and_then(|data| {
+                    SegmentReader::open(&data, key_ref, seg.nonce_start)
+                        .and_then(|reader| reader.read_rows(local_start, n))
+                })
+                .map_err(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        path = %seg.path.display(),
+                        "segment unreadable during range read"
+                    );
+                    e
+                })?;
+            out.extend(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(i, row)| (from + i as u64, row)),
+            );
         }
-        Ok(Vec::new())
+        // Consumers align by these indices; out-of-order entries would
+        // make a gap indistinguishable from misalignment.
+        debug_assert!(
+            out.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "read_range indices must be strictly increasing"
+        );
+        Ok(out)
     }
 
     /// Get a reference to the encryption key, whether it's held by the
@@ -547,8 +603,80 @@ mod tests {
         core.flush_pending().unwrap();
         core.seal_active_segment().unwrap();
 
-        assert!(core.read_rows(10, 1).unwrap().is_empty(), "gap reads empty");
-        assert_eq!(core.read_rows(35, 10).unwrap().len(), 10);
+        assert!(
+            core.read_range(10, 1).unwrap().is_empty(),
+            "gap reads empty"
+        );
+        assert_eq!(core.read_range(35, 10).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn read_range_spans_segments_and_tags_indices() {
+        let (mut core, _storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+        let mut second = make_rows(10, 80);
+        for row in &mut second {
+            row.cells[0].codepoint = 'z';
+        }
+        core.archive_rows(second, 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let rows = core.read_range(5, 10).unwrap();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.first().unwrap().0, 5);
+        assert_eq!(rows.last().unwrap().0, 14);
+        assert_eq!(rows[4].1.cells[0].codepoint, 'J', "index 9: segment 1");
+        assert_eq!(rows[5].1.cells[0].codepoint, 'z', "index 10: segment 2");
+    }
+
+    #[test]
+    fn read_range_errors_on_unreadable_segment() {
+        let (mut core, storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        // The read must fail rather than return the healthy tail as if
+        // the corrupt range were a gap: errors are retryable, gaps are not.
+        let seg0 = core.segment_path(0);
+        storage.state.borrow_mut().files.insert(seg0, vec![0; 32]);
+        assert!(core.read_range(0, 20).is_err());
+    }
+
+    #[test]
+    fn seal_enforces_disk_cap() {
+        // Any finalized segment exceeds this limit.
+        let (mut core, _storage) = fake_core(64);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+        assert!(
+            core.stats().disk_bytes <= 64,
+            "read-triggered seals must prune, got {} bytes",
+            core.stats().disk_bytes
+        );
+    }
+
+    #[test]
+    fn read_range_omits_gap_indices() {
+        let (mut core, _storage) = fake_core(u64::MAX);
+        core.archive_rows(make_rows(10, 80), 0).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        core.archive_rows(make_rows(10, 80), 25).unwrap();
+        core.flush_pending().unwrap();
+        core.seal_active_segment().unwrap();
+
+        let rows = core.read_range(5, 35).unwrap();
+        let indices: Vec<u64> = rows.iter().map(|(i, _)| *i).collect();
+        assert_eq!(indices, (5..10).chain(35..40).collect::<Vec<u64>>());
     }
 
     #[test]
@@ -570,8 +698,8 @@ mod tests {
         core.archive_rows(make_rows(10, 80), 0).unwrap();
         core.flush_pending().unwrap();
         core.seal_active_segment().unwrap();
-        assert!(core.read_rows(0, 1).unwrap().is_empty());
-        assert_eq!(core.read_rows(base_before, 10).unwrap().len(), 10);
+        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(base_before, 10).unwrap().len(), 10);
     }
 
     #[test]
@@ -615,8 +743,8 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 22);
-        assert!(core.read_rows(0, 1).unwrap().is_empty());
-        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(17, 5).unwrap().len(), 5);
     }
 
     #[test]
@@ -645,8 +773,8 @@ mod tests {
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 22);
         // Pre-error history is still readable under the salvaged key.
-        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
-        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+        assert_eq!(core.read_range(0, 10).unwrap().len(), 10);
+        assert_eq!(core.read_range(17, 5).unwrap().len(), 5);
     }
 
     #[test]
@@ -673,8 +801,8 @@ mod tests {
         core.flush_pending().unwrap();
         core.seal_active_segment().unwrap();
 
-        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
-        assert_eq!(core.read_rows(17, 5).unwrap().len(), 5);
+        assert_eq!(core.read_range(0, 10).unwrap().len(), 10);
+        assert_eq!(core.read_range(17, 5).unwrap().len(), 5);
     }
 
     #[test]
@@ -711,7 +839,7 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 20);
-        assert_eq!(core.read_rows(16, 4).unwrap().len(), 4);
+        assert_eq!(core.read_range(16, 4).unwrap().len(), 4);
     }
 
     #[test]
@@ -740,8 +868,8 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 15);
-        assert!(core.read_rows(0, 1).unwrap().is_empty());
-        assert_eq!(core.read_rows(10, 5).unwrap().len(), 5);
+        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(10, 5).unwrap().len(), 5);
     }
 
     #[test]
@@ -761,7 +889,7 @@ mod tests {
         assert_eq!(stats.lost_rows, 6);
         // The open segment was sealed before the base advanced, so its
         // stamped index still resolves.
-        assert_eq!(core.read_rows(0, 10).unwrap().len(), 10);
+        assert_eq!(core.read_range(0, 10).unwrap().len(), 10);
 
         storage.state.borrow_mut().low_disk = false;
         core.last_disk_check = None;
@@ -771,37 +899,36 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 20);
-        assert_eq!(core.read_rows(16, 4).unwrap().len(), 4);
+        assert_eq!(core.read_range(16, 4).unwrap().len(), 4);
     }
 
     #[test]
     fn prune_failure_keeps_metadata_consistent() {
-        // Any finalized segment exceeds this limit, so the next write
-        // always tries to prune.
+        // Any finalized segment exceeds this limit, so every seal and
+        // write tries to prune.
         let (mut core, storage) = fake_core(64);
         core.archive_rows(make_rows(10, 80), 0).unwrap();
         core.flush_pending().unwrap();
-        core.seal_active_segment().unwrap();
 
         storage.state.borrow_mut().fail_remove = true;
-        core.archive_rows(make_rows(6, 80), 0).unwrap();
-        assert!(core.flush_pending().is_err());
+        // The over-limit segment finalizes; the prune failure is not a
+        // seal failure — nothing was lost.
+        core.seal_active_segment().unwrap();
 
-        // A prune error loses nothing: metadata intact, totals include
-        // the just-written rows despite the failed prune.
+        // A prune error loses nothing: metadata intact, totals current.
         let stats = core.stats();
         assert_eq!(stats.lost_rows, 0);
         assert_eq!(stats.segment_count, 1);
-        assert_eq!(stats.total_archived_rows, 16);
+        assert_eq!(stats.total_archived_rows, 10);
 
         storage.state.borrow_mut().fail_remove = false;
-        core.archive_rows(make_rows(4, 80), 0).unwrap();
+        core.archive_rows(make_rows(6, 80), 0).unwrap();
         core.flush_pending().unwrap();
 
         // Retry pruned the oldest segment; its rows retire (not lost).
         let stats = core.stats();
         assert_eq!(stats.segment_count, 0);
         assert_eq!(stats.lost_rows, 0);
-        assert_eq!(stats.total_archived_rows, 10);
+        assert_eq!(stats.total_archived_rows, 6);
     }
 }
