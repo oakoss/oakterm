@@ -82,6 +82,11 @@ struct PaneState {
     command: String,
     /// Working directory for PTY spawn. Empty = inherit daemon's cwd.
     cwd: String,
+    /// Tombstone set by `ClosePane` under this pane's lock. A cloned
+    /// `SharedPane` can outlive removal from the map; consumers observing
+    /// `closed` treat the pane as absent, so a request racing a close
+    /// resolves to `UnknownPane` like it did under the single-lock design.
+    closed: bool,
 }
 
 /// Convert the wire-protocol `command` (single shell-style string) and `cwd`
@@ -113,9 +118,19 @@ fn build_command_spec(command: &str, cwd: &str) -> Result<oakterm_pty::CommandSp
     ))
 }
 
-/// Tracks all panes with monotonic ID assignment.
+/// A pane behind its own lock: PTY bursts and client reads on one pane
+/// never contend with another pane's traffic.
+type SharedPane = Arc<Mutex<PaneState>>;
+
+/// Tracks all panes with monotonic ID assignment. Guards topology only
+/// (create/lookup/remove/focus); pane contents live behind per-pane
+/// locks.
+///
+/// Lock order: take the manager lock, clone the `SharedPane`, release,
+/// then lock the pane — never hold the manager lock across a pane lock,
+/// and never hold two pane locks at once.
 pub struct PaneManager {
-    panes: std::collections::HashMap<u32, PaneState>,
+    panes: std::collections::HashMap<u32, SharedPane>,
     next_id: u32,
     focused_pane: Option<u32>,
 }
@@ -135,13 +150,14 @@ impl PaneManager {
         self.next_id += 1;
         self.panes.insert(
             id,
-            PaneState {
+            Arc::new(Mutex::new(PaneState {
                 screens: ScreenSet::new(cols, rows),
                 pty_state: PtyState::NotSpawned,
                 dirty_seqno: 0,
                 command,
                 cwd,
-            },
+                closed: false,
+            })),
         );
         // Auto-focus the first pane created.
         if self.focused_pane.is_none() {
@@ -154,17 +170,25 @@ impl PaneManager {
         self.panes.len()
     }
 
-    fn get(&self, id: u32) -> Option<&PaneState> {
-        self.panes.get(&id)
+    fn get(&self, id: u32) -> Option<SharedPane> {
+        self.panes.get(&id).cloned()
     }
 
-    fn get_mut(&mut self, id: u32) -> Option<&mut PaneState> {
-        self.panes.get_mut(&id)
-    }
-
-    fn remove(&mut self, id: u32) -> Option<PaneState> {
+    fn remove(&mut self, id: u32) -> Option<SharedPane> {
         self.panes.remove(&id)
     }
+}
+
+/// Look up and lock a pane, honoring the `PaneManager` lock order (the
+/// manager guard is released before the pane lock is taken). A pane
+/// tombstoned by `ClosePane` reads as absent.
+async fn lock_live_pane(
+    panes: &Arc<Mutex<PaneManager>>,
+    id: u32,
+) -> Option<tokio::sync::OwnedMutexGuard<PaneState>> {
+    let pane = panes.lock().await.get(id)?;
+    let guard = pane.lock_owned().await;
+    (!guard.closed).then_some(guard)
 }
 
 /// Daemon state shared across tasks.
@@ -243,8 +267,7 @@ impl Daemon {
                 config.max_bytes,
             ) {
                 Ok(mgr) => {
-                    let mut pm = self.panes.lock().await;
-                    if let Some(pane) = pm.get_mut(0) {
+                    if let Some(mut pane) = lock_live_pane(&self.panes, 0).await {
                         pane.screens.set_archive(mgr);
                         info!("scrollback archive enabled");
                     } else {
@@ -307,9 +330,10 @@ impl Daemon {
             }
         }
 
-        // Shut down archives for all panes.
-        let mut pm = self.panes.lock().await;
-        for pane in pm.panes.values_mut() {
+        // Shut down archives for all panes, one pane lock at a time.
+        let all_panes: Vec<SharedPane> = self.panes.lock().await.panes.values().cloned().collect();
+        for pane in all_panes {
+            let mut pane = pane.lock().await;
             if let Some(archive) = pane.screens.archive_mut() {
                 let parent = archive
                     .session_dir()
@@ -415,10 +439,10 @@ async fn pty_read_loop(
         }) {
             Ok(Ok(0)) => break "EOF",
             Ok(Ok(n)) => {
-                let mut pm = panes.lock().await;
-                let Some(pane) = pm.get_mut(pane_id) else {
+                // Re-lookup per read so pane removal is still detected;
+                // the topology lock is held only for the map lookup.
+                let Some(mut pane) = lock_live_pane(&panes, pane_id).await else {
                     warn!(pane_id, "pane removed while PTY read loop active, exiting");
-                    drop(pm);
                     break "pane removed";
                 };
                 let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
@@ -428,7 +452,10 @@ async fn pty_read_loop(
                 // active grid's seqno space, but dirty_seqno must keep
                 // increasing so clients know state changed.
                 pane.dirty_seqno = pane.dirty_seqno.max(pane.screens.active_grid().seqno) + 1;
-                drop(pm);
+                drop(pane);
+                // The seqno bump must happen-before this send: a client
+                // woken by the watch reads the seqno next, and a stale
+                // read would mark-seen and stall until unrelated output.
                 let _ = dirty_tx.send(pane_id.into());
             }
             Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -477,12 +504,12 @@ async fn record_pane_exit(
     exit_reason: &str,
     exit_code: Option<i32>,
 ) {
-    let mut pm = panes.lock().await;
-    match (pm.get_mut(pane_id), exit_code) {
-        (Some(pane), Some(code)) => {
+    let pane = lock_live_pane(panes, pane_id).await;
+    match (pane, exit_code) {
+        (Some(mut pane), Some(code)) => {
             pane.pty_state = PtyState::Exited { exit_code: code };
         }
-        (Some(pane), None) => {
+        (Some(mut pane), None) => {
             // Reader is gone but we never got a child status. Synthesize an
             // exit so clients aren't stuck waiting on PaneExited; -1 is
             // outside the 0-255 / 128+signal ranges produced by
@@ -496,10 +523,11 @@ async fn record_pane_exit(
         (None, _) if exit_reason == "cancelled" || exit_reason == "pane removed" => {
             // Expected on ClosePane and on internal pane removal: the
             // handler removes the pane from PaneManager *before* signalling
-            // cancel, so by the time we reach this cleanup, get_mut is None.
+            // cancel, so by the time we reach this cleanup, the lookup is
+            // None.
             debug!(
                 pane_id,
-                exit_reason, "PTY read loop ended; pane already removed"
+                exit_reason, "PTY read loop ended; pane removed or closed"
             );
         }
         (None, Some(code)) => {
@@ -507,13 +535,13 @@ async fn record_pane_exit(
                 pane_id,
                 exit_code = code,
                 exit_reason,
-                "PTY exited but pane already removed"
+                "PTY exited but pane removed or closed"
             );
         }
         (None, None) => {
             warn!(
                 pane_id,
-                exit_reason, "PTY read loop ended; pane already removed and no exit status"
+                exit_reason, "PTY read loop ended; pane removed or closed, no exit status"
             );
         }
     }
@@ -646,43 +674,48 @@ async fn handle_client(
                     break;
                 }
 
-                // Collect per-pane notifications while holding the lock.
+                // Collect per-pane notifications, one pane lock at a time.
                 let mut exit_msgs = Vec::new();
                 let mut title_msgs = Vec::new();
                 let mut bell_msgs = Vec::new();
                 let mut dirty_pane_ids = Vec::new();
-                {
-                    let mut pm = panes.lock().await;
-                    for (&id, pane) in &mut pm.panes {
-                        // PaneExited (once per pane).
-                        if !pane_exit_sent.contains(&id) {
-                            if let PtyState::Exited { exit_code } = pane.pty_state {
-                                pane_exit_sent.insert(id);
-                                exit_msgs.push(PaneExited { pane_id: id, exit_code });
-                            }
+                let pane_list: Vec<(u32, SharedPane)> = {
+                    let pm = panes.lock().await;
+                    pm.panes.iter().map(|(&id, p)| (id, Arc::clone(p))).collect()
+                };
+                for (id, pane) in pane_list {
+                    let mut pane = pane.lock().await;
+                    if pane.closed {
+                        continue;
+                    }
+                    // PaneExited (once per pane).
+                    if !pane_exit_sent.contains(&id) {
+                        if let PtyState::Exited { exit_code } = pane.pty_state {
+                            pane_exit_sent.insert(id);
+                            exit_msgs.push(PaneExited { pane_id: id, exit_code });
                         }
-                        // Title/bell.
-                        // NOTE: flags are per-grid, not per-client. First client
-                        // to wake clears them; others miss the event. Phase 1
-                        // needs per-client notification queues.
-                        let g = pane.screens.active_grid_mut();
-                        if g.title_dirty {
-                            g.title_dirty = false;
-                            title_msgs.push(TitleChanged {
-                                pane_id: id,
-                                title: g.title.clone().unwrap_or_default(),
-                            });
-                        }
-                        if g.bell_pending {
-                            g.bell_pending = false;
-                            bell_msgs.push(Bell { pane_id: id });
-                        }
-                        // Only notify if this pane's seqno advanced since last seen.
-                        let prev = last_seen.entry(id).or_insert(0);
-                        if pane.dirty_seqno > *prev {
-                            *prev = pane.dirty_seqno;
-                            dirty_pane_ids.push(id);
-                        }
+                    }
+                    // Title/bell.
+                    // NOTE: flags are per-grid, not per-client. First client
+                    // to wake clears them; others miss the event. Phase 1
+                    // needs per-client notification queues.
+                    let g = pane.screens.active_grid_mut();
+                    if g.title_dirty {
+                        g.title_dirty = false;
+                        title_msgs.push(TitleChanged {
+                            pane_id: id,
+                            title: g.title.clone().unwrap_or_default(),
+                        });
+                    }
+                    if g.bell_pending {
+                        g.bell_pending = false;
+                        bell_msgs.push(Bell { pane_id: id });
+                    }
+                    // Only notify if this pane's seqno advanced since last seen.
+                    let prev = last_seen.entry(id).or_insert(0);
+                    if pane.dirty_seqno > *prev {
+                        *prev = pane.dirty_seqno;
+                        dirty_pane_ids.push(id);
                     }
                 }
 
@@ -782,8 +815,7 @@ async fn handle_request(
                     "malformed KeyInput",
                 );
             };
-            let pm = panes.lock().await;
-            let Some(pane) = pm.get(msg.pane_id) else {
+            let Some(pane) = lock_live_pane(panes, msg.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -793,7 +825,7 @@ async fn handle_request(
             };
             match pane.pty_state {
                 PtyState::Running { fd, .. } => {
-                    drop(pm);
+                    drop(pane);
                     if !msg.key_data.is_empty() {
                         let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
                         if let Err(e) = rustix::io::write(borrowed, &msg.key_data) {
@@ -820,8 +852,7 @@ async fn handle_request(
                     "malformed MouseInput",
                 );
             };
-            let pm = panes.lock().await;
-            let Some(pane) = pm.get(msg.pane_id) else {
+            let Some(pane) = lock_live_pane(panes, msg.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -838,7 +869,7 @@ async fn handle_request(
                 let alt_scroll = g.modes.get(1007);
                 let decckm = g.modes.get(1);
                 let on_alt = pane.screens.active_screen() == ScreenId::Alternate;
-                drop(pm);
+                drop(pane);
 
                 let mouse_reporting = click || cell_motion || all_motion;
                 let shift_held = msg.modifiers & 4 != 0;
@@ -888,8 +919,7 @@ async fn handle_request(
                     "malformed Resize",
                 );
             };
-            let mut pm = panes.lock().await;
-            let Some(pane) = pm.get_mut(msg.pane_id) else {
+            let Some(mut pane) = lock_live_pane(panes, msg.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -899,10 +929,8 @@ async fn handle_request(
             };
             match pane.pty_state {
                 PtyState::NotSpawned => {
-                    // Note: spawn blocks briefly (~1-5ms for fork/exec) while
-                    // holding the PaneManager mutex. Acceptable for now; use
-                    // spawn_blocking if this becomes a contention issue with
-                    // many concurrent panes.
+                    // Spawn blocks briefly (~1-5ms for fork/exec) while
+                    // holding this pane's lock — other panes are unaffected.
                     let spec = match build_command_spec(&pane.command, &pane.cwd) {
                         Ok(s) => s,
                         Err(reason) => {
@@ -950,7 +978,7 @@ async fn handle_request(
                             };
                             pane.screens.resize_all(msg.cols, msg.rows);
                             let pane_id = msg.pane_id;
-                            drop(pm);
+                            drop(pane);
 
                             info!(pid, pane_id, "PTY spawned");
 
@@ -1021,8 +1049,7 @@ async fn handle_request(
                     "malformed GetRenderUpdate",
                 );
             };
-            let pm = panes.lock().await;
-            let Some(pane) = pm.get(req.pane_id) else {
+            let Some(pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1110,8 +1137,7 @@ async fn handle_request(
                     "malformed GetScrollback",
                 );
             };
-            let pm = panes.lock().await;
-            let Some(pane) = pm.get(req.pane_id) else {
+            let Some(pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1230,8 +1256,7 @@ async fn handle_request(
                     "malformed FindPrompt",
                 );
             };
-            let pm = panes.lock().await;
-            let Some(pane) = pm.get(req.pane_id) else {
+            let Some(pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1287,8 +1312,7 @@ async fn handle_request(
                     );
                 }
             };
-            let mut pm = panes.lock().await;
-            let Some(pane) = pm.get_mut(req.pane_id) else {
+            let Some(mut pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1310,8 +1334,7 @@ async fn handle_request(
                     "malformed SearchNext",
                 );
             };
-            let mut pm = panes.lock().await;
-            let Some(pane) = pm.get_mut(req.pane_id) else {
+            let Some(mut pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1336,8 +1359,7 @@ async fn handle_request(
                     "malformed SearchPrev",
                 );
             };
-            let mut pm = panes.lock().await;
-            let Some(pane) = pm.get_mut(req.pane_id) else {
+            let Some(mut pane) = lock_live_pane(panes, req.pane_id).await else {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1354,9 +1376,10 @@ async fn handle_request(
         }
         MSG_SEARCH_CLOSE => {
             // Idempotent — close search on all panes (no pane_id in payload).
-            let mut pm = panes.lock().await;
-            for pane in pm.panes.values_mut() {
-                pane.screens.clear_search();
+            let all_panes: Vec<SharedPane> =
+                { panes.lock().await.panes.values().cloned().collect() };
+            for pane in all_panes {
+                pane.lock().await.screens.clear_search();
             }
             RequestResult::NoResponse
         }
@@ -1421,12 +1444,20 @@ async fn handle_request(
                 pm.focused_pane = pm.panes.keys().next().copied();
             }
             drop(pm);
+            // Tombstone under the pane lock: any handle cloned before the
+            // removal observes `closed` once it acquires the lock. Taking
+            // the state gives ownership of the cancel sender.
+            let removed_state = {
+                let mut removed = removed.lock().await;
+                removed.closed = true;
+                std::mem::replace(&mut removed.pty_state, PtyState::NotSpawned)
+            };
             // Signal the read loop to exit promptly. Without this, an idle
             // shell (no output) would leave the loop blocked on readable()
             // forever; the loop only notices a removed pane on its next
             // successful read. Once the loop exits, dropping the Pty kills
             // and reaps the child via Pty::Drop.
-            if let PtyState::Running { pid, cancel, .. } = removed.pty_state {
+            if let PtyState::Running { pid, cancel, .. } = removed_state {
                 info!(
                     conn_id,
                     pane_id = msg.pane_id,
@@ -1466,7 +1497,7 @@ async fn handle_request(
                 );
             };
             let mut pm = panes.lock().await;
-            if pm.get(msg.pane_id).is_none() {
+            if !pm.panes.contains_key(&msg.pane_id) {
                 return make_error_response(
                     conn_id,
                     frame.serial,
@@ -1480,33 +1511,39 @@ async fn handle_request(
             RequestResult::NoResponse
         }
         MSG_LIST_PANES => {
-            let pm = panes.lock().await;
-            let infos: Vec<PaneInfo> = pm
-                .panes
-                .iter()
-                .map(|(&id, pane)| {
-                    let g = pane.screens.active_grid();
-                    let (pid, exit_code) = match &pane.pty_state {
-                        PtyState::Running { pid, .. } => (*pid, -1),
-                        PtyState::Exited { exit_code } => (0, *exit_code),
-                        PtyState::NotSpawned => (0, -1),
-                        PtyState::Failed(reason) => {
-                            debug!(pane_id = id, reason, "listing pane in failed state");
-                            (0, -1)
-                        }
-                    };
-                    PaneInfo {
-                        pane_id: id,
-                        title: g.title.clone().unwrap_or_default(),
-                        cols: g.cols,
-                        rows: g.rows,
-                        pid,
-                        exit_code,
-                        cwd: pane.cwd.clone(),
+            let pane_list: Vec<(u32, SharedPane)> = {
+                let pm = panes.lock().await;
+                pm.panes
+                    .iter()
+                    .map(|(&id, p)| (id, Arc::clone(p)))
+                    .collect()
+            };
+            let mut infos: Vec<PaneInfo> = Vec::with_capacity(pane_list.len());
+            for (id, pane) in pane_list {
+                let pane = pane.lock().await;
+                if pane.closed {
+                    continue;
+                }
+                let g = pane.screens.active_grid();
+                let (pid, exit_code) = match &pane.pty_state {
+                    PtyState::Running { pid, .. } => (*pid, -1),
+                    PtyState::Exited { exit_code } => (0, *exit_code),
+                    PtyState::NotSpawned => (0, -1),
+                    PtyState::Failed(reason) => {
+                        debug!(pane_id = id, reason, "listing pane in failed state");
+                        (0, -1)
                     }
-                })
-                .collect();
-            drop(pm);
+                };
+                infos.push(PaneInfo {
+                    pane_id: id,
+                    title: g.title.clone().unwrap_or_default(),
+                    cols: g.cols,
+                    rows: g.rows,
+                    pid,
+                    exit_code,
+                    cwd: pane.cwd.clone(),
+                });
+            }
             let resp = ListPanesResponse { panes: infos };
             match resp.to_frame(frame.serial) {
                 Ok(f) => RequestResult::Response(f),
@@ -2092,6 +2129,70 @@ mod tests {
             result.is_err(),
             "empty double-quoted program should return Err, got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn pane_locks_are_independent() {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let (a, b) = {
+            let mut pm = panes.lock().await;
+            let a = pm.create(80, 24, String::new(), String::new());
+            let b = pm.create(80, 24, String::new(), String::new());
+            (a, b)
+        };
+        let _held = lock_live_pane(&panes, a).await.unwrap();
+
+        // A burst on pane A (its lock held) must not block pane B.
+        let seqno = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            lock_live_pane(&panes, b).await.unwrap().dirty_seqno
+        })
+        .await
+        .expect("pane B blocked behind pane A's lock");
+        assert_eq!(seqno, 0);
+    }
+
+    #[tokio::test]
+    async fn tombstoned_pane_reads_as_absent() {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+
+        lock_live_pane(&panes, id).await.unwrap().closed = true;
+
+        // A handle that raced ClosePane resolves to absent, not to a
+        // ghost pane.
+        assert!(lock_live_pane(&panes, id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn handler_for_one_pane_unblocked_by_another_panes_lock() {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let (a, b) = {
+            let mut pm = panes.lock().await;
+            let a = pm.create(80, 24, String::new(), String::new());
+            let b = pm.create(80, 24, String::new(), String::new());
+            (a, b)
+        };
+        // Pane B is mid-burst: its lock is held.
+        let _held = lock_live_pane(&panes, b).await.unwrap();
+
+        let (dirty_tx, _dirty_rx) = watch::channel(0u64);
+        let req = GetRenderUpdate {
+            pane_id: a,
+            since_seqno: 0,
+        };
+        let frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()).unwrap();
+
+        // The full handler path for pane A must not queue behind pane B.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            handle_request(0, &frame, &panes, &dirty_tx),
+        )
+        .await
+        .expect("pane A's request blocked behind pane B's lock");
+        assert!(matches!(result, RequestResult::Response(_)));
     }
 
     #[test]

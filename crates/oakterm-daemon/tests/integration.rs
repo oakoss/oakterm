@@ -277,6 +277,78 @@ async fn close_pane_kills_idle_child_promptly() {
     );
 }
 
+// Multi-thread flavor: the firehose child keeps the PTY read-loop task
+// permanently ready, which starves a current_thread runtime's timers.
+// The production daemon runs multi-threaded, so that starvation is a
+// test-environment artifact, not the interleaving under test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_pane_kills_streaming_child_promptly() {
+    use rustix::process::{Pid, test_kill_process};
+
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    // A chatty child keeps the read loop mid-burst, exercising the
+    // remove-while-processing interleaving: ClosePane's tombstone write
+    // contends with the read loop's per-read pane lock.
+    let create = CreatePane {
+        command: "/bin/sh -c 'while :; do echo x; done'".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        150,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 150).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    let pid = poll_for_pid(&mut stream, &mut codec, pane_id).await;
+    let pid_i32 = i32::try_from(pid).expect("PID fits in i32");
+    let live_pid = Pid::from_raw(pid_i32).expect("daemon-reported PID is positive");
+
+    // Let output flow so the close lands mid-stream.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let close = ClosePane { pane_id };
+    let frame = Frame::new(MSG_CLOSE_PANE, 250, close.encode()).expect("close-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 250).await;
+    assert_eq!(resp.msg_type, MSG_CLOSE_PANE_RESPONSE);
+
+    // A hang here (hold-and-wait between ClosePane and the read loop)
+    // presents as the child surviving the window.
+    let mut alive = true;
+    for _ in 0..50 {
+        if test_kill_process(live_pid).is_err() {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !alive,
+        "streaming child {pid} should have been killed within 500ms of ClosePane"
+    );
+}
+
 #[tokio::test]
 async fn pane_exited_reports_non_zero_child_status() {
     let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;

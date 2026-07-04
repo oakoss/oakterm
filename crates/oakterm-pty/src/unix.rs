@@ -122,12 +122,78 @@ impl Drop for Pty {
             return;
         }
 
-        // Closing the master fd (which happens after this Drop runs)
-        // sends SIGHUP to the child. Kill + wait ensures no zombies even if
-        // SIGHUP is ignored.
         let _ = self.child.kill();
-        let _ = self.child.wait();
+
+        // A child killed while blocked writing to a full PTY buffer can
+        // wedge in the kernel's exit path (observed on macOS) until the
+        // buffer drains. An unbounded wait() here would then hang the
+        // dropping thread forever, so drain the master while reaping
+        // with a bounded wait.
+        let nonblocking = rustix::fs::fcntl_getfl(&self.master)
+            .and_then(|flags| rustix::fs::fcntl_setfl(&self.master, flags | OFlags::NONBLOCK))
+            .is_ok();
+        if !nonblocking {
+            // A blocking drain read could hang past the deadline; poll
+            // try_wait alone instead.
+            tracing::warn!(
+                pid = self.child.id(),
+                "could not set PTY master non-blocking; skipping drain"
+            );
+        }
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        pid = self.child.id(),
+                        error = %e,
+                        "try_wait failed during PTY drop; abandoning reap"
+                    );
+                    return;
+                }
+            }
+            if nonblocking {
+                loop {
+                    match rustix::io::read(&self.master, &mut buf) {
+                        Ok(n) if n > 0 => {}
+                        Ok(_) | Err(rustix::io::Errno::AGAIN | rustix::io::Errno::IO) => break,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "unexpected error draining PTY master");
+                            break;
+                        }
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                reap_in_background(self.child.id());
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
+}
+
+/// Closing the PTY master — which happens right after `Pty::Drop` returns —
+/// is what lets a child stuck flushing to a full buffer finish exiting, so
+/// the blocking wait completes shortly after instead of leaving a
+/// permanent zombie.
+fn reap_in_background(pid: u32) {
+    tracing::warn!(
+        pid,
+        "PTY child unreaped after kill + drain; reaping in background"
+    );
+    let Ok(raw_pid) = i32::try_from(pid) else {
+        return;
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _ = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
+    });
 }
 
 fn open_master() -> io::Result<OwnedFd> {
