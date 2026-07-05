@@ -6,5 +6,7 @@
 //! be unit-tested without the daemon's async and socket machinery.
 
 pub mod layout;
+pub mod ops;
 
 pub use layout::{Child, Container, InvariantViolation, LayoutNode, PaneId, SplitDirection};
+pub use ops::{CloseOutcome, LayoutError};
