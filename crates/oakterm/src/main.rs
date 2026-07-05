@@ -1,3 +1,4 @@
+mod a11y_bridge;
 mod daemon_conn;
 mod pane_view;
 mod render_grid;
@@ -29,27 +30,12 @@ use oakterm_renderer::pipeline::{BgUniforms, RenderPipeline, TextUniforms};
 use oakterm_renderer::shaper::FontKey;
 use oakterm_renderer::swash_shaper::SwashShaper;
 
+use a11y_bridge::{A11yDelta, A11ySnapshot};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
 use pane_view::{PaneView, ScrollbackClampOutcome, clamp_viewport};
 use render_grid::ClientGrid;
 
 // AccessKit handlers per Spec-0006.
-
-/// Snapshot of state needed to build the accessibility tree.
-/// Shared between App and the activation handler via `Arc<Mutex<>>`.
-struct A11ySnapshot {
-    rows: u16,
-    cols: u16,
-    row_texts: Vec<String>,
-    cursor_row: u16,
-    cursor_col: u16,
-    title: String,
-    scrollback_lines: u64,
-    cell_width: f64,
-    cell_height: f64,
-    /// Set when title changes; cleared after the next incremental update.
-    title_changed: bool,
-}
 
 struct TerminalActivationHandler {
     state: Arc<Mutex<Option<A11ySnapshot>>>,
@@ -223,7 +209,6 @@ struct App {
             notify_debouncer_full::RecommendedCache,
         >,
     >,
-    last_sent_dims: (u16, u16),
     /// Set after initial Resize is sent. Gates on first `RedrawRequested`.
     initial_resize_sent: bool,
     /// Last known mouse position in grid coordinates.
@@ -276,7 +261,6 @@ impl App {
             keybind_registry: oakterm_config::KeybindRegistry::new(),
             config_error: None,
             config_watcher: None,
-            last_sent_dims: (0, 0),
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
             modifiers: winit::event::Modifiers::default(),
@@ -733,8 +717,8 @@ impl ApplicationHandler<UserEvent> for App {
                             }
 
                             // Defer until RedrawRequested; startup fires multiple Resized events.
-                            if self.initial_resize_sent && (cols, rows) != self.last_sent_dims {
-                                self.last_sent_dims = (cols, rows);
+                            if self.initial_resize_sent && (cols, rows) != view.last_sent_dims {
+                                view.last_sent_dims = (cols, rows);
                                 if let Some(daemon) = &mut self.daemon {
                                     let msg = Resize {
                                         pane_id: self.focused_pane,
@@ -1052,16 +1036,16 @@ impl ApplicationHandler<UserEvent> for App {
                 // initial Resize that triggers PTY spawn on the daemon side.
                 if !self.initial_resize_sent {
                     #[allow(clippy::cast_possible_truncation)]
-                    if let (Some(font), Some(_), Some(daemon)) = (
+                    if let (Some(font), Some(view), Some(daemon)) = (
                         &self.font,
-                        self.panes.get(&self.focused_pane),
+                        self.panes.get_mut(&self.focused_pane),
                         &mut self.daemon,
                     ) {
                         let size =
                             winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
                         let (cols, rows) =
                             window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                        self.last_sent_dims = (cols, rows);
+                        view.last_sent_dims = (cols, rows);
                         let msg = Resize {
                             pane_id: self.focused_pane,
                             cols,
@@ -1331,25 +1315,20 @@ impl ApplicationHandler<UserEvent> for App {
                         };
 
                         if !dirty_indices.is_empty() || cursor_changed || title_changed {
-                            let cursor_row_text = grid.row_text(grid.cursor_y);
-                            let font = self.font.as_ref();
-                            let input = oakterm_a11y::IncrementalInput {
-                                rows: grid.rows,
-                                cols: grid.cols,
-                                dirty_row_indices: &dirty_indices,
-                                dirty_row_texts: &dirty_texts,
-                                cursor_row: grid.cursor_y,
-                                cursor_col: grid.cursor_x,
-                                cursor_changed,
-                                cursor_row_text: &cursor_row_text,
-                                title: &current_title,
-                                title_changed,
-                                announcement: announcement.as_ref(),
-                                cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
-                                cell_height: font
-                                    .map_or(16.0, |f| f64::from(f.metrics.cell_height)),
-                            };
-                            a11y_update = Some(oakterm_a11y::build_incremental_update(&input));
+                            let cell =
+                                a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
+                            a11y_update = Some(a11y_bridge::build_incremental(
+                                grid,
+                                cell,
+                                &A11yDelta {
+                                    dirty_row_indices: &dirty_indices,
+                                    dirty_row_texts: &dirty_texts,
+                                    cursor_changed,
+                                    title: &current_title,
+                                    title_changed,
+                                    announcement: announcement.as_ref(),
+                                },
+                            ));
                         }
 
                         if is_focused {
@@ -1396,31 +1375,20 @@ impl ApplicationHandler<UserEvent> for App {
                         let all_indices: Vec<u16> = (0..grid.rows).collect();
                         let all_texts: Vec<String> =
                             all_indices.iter().map(|&i| grid.row_text(i)).collect();
-                        let font = self.font.as_ref();
-                        let cursor_row_text = grid.row_text(grid.cursor_y);
-                        let title = self
-                            .a11y_state
-                            .lock()
-                            .ok()
-                            .and_then(|s| s.as_ref().map(|s| s.title.clone()))
-                            .unwrap_or_default();
-                        let input = oakterm_a11y::IncrementalInput {
-                            rows: grid.rows,
-                            cols: grid.cols,
-                            dirty_row_indices: &all_indices,
-                            dirty_row_texts: &all_texts,
-                            cursor_row: grid.cursor_y,
-                            cursor_col: grid.cursor_x,
-                            cursor_changed: true,
-                            cursor_row_text: &cursor_row_text,
-                            title: &title,
-                            title_changed: false,
-                            announcement: None,
-                            cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
-                            cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
-                        };
-                        a11y_scrollback_update =
-                            Some(oakterm_a11y::build_incremental_update(&input));
+                        let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
+                        let title = a11y_bridge::snapshot_title(&self.a11y_state);
+                        a11y_scrollback_update = Some(a11y_bridge::build_incremental(
+                            grid,
+                            cell,
+                            &A11yDelta {
+                                dirty_row_indices: &all_indices,
+                                dirty_row_texts: &all_texts,
+                                cursor_changed: true,
+                                title: &title,
+                                title_changed: false,
+                                announcement: None,
+                            },
+                        ));
                     }
                     if let (Some(adapter), Some(tree_update)) =
                         (&mut self.accesskit, a11y_scrollback_update)
@@ -1471,31 +1439,20 @@ impl ApplicationHandler<UserEvent> for App {
                 if let (Some(view), Some(adapter)) =
                     (self.panes.get(&self.focused_pane), &mut self.accesskit)
                 {
-                    let grid = &view.grid;
-                    let current_title = self
-                        .a11y_state
-                        .lock()
-                        .ok()
-                        .and_then(|s| s.as_ref().map(|s| s.title.clone()))
-                        .unwrap_or_default();
-                    let cursor_row_text = grid.row_text(grid.cursor_y);
-                    let font = self.font.as_ref();
-                    let input = oakterm_a11y::IncrementalInput {
-                        rows: grid.rows,
-                        cols: grid.cols,
-                        dirty_row_indices: &[],
-                        dirty_row_texts: &[],
-                        cursor_row: grid.cursor_y,
-                        cursor_col: grid.cursor_x,
-                        cursor_changed: false,
-                        cursor_row_text: &cursor_row_text,
-                        title: &current_title,
-                        title_changed: true,
-                        announcement: None,
-                        cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
-                        cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
-                    };
-                    let update = oakterm_a11y::build_incremental_update(&input);
+                    let current_title = a11y_bridge::snapshot_title(&self.a11y_state);
+                    let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
+                    let update = a11y_bridge::build_incremental(
+                        &view.grid,
+                        cell,
+                        &A11yDelta {
+                            dirty_row_indices: &[],
+                            dirty_row_texts: &[],
+                            cursor_changed: false,
+                            title: &current_title,
+                            title_changed: true,
+                            announcement: None,
+                        },
+                    );
                     adapter.update_if_active(|| update);
                 }
             }
@@ -1504,42 +1461,25 @@ impl ApplicationHandler<UserEvent> for App {
                 if let (Some(view), Some(adapter)) =
                     (self.panes.get(&self.focused_pane), &mut self.accesskit)
                 {
-                    let grid = &view.grid;
-                    let cursor_row_text = grid.row_text(grid.cursor_y);
-                    let title = self
-                        .a11y_state
-                        .lock()
-                        .ok()
-                        .and_then(|s| s.as_ref().map(|s| s.title.clone()))
-                        .unwrap_or_default();
+                    let title = a11y_bridge::snapshot_title(&self.a11y_state);
+                    let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
                     let ann = oakterm_a11y::Announcement {
                         text: "Bell".into(),
                         level: accesskit::Live::Assertive,
                     };
-                    let font = self.font.as_ref();
-                    let input = oakterm_a11y::IncrementalInput {
-                        rows: grid.rows,
-                        cols: grid.cols,
+                    let mut delta = A11yDelta {
                         dirty_row_indices: &[],
                         dirty_row_texts: &[],
-                        cursor_row: grid.cursor_y,
-                        cursor_col: grid.cursor_x,
                         cursor_changed: false,
-                        cursor_row_text: &cursor_row_text,
                         title: &title,
                         title_changed: false,
                         announcement: Some(&ann),
-                        cell_width: font.map_or(8.0, |f| f64::from(f.metrics.cell_width)),
-                        cell_height: font.map_or(16.0, |f| f64::from(f.metrics.cell_height)),
                     };
-                    let bell_update = oakterm_a11y::build_incremental_update(&input);
+                    let bell_update = a11y_bridge::build_incremental(&view.grid, cell, &delta);
                     adapter.update_if_active(|| bell_update);
                     // Clear so a repeated bell is a fresh text transition.
-                    let clear_input = oakterm_a11y::IncrementalInput {
-                        announcement: None,
-                        ..input
-                    };
-                    let clear = oakterm_a11y::build_incremental_update(&clear_input);
+                    delta.announcement = None;
+                    let clear = a11y_bridge::build_incremental(&view.grid, cell, &delta);
                     adapter.update_if_active(|| clear);
                 }
             }
@@ -1891,7 +1831,7 @@ impl App {
                     let cols = cols.max(1);
                     let rows = rows.max(1);
                     view.grid.resize(cols, rows);
-                    self.last_sent_dims = (cols, rows);
+                    view.last_sent_dims = (cols, rows);
 
                     if let Some(daemon) = &self.daemon {
                         let msg = Resize {

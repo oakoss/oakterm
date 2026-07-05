@@ -12,6 +12,8 @@ pub(crate) struct PaneView {
     pub(crate) selection: Option<Selection>,
     /// Whether the terminal has DECSET 2004 (bracketed paste) active.
     pub(crate) bracketed_paste: bool,
+    /// Last `(cols, rows)` sent to the daemon; suppresses redundant resizes.
+    pub(crate) last_sent_dims: (u16, u16),
 }
 
 impl PaneView {
@@ -21,6 +23,7 @@ impl PaneView {
             viewport_offset: 0,
             selection: None,
             bracketed_paste: false,
+            last_sent_dims: (0, 0),
         }
     }
 
