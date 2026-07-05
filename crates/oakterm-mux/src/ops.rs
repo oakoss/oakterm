@@ -7,6 +7,7 @@
 //! delta (`delta_weight = delta_pixels / container_pixel_extent`) and minimum
 //! pane size to weights, because only the daemon knows the pixel geometry.
 
+use crate::geometry::panes_share_border;
 use crate::layout::{Child, Container, LayoutNode, PaneId, SplitDirection};
 
 /// Why a layout operation was rejected. The tree is unchanged.
@@ -300,12 +301,6 @@ fn renormalize(children: &mut [Child]) {
 /// breaking the positive-weights invariant with no error.
 const MIN_SIBLING_WEIGHT: f32 = 1e-4;
 
-/// Minimum cross-axis overlap for two panes to count as sharing a border.
-/// Genuine corner touches compute to exactly (or within float noise of)
-/// zero; genuine sliver borders are far larger. Erring toward rejection is
-/// safe — a border this thin cannot be meaningfully dragged.
-const BORDER_OVERLAP_EPSILON: f32 = 1e-6;
-
 /// Descend to the container where `pane` and `neighbor` part ways and adjust
 /// the boundary between their subtrees. Membership is pre-validated.
 fn resize_at_border(
@@ -353,120 +348,6 @@ fn resize_at_border(
     c.children[neighbor_idx].weight -= applied;
     renormalize(&mut c.children);
     Ok(())
-}
-
-/// Whether the two panes actually abut the border between adjacent sibling
-/// subtrees. Adjacency of the subtrees is necessary but not sufficient: in
-/// `H[V[A,B], V[C,D]]` panes A and D sit in adjacent columns yet only meet
-/// at a corner. Each pane must touch the shared edge of its subtree
-/// (checked structurally — weight arithmetic cannot distinguish a touching
-/// pane from one separated by a sliver), and their extents along the
-/// border must overlap.
-fn panes_share_border(
-    c: &Container,
-    pane_idx: usize,
-    pane: PaneId,
-    neighbor_idx: usize,
-    neighbor: PaneId,
-) -> bool {
-    let (first_idx, first_id, second_id) = if pane_idx < neighbor_idx {
-        (pane_idx, pane, neighbor)
-    } else {
-        (neighbor_idx, neighbor, pane)
-    };
-    let first_node = &c.children[first_idx].node;
-    let second_node = &c.children[first_idx + 1].node;
-
-    if !touches_edge(first_node, first_id, c.direction, Edge::Trailing)
-        || !touches_edge(second_node, second_id, c.direction, Edge::Leading)
-    {
-        return false;
-    }
-
-    let first = pane_rect(first_node, first_id).expect("membership pre-validated");
-    let second = pane_rect(second_node, second_id).expect("membership pre-validated");
-    let cross_overlap = match c.direction {
-        SplitDirection::Horizontal => first.y1.min(second.y1) - first.y0.max(second.y0),
-        SplitDirection::Vertical => first.x1.min(second.x1) - first.x0.max(second.x0),
-    };
-    cross_overlap > BORDER_OVERLAP_EPSILON
-}
-
-/// Which edge of a subtree a pane must touch, along a given axis.
-#[derive(Clone, Copy, PartialEq)]
-enum Edge {
-    Leading,
-    Trailing,
-}
-
-/// Whether `target`'s leaf touches the given edge of `node` along `axis`:
-/// in every container along the path whose direction is `axis`, the pane
-/// must sit in the first (leading) or last (trailing) child. Structural,
-/// so a sliver pane between `target` and the edge is never mistaken for
-/// touching, no matter how thin.
-fn touches_edge(node: &LayoutNode, target: PaneId, axis: SplitDirection, edge: Edge) -> bool {
-    match node {
-        LayoutNode::Leaf(id) => *id == target,
-        LayoutNode::Container(c) => {
-            let Some(pos) = c.children.iter().position(|ch| ch.node.contains(target)) else {
-                return false;
-            };
-            if c.direction == axis {
-                let required = match edge {
-                    Edge::Leading => 0,
-                    Edge::Trailing => c.children.len() - 1,
-                };
-                if pos != required {
-                    return false;
-                }
-            }
-            touches_edge(&c.children[pos].node, target, axis, edge)
-        }
-    }
-}
-
-/// A pane's bounds within its subtree, both axes normalized to `[0, 1]`.
-#[derive(Clone, Copy)]
-struct UnitRect {
-    x0: f32,
-    x1: f32,
-    y0: f32,
-    y1: f32,
-}
-
-fn pane_rect(node: &LayoutNode, target: PaneId) -> Option<UnitRect> {
-    match node {
-        LayoutNode::Leaf(id) if *id == target => Some(UnitRect {
-            x0: 0.0,
-            x1: 1.0,
-            y0: 0.0,
-            y1: 1.0,
-        }),
-        LayoutNode::Leaf(_) => None,
-        LayoutNode::Container(c) => {
-            let mut start = 0.0;
-            for child in &c.children {
-                let end = start + child.weight;
-                if let Some(r) = pane_rect(&child.node, target) {
-                    let span = end - start;
-                    return Some(match c.direction {
-                        SplitDirection::Horizontal => UnitRect {
-                            x0: start + r.x0 * span,
-                            x1: start + r.x1 * span,
-                            ..r
-                        },
-                        SplitDirection::Vertical => UnitRect {
-                            y0: start + r.y0 * span,
-                            y1: start + r.y1 * span,
-                            ..r
-                        },
-                    });
-                }
-                start = end;
-            }
-            None
-        }
-    }
 }
 
 fn swap_leaves(node: &mut LayoutNode, a: PaneId, b: PaneId) {

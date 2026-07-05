@@ -9,7 +9,9 @@ use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
     HandshakeStatus, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE,
     MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
-    MSG_PING, MSG_PONG, MSG_SERVER_HELLO, PaneExited, ServerHello,
+    MSG_PING, MSG_PONG, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE,
+    MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, PaneExited, ResizePane, ServerHello, SplitDirection,
+    SplitPane, SplitPaneResponse, SwapPane,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -550,4 +552,294 @@ async fn poll_for_pid(stream: &mut UnixStream, codec: &mut FrameCodec, target_pa
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("PTY for pane {target_pane} did not report a PID within 1s");
+}
+
+/// Send `SplitPane` for `target` and return the new pane's ID, asserting
+/// the split was accepted.
+async fn split_pane_ok(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    target: u32,
+    direction: SplitDirection,
+    serial: u32,
+) -> u32 {
+    let split = SplitPane {
+        pane_id: target,
+        direction,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_SPLIT_PANE,
+        serial,
+        split.encode().expect("encode SplitPane"),
+    )
+    .expect("split frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(resp.msg_type, MSG_SPLIT_PANE_RESPONSE, "split rejected");
+    SplitPaneResponse::decode(&resp.payload)
+        .expect("decode SplitPaneResponse")
+        .new_pane_id
+}
+
+#[tokio::test]
+async fn split_pane_creates_pane_and_swap_round_trips() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 300).await;
+    assert_ne!(new_pane, 0);
+
+    // The new pane is listed alongside the default pane.
+    let frame = Frame::new(MSG_LIST_PANES, 301, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 301).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert!(
+        ids.contains(&0) && ids.contains(&new_pane),
+        "panes: {ids:?}"
+    );
+
+    let swap = SwapPane {
+        pane_id_a: 0,
+        pane_id_b: new_pane,
+    };
+    let frame = Frame::new(MSG_SWAP_PANE, 302, swap.encode()).expect("swap frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 302).await;
+    assert_eq!(resp.msg_type, MSG_SWAP_PANE_RESPONSE);
+}
+
+#[tokio::test]
+async fn split_pane_unknown_target_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let split = SplitPane {
+        pane_id: 999,
+        direction: SplitDirection::Horizontal,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_SPLIT_PANE,
+        310,
+        split.encode().expect("encode SplitPane"),
+    )
+    .expect("split frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 310).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+/// Spec-0007 Constraints: a split whose resulting pane would be under
+/// 2 cols x 1 row is rejected — but only along the split axis.
+#[tokio::test]
+async fn split_pane_below_minimum_size_rejected() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // Shrink pane 0 to 3 columns (this also spawns the default shell).
+    // Frames on one connection are handled in order, so the split below
+    // sees the new dimensions.
+    let resize = Resize {
+        pane_id: 0,
+        cols: 3,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    // Horizontal split would leave 1.5 columns per pane: rejected.
+    let split = SplitPane {
+        pane_id: 0,
+        direction: SplitDirection::Horizontal,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_SPLIT_PANE,
+        320,
+        split.encode().expect("encode SplitPane"),
+    )
+    .expect("split frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 320).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::LayoutRejected as u32);
+
+    // A vertical split of the same pane still fits (12 rows each).
+    let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Vertical, 321).await;
+    assert_ne!(new_pane, 0);
+}
+
+/// A same-direction insert shrinks every sibling by N/(N+1); a sibling
+/// already at the minimum blocks the split even when the target is large.
+#[tokio::test]
+async fn split_pane_shrinking_sibling_below_minimum_rejected() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let b = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 328).await;
+
+    // Shrink the sibling to the 2-column floor (spawns its shell).
+    let resize = Resize {
+        pane_id: b,
+        cols: 2,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    // Splitting the 80-col pane 0 would scale b by 2/3, below minimum.
+    let split = SplitPane {
+        pane_id: 0,
+        direction: SplitDirection::Horizontal,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_SPLIT_PANE,
+        329,
+        split.encode().expect("encode SplitPane"),
+    )
+    .expect("split frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 329).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::LayoutRejected as u32);
+}
+
+/// The minimum is inclusive: a 4-column pane splits into exactly 2+2.
+#[tokio::test]
+async fn split_pane_at_exact_minimum_accepted() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let resize = Resize {
+        pane_id: 0,
+        cols: 4,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 325).await;
+    assert_ne!(new_pane, 0);
+}
+
+#[tokio::test]
+async fn resize_pane_unknown_neighbor_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 330).await;
+
+    let resize = ResizePane {
+        pane_id: 0,
+        neighbor_pane_id: 999,
+        delta: 5,
+    };
+    let frame = Frame::new(MSG_RESIZE_PANE, 0, resize.encode()).expect("resize frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    // ResizePane is a push; its error arrives with serial 0.
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+#[tokio::test]
+async fn resize_pane_corner_pair_rejected() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // Build H[V[0,c], V[b,d]]: 0 top-left, d bottom-right — corner only.
+    let b = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 340).await;
+    let _c = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Vertical, 341).await;
+    let d = split_pane_ok(&mut stream, &mut codec, b, SplitDirection::Vertical, 342).await;
+
+    let resize = ResizePane {
+        pane_id: 0,
+        neighbor_pane_id: d,
+        delta: 5,
+    };
+    let frame = Frame::new(MSG_RESIZE_PANE, 0, resize.encode()).expect("resize frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::LayoutRejected as u32);
+}
+
+/// A valid sibling resize is silent (push, no response): the next Pong
+/// must arrive with no Error frame before it.
+#[tokio::test]
+async fn resize_pane_between_siblings_is_silent() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 350).await;
+
+    let resize = ResizePane {
+        pane_id: 0,
+        neighbor_pane_id: new_pane,
+        delta: 5,
+    };
+    let frame = Frame::new(MSG_RESIZE_PANE, 0, resize.encode()).expect("resize frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    let ping = Frame::new(MSG_PING, 351, vec![]).expect("ping frame");
+    write_frame(&mut stream, &mut codec, ping).await;
+
+    let mut buf = BytesMut::with_capacity(4096);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Some(frame) = codec.decode(&mut buf).expect("decode") {
+            assert_ne!(
+                frame.msg_type, MSG_ERROR,
+                "sibling resize must not produce an error"
+            );
+            if frame.serial == 351 {
+                assert_eq!(frame.msg_type, MSG_PONG);
+                return;
+            }
+        }
+        let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        let n = tokio::time::timeout(timeout, stream.read_buf(&mut buf))
+            .await
+            .expect("timed out waiting for Pong")
+            .expect("read error");
+        assert!(n > 0, "daemon closed connection");
+    }
+}
+
+#[tokio::test]
+async fn swap_pane_unknown_pane_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let swap = SwapPane {
+        pane_id_a: 0,
+        pane_id_b: 999,
+    };
+    let frame = Frame::new(MSG_SWAP_PANE, 360, swap.encode()).expect("swap frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 360).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
 }

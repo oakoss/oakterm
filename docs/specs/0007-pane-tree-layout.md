@@ -238,6 +238,8 @@ Resize adjusts the weight boundary between two adjacent siblings in the same con
 
 **Cross-container borders:** Resize operates between siblings only. Borders that visually align across containers (e.g., a horizontal border spanning two vertical containers) cannot be dragged as a unified border. Each container's children are resized independently. This matches tmux and i3 behavior.
 
+**Accepted pane pairs (TREK-97/98):** "Adjacent siblings" is deliberately broader than two leaves of one container: the two panes may sit in adjacent sibling _subtrees_, provided each pane touches the shared edge of its subtree and their extents along the border overlap. This is exactly the set of pairs a GUI border drag produces — in `H[A, V[B, C]]`, dragging the vertical border beside B sends `(B, A)`, and the adjustment applies to the two subtree weights. Panes that meet only at a corner, or are separated from the border by another pane, are rejected. Because the adjustment applies to subtree weights, panes _inside_ a resized subtree shrink proportionally; the minimum-size clamp applies to the two sibling weights, not to descendant panes.
+
 ### Focus Navigation
 
 Directional focus (left, right, up, down) finds the nearest pane in the requested direction:

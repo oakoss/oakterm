@@ -5,8 +5,10 @@
 //! to wire-protocol messages; keeping it in its own crate lets the tree logic
 //! be unit-tested without the daemon's async and socket machinery.
 
+pub mod geometry;
 pub mod layout;
 pub mod ops;
 
+pub use geometry::{BorderExtents, SplitPreview};
 pub use layout::{Child, Container, InvariantViolation, LayoutNode, PaneId, SplitDirection};
 pub use ops::{CloseOutcome, LayoutError};

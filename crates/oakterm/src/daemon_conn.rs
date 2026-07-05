@@ -4,9 +4,9 @@
 use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    ClientHello, ClientType, HandshakeStatus, MSG_BELL, MSG_DIRTY_NOTIFY, MSG_GET_RENDER_UPDATE,
-    MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO,
-    MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, TitleChanged,
+    ClientHello, ClientType, ErrorMessage, HandshakeStatus, MSG_BELL, MSG_DIRTY_NOTIFY, MSG_ERROR,
+    MSG_GET_RENDER_UPDATE, MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA,
+    MSG_SERVER_HELLO, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
@@ -283,6 +283,34 @@ fn send_get_render_update(
     writer.send_frame(&frame)
 }
 
+/// Failures land here both as serial-0 pushes (e.g. `ResizePane`
+/// rejections, Spec-0001) and as serial-carrying error responses (e.g.
+/// `GetRenderUpdate` for an unknown pane). There is no response routing
+/// yet — nothing correlates a serial back to its request, so an errored
+/// `GetRenderUpdate` leaves its pane's `in_flight` entry set (recovery is
+/// TREK-156; routing arrives with the TREK-99 client wiring). Until a UI
+/// surface exists, the log is the only signal.
+fn log_daemon_error(frame: &Frame) {
+    match ErrorMessage::decode(&frame.payload) {
+        Ok(err) => {
+            error!(
+                serial = frame.serial,
+                code = err.code,
+                message = %err.message,
+                "daemon reported an error"
+            );
+        }
+        Err(e) => {
+            error!(
+                serial = frame.serial,
+                payload_len = frame.payload.len(),
+                error = %e,
+                "failed to decode ErrorMessage"
+            );
+        }
+    }
+}
+
 /// Background thread: read frames, request render updates on `DirtyNotify`.
 ///
 /// Per pane, at most one `GetRenderUpdate` is in flight at a time; subsequent
@@ -389,6 +417,7 @@ fn daemon_reader(
                 MSG_BELL => {
                     let _ = proxy.send_event(UserEvent::Bell);
                 }
+                MSG_ERROR => log_daemon_error(&frame),
                 other => {
                     warn!(
                         msg_type = format_args!("0x{other:04x}"),

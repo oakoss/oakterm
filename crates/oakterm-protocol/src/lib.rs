@@ -867,4 +867,118 @@ mod tests {
         assert_eq!(frame.msg_type, MSG_LIST_PANES_RESPONSE);
         assert_eq!(frame.serial, 42);
     }
+
+    // --- Split topology (0xA0-0xA4) ---
+
+    #[test]
+    fn split_pane_roundtrip() {
+        let msg = SplitPane {
+            pane_id: 3,
+            direction: SplitDirection::Vertical,
+            command: "htop --tree".into(),
+            cwd: "/home/user".into(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = SplitPane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn split_pane_empty_strings_roundtrip() {
+        let msg = SplitPane {
+            pane_id: 0,
+            direction: SplitDirection::Horizontal,
+            command: String::new(),
+            cwd: String::new(),
+        };
+        let encoded = msg.encode().unwrap();
+        assert_eq!(encoded.len(), 9);
+        let decoded = SplitPane::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn split_pane_unknown_direction_rejected() {
+        let msg = SplitPane {
+            pane_id: 1,
+            direction: SplitDirection::Horizontal,
+            command: String::new(),
+            cwd: String::new(),
+        };
+        let mut encoded = msg.encode().unwrap();
+        encoded[4] = 2;
+        assert!(SplitPane::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn split_pane_too_short() {
+        assert!(SplitPane::decode(&[0; 4]).is_err());
+    }
+
+    #[test]
+    fn split_pane_response_roundtrip_and_frame() {
+        let resp = SplitPaneResponse { new_pane_id: 7 };
+        let decoded = SplitPaneResponse::decode(&resp.encode()).unwrap();
+        assert_eq!(decoded, resp);
+        let frame = resp.to_frame(11).unwrap();
+        assert_eq!(frame.msg_type, MSG_SPLIT_PANE_RESPONSE);
+        assert_eq!(frame.serial, 11);
+    }
+
+    #[test]
+    fn resize_pane_roundtrip() {
+        let msg = ResizePane {
+            pane_id: 2,
+            neighbor_pane_id: 5,
+            delta: -3,
+        };
+        let decoded = ResizePane::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn resize_pane_too_short() {
+        assert!(ResizePane::decode(&[0; 9]).is_err());
+    }
+
+    #[test]
+    fn swap_pane_roundtrip() {
+        let msg = SwapPane {
+            pane_id_a: 1,
+            pane_id_b: 9,
+        };
+        let decoded = SwapPane::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn swap_pane_too_short() {
+        assert!(SwapPane::decode(&[0; 7]).is_err());
+    }
+
+    #[test]
+    fn error_code_roundtrip_all_variants() {
+        use ErrorCode::{
+            InternalError, InvalidMessage, LayoutRejected, MalformedPayload, PaneExited,
+            PermissionDenied, UnknownPane,
+        };
+        let all = [
+            UnknownPane,
+            InvalidMessage,
+            MalformedPayload,
+            InternalError,
+            PaneExited,
+            PermissionDenied,
+            LayoutRejected,
+        ];
+        for code in all {
+            // Exhaustive match: adding a variant without extending `all`
+            // stops compiling.
+            match code {
+                UnknownPane | InvalidMessage | MalformedPayload | InternalError | PaneExited
+                | PermissionDenied | LayoutRejected => {}
+            }
+            assert_eq!(ErrorCode::try_from(code as u32).unwrap(), code);
+        }
+    }
 }

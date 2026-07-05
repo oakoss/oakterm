@@ -129,16 +129,17 @@ This spec defines protocol version **major 1, minor 1**. Minor bumps are recorde
 
 **Error codes (0x05 Error payload):**
 
-| Code | Name                | Meaning                                          |
-| ---- | ------------------- | ------------------------------------------------ |
-| 1    | `UNKNOWN_PANE`      | Requested pane_id does not exist                 |
-| 2    | `INVALID_MESSAGE`   | Message type not allowed on this connection type |
-| 3    | `MALFORMED_PAYLOAD` | Payload deserialization failed                   |
-| 4    | `INTERNAL_ERROR`    | Daemon encountered an unexpected error           |
-| 5    | `PANE_EXITED`       | Pane exists but the child process has exited     |
-| 6    | `PERMISSION_DENIED` | Operation not permitted for this client          |
+| Code | Name                | Meaning                                                                                                      |
+| ---- | ------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1    | `UNKNOWN_PANE`      | Requested pane_id does not exist                                                                             |
+| 2    | `INVALID_MESSAGE`   | Message type not allowed on this connection type                                                             |
+| 3    | `MALFORMED_PAYLOAD` | Payload deserialization failed                                                                               |
+| 4    | `INTERNAL_ERROR`    | Daemon encountered an unexpected error                                                                       |
+| 5    | `PANE_EXITED`       | Pane exists but the child process has exited                                                                 |
+| 6    | `PERMISSION_DENIED` | Operation not permitted for this client                                                                      |
+| 7    | `LAYOUT_REJECTED`   | Layout operation violates a Spec-0007 constraint (minimum pane size, or the panes share no resizable border) |
 
-Error codes 0 and 7-255 are reserved. Codes 256+ are available for future use.
+Error codes 0 and 8-255 are reserved. Codes 256+ are available for future use. New codes are assigned from the reserved range without a version bump — codes are data inside an existing message, not new wire surface — so clients must treat an unknown code as an opaque failure, keyed by the human-readable `message`. (`LAYOUT_REJECTED` was assigned this way with the first split-topology implementation, TREK-98.)
 
 **`RequestShutdown` (0x07) and `ShutdownAck` (0x08):** A client asks the daemon
 to persist session state and exit — the single save-then-exit path shared by
@@ -303,13 +304,17 @@ is_active          u8          1 if this is the currently selected match, 0 othe
 it into program + args at PTY spawn time (e.g., `"htop --tree"` becomes
 `program=htop`, `args=["--tree"]`). Malformed quoting (unclosed quote, etc.)
 produces an `ErrorMessage` (0x05) with `ErrorCode::MalformedPayload` —
-client error, not a daemon fault. When `SplitPane` (0xA0) and `NewTab`
-(0xA7) are implemented, the same parsing rule will apply to their `command`
-fields.
+client error, not a daemon fault. The same parsing rule applies to
+`SplitPane` (0xA0) and, when implemented, `NewTab` (0xA7).
 
 `CreatePane.cwd` is a UTF-8 path. If the directory doesn't exist at spawn
 time, the daemon falls back to `$HOME` → `/` and logs a warning; the spawn
 still succeeds.
+
+Every pane lives in the Spec-0007 layout tree. The first `CreatePane`
+seeds the tree's root; until the tab model lands, a later `CreatePane`
+(which carries no placement) enters the tree as a horizontal split of the
+focused pane. `SplitPane` (0xA0) chooses its own target and direction.
 
 **PaneInfo:**
 
@@ -344,23 +349,27 @@ The daemon tracks which clients have pinned viewports per pane (a set of client 
 
 See Spec-0007 for the layout tree model.
 
-| msg_type | Name              | Direction | Serial   | Payload                                                                                                                                                                        |
-| -------- | ----------------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `0xA0`   | SplitPane         | C→D       | Request  | `pane_id: u32`, `direction: u8` (0=horizontal: children left-to-right, 1=vertical: children top-to-bottom), `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8` |
-| `0xA1`   | SplitPaneResponse | D→C       | Response | `new_pane_id: u32`                                                                                                                                                             |
-| `0xA2`   | ResizePane        | C→D       | Push (0) | `pane_id: u32`, `neighbor_pane_id: u32`, `delta: i16` (positive = grow pane_id, negative = shrink). Error if panes are not adjacent siblings.                                  |
-| `0xA3`   | SwapPane          | C→D       | Request  | `pane_id_a: u32`, `pane_id_b: u32`                                                                                                                                             |
-| `0xA4`   | SwapPaneResponse  | D→C       | Response | Empty. Confirms swap completed.                                                                                                                                                |
-| `0xA5`   | GetLayoutTree     | C→D       | Request  | `workspace_id: u32`, `tab_id: u32`                                                                                                                                             |
-| `0xA6`   | LayoutTree        | D→C       | Response | `tree_len: u32`, `tree: bytes` (JSON-encoded layout tree, see below)                                                                                                           |
-| `0xA7`   | NewTab            | C→D       | Request  | `workspace_id: u32`, `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8`                                                                                        |
-| `0xA8`   | NewTabResponse    | D→C       | Response | `tab_id: u32`, `pane_id: u32`                                                                                                                                                  |
-| `0xA9`   | CloseTab          | C→D       | Request  | `tab_id: u32`                                                                                                                                                                  |
-| `0xAA`   | CloseTabResponse  | D→C       | Response | Empty. Confirms tab closed.                                                                                                                                                    |
-| `0xAB`   | SwitchTab         | C→D       | Push (0) | `tab_id: u32`                                                                                                                                                                  |
-| `0xAC`   | NewWorkspace      | C→D       | Request  | `name_len: u16`, `name: UTF-8`                                                                                                                                                 |
-| `0xAD`   | NewWorkspaceResp  | D→C       | Response | `workspace_id: u32`, `tab_id: u32`, `pane_id: u32`                                                                                                                             |
-| `0xAE`   | SwitchWorkspace   | C→D       | Push (0) | `workspace_id: u32`                                                                                                                                                            |
+| msg_type | Name              | Direction | Serial   | Payload                                                                                                                                                                                                                      |
+| -------- | ----------------- | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0xA0`   | SplitPane         | C→D       | Request  | `pane_id: u32`, `direction: u8` (0=horizontal: children left-to-right, 1=vertical: children top-to-bottom), `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8`                                               |
+| `0xA1`   | SplitPaneResponse | D→C       | Response | `new_pane_id: u32`                                                                                                                                                                                                           |
+| `0xA2`   | ResizePane        | C→D       | Push (0) | `pane_id: u32`, `neighbor_pane_id: u32`, `delta: i16` in grid cells along the border axis (columns for a vertical border, rows for a horizontal one; positive = grow pane_id). Error if the panes share no resizable border. |
+| `0xA3`   | SwapPane          | C→D       | Request  | `pane_id_a: u32`, `pane_id_b: u32`                                                                                                                                                                                           |
+| `0xA4`   | SwapPaneResponse  | D→C       | Response | Empty. Confirms swap completed.                                                                                                                                                                                              |
+| `0xA5`   | GetLayoutTree     | C→D       | Request  | `workspace_id: u32`, `tab_id: u32`                                                                                                                                                                                           |
+| `0xA6`   | LayoutTree        | D→C       | Response | `tree_len: u32`, `tree: bytes` (JSON-encoded layout tree, see below)                                                                                                                                                         |
+| `0xA7`   | NewTab            | C→D       | Request  | `workspace_id: u32`, `command_len: u16`, `command: UTF-8`, `cwd_len: u16`, `cwd: UTF-8`                                                                                                                                      |
+| `0xA8`   | NewTabResponse    | D→C       | Response | `tab_id: u32`, `pane_id: u32`                                                                                                                                                                                                |
+| `0xA9`   | CloseTab          | C→D       | Request  | `tab_id: u32`                                                                                                                                                                                                                |
+| `0xAA`   | CloseTabResponse  | D→C       | Response | Empty. Confirms tab closed.                                                                                                                                                                                                  |
+| `0xAB`   | SwitchTab         | C→D       | Push (0) | `tab_id: u32`                                                                                                                                                                                                                |
+| `0xAC`   | NewWorkspace      | C→D       | Request  | `name_len: u16`, `name: UTF-8`                                                                                                                                                                                               |
+| `0xAD`   | NewWorkspaceResp  | D→C       | Response | `workspace_id: u32`, `tab_id: u32`, `pane_id: u32`                                                                                                                                                                           |
+| `0xAE`   | SwitchWorkspace   | C→D       | Push (0) | `workspace_id: u32`                                                                                                                                                                                                          |
+
+**`SplitPane` (0xA0):** The new pane follows the `CreatePane` lifecycle — created unspawned; the client's first `Resize` for it determines dimensions and spawns the PTY. Focus moves to the new pane (Spec-0007 Split). The daemon rejects the request with `LAYOUT_REJECTED` when the split would leave any resulting pane below the Spec-0007 minimum (2 columns × 1 row) along the split axis — the new pane, the shrunk target, or a sibling scaled by a same-direction insert.
+
+**`ResizePane` (0xA2):** `delta` is in grid cells because the daemon has no pixel geometry — the client converts its pixel drag using its cell size. The daemon converts cells to Spec-0007 weight space and clamps so neither side drops below the minimum pane size. The accepted pane pairs are those sharing a resizable border: adjacent sibling subtrees of one container where each pane touches the shared edge and their extents overlap (Spec-0007 Resize) — the pairs a border drag in the GUI naturally produces. Failures (`UNKNOWN_PANE`, `LAYOUT_REJECTED`) are pushed as `Error` frames with serial 0.
 
 **GetLayoutTree response:** The `tree` payload is a JSON-encoded layout tree for a single tab. Based on Spec-0010's `SavedLayoutNode` structure but with live `pane_id: u32` at each leaf instead of `SavedPane`. This gives the GUI the pane IDs it needs to correlate with render updates. JSON is used because layout tree queries are infrequent (on tab switch, not per frame) and the tree is small (~1-5 KB).
 
@@ -428,6 +437,8 @@ The daemon does not push screen content to GUI clients. Instead:
 | Control message on GUI connection                    | Send `Error` response.                                                                                                                         |
 | `GetRenderUpdate` for unknown pane_id                | Send `Error` response with appropriate error code.                                                                                             |
 | `RequestShutdown` with an unknown `reason` value     | Send `Error` response (`MALFORMED_PAYLOAD`). Do not shut down; the daemon keeps running.                                                       |
+| `SplitPane` below the minimum pane size              | Send `Error` response (`LAYOUT_REJECTED`). The layout tree is unchanged.                                                                       |
+| `ResizePane` between panes with no shared border     | Push an `Error` frame (`LAYOUT_REJECTED`, serial 0). The layout tree is unchanged.                                                             |
 | Serial collision (client reuses an in-flight serial) | Undefined behavior. Clients must use unique serials for outstanding requests.                                                                  |
 
 ### Reconnection

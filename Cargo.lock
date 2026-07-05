@@ -2053,6 +2053,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "oakterm-config",
+ "oakterm-mux",
  "oakterm-protocol",
  "oakterm-pty",
  "oakterm-terminal",

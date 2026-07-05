@@ -1,6 +1,7 @@
 //! Client request dispatch, split by message family (Spec-0001).
 
 mod input;
+mod layout;
 mod panes;
 mod render;
 mod scrollback;
@@ -11,8 +12,8 @@ use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
     ErrorCode, ErrorMessage, MSG_CLOSE_PANE, MSG_CREATE_PANE, MSG_DETACH, MSG_FIND_PROMPT,
     MSG_FOCUS_PANE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_LIST_PANES,
-    MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RESIZE, MSG_SEARCH_CLOSE, MSG_SEARCH_NEXT,
-    MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK,
+    MSG_MOUSE_INPUT, MSG_PING, MSG_PONG, MSG_RESIZE, MSG_RESIZE_PANE, MSG_SEARCH_CLOSE,
+    MSG_SEARCH_NEXT, MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK, MSG_SPLIT_PANE, MSG_SWAP_PANE,
 };
 use std::sync::Arc;
 use tokio::sync::{Mutex, watch};
@@ -48,6 +49,9 @@ pub(crate) async fn handle_request(
         MSG_CLOSE_PANE => panes::close_pane(conn_id, frame, panes).await,
         MSG_FOCUS_PANE => panes::focus_pane(conn_id, frame, panes).await,
         MSG_LIST_PANES => panes::list_panes(conn_id, frame, panes).await,
+        MSG_SPLIT_PANE => layout::split_pane(conn_id, frame, panes).await,
+        MSG_RESIZE_PANE => layout::resize_pane(conn_id, frame, panes).await,
+        MSG_SWAP_PANE => layout::swap_pane(conn_id, frame, panes).await,
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {
             Ok(f) => RequestResult::Response(f),
             Err(e) => {

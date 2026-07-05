@@ -49,6 +49,13 @@ pub const MSG_FOCUS_PANE: u16 = 0x94;
 pub const MSG_LIST_PANES: u16 = 0x95;
 pub const MSG_LIST_PANES_RESPONSE: u16 = 0x96;
 
+// Split topology (Spec-0001 0xA0-0xAF).
+pub const MSG_SPLIT_PANE: u16 = 0xA0;
+pub const MSG_SPLIT_PANE_RESPONSE: u16 = 0xA1;
+pub const MSG_RESIZE_PANE: u16 = 0xA2;
+pub const MSG_SWAP_PANE: u16 = 0xA3;
+pub const MSG_SWAP_PANE_RESPONSE: u16 = 0xA4;
+
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
 pub const MSG_CTL_RESPONSE: u16 = 0xC9;
@@ -113,6 +120,10 @@ pub enum ErrorCode {
     InternalError = 4,
     PaneExited = 5,
     PermissionDenied = 6,
+    /// A layout operation was rejected: it would violate a layout
+    /// constraint (minimum pane size, or the panes share no resizable
+    /// border).
+    LayoutRejected = 7,
 }
 
 impl TryFrom<u32> for ErrorCode {
@@ -125,6 +136,7 @@ impl TryFrom<u32> for ErrorCode {
             4 => Ok(Self::InternalError),
             5 => Ok(Self::PaneExited),
             6 => Ok(Self::PermissionDenied),
+            7 => Ok(Self::LayoutRejected),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown error code: {v}"),
@@ -1199,5 +1211,202 @@ impl ListPanesResponse {
     /// Returns an error if frame construction fails.
     pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
         Frame::new(MSG_LIST_PANES_RESPONSE, serial, self.encode()?)
+    }
+}
+
+// --- Split topology messages (0xA0-0xA4) ---
+
+/// Split direction for `SplitPane` (Spec-0007 `SplitDirection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SplitDirection {
+    /// Children arranged left-to-right.
+    Horizontal = 0,
+    /// Children arranged top-to-bottom.
+    Vertical = 1,
+}
+
+impl TryFrom<u8> for SplitDirection {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        match v {
+            0 => Ok(Self::Horizontal),
+            1 => Ok(Self::Vertical),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown split direction: {v}"),
+            )),
+        }
+    }
+}
+
+/// `SplitPane` (0xA0): client requests a split of an existing pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPane {
+    pub pane_id: u32,
+    pub direction: SplitDirection,
+    /// Shell command for the new pane. Empty = default shell.
+    pub command: String,
+    /// Working directory for the new pane. Empty = inherit from daemon.
+    pub cwd: String,
+}
+
+impl SplitPane {
+    /// # Errors
+    /// Returns an error if command or cwd exceed u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(9 + self.command.len() + self.cwd.len());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.push(self.direction as u8);
+        encode_str(&mut buf, &self.command)?;
+        encode_str(&mut buf, &self.cwd)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed or the direction byte
+    /// is unknown.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SplitPane too short",
+            ));
+        }
+        let pane_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let direction = SplitDirection::try_from(data[4])?;
+        let (command, consumed) = decode_str(data, 5, "command")?;
+        let (cwd, _) = decode_str(data, 5 + consumed, "cwd")?;
+        Ok(Self {
+            pane_id,
+            direction,
+            command,
+            cwd,
+        })
+    }
+}
+
+/// `SplitPaneResponse` (0xA1): daemon returns the new pane's ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPaneResponse {
+    pub new_pane_id: u32,
+}
+
+impl SplitPaneResponse {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.new_pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SplitPaneResponse too short",
+            ));
+        }
+        Ok(Self {
+            new_pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_SPLIT_PANE_RESPONSE, serial, self.encode())
+    }
+}
+
+/// `ResizePane` (0xA2): move the border between two panes. Push message;
+/// `delta` is in grid cells along the border container's axis (columns for
+/// a vertical border, rows for a horizontal border), positive grows
+/// `pane_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizePane {
+    pub pane_id: u32,
+    pub neighbor_pane_id: u32,
+    pub delta: i16,
+}
+
+impl ResizePane {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(10);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.neighbor_pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.delta.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 10 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ResizePane too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            neighbor_pane_id: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            delta: i16::from_le_bytes([data[8], data[9]]),
+        })
+    }
+}
+
+/// `SwapPaneResponse` (0xA4): empty payload confirming the swap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapPaneResponse;
+
+impl SwapPaneResponse {
+    /// # Errors
+    /// Never fails; any payload (including empty) decodes.
+    pub fn decode(_data: &[u8]) -> io::Result<Self> {
+        Ok(Self)
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_SWAP_PANE_RESPONSE, serial, vec![])
+    }
+}
+
+/// `SwapPane` (0xA3): exchange two panes' positions in the layout tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapPane {
+    pub pane_id_a: u32,
+    pub pane_id_b: u32,
+}
+
+impl SwapPane {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&self.pane_id_a.to_le_bytes());
+        buf.extend_from_slice(&self.pane_id_b.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SwapPane too short",
+            ));
+        }
+        Ok(Self {
+            pane_id_a: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            pane_id_b: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        })
     }
 }
