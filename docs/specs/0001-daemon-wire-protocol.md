@@ -3,7 +3,7 @@ spec: '0001'
 title: Daemon Wire Protocol
 status: implementing
 date: 2026-03-26
-adrs: ['0007']
+adrs: ['0007', '0020']
 tags: [core]
 ---
 
@@ -102,19 +102,30 @@ The negotiation rules above describe how a mismatch is _handled_; these rules de
 - Forward compatibility within a major version rests on the unknown-`msg_type` rule (ignore the frame — see [Error Cases](#error-cases)); additive changes are only safe because of it.
 - Client obligation: gate new request types on the peer's advertised minor version, and never block waiting for a response to a `msg_type` the peer may not know — an ignored frame produces no response by design.
 
+**Version history:**
+
+This spec defines protocol version **major 1, minor 1**. Minor bumps are recorded here; the advertised `VERSION_MINOR` constant ships with the first implementation of each bump's messages, so binaries may lag the spec by one minor version.
+
+| Version | Change                                                                                                                                                                                                                                                                 |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0     | Initial Phase 0 protocol: framing, handshake, version negotiation, and the message catalog.                                                                                                                                                                            |
+| 1.1     | Added `RequestShutdown` (0x07) and `ShutdownAck` (0x08) for client-initiated save-then-exit ([ADR-0020](../adrs/0020-daemon-upgrade-version-skew.md)). Additive — no existing message or field changed; unknown to older daemons, which fall back to a manual restart. |
+
 ### Message Catalog
 
 #### Infrastructure Messages (0x00-0x09)
 
-| msg_type | Name        | Direction | Serial   | Payload                                                 |
-| -------- | ----------- | --------- | -------- | ------------------------------------------------------- |
-| `0x00`   | (reserved)  | —         | —        | Invalid. Must never appear in a valid frame.            |
-| `0x01`   | ClientHello | C→D       | Request  | Handshake (see above)                                   |
-| `0x02`   | ServerHello | D→C       | Response | Handshake response (see above)                          |
-| `0x03`   | Ping        | Either    | Request  | Empty                                                   |
-| `0x04`   | Pong        | Either    | Response | Empty (echoes Ping serial)                              |
-| `0x05`   | Error       | D→C       | Response | `error_code: u32`, `message_len: u16`, `message: UTF-8` |
-| `0x06`   | Shutdown    | D→C       | Push (0) | `reason: u8` (0=clean, 1=crash, 2=upgrade)              |
+| msg_type | Name            | Direction | Serial   | Payload                                                 |
+| -------- | --------------- | --------- | -------- | ------------------------------------------------------- |
+| `0x00`   | (reserved)      | —         | —        | Invalid. Must never appear in a valid frame.            |
+| `0x01`   | ClientHello     | C→D       | Request  | Handshake (see above)                                   |
+| `0x02`   | ServerHello     | D→C       | Response | Handshake response (see above)                          |
+| `0x03`   | Ping            | Either    | Request  | Empty                                                   |
+| `0x04`   | Pong            | Either    | Response | Empty (echoes Ping serial)                              |
+| `0x05`   | Error           | D→C       | Response | `error_code: u32`, `message_len: u16`, `message: UTF-8` |
+| `0x06`   | Shutdown        | D→C       | Push (0) | `reason: u8` (0=clean, 1=crash, 2=upgrade)              |
+| `0x07`   | RequestShutdown | C→D       | Request  | `reason: u8` (0=quit, 1=upgrade)                        |
+| `0x08`   | ShutdownAck     | D→C       | Response | `status: u8` (0=accepted, 1=save_failed)                |
 
 **Error codes (0x05 Error payload):**
 
@@ -128,6 +139,23 @@ The negotiation rules above describe how a mismatch is _handled_; these rules de
 | 6    | `PERMISSION_DENIED` | Operation not permitted for this client          |
 
 Error codes 0 and 7-255 are reserved. Codes 256+ are available for future use.
+
+**`RequestShutdown` (0x07) and `ShutdownAck` (0x08):** A client asks the daemon
+to persist session state and exit — the single save-then-exit path shared by
+`oakterm quit` (`reason=0`, quit) and the coordinated daemon upgrade of
+[ADR-0020](../adrs/0020-daemon-upgrade-version-skew.md) (`reason=1`, upgrade).
+As an infrastructure message it is accepted on both GUI and control
+connections, which the upgrade flow needs: the new GUI re-connects speaking the
+daemon's older protocol solely to deliver it. On receipt the daemon saves the
+[Spec-0010](0010-session-persistence.md) session file, then replies with
+`ShutdownAck`: `status=0` (accepted) once the save succeeds, after which it
+broadcasts `Shutdown` (0x06) to the remaining clients and exits; `status=1`
+(save_failed) if the session could not be persisted, in which case the daemon
+aborts the shutdown and keeps running so no state is lost. The broadcast
+`Shutdown` inherits the request's intent: `reason=0` (quit) maps to `Shutdown`
+`reason=0` (clean), `reason=1` (upgrade) maps to `Shutdown` `reason=2`
+(upgrade). An unknown `reason` value is a malformed payload (see
+[Error Cases](#error-cases)).
 
 #### GUI Protocol — Input (0x64-0x6F)
 
@@ -382,6 +410,7 @@ The daemon does not push screen content to GUI clients. Instead:
 
 - **Clean disconnect:** Client sends `Detach`, then closes the socket. Daemon cleans up client subscriptions.
 - **Unclean disconnect:** Daemon detects socket close (read returns 0 or error). Same cleanup as clean disconnect.
+- **Client-requested shutdown:** A client sends `RequestShutdown`. The daemon persists the session file, replies `ShutdownAck` (`status=0`), and then follows the daemon-shutdown path below (broadcast `Shutdown`, drain, close). If the save fails it replies `ShutdownAck` (`status=1`) and keeps running. Reason and status encodings are in the message catalog.
 - **Daemon shutdown:** Daemon sends `Shutdown` to all connected clients, waits up to 1 second for clients to close, then closes all sockets.
 
 ### Error Cases
@@ -396,6 +425,7 @@ The daemon does not push screen content to GUI clients. Instead:
 | GUI message on control connection                    | Send `Error` response.                                                                                                                         |
 | Control message on GUI connection                    | Send `Error` response.                                                                                                                         |
 | `GetRenderUpdate` for unknown pane_id                | Send `Error` response with appropriate error code.                                                                                             |
+| `RequestShutdown` with an unknown `reason` value     | Send `Error` response (`MALFORMED_PAYLOAD`). Do not shut down; the daemon keeps running.                                                       |
 | Serial collision (client reuses an in-flight serial) | Undefined behavior. Clients must use unique serials for outstanding requests.                                                                  |
 
 ### Reconnection
