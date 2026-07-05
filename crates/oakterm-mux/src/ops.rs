@@ -7,7 +7,7 @@
 //! delta (`delta_weight = delta_pixels / container_pixel_extent`) and minimum
 //! pane size to weights, because only the daemon knows the pixel geometry.
 
-use crate::geometry::panes_share_border;
+use crate::geometry::{BorderPath, SplitSite, locate_border, locate_split_site};
 use crate::layout::{Child, Container, LayoutNode, PaneId, SplitDirection};
 
 /// Why a layout operation was rejected. The tree is unchanged.
@@ -187,15 +187,30 @@ impl LayoutNode {
     }
 }
 
-/// Apply the split at the target leaf. Membership is pre-validated, so the
-/// target is always found.
+/// Apply the split at the site [`locate_split_site`] resolves. Membership is
+/// pre-validated.
 fn split_in(node: &mut LayoutNode, target: PaneId, new_pane: PaneId, direction: SplitDirection) {
-    match node {
-        LayoutNode::Leaf(leaf) => {
-            debug_assert_eq!(*leaf, target, "split_in reached a non-target leaf");
-            // Rule 2: bare leaf (or parent of a different direction) becomes
-            // a two-child container splitting the slot evenly.
-            *node = LayoutNode::Container(Container {
+    match locate_split_site(node, target, direction) {
+        // Rule 1: insert the newcomer as the target's next sibling; existing
+        // children scale by n/(n+1) and it takes 1/(n+1).
+        SplitSite::Sibling { path, target_pos } => {
+            let LayoutNode::Container(c) = node_at_mut(node, &path) else {
+                unreachable!("a Sibling site resolves to its same-direction container");
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let n = c.children.len() as f32;
+            for ch in &mut c.children {
+                ch.weight *= n / (n + 1.0);
+            }
+            c.children.insert(
+                target_pos + 1,
+                Child::new(LayoutNode::Leaf(new_pane), 1.0 / (n + 1.0)),
+            );
+        }
+        // Rule 2: the target leaf's slot becomes a two-child container split
+        // evenly.
+        SplitSite::Halve { path } => {
+            *node_at_mut(node, &path) = LayoutNode::Container(Container {
                 direction,
                 children: vec![
                     Child::new(LayoutNode::Leaf(target), 0.5),
@@ -203,35 +218,20 @@ fn split_in(node: &mut LayoutNode, target: PaneId, new_pane: PaneId, direction: 
                 ],
             });
         }
-        LayoutNode::Container(c) => {
-            // Rule 1: the target is a direct leaf child of a same-direction
-            // container — insert the newcomer as its sibling.
-            if c.direction == direction {
-                let target_pos = c
-                    .children
-                    .iter()
-                    .position(|ch| matches!(ch.node, LayoutNode::Leaf(id) if id == target));
-                if let Some(i) = target_pos {
-                    #[allow(clippy::cast_precision_loss)]
-                    let n = c.children.len() as f32;
-                    for ch in &mut c.children {
-                        ch.weight *= n / (n + 1.0);
-                    }
-                    c.children.insert(
-                        i + 1,
-                        Child::new(LayoutNode::Leaf(new_pane), 1.0 / (n + 1.0)),
-                    );
-                    return;
-                }
-            }
-            let child = c
-                .children
-                .iter_mut()
-                .find(|ch| ch.node.contains(target))
-                .expect("membership pre-validated");
-            split_in(&mut child.node, target, new_pane, direction);
-        }
     }
+}
+
+/// A pane's subtree slot reached by descending `path`; every index is a
+/// container. Lets `split_in` mutate the site after [`locate_split_site`]
+/// resolved it on a shared immutable borrow.
+fn node_at_mut<'a>(mut node: &'a mut LayoutNode, path: &[usize]) -> &'a mut LayoutNode {
+    for &i in path {
+        let LayoutNode::Container(c) = node else {
+            unreachable!("split path indexes only containers");
+        };
+        node = &mut c.children[i].node;
+    }
+    node
 }
 
 /// Outcome of [`remove_leaf`]: distinguishes "target not in this subtree"
@@ -301,8 +301,8 @@ fn renormalize(children: &mut [Child]) {
 /// breaking the positive-weights invariant with no error.
 const MIN_SIBLING_WEIGHT: f32 = 1e-4;
 
-/// Descend to the container where `pane` and `neighbor` part ways and adjust
-/// the boundary between their subtrees. Membership is pre-validated.
+/// Adjust the boundary at the border [`locate_border`] identifies. Membership
+/// is pre-validated.
 fn resize_at_border(
     c: &mut Container,
     pane: PaneId,
@@ -310,44 +310,39 @@ fn resize_at_border(
     delta_weight: f32,
     min_weight: f32,
 ) -> Result<(), LayoutError> {
-    let pane_idx = c
-        .children
-        .iter()
-        .position(|ch| ch.node.contains(pane))
-        .expect("membership pre-validated");
-    let neighbor_idx = c
-        .children
-        .iter()
-        .position(|ch| ch.node.contains(neighbor))
-        .expect("membership pre-validated");
-
-    if pane_idx == neighbor_idx {
-        let LayoutNode::Container(inner) = &mut c.children[pane_idx].node else {
-            // Both ids in one leaf means pane == neighbor: no border.
-            return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
-        };
-        return resize_at_border(inner, pane, neighbor, delta_weight, min_weight);
-    }
-    if pane_idx.abs_diff(neighbor_idx) != 1 {
-        return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
-    }
-    if !panes_share_border(c, pane_idx, pane, neighbor_idx, neighbor) {
-        return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
-    }
+    let BorderPath {
+        path,
+        pane_idx,
+        neighbor_idx,
+    } = locate_border(c, pane, neighbor)?;
+    let border = container_at_mut(c, &path);
 
     // Clamp the delta so neither sibling drops below the floor. A sibling
     // already below it (degenerate input) is never pushed lower.
     let floor = min_weight.max(MIN_SIBLING_WEIGHT);
-    let grow = c.children[pane_idx].weight;
-    let shrink = c.children[neighbor_idx].weight;
+    let grow = border.children[pane_idx].weight;
+    let shrink = border.children[neighbor_idx].weight;
     let lo = -(grow - floor).max(0.0);
     let hi = (shrink - floor).max(0.0);
     let applied = delta_weight.clamp(lo, hi);
 
-    c.children[pane_idx].weight += applied;
-    c.children[neighbor_idx].weight -= applied;
-    renormalize(&mut c.children);
+    border.children[pane_idx].weight += applied;
+    border.children[neighbor_idx].weight -= applied;
+    renormalize(&mut border.children);
     Ok(())
+}
+
+/// The container reached by descending `path`; every index is a container.
+/// Re-descends what [`locate_border`] resolved, so the mutable borrow is taken
+/// only after the read-only descent ends.
+fn container_at_mut<'a>(mut c: &'a mut Container, path: &[usize]) -> &'a mut Container {
+    for &i in path {
+        let LayoutNode::Container(inner) = &mut c.children[i].node else {
+            unreachable!("border path indexes only containers");
+        };
+        c = inner;
+    }
+    c
 }
 
 fn swap_leaves(node: &mut LayoutNode, a: PaneId, b: PaneId) {

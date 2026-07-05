@@ -71,7 +71,8 @@ impl LayoutNode {
             // Single-leaf tree: pane == neighbor == leaf, no border.
             return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
         };
-        let (axis, container_extent) = border_container_extent(c, 1.0, 1.0, pane, neighbor)?;
+        let BorderPath { path, .. } = locate_border(c, pane, neighbor)?;
+        let (axis, container_extent) = border_container_extent(c, &path);
         // Membership was pre-validated; keep the query total anyway.
         let Some(r) = pane_rect(self, pane) else {
             return Err(LayoutError::PaneNotFound(pane));
@@ -105,88 +106,175 @@ impl LayoutNode {
     }
 }
 
-/// Descend to the container where the two panes' subtrees diverge,
-/// tracking the current subtree's extent on both axes. Validation mirrors
-/// `resize_at_border`; membership is pre-validated.
-fn border_container_extent(
-    c: &Container,
-    width: f32,
-    height: f32,
+/// Child-index path from the queried container to the container that owns the
+/// border between two panes, plus the border's two adjacent child slots.
+pub(crate) struct BorderPath {
+    /// Indices to descend from the queried container to the border container.
+    pub(crate) path: Vec<usize>,
+    pub(crate) pane_idx: usize,
+    pub(crate) neighbor_idx: usize,
+}
+
+/// Descend to the container where `pane` and `neighbor` part ways, enforcing
+/// the resize adjacency rules: adjacent sibling subtrees that each reach the
+/// shared edge. The returned path lets a caller re-descend to mutate
+/// (`resize_at_border`) or measure (`border_container_extent`) without holding
+/// a mutable borrow across the descent. Membership is pre-validated.
+///
+/// # Errors
+/// [`LayoutError::NotAdjacentSiblings`] if the panes do not share a border.
+pub(crate) fn locate_border(
+    root: &Container,
     pane: PaneId,
     neighbor: PaneId,
-) -> Result<(SplitDirection, f32), LayoutError> {
-    let pane_idx = c
-        .children
-        .iter()
-        .position(|ch| ch.node.contains(pane))
-        .expect("membership pre-validated");
-    let neighbor_idx = c
-        .children
-        .iter()
-        .position(|ch| ch.node.contains(neighbor))
-        .expect("membership pre-validated");
+) -> Result<BorderPath, LayoutError> {
+    let mut path = Vec::new();
+    let mut c = root;
+    loop {
+        let pane_idx = c
+            .children
+            .iter()
+            .position(|ch| ch.node.contains(pane))
+            .expect("membership pre-validated");
+        let neighbor_idx = c
+            .children
+            .iter()
+            .position(|ch| ch.node.contains(neighbor))
+            .expect("membership pre-validated");
 
-    if pane_idx == neighbor_idx {
-        let child = &c.children[pane_idx];
-        let LayoutNode::Container(inner) = &child.node else {
-            // Both ids in one leaf means pane == neighbor: no border.
+        if pane_idx == neighbor_idx {
+            let LayoutNode::Container(inner) = &c.children[pane_idx].node else {
+                // Both ids in one leaf means pane == neighbor: no border.
+                return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
+            };
+            path.push(pane_idx);
+            c = inner;
+            continue;
+        }
+        if pane_idx.abs_diff(neighbor_idx) != 1
+            || !panes_share_border(c, pane_idx, pane, neighbor_idx, neighbor)
+        {
             return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
-        };
-        let (w, h) = match c.direction {
-            SplitDirection::Horizontal => (width * child.weight, height),
-            SplitDirection::Vertical => (width, height * child.weight),
-        };
-        return border_container_extent(inner, w, h, pane, neighbor);
+        }
+        return Ok(BorderPath {
+            path,
+            pane_idx,
+            neighbor_idx,
+        });
     }
-    if pane_idx.abs_diff(neighbor_idx) != 1
-        || !panes_share_border(c, pane_idx, pane, neighbor_idx, neighbor)
-    {
-        return Err(LayoutError::NotAdjacentSiblings { pane, neighbor });
+}
+
+/// The border container's split axis and its extent along that axis,
+/// normalized to the whole tree's `[0, 1]` space. Re-descends the path
+/// [`locate_border`] returned, accumulating the extent on both axes; every
+/// index there is a container.
+fn border_container_extent(root: &Container, path: &[usize]) -> (SplitDirection, f32) {
+    let mut width = 1.0;
+    let mut height = 1.0;
+    let mut c = root;
+    for &i in path {
+        let child = &c.children[i];
+        match c.direction {
+            SplitDirection::Horizontal => width *= child.weight,
+            SplitDirection::Vertical => height *= child.weight,
+        }
+        let LayoutNode::Container(inner) = &child.node else {
+            unreachable!("border path indexes only containers");
+        };
+        c = inner;
     }
     let extent = match c.direction {
         SplitDirection::Horizontal => width,
         SplitDirection::Vertical => height,
     };
-    Ok((c.direction, extent))
+    (c.direction, extent)
 }
 
-/// Mirrors `split_in`'s descent. Membership is pre-validated.
+/// Where [`LayoutNode::split`] inserts the newcomer, shared by the mutating
+/// `split_in` and the predictive `split_preview_in` so the descent rule lives
+/// in one place. Membership is pre-validated.
+pub(crate) enum SplitSite {
+    /// `target` is a direct leaf child at `target_pos` of a same-direction
+    /// container reached by `path`; the newcomer becomes its next sibling and
+    /// the container's children scale by `n/(n+1)`.
+    Sibling { path: Vec<usize>, target_pos: usize },
+    /// `target` is a bare leaf reached by `path`; its slot becomes a two-child
+    /// container split evenly.
+    Halve { path: Vec<usize> },
+}
+
+/// Descend to the site where a split in `direction` inserts beside `target`:
+/// the nearest same-direction container holding `target` as a direct leaf
+/// child, else the target leaf itself. Membership is pre-validated.
+pub(crate) fn locate_split_site(
+    root: &LayoutNode,
+    target: PaneId,
+    direction: SplitDirection,
+) -> SplitSite {
+    let mut path = Vec::new();
+    let mut node = root;
+    loop {
+        let LayoutNode::Container(c) = node else {
+            return SplitSite::Halve { path };
+        };
+        if c.direction == direction {
+            if let Some(target_pos) = c
+                .children
+                .iter()
+                .position(|ch| matches!(ch.node, LayoutNode::Leaf(id) if id == target))
+            {
+                return SplitSite::Sibling { path, target_pos };
+            }
+        }
+        let next = c
+            .children
+            .iter()
+            .position(|ch| ch.node.contains(target))
+            .expect("membership pre-validated");
+        path.push(next);
+        node = &c.children[next].node;
+    }
+}
+
+/// A pane's subtree reached by descending `path`; every index is a container,
+/// though the final node may be a container or a leaf.
+fn node_at<'a>(mut node: &'a LayoutNode, path: &[usize]) -> &'a LayoutNode {
+    for &i in path {
+        let LayoutNode::Container(c) = node else {
+            unreachable!("split path indexes only containers");
+        };
+        node = &c.children[i].node;
+    }
+    node
+}
+
+/// Predicts the geometry `split_in` produces, sharing its descent through
+/// [`locate_split_site`]. Membership is pre-validated.
 fn split_preview_in(node: &LayoutNode, target: PaneId, direction: SplitDirection) -> SplitPreview {
-    match node {
-        LayoutNode::Leaf(_) => SplitPreview {
+    match locate_split_site(node, target, direction) {
+        SplitSite::Halve { .. } => SplitPreview {
             new_pane_fraction: 0.5,
             target_fraction: 0.5,
             shrunk_siblings: Vec::new(),
         },
-        LayoutNode::Container(c) => {
-            if c.direction == direction {
-                let target_pos = c
-                    .children
-                    .iter()
-                    .position(|ch| matches!(ch.node, LayoutNode::Leaf(id) if id == target));
-                if let Some(i) = target_pos {
-                    #[allow(clippy::cast_precision_loss)]
-                    let n = c.children.len() as f32;
-                    let shrunk_siblings = c
-                        .children
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| *j != i)
-                        .flat_map(|(_, ch)| ch.node.pane_ids())
-                        .collect();
-                    return SplitPreview {
-                        new_pane_fraction: 1.0 / ((n + 1.0) * c.children[i].weight),
-                        target_fraction: n / (n + 1.0),
-                        shrunk_siblings,
-                    };
-                }
-            }
-            let child = c
+        SplitSite::Sibling { path, target_pos } => {
+            let LayoutNode::Container(c) = node_at(node, &path) else {
+                unreachable!("a Sibling site resolves to its same-direction container");
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let n = c.children.len() as f32;
+            let shrunk_siblings = c
                 .children
                 .iter()
-                .find(|ch| ch.node.contains(target))
-                .expect("membership pre-validated");
-            split_preview_in(&child.node, target, direction)
+                .enumerate()
+                .filter(|(j, _)| *j != target_pos)
+                .flat_map(|(_, ch)| ch.node.pane_ids())
+                .collect();
+            SplitPreview {
+                new_pane_fraction: 1.0 / ((n + 1.0) * c.children[target_pos].weight),
+                target_fraction: n / (n + 1.0),
+                shrunk_siblings,
+            }
         }
     }
 }
@@ -544,6 +632,30 @@ mod tests {
         let before_w = before.x1 - before.x0;
         assert!(((target_after.x1 - target_after.x0) / before_w - p.target_fraction).abs() < 1e-5);
         assert!(((new_after.x1 - new_after.x0) / before_w - p.new_pane_fraction).abs() < 1e-5);
+    }
+
+    #[test]
+    fn split_preview_matches_actual_nested_cross_direction_split() {
+        // Target sits in a nested same-direction container reached by a
+        // cross-direction parent; the shared descent must land preview and
+        // split() on the same nested site, not the root.
+        let mut tree = container(
+            Vertical,
+            vec![
+                leaf(A),
+                container(Horizontal, vec![leaf(B), leaf(C)], vec![0.4, 0.6]),
+            ],
+            vec![0.3, 0.7],
+        );
+        let before = pane_rect(&tree, C).unwrap();
+        let p = tree.split_preview(C, Horizontal).unwrap();
+        tree.split(C, D, Horizontal).unwrap();
+        let target_after = pane_rect(&tree, C).unwrap();
+        let new_after = pane_rect(&tree, D).unwrap();
+        let before_w = before.x1 - before.x0;
+        assert!(((target_after.x1 - target_after.x0) / before_w - p.target_fraction).abs() < 1e-5);
+        assert!(((new_after.x1 - new_after.x0) / before_w - p.new_pane_fraction).abs() < 1e-5);
+        assert_eq!(p.shrunk_siblings, vec![B]);
     }
 
     #[test]
