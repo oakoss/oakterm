@@ -1,8 +1,8 @@
+mod daemon_conn;
+mod pane_view;
 mod render_grid;
 
-use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
-use std::os::unix::net::UnixStream;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tracing::{debug, error, warn};
@@ -18,12 +18,10 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, FindPrompt, GetScrollback, HandshakeStatus, MSG_BELL, MSG_DETACH,
-    MSG_DIRTY_NOTIFY, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK,
-    MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO,
-    MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, SearchDirection, TitleChanged,
+    FindPrompt, GetScrollback, MSG_DETACH, MSG_FIND_PROMPT, MSG_GET_RENDER_UPDATE,
+    MSG_GET_SCROLLBACK, PromptPosition, ScrollbackData, SearchDirection,
 };
-use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
+use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
 use oakterm_renderer::atlas::AtlasPlane;
 use oakterm_renderer::font;
@@ -31,6 +29,8 @@ use oakterm_renderer::pipeline::{BgUniforms, RenderPipeline, TextUniforms};
 use oakterm_renderer::shaper::FontKey;
 use oakterm_renderer::swash_shaper::SwashShaper;
 
+use daemon_conn::{DaemonWriter, connect_to_daemon};
+use pane_view::{PaneView, ScrollbackClampOutcome, clamp_viewport};
 use render_grid::ClientGrid;
 
 // AccessKit handlers per Spec-0006.
@@ -139,20 +139,6 @@ struct FontState {
     metrics: oakterm_renderer::shaper::FontMetrics,
 }
 
-/// Thread-safe handle for writing frames to the daemon socket.
-#[derive(Clone)]
-struct DaemonWriter {
-    stream: Arc<Mutex<UnixStream>>,
-}
-
-impl DaemonWriter {
-    fn send_frame(&self, frame: &Frame) -> std::io::Result<()> {
-        let data = frame.encode_to_vec();
-        let mut stream = self.stream.lock().expect("daemon writer lock poisoned");
-        stream.write_all(&data)
-    }
-}
-
 /// Copyable action descriptor to break the borrow on `keybind_registry`
 /// during `dispatch_action_at`. `Callback` stores the index back into the
 /// registry since `RegistryKey` is not `Clone`.
@@ -167,28 +153,6 @@ enum ActionDesc {
     ReloadConfig,
     Callback(usize),
     Stub,
-}
-
-/// Outcome of clamping the host scrollback viewport offset against the
-/// daemon's reported buffer length.
-#[derive(Debug, PartialEq, Eq)]
-enum ScrollbackClampOutcome {
-    /// Clamped to a non-zero offset; stay in scrollback.
-    Clamp(u32),
-    /// Buffer is empty (or smaller than 1); leave scrollback mode entirely.
-    ReturnToLive,
-}
-
-/// Clamp `current` viewport offset to the daemon's actual scrollback length.
-/// Returns `ReturnToLive` when the clamp lands at zero, signalling the caller
-/// should call `return_to_live()` instead of painting a "[0 lines]" indicator.
-fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
-    let clamped = current.min(total);
-    if clamped == 0 {
-        ScrollbackClampOutcome::ReturnToLive
-    } else {
-        ScrollbackClampOutcome::Clamp(clamped)
-    }
 }
 
 /// Convert a winit `MouseScrollDelta` into integer "wheel notches" (1 notch =
@@ -234,7 +198,7 @@ struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
     font: Option<FontState>,
-    grids: HashMap<u32, ClientGrid>,
+    panes: HashMap<u32, PaneView>,
     focused_pane: u32,
     daemon: Option<DaemonWriter>,
     proxy: EventLoopProxy<UserEvent>,
@@ -264,8 +228,6 @@ struct App {
     initial_resize_sent: bool,
     /// Last known mouse position in grid coordinates.
     last_mouse_cell: (u16, u16),
-    /// Lines scrolled up from bottom. 0 = live view (at bottom).
-    viewport_offset: u32,
     /// Current keyboard modifier state for intercepting Shift+key.
     modifiers: winit::event::Modifiers,
     /// Buttons whose press was Shift-bypassed; suppress their release too.
@@ -280,10 +242,6 @@ struct App {
     a11y_state: Arc<Mutex<Option<A11ySnapshot>>>,
     /// Debounce: last time an a11y announcement was sent.
     last_announcement: Option<std::time::Instant>,
-    /// Whether the terminal has DECSET 2004 (bracketed paste) active.
-    bracketed_paste: bool,
-    /// Active text selection, if any.
-    selection: Option<oakterm_terminal::grid::selection::Selection>,
     /// Left mouse button held for drag tracking.
     mouse_pressed: bool,
     /// Click count for double/triple click detection.
@@ -306,7 +264,7 @@ impl App {
             window: None,
             gpu: None,
             font: None,
-            grids: HashMap::new(),
+            panes: HashMap::new(),
             focused_pane: 0,
             daemon: None,
             proxy,
@@ -321,7 +279,6 @@ impl App {
             last_sent_dims: (0, 0),
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
-            viewport_offset: 0,
             modifiers: winit::event::Modifiers::default(),
             shift_bypassed_buttons: 0,
             blink_visible: true,
@@ -329,8 +286,6 @@ impl App {
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
             last_announcement: None,
-            bracketed_paste: false,
-            selection: None,
             mouse_pressed: false,
             click_count: 0,
             last_click_time: None,
@@ -340,13 +295,26 @@ impl App {
         }
     }
 
+    fn focused_view(&self) -> Option<&PaneView> {
+        self.panes.get(&self.focused_pane)
+    }
+
+    fn focused_view_mut(&mut self) -> Option<&mut PaneView> {
+        self.panes.get_mut(&self.focused_pane)
+    }
+
+    /// The focused pane's scrollback offset; 0 (live view) when no pane exists.
+    fn viewport_offset(&self) -> u32 {
+        self.focused_view().map_or(0, |v| v.viewport_offset)
+    }
+
     /// Request scrollback rows from the daemon for the current viewport offset.
     fn request_scrollback(&self) {
-        if let (Some(daemon), Some(grid)) = (&self.daemon, self.grids.get(&self.focused_pane)) {
+        if let (Some(daemon), Some(view)) = (&self.daemon, self.focused_view()) {
             let req = GetScrollback {
                 pane_id: self.focused_pane,
-                start_row: -i64::from(self.viewport_offset),
-                count: u32::from(grid.rows),
+                start_row: -i64::from(view.viewport_offset),
+                count: u32::from(view.grid.rows),
             };
             match Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
                 Ok(frame) => {
@@ -365,7 +333,7 @@ impl App {
         if let Some(daemon) = &self.daemon {
             let req = FindPrompt {
                 pane_id: self.focused_pane,
-                from_offset: -i64::from(self.viewport_offset),
+                from_offset: -i64::from(self.viewport_offset()),
                 direction,
             };
             match Frame::new(MSG_FIND_PROMPT, 0, req.encode()) {
@@ -383,19 +351,16 @@ impl App {
     /// negative = down (toward live). Handles enter/exit scrollback.
     fn scroll_viewport(&mut self, lines: i32) {
         if lines > 0 {
-            if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-                if !grid.is_scrolled() {
-                    grid.enter_scrollback();
-                }
+            if let Some(view) = self.focused_view_mut() {
                 #[allow(clippy::cast_sign_loss)]
-                {
-                    self.viewport_offset = self.viewport_offset.saturating_add(lines as u32);
-                }
+                view.scroll_up(lines as u32);
             }
             self.request_scrollback();
-        } else if lines < 0 && self.viewport_offset > 0 {
-            self.viewport_offset = self.viewport_offset.saturating_sub(lines.unsigned_abs());
-            if self.viewport_offset == 0 {
+        } else if lines < 0 && self.viewport_offset() > 0 {
+            let Some(view) = self.focused_view_mut() else {
+                return;
+            };
+            if view.scroll_down(lines.unsigned_abs()) {
                 self.return_to_live();
             } else {
                 self.request_scrollback();
@@ -405,9 +370,9 @@ impl App {
 
     /// Return to live view from scrollback.
     fn return_to_live(&mut self) {
-        self.viewport_offset = 0;
-        if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-            grid.exit_scrollback();
+        if let Some(view) = self.focused_view_mut() {
+            view.viewport_offset = 0;
+            view.grid.exit_scrollback();
         }
         // Request a full refresh to ensure live view is current.
         if let Some(daemon) = &self.daemon {
@@ -462,14 +427,14 @@ impl App {
         self.last_click_time = Some(now);
         self.last_click_pos = (col, row);
 
-        let sel_row = i64::from(row) - i64::from(self.viewport_offset);
+        let sel_row = i64::from(row) - i64::from(self.viewport_offset());
 
         match self.click_count {
             2 => {
                 // Semantic (word) selection.
-                if let Some(grid) = self.grids.get(&self.focused_pane) {
-                    if row < grid.rows {
-                        let text: Vec<char> = grid.row_text(row).chars().collect();
+                if let Some(view) = self.focused_view_mut() {
+                    if row < view.grid.rows {
+                        let text: Vec<char> = view.grid.row_text(row).chars().collect();
                         // Click past end of text: no word to select.
                         if (col as usize) < text.len() {
                             let (start_col, end_col) = word_boundaries(&text, col);
@@ -480,7 +445,7 @@ impl App {
                                 AnchorSide::Left,
                             );
                             sel.update(sel_row, end_col, AnchorSide::Right);
-                            self.selection = Some(sel);
+                            view.selection = Some(sel);
                         }
                     }
                 }
@@ -489,11 +454,16 @@ impl App {
                 // Line selection.
                 let mut sel = Selection::new(SelectionType::Line, sel_row, 0, AnchorSide::Left);
                 sel.update(sel_row, 0, AnchorSide::Left);
-                self.selection = Some(sel);
+                if let Some(view) = self.focused_view_mut() {
+                    view.selection = Some(sel);
+                }
             }
             _ => {
                 // Normal (single click) selection.
-                self.selection = Some(Selection::new(SelectionType::Normal, sel_row, col, side));
+                if let Some(view) = self.focused_view_mut() {
+                    view.selection =
+                        Some(Selection::new(SelectionType::Normal, sel_row, col, side));
+                }
             }
         }
 
@@ -519,14 +489,14 @@ impl App {
         if !self.config.cursor_blink || !self.focused {
             return false;
         }
-        let Some(grid) = self.grids.get(&self.focused_pane) else {
+        let Some(view) = self.focused_view() else {
             return false;
         };
-        if !grid.cursor_visible || grid.is_scrolled() {
+        if !view.grid.cursor_visible || view.grid.is_scrolled() {
             return false;
         }
         // Blinking styles: 0=BlinkingBlock, 2=BlinkingUnderline, 4=BlinkingBar
-        matches!(grid.cursor_style, 0 | 2 | 4)
+        matches!(view.grid.cursor_style, 0 | 2 | 4)
     }
 }
 
@@ -644,7 +614,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.gpu = Some(gpu);
         self.font = Some(font_state);
-        self.grids.insert(self.focused_pane, grid);
+        self.panes.insert(self.focused_pane, PaneView::new(grid));
         self.config = config;
         self.config_error = cr.error;
         self.event_registry = cr.registry;
@@ -701,12 +671,15 @@ impl ApplicationHandler<UserEvent> for App {
                         }
 
                         // Resize exits scrollback for the focused pane.
-                        self.viewport_offset = 0;
+                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                            view.viewport_offset = 0;
+                        }
 
                         #[allow(clippy::cast_possible_truncation)]
-                        if let (Some(font), Some(grid)) =
-                            (&self.font, self.grids.get_mut(&self.focused_pane))
+                        if let (Some(font), Some(view)) =
+                            (&self.font, self.panes.get_mut(&self.focused_pane))
                         {
+                            let grid = &mut view.grid;
                             let (cols, rows) =
                                 window_to_grid_dims(size, &font.metrics, &self.config.padding);
                             let dims_changed = grid.rows != rows || grid.cols != cols;
@@ -855,15 +828,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
 
                 // Clear selection on non-copy keystrokes.
-                if self.selection.is_some() {
-                    self.selection = None;
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
+                if let Some(view) = self.focused_view_mut() {
+                    if view.selection.is_some() {
+                        view.selection = None;
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
                     }
                 }
 
                 // Any unbound key while scrolled: snap back to live first.
-                if self.viewport_offset > 0 {
+                if self.viewport_offset() > 0 {
                     self.return_to_live();
                 }
 
@@ -913,11 +888,12 @@ impl ApplicationHandler<UserEvent> for App {
                         } else {
                             AnchorSide::Left
                         };
-                        let sel_row = i64::from(row) - i64::from(self.viewport_offset);
-                        if let Some(sel) = &mut self.selection {
-                            if sel.ty == SelectionType::Semantic {
-                                // Snap drag to word boundaries.
-                                if let Some(grid) = self.grids.get(&self.focused_pane) {
+                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                            let sel_row = i64::from(row) - i64::from(view.viewport_offset);
+                            let grid = &view.grid;
+                            if let Some(sel) = &mut view.selection {
+                                if sel.ty == SelectionType::Semantic {
+                                    // Snap drag to word boundaries.
                                     if row < grid.rows {
                                         let text: Vec<char> = grid.row_text(row).chars().collect();
                                         if (col as usize) < text.len() {
@@ -935,9 +911,9 @@ impl ApplicationHandler<UserEvent> for App {
                                             sel.update(sel_row, col, side);
                                         }
                                     }
+                                } else {
+                                    sel.update(sel_row, col, side);
                                 }
-                            } else {
-                                sel.update(sel_row, col, side);
                             }
                         }
                         if let Some(w) = &self.window {
@@ -974,10 +950,14 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     _ => {
                         // Clear selection on non-shift click.
-                        if state == ElementState::Pressed && btn == 0 && self.selection.is_some() {
-                            self.selection = None;
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
+                        if state == ElementState::Pressed && btn == 0 {
+                            if let Some(view) = self.focused_view_mut() {
+                                if view.selection.is_some() {
+                                    view.selection = None;
+                                    if let Some(w) = &self.window {
+                                        w.request_redraw();
+                                    }
+                                }
                             }
                         }
                         if let Some(daemon) = &mut self.daemon {
@@ -1024,10 +1004,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let scroll_lines = (3 * count) as i32;
 
                 let shift = self.modifiers.state().shift_key();
-                let alt_screen = self
-                    .grids
-                    .get(&self.focused_pane)
-                    .is_some_and(|g| g.alt_screen);
+                let alt_screen = self.focused_view().is_some_and(|v| v.grid.alt_screen);
 
                 // Routing (matches alacritty/kitty/wezterm):
                 // - Already in host scrollback: keep scrolling host until offset == 0.
@@ -1038,7 +1015,7 @@ impl ApplicationHandler<UserEvent> for App {
                 } else {
                     -scroll_lines
                 };
-                if self.viewport_offset > 0 || shift || !alt_screen {
+                if self.viewport_offset() > 0 || shift || !alt_screen {
                     self.scroll_viewport(delta);
                 } else if let Some(daemon) = &mut self.daemon {
                     let (x, y) = self.last_mouse_cell;
@@ -1077,7 +1054,7 @@ impl ApplicationHandler<UserEvent> for App {
                     #[allow(clippy::cast_possible_truncation)]
                     if let (Some(font), Some(_), Some(daemon)) = (
                         &self.font,
-                        self.grids.get(&self.focused_pane),
+                        self.panes.get(&self.focused_pane),
                         &mut self.daemon,
                     ) {
                         let size =
@@ -1133,15 +1110,16 @@ impl ApplicationHandler<UserEvent> for App {
                     ..Default::default()
                 });
 
-                let (bg_colors, glyph_instances) = if let (Some(grid), Some(font)) =
-                    (self.grids.get(&self.focused_pane), &mut self.font)
+                let (bg_colors, glyph_instances) = if let (Some(pane), Some(font)) =
+                    (self.panes.get(&self.focused_pane), &mut self.font)
                 {
+                    let grid = &pane.grid;
                     // Effective cursor visibility: hidden during blink-off phase.
                     let cursor_vis = grid.cursor_visible
                         && (self.blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
 
                     let bg =
-                        grid.bg_colors(cursor_vis, self.selection.as_ref(), self.viewport_offset);
+                        grid.bg_colors(cursor_vis, pane.selection.as_ref(), pane.viewport_offset);
                     let keys = render_grid::FontKeys {
                         regular: font.font_key,
                         bold: font.bold_key,
@@ -1157,8 +1135,8 @@ impl ApplicationHandler<UserEvent> for App {
                         &mut font.color_atlas,
                         &mut font.color_keys,
                         cursor_vis,
-                        self.selection.as_ref(),
-                        self.viewport_offset,
+                        pane.selection.as_ref(),
+                        pane.viewport_offset,
                         self.config.padding.left as f32,
                         self.config.padding.top as f32,
                     );
@@ -1186,9 +1164,11 @@ impl ApplicationHandler<UserEvent> for App {
                 };
 
                 let (cols, rows) = self
-                    .grids
+                    .panes
                     .get(&self.focused_pane)
-                    .map_or((0u32, 0u32), |g| (u32::from(g.cols), u32::from(g.rows)));
+                    .map_or((0u32, 0u32), |v| {
+                        (u32::from(v.grid.cols), u32::from(v.grid.rows))
+                    });
 
                 let (atlas_w, atlas_h) = self
                     .font
@@ -1226,10 +1206,10 @@ impl ApplicationHandler<UserEvent> for App {
                 };
 
                 let clear_color =
-                    self.grids
+                    self.panes
                         .get(&self.focused_pane)
-                        .map_or(wgpu::Color::BLACK, |g| {
-                            let [r, g, b] = g.bg_color;
+                        .map_or(wgpu::Color::BLACK, |v| {
+                            let [r, g, b] = v.grid.bg_color;
                             wgpu::Color {
                                 r: f64::from(r) / 255.0,
                                 g: f64::from(g) / 255.0,
@@ -1265,14 +1245,21 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::RenderUpdate(update) => {
-                self.bracketed_paste = update.bracketed_paste;
-
                 // Build a11y incremental data while grid is borrowed,
                 // then send it via adapter after the grid borrow ends.
                 let mut a11y_update: Option<accesskit::TreeUpdate> = None;
 
                 let is_focused = update.pane_id == self.focused_pane;
-                if let Some(grid) = self.grids.get_mut(&update.pane_id) {
+                let Some(view) = self.panes.get_mut(&update.pane_id) else {
+                    debug!(
+                        pane_id = update.pane_id,
+                        "render update for unknown pane, dropping"
+                    );
+                    return;
+                };
+                {
+                    view.bracketed_paste = update.bracketed_paste;
+                    let grid = &mut view.grid;
                     if grid.is_scrolled() {
                         grid.apply_update_while_scrolled(&update);
                     } else {
@@ -1383,23 +1370,27 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::ScrollbackData(data) => {
-                if self.viewport_offset > 0 {
-                    match clamp_viewport(self.viewport_offset, data.total_rows) {
+                if self.viewport_offset() > 0 {
+                    match clamp_viewport(self.viewport_offset(), data.total_rows) {
                         ScrollbackClampOutcome::ReturnToLive => {
                             self.return_to_live();
                             return;
                         }
                         ScrollbackClampOutcome::Clamp(clamped) => {
-                            self.viewport_offset = clamped;
+                            if let Some(view) = self.focused_view_mut() {
+                                view.viewport_offset = clamped;
+                            }
                         }
                     }
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
-                    if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
+                    let scroll_indicator = self.config.scroll_indicator;
+                    if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                        let grid = &mut view.grid;
                         #[allow(clippy::cast_possible_truncation)]
-                        let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
+                        let offset = view.viewport_offset.min(u32::from(u16::MAX)) as u16;
                         grid.apply_scrollback(&data.rows, offset);
-                        if self.config.scroll_indicator {
-                            grid.set_scroll_indicator(self.viewport_offset);
+                        if scroll_indicator {
+                            grid.set_scroll_indicator(view.viewport_offset);
                         }
                         // All visible rows changed — update a11y with full row set.
                         let all_indices: Vec<u16> = (0..grid.rows).collect();
@@ -1452,10 +1443,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if new_offset == 0 {
                         self.return_to_live();
                     } else {
-                        self.viewport_offset = new_offset;
-                        if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-                            if !grid.is_scrolled() {
-                                grid.enter_scrollback();
+                        if let Some(view) = self.focused_view_mut() {
+                            view.viewport_offset = new_offset;
+                            if !view.grid.is_scrolled() {
+                                view.grid.enter_scrollback();
                             }
                         }
                         self.request_scrollback();
@@ -1477,9 +1468,10 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     Err(e) => warn!(error = %e, "a11y: mutex poisoned on title change"),
                 }
-                if let (Some(grid), Some(adapter)) =
-                    (self.grids.get(&self.focused_pane), &mut self.accesskit)
+                if let (Some(view), Some(adapter)) =
+                    (self.panes.get(&self.focused_pane), &mut self.accesskit)
                 {
+                    let grid = &view.grid;
                     let current_title = self
                         .a11y_state
                         .lock()
@@ -1509,9 +1501,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Bell => {
                 // Announce bell to screen readers (assertive = interrupts).
-                if let (Some(grid), Some(adapter)) =
-                    (self.grids.get(&self.focused_pane), &mut self.accesskit)
+                if let (Some(view), Some(adapter)) =
+                    (self.panes.get(&self.focused_pane), &mut self.accesskit)
                 {
+                    let grid = &view.grid;
                     let cursor_row_text = grid.row_text(grid.cursor_y);
                     let title = self
                         .a11y_state
@@ -1558,17 +1551,11 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                     accesskit::Action::ScrollUp => {
-                        let page = self
-                            .grids
-                            .get(&self.focused_pane)
-                            .map_or(24, |g| i32::from(g.rows));
+                        let page = self.focused_view().map_or(24, |v| i32::from(v.grid.rows));
                         self.scroll_viewport(page);
                     }
                     accesskit::Action::ScrollDown => {
-                        let page = self
-                            .grids
-                            .get(&self.focused_pane)
-                            .map_or(24, |g| i32::from(g.rows));
+                        let page = self.focused_view().map_or(24, |v| i32::from(v.grid.rows));
                         self.scroll_viewport(-page);
                     }
                     accesskit::Action::SetScrollOffset => {
@@ -1578,12 +1565,12 @@ impl ApplicationHandler<UserEvent> for App {
                             if target == 0 {
                                 self.return_to_live();
                             } else {
-                                if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-                                    if !grid.is_scrolled() {
-                                        grid.enter_scrollback();
+                                if let Some(view) = self.focused_view_mut() {
+                                    if !view.grid.is_scrolled() {
+                                        view.grid.enter_scrollback();
                                     }
+                                    view.viewport_offset = target;
                                 }
-                                self.viewport_offset = target;
                                 self.request_scrollback();
                             }
                         }
@@ -1663,33 +1650,30 @@ impl App {
 
         match action_desc {
             ActionDesc::ScrollUp(lines) => {
-                if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-                    if !grid.is_scrolled() {
-                        grid.enter_scrollback();
-                    }
+                if let Some(view) = self.focused_view_mut() {
                     let amount = if lines == 0 {
-                        u32::from(grid.rows)
+                        u32::from(view.grid.rows)
                     } else {
                         lines
                     };
-                    self.viewport_offset = self.viewport_offset.saturating_add(amount);
+                    view.scroll_up(amount);
                 }
                 self.request_scrollback();
                 true
             }
             ActionDesc::ScrollDown(lines) => {
-                if self.viewport_offset == 0 {
+                if self.viewport_offset() == 0 {
                     return false; // Not scrolled; let key pass through to PTY.
                 }
+                let Some(view) = self.focused_view_mut() else {
+                    return false;
+                };
                 let amount = if lines == 0 {
-                    self.grids
-                        .get(&self.focused_pane)
-                        .map_or(24, |g| u32::from(g.rows))
+                    u32::from(view.grid.rows)
                 } else {
                     lines
                 };
-                self.viewport_offset = self.viewport_offset.saturating_sub(amount);
-                if self.viewport_offset == 0 {
+                if view.scroll_down(amount) {
                     self.return_to_live();
                 } else {
                     self.request_scrollback();
@@ -1703,13 +1687,13 @@ impl App {
                     SearchDirection::Newer
                 };
                 if dir == SearchDirection::Older {
-                    if let Some(grid) = self.grids.get_mut(&self.focused_pane) {
-                        if !grid.is_scrolled() {
-                            grid.enter_scrollback();
+                    if let Some(view) = self.focused_view_mut() {
+                        if !view.grid.is_scrolled() {
+                            view.grid.enter_scrollback();
                         }
                     }
                     self.request_find_prompt(dir);
-                } else if self.viewport_offset > 0 {
+                } else if self.viewport_offset() > 0 {
                     self.request_find_prompt(dir);
                 }
                 true
@@ -1786,10 +1770,11 @@ impl App {
                 true
             }
             ActionDesc::Copy => {
-                if let (Some(sel), Some(grid)) =
-                    (&self.selection, self.grids.get(&self.focused_pane))
+                if let Some((sel, view)) = self
+                    .focused_view()
+                    .and_then(|v| v.selection.as_ref().map(|sel| (sel, v)))
                 {
-                    let text = grid.extract_selection_text(sel, self.viewport_offset);
+                    let text = view.grid.extract_selection_text(sel, view.viewport_offset);
                     if !text.is_empty() {
                         match arboard::Clipboard::new() {
                             Ok(mut cb) => {
@@ -1807,10 +1792,11 @@ impl App {
                 match arboard::Clipboard::new() {
                     Ok(mut cb) => match cb.get_text() {
                         Ok(text) if !text.is_empty() => {
+                            let bracketed = self.focused_view().is_some_and(|v| v.bracketed_paste);
                             if let Some(daemon) = &mut self.daemon {
                                 // Normalize line endings: PTY expects \r.
                                 let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-                                let key_data = if self.bracketed_paste {
+                                let key_data = if bracketed {
                                     let mut buf = Vec::with_capacity(normalized.len() + 12);
                                     buf.extend_from_slice(b"\x1b[200~");
                                     buf.extend_from_slice(normalized.as_bytes());
@@ -1897,14 +1883,14 @@ impl App {
                 };
 
                 #[allow(clippy::cast_possible_truncation)]
-                if let (Some(gpu), Some(grid)) = (&self.gpu, self.grids.get_mut(&self.focused_pane))
+                if let (Some(gpu), Some(view)) = (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
                     let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
                     let (cols, rows) =
                         window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
                     let cols = cols.max(1);
                     let rows = rows.max(1);
-                    grid.resize(cols, rows);
+                    view.grid.resize(cols, rows);
                     self.last_sent_dims = (cols, rows);
 
                     if let Some(daemon) = &self.daemon {
@@ -2389,414 +2375,6 @@ fn encode_mouse_modifiers(mods: winit::event::Modifiers) -> u8 {
     bits
 }
 
-/// Connect to the daemon, spawning it if needed.
-///
-/// Uses tmux-style connect-and-check with a lock file to handle stale
-/// sockets and prevent two clients from racing to start the daemon.
-fn connect_to_daemon(
-    proxy: &EventLoopProxy<UserEvent>,
-) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
-    let socket_path = oakterm_daemon::socket::socket_path()?;
-
-    // Try connecting to an existing daemon first.
-    match UnixStream::connect(&socket_path) {
-        Ok(stream) => return finish_connect(stream, proxy, None),
-        Err(e)
-            if e.kind() == std::io::ErrorKind::ConnectionRefused
-                || e.kind() == std::io::ErrorKind::NotFound =>
-        {
-            // Stale socket or no socket. Fall through to spawn.
-        }
-        Err(e) => return Err(e),
-    }
-
-    // Acquire exclusive lock to serialize daemon startup.
-    let _lock = oakterm_daemon::socket::acquire_startup_lock()?;
-
-    // After acquiring the lock, retry connect: another client may have
-    // started the daemon while we waited.
-    match UnixStream::connect(&socket_path) {
-        Ok(stream) => return finish_connect(stream, proxy, None),
-        Err(e)
-            if e.kind() == std::io::ErrorKind::ConnectionRefused
-                || e.kind() == std::io::ErrorKind::NotFound =>
-        {
-            // Still no daemon. Proceed to spawn.
-        }
-        Err(e) => return Err(e),
-    }
-
-    // We hold the lock and no daemon is running. Clean up stale socket.
-    if let Err(e) = std::fs::remove_file(&socket_path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            return Err(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "failed to remove stale socket at {}: {e}",
-                    socket_path.display()
-                ),
-            ));
-        }
-    }
-
-    let child = spawn_daemon(&socket_path)?;
-
-    // Brief retry: socket file appears at bind() but may not be listening yet.
-    let stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            UnixStream::connect(&socket_path)?
-        }
-        Err(e) => return Err(e),
-    };
-    finish_connect(stream, proxy, Some(child))
-}
-
-/// Spawn the daemon binary and poll until the socket appears.
-fn spawn_daemon(socket_path: &std::path::Path) -> std::io::Result<std::process::Child> {
-    let daemon_bin = std::env::current_exe()?
-        .parent()
-        .expect("exe has parent dir")
-        .join("oakterm-daemon");
-
-    let mut child = std::process::Command::new(&daemon_bin)
-        .spawn()
-        .map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!("failed to spawn daemon at {}: {e}", daemon_bin.display()),
-            )
-        })?;
-
-    for _ in 0..50 {
-        if socket_path.exists() {
-            return Ok(child);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-
-    let detail = match child.try_wait() {
-        Ok(Some(status)) => format!("daemon exited with {status}"),
-        Ok(None) => "daemon running but socket not created after 2.5s".into(),
-        Err(e) => format!("could not check daemon status: {e}"),
-    };
-    // Clean up to avoid zombie/orphan processes.
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        format!(
-            "daemon socket not available at {}: {detail}",
-            socket_path.display()
-        ),
-    ))
-}
-
-/// Complete connection setup: clone stream, create writer, handshake, spawn reader.
-fn finish_connect(
-    stream: UnixStream,
-    proxy: &EventLoopProxy<UserEvent>,
-    child: Option<std::process::Child>,
-) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
-    let mut read_stream = stream.try_clone()?;
-    let write_stream = Arc::new(Mutex::new(stream));
-
-    let writer = DaemonWriter {
-        stream: Arc::clone(&write_stream),
-    };
-    handshake(&writer, &mut read_stream)?;
-
-    let reader_writer = writer.clone();
-    let proxy = proxy.clone();
-    std::thread::spawn(move || {
-        daemon_reader(read_stream, &reader_writer, &proxy);
-    });
-
-    Ok((writer, child))
-}
-
-/// Perform the protocol handshake per Spec-0001.
-fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Result<()> {
-    let hello = ClientHello {
-        protocol_version_major: ClientHello::VERSION_MAJOR,
-        protocol_version_minor: ClientHello::VERSION_MINOR,
-        client_type: ClientType::Gui,
-        client_name: "oakterm".to_string(),
-    };
-    let frame = hello.to_frame(1)?;
-    writer.send_frame(&frame)?;
-
-    let response = read_frame(read_stream)?;
-    if response.msg_type != MSG_SERVER_HELLO {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "expected ServerHello",
-        ));
-    }
-
-    let server_hello = oakterm_protocol::message::ServerHello::decode(&response.payload)?;
-    if server_hello.status != HandshakeStatus::Accepted {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            format!("handshake rejected: {:?}", server_hello.status),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Per-pane bookkeeping for the daemon read loop's request/response
-/// debounce. I/O-free: every method mutates only `self` and returns the
-/// action the caller must perform, so the transition table is testable
-/// without sockets, threads, or the event-loop proxy.
-#[derive(Debug, Default)]
-struct ReaderState {
-    /// Last `seqno` we observed in a `RenderUpdate` for each pane. Used as
-    /// the `since_seqno` cursor on the next `GetRenderUpdate`.
-    seqnos: HashMap<u32, u64>,
-    /// Panes with an outstanding `GetRenderUpdate` request.
-    in_flight: HashSet<u32>,
-    /// Panes that received a `DirtyNotify` while a request was already in
-    /// flight; the next `RenderUpdate` for each will fire one follow-up.
-    pending: HashSet<u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirtyOutcome {
-    /// Caller should send a `GetRenderUpdate` with this `since_seqno`.
-    Send(u64),
-    /// A request is already in flight; this notify was coalesced.
-    Coalesce,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpdateOutcome {
-    /// No follow-up needed.
-    Done,
-    /// Caller should send a follow-up `GetRenderUpdate` with this seqno.
-    SendFollowUp(u64),
-}
-
-impl ReaderState {
-    fn on_dirty_notify(&mut self, pane_id: u32) -> DirtyOutcome {
-        if self.in_flight.contains(&pane_id) {
-            self.pending.insert(pane_id);
-            DirtyOutcome::Coalesce
-        } else {
-            let since_seqno = self.seqnos.get(&pane_id).copied().unwrap_or(0);
-            self.in_flight.insert(pane_id);
-            DirtyOutcome::Send(since_seqno)
-        }
-    }
-
-    fn on_render_update(&mut self, pane_id: u32, seqno: u64) -> UpdateOutcome {
-        self.seqnos.insert(pane_id, seqno);
-        self.in_flight.remove(&pane_id);
-        if self.pending.remove(&pane_id) {
-            // Re-mark in-flight for the follow-up. The daemon's
-            // GetRenderUpdate handler returns rows with seqno > since_seqno,
-            // so passing the freshly-bumped seqno here covers every row that
-            // changed during the in-flight window — no matter how many
-            // DirtyNotify arrivals we coalesced.
-            self.in_flight.insert(pane_id);
-            UpdateOutcome::SendFollowUp(self.seqnos.get(&pane_id).copied().unwrap_or(0))
-        } else {
-            UpdateOutcome::Done
-        }
-    }
-
-    /// Drop all bookkeeping for `pane_id`. Currently unused — `daemon_reader`
-    /// has no `MSG_PANE_EXITED` arm, so per-pane state leaks until the
-    /// daemon connection closes. TREK-157 will add the arm and call this.
-    #[allow(dead_code)] // TREK-157
-    fn on_pane_exit(&mut self, pane_id: u32) {
-        self.seqnos.remove(&pane_id);
-        self.in_flight.remove(&pane_id);
-        self.pending.remove(&pane_id);
-    }
-}
-
-/// Send `UserEvent::Disconnected` to the GUI event loop. Logs at `warn` if
-/// the event loop has already shut down (the reader is on its way out
-/// either way; the user just won't see the disconnect notification).
-fn notify_disconnected(proxy: &EventLoopProxy<UserEvent>) {
-    if let Err(e) = proxy.send_event(UserEvent::Disconnected) {
-        warn!(error = %e, "event loop closed before Disconnected delivered");
-    }
-}
-
-/// Send a `GetRenderUpdate` for `pane_id`. Caller passes the `since_seqno`
-/// from `ReaderState` so this helper has no map-lookup responsibility.
-fn send_get_render_update(
-    pane_id: u32,
-    since_seqno: u64,
-    writer: &DaemonWriter,
-) -> std::io::Result<()> {
-    let req = GetRenderUpdate {
-        pane_id,
-        since_seqno,
-    };
-    let frame = Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode())
-        .expect("GetRenderUpdate payload fits in frame");
-    writer.send_frame(&frame)
-}
-
-/// Background thread: read frames, request render updates on `DirtyNotify`.
-///
-/// Per pane, at most one `GetRenderUpdate` is in flight at a time; subsequent
-/// `DirtyNotify` arrivals collapse into a single follow-up after the response
-/// lands. Without this, fast PTY output (e.g. `tree` flooding) produces one
-/// round-trip per PTY chunk and the daemon's per-update serialization plus
-/// the client's per-update decode/apply work pin the UI. See `ReaderState`
-/// for the transition table.
-fn daemon_reader(
-    mut read_stream: UnixStream,
-    writer: &DaemonWriter,
-    proxy: &EventLoopProxy<UserEvent>,
-) {
-    let mut state = ReaderState::default();
-
-    loop {
-        match read_frame(&mut read_stream) {
-            Ok(frame) => match frame.msg_type {
-                MSG_DIRTY_NOTIFY => {
-                    let pane_id = match DirtyNotify::decode(&frame.payload) {
-                        Ok(n) => n.pane_id,
-                        Err(e) => {
-                            error!(
-                                error = %e,
-                                payload_len = frame.payload.len(),
-                                "failed to decode DirtyNotify, dropping"
-                            );
-                            continue;
-                        }
-                    };
-                    match state.on_dirty_notify(pane_id) {
-                        DirtyOutcome::Send(since_seqno) => {
-                            if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
-                                // state.in_flight has the phantom entry from
-                                // on_dirty_notify above; safe only because we
-                                // break and drop `state`. Any future retry
-                                // path here must roll the state mutation back.
-                                error!(error = %e, "daemon write error");
-                                notify_disconnected(proxy);
-                                break;
-                            }
-                        }
-                        DirtyOutcome::Coalesce => {
-                            debug!(pane_id, "render request coalesced");
-                        }
-                    }
-                }
-                MSG_RENDER_UPDATE => match RenderUpdate::decode(&frame.payload) {
-                    Ok(update) => {
-                        let pane_id = update.pane_id;
-                        let seqno = update.seqno;
-                        // Paint first; bookkeeping after. The reader thread is
-                        // single-threaded, so the event loop can't race against
-                        // the state mutation — but the user-visible repaint
-                        // lands ASAP this way.
-                        let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
-                        if let UpdateOutcome::SendFollowUp(since_seqno) =
-                            state.on_render_update(pane_id, seqno)
-                        {
-                            if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
-                                // Same phantom-in_flight caveat as the
-                                // DirtyNotify arm above; safe only because we
-                                // break.
-                                error!(error = %e, "daemon write error");
-                                notify_disconnected(proxy);
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            error = %e,
-                            payload_len = frame.payload.len(),
-                            "failed to decode RenderUpdate, disconnecting"
-                        );
-                        notify_disconnected(proxy);
-                        break;
-                    }
-                },
-                MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
-                    Ok(msg) => {
-                        let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode TitleChanged");
-                    }
-                },
-                MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
-                    Ok(data) => {
-                        let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode ScrollbackData");
-                    }
-                },
-                MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
-                    Ok(pos) => {
-                        let _ = proxy.send_event(UserEvent::PromptPosition(pos));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode PromptPosition");
-                    }
-                },
-                MSG_BELL => {
-                    let _ = proxy.send_event(UserEvent::Bell);
-                }
-                other => {
-                    warn!(
-                        msg_type = format_args!("0x{other:04x}"),
-                        "unhandled daemon message"
-                    );
-                }
-            },
-            Err(e) => {
-                error!(error = %e, "daemon read error");
-                notify_disconnected(proxy);
-                break;
-            }
-        }
-    }
-}
-
-/// Read a single frame from a blocking stream.
-fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Frame> {
-    use oakterm_protocol::frame::{HEADER_SIZE, MAGIC, MAX_PAYLOAD};
-
-    let mut header = [0u8; HEADER_SIZE];
-    stream.read_exact(&mut header)?;
-
-    if header[0..2] != MAGIC {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid magic bytes",
-        ));
-    }
-
-    let msg_type = u16::from_le_bytes([header[3], header[4]]);
-    let serial = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
-    let payload_len = u32::from_le_bytes([header[9], header[10], header[11], header[12]]);
-
-    if payload_len > MAX_PAYLOAD {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("payload too large: {payload_len}"),
-        ));
-    }
-
-    let mut payload = vec![0u8; payload_len as usize];
-    if !payload.is_empty() {
-        stream.read_exact(&mut payload)?;
-    }
-
-    Frame::new(msg_type, serial, payload)
-}
-
 fn create_atlas_texture(
     device: &wgpu::Device,
     width: u32,
@@ -3076,125 +2654,9 @@ fn version_string() -> String {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{
-        DirtyOutcome, ReaderState, ScrollbackClampOutcome, UpdateOutcome, clamp_viewport,
-        drain_wheel_notches,
-    };
+    use super::drain_wheel_notches;
     use winit::dpi::PhysicalPosition;
     use winit::event::MouseScrollDelta;
-
-    // --- ReaderState (PTY render request debounce) ---
-
-    #[test]
-    fn dirty_notify_with_no_in_flight_sends() {
-        let mut s = ReaderState::default();
-        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Send(0));
-        assert!(s.in_flight.contains(&1));
-        assert!(!s.pending.contains(&1));
-    }
-
-    #[test]
-    fn dirty_notify_uses_last_seen_seqno() {
-        let mut s = ReaderState::default();
-        s.seqnos.insert(1, 42);
-        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Send(42));
-    }
-
-    #[test]
-    fn dirty_notify_while_in_flight_coalesces() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Coalesce);
-        assert!(s.pending.contains(&1));
-    }
-
-    #[test]
-    fn many_coalesced_dirty_collapse_to_single_followup() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        for _ in 0..100 {
-            assert_eq!(s.on_dirty_notify(1), DirtyOutcome::Coalesce);
-        }
-        assert_eq!(s.on_render_update(1, 5), UpdateOutcome::SendFollowUp(5));
-        // Follow-up re-marks in_flight; pending was drained by the take.
-        assert!(s.in_flight.contains(&1));
-        assert!(!s.pending.contains(&1));
-    }
-
-    #[test]
-    fn render_update_without_pending_is_done() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        assert_eq!(s.on_render_update(1, 5), UpdateOutcome::Done);
-        assert!(!s.in_flight.contains(&1));
-    }
-
-    #[test]
-    fn render_update_with_pending_fires_followup_with_new_seqno() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        s.on_dirty_notify(1); // sets pending
-        // Follow-up uses the seqno we just observed, not the previous one.
-        assert_eq!(s.on_render_update(1, 99), UpdateOutcome::SendFollowUp(99));
-        assert!(s.in_flight.contains(&1));
-        assert!(!s.pending.contains(&1));
-    }
-
-    #[test]
-    fn cross_pane_state_is_independent() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        s.on_dirty_notify(2);
-        assert!(s.in_flight.contains(&1));
-        assert!(s.in_flight.contains(&2));
-        // Render for pane 1 must not touch pane 2.
-        s.on_render_update(1, 10);
-        assert!(!s.in_flight.contains(&1));
-        assert!(s.in_flight.contains(&2));
-    }
-
-    #[test]
-    fn render_for_unknown_pane_is_safe() {
-        // Spurious update for a pane we never requested. Server bug or
-        // stale frame after disconnect; must not panic or fire follow-up.
-        let mut s = ReaderState::default();
-        assert_eq!(s.on_render_update(99, 1), UpdateOutcome::Done);
-        assert!(!s.in_flight.contains(&99));
-        assert!(!s.pending.contains(&99));
-    }
-
-    #[test]
-    fn pane_exit_clears_all_per_pane_state() {
-        let mut s = ReaderState::default();
-        s.on_dirty_notify(1);
-        s.on_dirty_notify(1); // sets pending
-        s.on_pane_exit(1);
-        assert!(!s.in_flight.contains(&1));
-        assert!(!s.pending.contains(&1));
-        assert!(!s.seqnos.contains_key(&1));
-    }
-
-    // --- clamp_viewport ---
-
-    #[test]
-    fn clamp_below_total_keeps_offset() {
-        assert_eq!(clamp_viewport(10, 100), ScrollbackClampOutcome::Clamp(10));
-    }
-
-    #[test]
-    fn clamp_above_total_clamps_to_total() {
-        assert_eq!(clamp_viewport(2412, 50), ScrollbackClampOutcome::Clamp(50));
-    }
-
-    #[test]
-    fn clamp_total_zero_returns_to_live() {
-        assert_eq!(clamp_viewport(10, 0), ScrollbackClampOutcome::ReturnToLive);
-    }
-
-    #[test]
-    fn clamp_current_zero_returns_to_live() {
-        assert_eq!(clamp_viewport(0, 100), ScrollbackClampOutcome::ReturnToLive);
-    }
 
     // --- drain_wheel_notches: LineDelta ---
 
