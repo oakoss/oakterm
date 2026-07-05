@@ -3,12 +3,14 @@
 use crate::framing::{read_frame, write_frame};
 use crate::pane::{PaneManager, PtyState, SharedPane, lock_live_pane};
 use crate::requests::{RequestResult, handle_request};
+use crate::session::{default_state_dir, save_session};
 use crate::socket::socket_path;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::message::{
-    Bell, ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DIRTY_NOTIFY, PaneExited,
-    ServerHello, TitleChanged,
+    Bell, ClientHello, ErrorCode, ErrorMessage, HandshakeStatus, MSG_CLIENT_HELLO,
+    MSG_DIRTY_NOTIFY, MSG_REQUEST_SHUTDOWN, PaneExited, RequestShutdown, ServerHello, Shutdown,
+    ShutdownAck, ShutdownAckStatus, ShutdownReason, TitleChanged,
 };
 use oakterm_protocol::render::DirtyNotify;
 use std::io;
@@ -42,6 +44,23 @@ pub struct Daemon {
     archive_config: Option<ArchiveConfig>,
     /// Pane created at construction; `run` attaches the archive to it.
     default_pane_id: u32,
+    /// Directory for the Spec-0010 session file.
+    state_dir: std::path::PathBuf,
+}
+
+/// Per-connection handle for client-requested shutdown (Spec-0001 0x07):
+/// signals daemon termination and carries the session state dir.
+#[derive(Clone)]
+struct ShutdownCtx {
+    term_tx: watch::Sender<Option<ShutdownReason>>,
+    /// Request-dispatch barrier: frame handlers hold `read`, a shutdown
+    /// save holds `write`, so the snapshot waits out in-flight mutations
+    /// and none can be acknowledged after it and then lost on exit. A
+    /// reader blocked during a save re-checks `term_tx` on wake — accepted:
+    /// drop the frame (connection closing); aborted: dispatch normally.
+    /// The write guard also serializes concurrent `RequestShutdown`s.
+    gate: Arc<tokio::sync::RwLock<()>>,
+    state_dir: Arc<std::path::PathBuf>,
 }
 
 impl Daemon {
@@ -67,12 +86,19 @@ impl Daemon {
             persist: false,
             archive_config: None,
             default_pane_id,
+            state_dir: default_state_dir(),
         }
     }
 
     /// Enable persist mode: daemon stays running with zero clients.
     pub fn set_persist(&mut self, persist: bool) {
         self.persist = persist;
+    }
+
+    /// Override the Spec-0010 session directory (tests; defaults to
+    /// `$OAKTERM_STATE_DIR` or the platform state dir).
+    pub fn set_state_dir(&mut self, dir: std::path::PathBuf) {
+        self.state_dir = dir;
     }
 
     pub fn set_archive_config(&mut self, config: ArchiveConfig) {
@@ -105,8 +131,15 @@ impl Daemon {
         // when control clients exist, filter by ClientType::Gui.
         let client_count = Arc::new(AtomicUsize::new(0));
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (term_tx, mut term_rx) = watch::channel::<Option<ShutdownReason>>(None);
+        let shutdown_ctx = ShutdownCtx {
+            term_tx,
+            gate: Arc::new(tokio::sync::RwLock::new(())),
+            state_dir: Arc::new(self.state_dir.clone()),
+        };
         let persist = self.persist;
         let mut next_conn_id: u64 = 0;
+        let mut drain_clients = false;
 
         loop {
             tokio::select! {
@@ -119,12 +152,13 @@ impl Daemon {
                     let dirty_tx = self.dirty_tx.clone();
                     let count = Arc::clone(&client_count);
                     let tx = shutdown_tx.clone();
+                    let shutdown = shutdown_ctx.clone();
 
                     count.fetch_add(1, Ordering::AcqRel);
                     info!(conn_id, "client connected");
 
                     tokio::spawn(async move {
-                        handle_client(conn_id, stream, panes, dirty_rx, dirty_tx).await;
+                        handle_client(conn_id, stream, panes, dirty_rx, dirty_tx, shutdown).await;
                         let remaining = count.fetch_sub(1, Ordering::AcqRel) - 1;
                         info!(conn_id, remaining, "client disconnected");
                         if remaining == 0 && !persist {
@@ -136,6 +170,33 @@ impl Daemon {
                     info!("last client disconnected, shutting down");
                     break;
                 }
+                // Awaiting inside an arm would hold the select's output
+                // (the watch guard) across the await; drain after the loop.
+                _ = term_rx.wait_for(Option::is_some) => {
+                    info!("client-requested shutdown, draining connections");
+                    drain_clients = true;
+                    break;
+                }
+            }
+        }
+
+        // Fail new connects fast: a client arriving now would otherwise
+        // block on ServerHello until the process exits, seeing a raw reset
+        // instead of the "daemon not running" path it already handles.
+        drop(listener);
+        if let Err(e) = std::fs::remove_file(&self.socket_path) {
+            if e.kind() != io::ErrorKind::NotFound {
+                warn!(error = %e, "failed to remove socket during shutdown");
+            }
+        }
+
+        if drain_clients {
+            // Spec-0001: wait up to 1 second for clients to close after
+            // the Shutdown broadcast, then exit regardless.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            while client_count.load(Ordering::Acquire) > 0 && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
 
@@ -229,10 +290,19 @@ async fn handle_client(
     panes: Arc<Mutex<PaneManager>>,
     mut dirty_rx: watch::Receiver<u64>,
     dirty_tx: watch::Sender<u64>,
+    shutdown: ShutdownCtx,
 ) {
     let mut codec = FrameCodec;
     let mut read_buf = BytesMut::with_capacity(4096);
     let mut write_buf = BytesMut::with_capacity(4096);
+    let mut term_rx = shutdown.term_tx.subscribe();
+    // A subscription marks the current value as seen, so a termination
+    // signalled before this connection was accepted would never fire
+    // `changed()` — check it directly and refuse the connection.
+    if term_rx.borrow_and_update().is_some() {
+        debug!(conn_id, "connection arrived during shutdown, closing");
+        return;
+    }
 
     // Handshake with timeout per Spec-0001.
     let handshake = async {
@@ -407,12 +477,65 @@ async fn handle_client(
                     }
                 }
             }
+            result = term_rx.changed() => {
+                if result.is_err() {
+                    break;
+                }
+                let Some(reason) = *term_rx.borrow_and_update() else {
+                    continue;
+                };
+                match (Shutdown { reason }).to_frame() {
+                    Ok(f) => {
+                        match write_frame(&mut stream, &mut codec, &mut write_buf, f).await {
+                            Ok(()) => info!(conn_id, reason = ?reason, "shutdown broadcast sent, closing connection"),
+                            Err(e) => warn!(conn_id, error = %e, "failed to deliver Shutdown broadcast; client sees a bare EOF"),
+                        }
+                    }
+                    Err(e) => error!(conn_id, error = %e, "failed to encode Shutdown frame"),
+                }
+                break;
+            }
             result = read_frame(&mut stream, &mut read_buf) => {
                 if result.is_err() {
                     break;
                 }
                 while let Ok(Some(frame)) = codec.decode(&mut read_buf) {
-                    match handle_request(conn_id, &frame, &panes, &dirty_tx).await {
+                    // Infrastructure message needing daemon-level control
+                    // (session save + termination signal), so it is handled
+                    // here rather than in the request dispatch.
+                    if frame.msg_type == MSG_REQUEST_SHUTDOWN {
+                        let (response, accepted) = request_shutdown(conn_id, &frame, &panes, &shutdown).await;
+                        if let Some(response) = response {
+                            if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
+                                break 'outer;
+                            }
+                        }
+                        if accepted {
+                            // Pipelined frames after an accepted shutdown
+                            // would mutate state the saved session no longer
+                            // reflects; drop them and let the term arm close
+                            // the connection.
+                            break;
+                        }
+                        continue;
+                    }
+                    // Wait out any in-flight shutdown save; if it was
+                    // accepted, drop the frame instead of dispatching (a
+                    // mutation dispatched now would be acked and then lost
+                    // on exit). An aborted save dispatches normally. The
+                    // guard covers only the dispatch, not the response
+                    // write, so a stalled reader can't block a later
+                    // shutdown save — the mutation is already committed
+                    // once the guard drops.
+                    let dispatch = {
+                        let _in_flight = shutdown.gate.read().await;
+                        if shutdown.term_tx.borrow().is_some() {
+                            debug!(conn_id, msg_type = frame.msg_type, "dropping frame during shutdown");
+                            continue;
+                        }
+                        handle_request(conn_id, &frame, &panes, &dirty_tx).await
+                    };
+                    match dispatch {
                         RequestResult::Response(response) => {
                             if write_frame(&mut stream, &mut codec, &mut write_buf, response).await.is_err() {
                                 break 'outer;
@@ -428,6 +551,90 @@ async fn handle_client(
             }
         }
     }
+}
+
+/// Save-then-signal for `RequestShutdown` (Spec-0001 0x07). Returns the
+/// response frame for the caller to write, and whether the shutdown was
+/// accepted (termination signal sent — the requester's `Shutdown` push
+/// follows the ack because writes on one connection are sequential). A
+/// failed save aborts the shutdown regardless of the requested reason
+/// (ADR-0020): the daemon replies `save_failed` and keeps running. The
+/// daemon never exits ack-less — an ack that fails to encode also
+/// suppresses the signal.
+async fn request_shutdown(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+    shutdown: &ShutdownCtx,
+) -> (Option<Frame>, bool) {
+    let msg = match RequestShutdown::decode(&frame.payload) {
+        Ok(m) => m,
+        Err(e) => {
+            // Spec-0001 error case: unknown reason or malformed payload —
+            // do not shut down.
+            warn!(conn_id, error = %e, "malformed RequestShutdown payload");
+            let err = ErrorMessage {
+                code: ErrorCode::MalformedPayload as u32,
+                message: "malformed RequestShutdown".to_string(),
+            };
+            let response = match err.to_frame(frame.serial) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    error!(conn_id, error = %e, "failed to encode error response");
+                    None
+                }
+            };
+            return (response, false);
+        }
+    };
+    // Drain in-flight request handlers (they hold the gate's read side)
+    // before snapshotting, and block new dispatch until the outcome is
+    // known. Also serializes concurrent RequestShutdowns.
+    let _barrier = shutdown.gate.write().await;
+    if shutdown.term_tx.borrow().is_some() {
+        // A concurrent request already saved and signalled termination;
+        // acknowledge idempotently without saving again.
+        info!(conn_id, "shutdown already in progress, acknowledging");
+        let ack = match (ShutdownAck {
+            status: ShutdownAckStatus::Accepted,
+        })
+        .to_frame(frame.serial)
+        {
+            Ok(f) => Some(f),
+            Err(e) => {
+                error!(conn_id, error = %e, "failed to encode ShutdownAck");
+                None
+            }
+        };
+        return (ack, true);
+    }
+    let status = match save_session(panes, &shutdown.state_dir).await {
+        Ok(path) => {
+            info!(
+                conn_id,
+                reason = ?msg.reason,
+                path = %path.display(),
+                "shutdown requested, session saved"
+            );
+            ShutdownAckStatus::Accepted
+        }
+        Err(e) => {
+            error!(conn_id, error = %e, "session save failed, aborting shutdown");
+            ShutdownAckStatus::SaveFailed
+        }
+    };
+    let ack = match (ShutdownAck { status }).to_frame(frame.serial) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            error!(conn_id, error = %e, "failed to encode ShutdownAck");
+            None
+        }
+    };
+    let accepted = status == ShutdownAckStatus::Accepted && ack.is_some();
+    if accepted {
+        let _ = shutdown.term_tx.send(Some(msg.reason.broadcast_reason()));
+    }
+    (ack, accepted)
 }
 
 /// Resolve the base directory for scrollback archive files.

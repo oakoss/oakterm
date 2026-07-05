@@ -2058,6 +2058,8 @@ dependencies = [
  "oakterm-pty",
  "oakterm-terminal",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "shlex",
  "tempfile",
  "tokio",

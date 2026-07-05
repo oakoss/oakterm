@@ -9,8 +9,10 @@ use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
     HandshakeStatus, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE,
     MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
-    MSG_PING, MSG_PONG, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE,
-    MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, PaneExited, ResizePane, ServerHello, SplitDirection,
+    MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
+    MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
+    MSG_SWAP_PANE_RESPONSE, PaneExited, RequestShutdown, RequestShutdownReason, ResizePane,
+    ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus, ShutdownReason, SplitDirection,
     SplitPane, SplitPaneResponse, SwapPane,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -135,7 +137,12 @@ async fn malformed_payload_returns_error() {
 /// The returned `TestDaemon` must be held alive for the socket to remain valid.
 async fn connect_and_handshake() -> (UnixStream, FrameCodec, TestDaemon) {
     let td = TestDaemon::start().await;
+    let (stream, codec) = connect_to(&td).await;
+    (stream, codec, td)
+}
 
+/// Open an additional handshaken connection to a running test daemon.
+async fn connect_to(td: &TestDaemon) -> (UnixStream, FrameCodec) {
     let mut stream = UnixStream::connect(&td.socket).await.expect("connect");
     let mut codec = FrameCodec;
 
@@ -160,21 +167,23 @@ async fn connect_and_handshake() -> (UnixStream, FrameCodec, TestDaemon) {
     let server_hello = ServerHello::decode(&response.payload).expect("decode ServerHello");
     assert_eq!(server_hello.status, HandshakeStatus::Accepted);
 
-    (stream, codec, td)
+    (stream, codec)
 }
 
 /// Holds a daemon task and its tempdir alive for the duration of a test.
 struct TestDaemon {
     socket: std::path::PathBuf,
-    _dir: tempfile::TempDir,
-    _handle: tokio::task::JoinHandle<()>,
+    dir: tempfile::TempDir,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl TestDaemon {
     async fn start() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("sock");
-        let daemon = oakterm_daemon::server::Daemon::with_socket_path(80, 24, socket.clone());
+        let mut daemon = oakterm_daemon::server::Daemon::with_socket_path(80, 24, socket.clone());
+        // Session saves land in the test's tempdir, never the real one.
+        daemon.set_state_dir(dir.path().join("state"));
 
         let handle = tokio::spawn(async move {
             let _ = daemon.run().await;
@@ -184,9 +193,13 @@ impl TestDaemon {
 
         Self {
             socket,
-            _dir: dir,
-            _handle: handle,
+            dir,
+            handle,
         }
+    }
+
+    fn state_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join("state")
     }
 }
 
@@ -842,4 +855,222 @@ async fn swap_pane_unknown_pane_errors() {
     assert_eq!(resp.msg_type, MSG_ERROR);
     let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
     assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+async fn send_request_shutdown(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    reason: RequestShutdownReason,
+    serial: u32,
+) -> ShutdownAck {
+    let req = RequestShutdown { reason };
+    let frame = Frame::new(MSG_REQUEST_SHUTDOWN, serial, req.encode()).expect("shutdown frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(resp.msg_type, MSG_SHUTDOWN_ACK);
+    ShutdownAck::decode(&resp.payload).expect("decode ShutdownAck")
+}
+
+/// Request a shutdown and assert the full accepted sequence on one buffer
+/// (ack and Shutdown push can arrive in a single read): ack first, then
+/// the Shutdown push with `expected`, then EOF.
+async fn shutdown_and_expect_exit(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    serial: u32,
+    reason: RequestShutdownReason,
+    expected: ShutdownReason,
+) {
+    let req = RequestShutdown { reason };
+    let frame = Frame::new(MSG_REQUEST_SHUTDOWN, serial, req.encode()).expect("shutdown frame");
+    write_frame(stream, codec, frame).await;
+
+    let mut buf = BytesMut::with_capacity(4096);
+    let mut got_ack = false;
+    let mut got_shutdown = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Some(frame) = codec.decode(&mut buf).expect("decode") {
+            if frame.serial == serial {
+                assert_eq!(frame.msg_type, MSG_SHUTDOWN_ACK);
+                let ack = ShutdownAck::decode(&frame.payload).expect("decode ShutdownAck");
+                assert_eq!(ack.status, ShutdownAckStatus::Accepted);
+                assert!(!got_shutdown, "ack must precede the Shutdown push");
+                got_ack = true;
+            } else if frame.serial == 0 && frame.msg_type == MSG_SHUTDOWN {
+                let msg = Shutdown::decode(&frame.payload).expect("decode Shutdown");
+                assert_eq!(msg.reason, expected);
+                assert!(got_ack, "Shutdown push must follow the ack");
+                got_shutdown = true;
+            }
+        }
+        let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        let n = tokio::time::timeout(timeout, stream.read_buf(&mut buf))
+            .await
+            .expect("timed out waiting for shutdown sequence")
+            .expect("read error during shutdown sequence");
+        if n == 0 {
+            assert!(got_ack, "connection closed before the ack");
+            assert!(got_shutdown, "connection closed before the Shutdown push");
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn request_shutdown_quit_saves_session_and_exits() {
+    let (mut stream, mut codec, mut td) = connect_and_handshake().await;
+
+    shutdown_and_expect_exit(
+        &mut stream,
+        &mut codec,
+        400,
+        RequestShutdownReason::Quit,
+        ShutdownReason::Clean,
+    )
+    .await;
+
+    // EOF only proves handle_client returned; the daemon task itself must
+    // finish (drain + archive teardown included) or `oakterm quit` leaves
+    // a zombie holding the socket.
+    tokio::time::timeout(std::time::Duration::from_secs(5), &mut td.handle)
+        .await
+        .expect("daemon task did not exit")
+        .expect("daemon task panicked");
+
+    let session = td.state_dir().join("session.json");
+    let json = std::fs::read_to_string(&session).expect("session file written");
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert_eq!(parsed["version"], 1);
+    assert_eq!(parsed["workspaces"].as_array().map(Vec::len), Some(1));
+}
+
+/// The 0x06 broadcast must reach clients other than the requester — an
+/// idle client parked in the daemon's select loop.
+#[tokio::test]
+async fn request_shutdown_notifies_other_clients() {
+    let (mut requester, mut req_codec, td) = connect_and_handshake().await;
+    let (mut observer, mut obs_codec) = connect_to(&td).await;
+
+    shutdown_and_expect_exit(
+        &mut requester,
+        &mut req_codec,
+        440,
+        RequestShutdownReason::Quit,
+        ShutdownReason::Clean,
+    )
+    .await;
+
+    // The observer never requested anything: it gets the push, then EOF.
+    let push = read_push_with_msg_type(&mut observer, &mut obs_codec, MSG_SHUTDOWN).await;
+    let msg = Shutdown::decode(&push.payload).expect("decode Shutdown");
+    assert_eq!(msg.reason, ShutdownReason::Clean);
+
+    let mut buf = BytesMut::with_capacity(256);
+    let eof = async {
+        loop {
+            if observer.read_buf(&mut buf).await.expect("read") == 0 {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), eof)
+        .await
+        .expect("daemon did not close the observer connection");
+}
+
+/// A minor-version-0 client stays accepted after the bump to 1 — minor
+/// skew is additive per Spec-0001.
+#[tokio::test]
+async fn handshake_accepts_older_minor_version() {
+    let td = TestDaemon::start().await;
+    let mut stream = UnixStream::connect(&td.socket).await.expect("connect");
+    let mut codec = FrameCodec;
+
+    let hello = ClientHello {
+        protocol_version_major: ClientHello::VERSION_MAJOR,
+        protocol_version_minor: 0,
+        client_type: ClientType::Gui,
+        client_name: "old-minor-client".to_string(),
+    };
+    write_frame(&mut stream, &mut codec, hello.to_frame(1).expect("encode")).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 1).await;
+    assert_eq!(resp.msg_type, MSG_SERVER_HELLO);
+    let server_hello = ServerHello::decode(&resp.payload).expect("decode ServerHello");
+    assert_eq!(server_hello.status, HandshakeStatus::Accepted);
+    assert_eq!(server_hello.protocol_version_minor, 1);
+}
+
+#[tokio::test]
+async fn request_shutdown_upgrade_broadcasts_upgrade_reason() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    shutdown_and_expect_exit(
+        &mut stream,
+        &mut codec,
+        410,
+        RequestShutdownReason::Upgrade,
+        ShutdownReason::Upgrade,
+    )
+    .await;
+}
+
+/// ADR-0020: a failed save aborts the shutdown — the daemon stays up.
+#[tokio::test]
+async fn request_shutdown_save_failure_aborts() {
+    let (mut stream, mut codec, td) = connect_and_handshake().await;
+
+    // A file where the state dir should be makes the save fail.
+    std::fs::write(td.state_dir(), b"blocked").expect("block state dir");
+
+    let ack =
+        send_request_shutdown(&mut stream, &mut codec, RequestShutdownReason::Quit, 420).await;
+    assert_eq!(ack.status, ShutdownAckStatus::SaveFailed);
+
+    // Daemon still serves requests, and no Shutdown push precedes the Pong.
+    let ping = Frame::new(MSG_PING, 421, vec![]).expect("ping frame");
+    write_frame(&mut stream, &mut codec, ping).await;
+    let mut buf = BytesMut::with_capacity(4096);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Some(frame) = codec.decode(&mut buf).expect("decode") {
+            assert_ne!(
+                frame.msg_type, MSG_SHUTDOWN,
+                "failed save must not shut the daemon down"
+            );
+            if frame.serial == 421 {
+                assert_eq!(frame.msg_type, MSG_PONG);
+                return;
+            }
+        }
+        let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        let n = tokio::time::timeout(timeout, stream.read_buf(&mut buf))
+            .await
+            .expect("timed out waiting for Pong")
+            .expect("read error");
+        assert!(n > 0, "daemon closed connection after failed save");
+    }
+}
+
+/// Spec-0001 error case: unknown reason gets `MALFORMED_PAYLOAD` and the
+/// daemon keeps running.
+#[tokio::test]
+async fn request_shutdown_unknown_reason_rejected() {
+    let (mut stream, mut codec, td) = connect_and_handshake().await;
+
+    let frame = Frame::new(MSG_REQUEST_SHUTDOWN, 430, vec![7]).expect("shutdown frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 430).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::MalformedPayload as u32);
+
+    let ping = Frame::new(MSG_PING, 431, vec![]).expect("ping frame");
+    write_frame(&mut stream, &mut codec, ping).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 431).await;
+    assert_eq!(resp.msg_type, MSG_PONG);
+    assert!(
+        !td.state_dir().join("session.json").exists(),
+        "rejected request must not save a session"
+    );
 }

@@ -6,14 +6,15 @@ use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
     ClientHello, ClientType, ErrorMessage, HandshakeStatus, MSG_BELL, MSG_DIRTY_NOTIFY, MSG_ERROR,
     MSG_GET_RENDER_UPDATE, MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA,
-    MSG_SERVER_HELLO, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, TitleChanged,
+    MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, Shutdown,
+    TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 use winit::event_loop::EventLoopProxy;
 
 /// Thread-safe handle for writing frames to the daemon socket.
@@ -311,6 +312,19 @@ fn log_daemon_error(frame: &Frame) {
     }
 }
 
+/// The daemon closes the socket right after this push; the read loop's
+/// EOF then drives the existing disconnect path.
+fn log_daemon_shutdown(frame: &Frame) {
+    match Shutdown::decode(&frame.payload) {
+        Ok(msg) => {
+            info!(reason = ?msg.reason, "daemon announced shutdown");
+        }
+        Err(e) => {
+            error!(error = %e, "failed to decode Shutdown");
+        }
+    }
+}
+
 /// Background thread: read frames, request render updates on `DirtyNotify`.
 ///
 /// Per pane, at most one `GetRenderUpdate` is in flight at a time; subsequent
@@ -418,6 +432,7 @@ fn daemon_reader(
                     let _ = proxy.send_event(UserEvent::Bell);
                 }
                 MSG_ERROR => log_daemon_error(&frame),
+                MSG_SHUTDOWN => log_daemon_shutdown(&frame),
                 other => {
                     warn!(
                         msg_type = format_args!("0x{other:04x}"),

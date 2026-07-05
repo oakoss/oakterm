@@ -303,17 +303,13 @@ impl PaneManager {
         Some(removed)
     }
 
-    /// Gated behind `cfg(test)`: no production reader exists yet, only
-    /// tests and future layout work.
-    #[cfg(test)]
     pub(crate) fn focused(&self) -> Option<u32> {
         self.focused_pane
     }
 
-    /// Gated behind `cfg(test)`: production code drives the tree through
-    /// the split/resize/swap methods; `GetLayoutTree` (TREK-106) will add
-    /// the first production reader.
-    #[cfg(test)]
+    /// Mutations go through the split/resize/swap methods; this read-only
+    /// view serves session saving (Spec-0010) and, later, `GetLayoutTree`
+    /// (TREK-106).
     pub(crate) fn layout(&self) -> Option<&LayoutNode> {
         self.layout.as_ref()
     }

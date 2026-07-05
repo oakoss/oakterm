@@ -957,6 +957,68 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_roundtrip_and_push_frame() {
+        let msg = Shutdown {
+            reason: ShutdownReason::Upgrade,
+        };
+        let decoded = Shutdown::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+        let frame = msg.to_frame().unwrap();
+        assert_eq!(frame.msg_type, MSG_SHUTDOWN);
+        assert_eq!(frame.serial, 0, "Shutdown is a push");
+    }
+
+    #[test]
+    fn request_shutdown_roundtrip() {
+        for reason in [RequestShutdownReason::Quit, RequestShutdownReason::Upgrade] {
+            let msg = RequestShutdown { reason };
+            let decoded = RequestShutdown::decode(&msg.encode()).unwrap();
+            assert_eq!(decoded, msg);
+        }
+        let frame = RequestShutdown {
+            reason: RequestShutdownReason::Quit,
+        }
+        .to_frame(77)
+        .unwrap();
+        assert_eq!(frame.msg_type, MSG_REQUEST_SHUTDOWN);
+        assert_eq!(frame.serial, 77);
+    }
+
+    #[test]
+    fn request_shutdown_unknown_reason_rejected() {
+        assert!(RequestShutdown::decode(&[9]).is_err());
+        assert!(RequestShutdown::decode(&[]).is_err());
+    }
+
+    #[test]
+    fn request_shutdown_reason_maps_to_broadcast_reason() {
+        assert_eq!(
+            RequestShutdownReason::Quit.broadcast_reason(),
+            ShutdownReason::Clean
+        );
+        assert_eq!(
+            RequestShutdownReason::Upgrade.broadcast_reason(),
+            ShutdownReason::Upgrade
+        );
+    }
+
+    #[test]
+    fn shutdown_ack_roundtrip() {
+        for status in [ShutdownAckStatus::Accepted, ShutdownAckStatus::SaveFailed] {
+            let msg = ShutdownAck { status };
+            let decoded = ShutdownAck::decode(&msg.encode()).unwrap();
+            assert_eq!(decoded, msg);
+        }
+        let frame = ShutdownAck {
+            status: ShutdownAckStatus::Accepted,
+        }
+        .to_frame(88)
+        .unwrap();
+        assert_eq!(frame.msg_type, MSG_SHUTDOWN_ACK);
+        assert_eq!(frame.serial, 88);
+    }
+
+    #[test]
     fn error_code_roundtrip_all_variants() {
         use ErrorCode::{
             InternalError, InvalidMessage, LayoutRejected, MalformedPayload, PaneExited,

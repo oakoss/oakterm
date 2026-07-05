@@ -6,5 +6,6 @@ mod pane;
 mod pty_io;
 mod requests;
 pub mod server;
+mod session;
 pub mod socket;
 mod wire;

@@ -10,6 +10,8 @@ pub const MSG_PING: u16 = 0x03;
 pub const MSG_PONG: u16 = 0x04;
 pub const MSG_ERROR: u16 = 0x05;
 pub const MSG_SHUTDOWN: u16 = 0x06;
+pub const MSG_REQUEST_SHUTDOWN: u16 = 0x07;
+pub const MSG_SHUTDOWN_ACK: u16 = 0x08;
 
 // GUI — input (0x64-0x6F).
 pub const MSG_KEY_INPUT: u16 = 0x64;
@@ -169,6 +171,171 @@ impl TryFrom<u8> for ShutdownReason {
     }
 }
 
+/// `Shutdown` (0x06): daemon tells clients it is exiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shutdown {
+    pub reason: ShutdownReason,
+}
+
+impl Shutdown {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        vec![self.reason as u8]
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short or the reason unknown.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Shutdown too short",
+            ));
+        }
+        Ok(Self {
+            reason: ShutdownReason::try_from(data[0])?,
+        })
+    }
+
+    /// Wrap as a push frame (serial 0 per Spec-0001).
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_SHUTDOWN, 0, self.encode())
+    }
+}
+
+/// Why a client asks the daemon to exit (`RequestShutdown`, Spec-0001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RequestShutdownReason {
+    /// `oakterm quit`: save the session and exit cleanly.
+    Quit = 0,
+    /// Coordinated daemon upgrade (ADR-0020): save, exit, and signal
+    /// clients to restart the daemon.
+    Upgrade = 1,
+}
+
+impl RequestShutdownReason {
+    /// The `Shutdown` (0x06) reason broadcast for this request.
+    #[must_use]
+    pub fn broadcast_reason(self) -> ShutdownReason {
+        match self {
+            Self::Quit => ShutdownReason::Clean,
+            Self::Upgrade => ShutdownReason::Upgrade,
+        }
+    }
+}
+
+impl TryFrom<u8> for RequestShutdownReason {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        match v {
+            0 => Ok(Self::Quit),
+            1 => Ok(Self::Upgrade),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown request-shutdown reason: {v}"),
+            )),
+        }
+    }
+}
+
+/// `RequestShutdown` (0x07): client asks the daemon to save and exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestShutdown {
+    pub reason: RequestShutdownReason,
+}
+
+impl RequestShutdown {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        vec![self.reason as u8]
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short or the reason unknown.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "RequestShutdown too short",
+            ));
+        }
+        Ok(Self {
+            reason: RequestShutdownReason::try_from(data[0])?,
+        })
+    }
+
+    /// Wrap as a request frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_REQUEST_SHUTDOWN, serial, self.encode())
+    }
+}
+
+/// Outcome of a `RequestShutdown` (`ShutdownAck`, Spec-0001). A failed
+/// session save aborts the shutdown for both reasons — the daemon keeps
+/// running rather than exit with silent state loss (ADR-0020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ShutdownAckStatus {
+    Accepted = 0,
+    SaveFailed = 1,
+}
+
+impl TryFrom<u8> for ShutdownAckStatus {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        match v {
+            0 => Ok(Self::Accepted),
+            1 => Ok(Self::SaveFailed),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown shutdown-ack status: {v}"),
+            )),
+        }
+    }
+}
+
+/// `ShutdownAck` (0x08): daemon's response to `RequestShutdown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownAck {
+    pub status: ShutdownAckStatus,
+}
+
+impl ShutdownAck {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        vec![self.status as u8]
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short or the status unknown.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ShutdownAck too short",
+            ));
+        }
+        Ok(Self {
+            status: ShutdownAckStatus::try_from(data[0])?,
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_SHUTDOWN_ACK, serial, self.encode())
+    }
+}
+
 /// Encode a length-prefixed UTF-8 string (u16 LE length + bytes).
 fn encode_str(buf: &mut Vec<u8>, s: &str) -> io::Result<()> {
     let bytes = s.as_bytes();
@@ -215,7 +382,9 @@ pub struct ClientHello {
 
 impl ClientHello {
     pub const VERSION_MAJOR: u16 = 1;
-    pub const VERSION_MINOR: u16 = 0;
+    /// Minor 1 ships `RequestShutdown`/`ShutdownAck` (Spec-0001 1.1); the
+    /// constant tracks the spec's version-history table.
+    pub const VERSION_MINOR: u16 = 1;
 
     /// # Errors
     /// Returns an error if the client name exceeds u16 max length.
