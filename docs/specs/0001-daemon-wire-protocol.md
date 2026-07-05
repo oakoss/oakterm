@@ -151,7 +151,9 @@ daemon's older protocol solely to deliver it. On receipt the daemon saves the
 `ShutdownAck`: `status=0` (accepted) once the save succeeds, after which it
 broadcasts `Shutdown` (0x06) to the remaining clients and exits; `status=1`
 (save_failed) if the session could not be persisted, in which case the daemon
-aborts the shutdown and keeps running so no state is lost. The broadcast
+aborts the shutdown and keeps running so no state is lost — a silent-loss exit
+would be worse than a stuck quit, and a client can still bring a default-mode
+daemon down by disconnecting. The broadcast
 `Shutdown` inherits the request's intent: `reason=0` (quit) maps to `Shutdown`
 `reason=0` (clean), `reason=1` (upgrade) maps to `Shutdown` `reason=2`
 (upgrade). An unknown `reason` value is a malformed payload (see

@@ -92,7 +92,7 @@ Two subsidiary decisions:
 
 ## Consequences
 
-- Upon acceptance, Spec-0001 gains a client-to-daemon `RequestShutdown` message (payload, response, error cases — an additive minor bump in the infrastructure range) alongside the existing `Shutdown` (0x06) push, and a Trekker task implements save-then-exit in the daemon. This must ship before the first breaking protocol change — the mechanism only helps if old daemons already understand the request; until it ships, every major upgrade is Option A.
+- Upon acceptance, Spec-0001 gains a client-to-daemon `RequestShutdown` message (payload, response, error cases — an additive minor bump in the infrastructure range) alongside the existing `Shutdown` (0x06) push, and a Trekker task implements save-then-exit in the daemon. A failed session save aborts the shutdown for both reasons (quit and upgrade): the daemon reports `save_failed` and keeps running, because a silent-loss exit is worse than a stuck quit — a client can still bring a default-mode daemon down by disconnecting, and an upgrade that loses the session defeats its purpose. Decided 2026-07-05. This must ship before the first breaking protocol change — the mechanism only helps if old daemons already understand the request; until it ships, every major upgrade is Option A.
 - The GUI gains the major-mismatch upgrade prompt (wording must state that running processes restart) and the minor-skew status-bar indicator.
 - The startup path already handles "socket exists but connection refused" (stale-socket recovery); the upgrade flow reuses it after the old daemon exits.
 - Upgrade UX degrades gracefully with daemon age: pre-`RequestShutdown` daemons fall back to Option A's manual message.
