@@ -188,6 +188,8 @@ struct MultiplexerState {
 }
 ```
 
+The in-memory state may transiently hold zero workspaces: it models a daemon before its first pane exists (and after the last one closes). The exit-on-last-workspace rule above is daemon policy, not a data-model invariant. The first pane seeds a workspace named `default`.
+
 ## Behavior
 
 ### Split
