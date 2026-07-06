@@ -2,38 +2,139 @@
 //! `A11yModel`) into `oakterm_a11y` tree updates, and maps between the
 //! terminal's cell-based `Selection` and AccessKit's between-character
 //! `TextSelection` positions.
+//!
+//! [`apply`] is the single entry point: it mutates the pane's snapshot and
+//! builds the matching tree update under one lock, so snapshot state can
+//! never diverge from what assistive technology was told.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
-use oakterm_a11y::SelectionRange;
+use oakterm_a11y::{Announcement, SelectionRange};
 use oakterm_renderer::shaper::FontMetrics;
 use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
 
+use crate::pane_view::PaneView;
 use crate::render_grid::ClientGrid;
+use tracing::{debug, warn};
 
-pub(crate) struct PaneA11ySnapshot {
-    pub(crate) rows: u16,
-    pub(crate) cols: u16,
-    pub(crate) row_texts: Vec<String>,
-    pub(crate) cursor_row: u16,
-    pub(crate) cursor_col: u16,
-    pub(crate) title: String,
-    pub(crate) scrollback_lines: u64,
-    pub(crate) scroll_offset: u64,
-    pub(crate) selection: Option<SelectionRange>,
+struct PaneA11ySnapshot {
+    rows: u16,
+    cols: u16,
+    row_texts: Vec<String>,
+    cursor_row: u16,
+    cursor_col: u16,
+    title: String,
+    scrollback_lines: u64,
+    scroll_offset: u64,
+    selection: Option<SelectionRange>,
+}
+
+impl PaneA11ySnapshot {
+    fn from_view(view: &PaneView) -> Self {
+        let grid = &view.grid;
+        Self {
+            rows: grid.rows,
+            cols: grid.cols,
+            row_texts: grid.row_texts(),
+            cursor_row: grid.cursor_y,
+            cursor_col: grid.cursor_x,
+            title: String::new(),
+            scrollback_lines: 0,
+            scroll_offset: u64::from(view.viewport_offset),
+            selection: view_selection(view, view.viewport_offset),
+        }
+    }
+
+    /// Refresh the grid-derived fields at the given viewport offset.
+    fn refresh_from(&mut self, view: &PaneView, offset: u32) {
+        let grid = &view.grid;
+        self.rows = grid.rows;
+        self.cols = grid.cols;
+        self.row_texts = grid.row_texts();
+        self.cursor_row = grid.cursor_y;
+        self.cursor_col = grid.cursor_x;
+        self.scroll_offset = u64::from(offset);
+        self.selection = view_selection(view, offset);
+    }
+}
+
+fn view_selection(view: &PaneView, offset: u32) -> Option<SelectionRange> {
+    view.selection
+        .as_ref()
+        .and_then(|s| selection_range(s, offset, view.grid.rows))
+}
+
+/// What changed this frame; drives which snapshot fields [`apply`] mutates
+/// and what the resulting tree update carries.
+#[derive(Clone, Copy)]
+pub(crate) enum A11yEvent<'a> {
+    /// Live-view grid update. `dirty_rows` is `(row index, text)` from the
+    /// daemon's `RenderUpdate`; output announcements derive from it.
+    Render { dirty_rows: &'a [(u16, String)] },
+    /// Viewport scrolled: every visible row changed. `total_rows` is the
+    /// daemon's scrollback length (`scroll_y_max`).
+    Scrollback { total_rows: u64 },
+    /// Pane title changed. The OS window title is the caller's concern.
+    Title(&'a str),
+    /// The tracked selection may have changed; no-op when it hasn't.
+    SelectionChanged,
+    /// Grid dimensions changed: refresh the snapshot and rebuild the full
+    /// tree (row node IDs are only stable while dimensions hold).
+    Resize,
+    /// Push a live-region announcement (bell); no snapshot mutation.
+    Announce(&'a Announcement),
+    /// Clear the live region so the next identical text re-announces.
+    ClearAnnouncement,
+}
+
+impl A11yEvent<'_> {
+    /// Log label naming which user-visible behavior an event carries.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Render { .. } => "render",
+            Self::Scrollback { .. } => "scrollback",
+            Self::Title(_) => "title",
+            Self::SelectionChanged => "selection",
+            Self::Resize => "resize",
+            Self::Announce(_) => "announce",
+            Self::ClearAnnouncement => "clear-announcement",
+        }
+    }
 }
 
 /// Snapshot of all panes for the accessibility tree. Shared between `App`
-/// and the AccessKit activation handler via `Arc<Mutex<Option<_>>>`.
+/// and the AccessKit activation handler via `Arc<Mutex<Option<_>>>`; all
+/// mutation goes through [`apply`] so the snapshot and the updates sent to
+/// AT stay consistent.
 pub(crate) struct A11yModel {
-    pub(crate) panes: HashMap<u32, PaneA11ySnapshot>,
-    pub(crate) focused: u32,
-    pub(crate) cell_width: f64,
-    pub(crate) cell_height: f64,
+    panes: HashMap<u32, PaneA11ySnapshot>,
+    focused: u32,
+    cell_width: f64,
+    cell_height: f64,
+    /// Debounce for output announcements: at most one per 100ms.
+    last_announcement: Option<Instant>,
 }
 
 impl A11yModel {
+    pub(crate) fn new(focused: u32, (cell_width, cell_height): (f64, f64)) -> Self {
+        Self {
+            panes: HashMap::new(),
+            focused,
+            cell_width,
+            cell_height,
+            last_announcement: None,
+        }
+    }
+
+    /// Track a pane, snapshotting its current view state. Pane create and
+    /// close must keep this map in step with `App::panes` (TREK-190).
+    pub(crate) fn register_pane(&mut self, pane_id: u32, view: &PaneView) {
+        self.panes
+            .insert(pane_id, PaneA11ySnapshot::from_view(view));
+    }
+
     /// Build the full tree from every pane snapshot, in stable pane-id
     /// order so repeated builds produce identical child lists.
     pub(crate) fn build_full_tree(&self) -> accesskit::TreeUpdate {
@@ -66,25 +167,252 @@ impl A11yModel {
             cell_height: self.cell_height,
         })
     }
+
+    /// Announce output that reached the bottom rows, debounced to one per
+    /// 100ms. The timestamp is consumed only when an announcement is
+    /// produced, so a suppressed or empty candidate never eats the window.
+    fn output_announcement(
+        &mut self,
+        dirty_rows: &[(u16, String)],
+        grid_rows: u16,
+    ) -> Option<Announcement> {
+        if dirty_rows.is_empty() || grid_rows == 0 {
+            return None;
+        }
+        let bottom = grid_rows - 1;
+        let has_bottom = dirty_rows.iter().any(|(i, _)| *i == bottom);
+        let debounce_ok = self
+            .last_announcement
+            .is_none_or(|t| t.elapsed().as_millis() >= 100);
+        if !(has_bottom && debounce_ok) {
+            return None;
+        }
+        let text: String = dirty_rows
+            .iter()
+            .filter(|(i, _)| *i >= bottom.saturating_sub(2))
+            .map(|(_, t)| t.as_str())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            return None;
+        }
+        self.last_announcement = Some(Instant::now());
+        Some(Announcement {
+            text,
+            level: accesskit::Live::Polite,
+        })
+    }
 }
 
-/// The per-event varying inputs to an incremental update. Grid-derived fields
-/// (rows/cols/cursor) and cell dimensions are supplied to `build_incremental`
-/// separately, so callers only specify what actually differs between events.
-pub(crate) struct A11yDelta<'a> {
-    pub(crate) pane_id: u32,
-    pub(crate) focused: u32,
-    pub(crate) dirty_row_indices: &'a [u16],
-    /// Parallel to `dirty_row_indices` (matching `IncrementalInput`).
-    pub(crate) dirty_row_texts: &'a [String],
-    pub(crate) cursor_changed: bool,
-    pub(crate) title: &'a str,
-    pub(crate) title_changed: bool,
-    pub(crate) scrollback_lines: u64,
-    pub(crate) scroll_offset: u64,
-    pub(crate) selection: Option<SelectionRange>,
-    pub(crate) selection_changed: bool,
-    pub(crate) announcement: Option<&'a oakterm_a11y::Announcement>,
+/// What an event contributes to the incremental update, decided while the
+/// snapshot is mutated.
+#[derive(Default)]
+struct EventOutcome<'a> {
+    dirty_rows: std::borrow::Cow<'a, [(u16, String)]>,
+    cursor_changed: bool,
+    title_changed: bool,
+    selection_changed: bool,
+}
+
+/// Mutate the snapshot for one event. Returns `None` when the event changed
+/// nothing worth pushing. `Resize` is handled by [`apply`] (it needs the
+/// whole model for the full-tree rebuild); `Announce`/`ClearAnnouncement`
+/// never reach here (they touch no pane state).
+fn apply_to_snapshot<'a>(
+    snap: &mut PaneA11ySnapshot,
+    view: &PaneView,
+    event: &A11yEvent<'a>,
+) -> Option<EventOutcome<'a>> {
+    let grid = &view.grid;
+    match event {
+        A11yEvent::Render { dirty_rows } => {
+            let cursor_changed =
+                snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
+            // The render path only runs on the live view, so the offset is
+            // 0 whenever that contract holds — and stays truthful if not.
+            snap.refresh_from(view, view.viewport_offset);
+            if dirty_rows.is_empty() && !cursor_changed {
+                return None;
+            }
+            Some(EventOutcome {
+                dirty_rows: std::borrow::Cow::Borrowed(dirty_rows),
+                cursor_changed,
+                ..Default::default()
+            })
+        }
+        A11yEvent::Scrollback { total_rows } => {
+            snap.refresh_from(view, view.viewport_offset);
+            snap.scrollback_lines = *total_rows;
+            // Every visible row changed; cursor_changed forces the terminal
+            // rebuild that carries the new scroll position.
+            Some(EventOutcome {
+                dirty_rows: (0..grid.rows)
+                    .map(|i| (i, grid.row_text(i)))
+                    .collect::<Vec<_>>()
+                    .into(),
+                cursor_changed: true,
+                ..Default::default()
+            })
+        }
+        A11yEvent::Title(title) => {
+            snap.title = (*title).to_string();
+            // The rebuilt terminal node carries scroll state; keep it
+            // current even when no scroll event refreshed the snapshot yet.
+            snap.scroll_offset = u64::from(view.viewport_offset);
+            Some(EventOutcome {
+                title_changed: true,
+                ..Default::default()
+            })
+        }
+        A11yEvent::SelectionChanged => {
+            let sel = view_selection(view, view.viewport_offset);
+            if snap.selection == sel {
+                return None;
+            }
+            snap.selection = sel;
+            snap.scroll_offset = u64::from(view.viewport_offset);
+            Some(EventOutcome {
+                selection_changed: true,
+                ..Default::default()
+            })
+        }
+        A11yEvent::Announce(_) | A11yEvent::ClearAnnouncement | A11yEvent::Resize => {
+            unreachable!("handled by apply before the snapshot step")
+        }
+    }
+}
+
+/// Apply an event to a pane's snapshot and build the tree update to push,
+/// all under one model lock. Returns `None` when there is nothing to push:
+/// the model is unpopulated or poisoned, the pane is untracked (the tree
+/// never parented its nodes), or the event changed nothing.
+pub(crate) fn apply(
+    state: &Mutex<Option<A11yModel>>,
+    pane_id: u32,
+    view: &PaneView,
+    event: A11yEvent<'_>,
+) -> Option<accesskit::TreeUpdate> {
+    let mut guard = match state.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(error = %e, event = event.kind(), "a11y: mutex poisoned");
+            return None;
+        }
+    };
+    let Some(model) = guard.as_mut() else {
+        debug!(
+            pane_id,
+            event = event.kind(),
+            "a11y: event before model init"
+        );
+        return None;
+    };
+    let grid = &view.grid;
+
+    // Announcements touch only the shared window-level live region, so
+    // they need no pane snapshot and skip the pane-presence gate.
+    match event {
+        A11yEvent::Announce(ann) => {
+            return Some(build_update(
+                model,
+                pane_id,
+                grid,
+                &EventOutcome::default(),
+                Some(ann),
+            ));
+        }
+        A11yEvent::ClearAnnouncement => {
+            return Some(build_update(
+                model,
+                pane_id,
+                grid,
+                &EventOutcome::default(),
+                None,
+            ));
+        }
+        _ => {}
+    }
+
+    if !model.panes.contains_key(&pane_id) {
+        debug!(
+            pane_id,
+            event = event.kind(),
+            "a11y: event for pane not in a11y model"
+        );
+        return None;
+    }
+
+    if let A11yEvent::Resize = event {
+        // Row node IDs are recalculated when dimensions change; the
+        // viewport was reset to 0 by the caller.
+        let snap = model.panes.get_mut(&pane_id).expect("presence checked");
+        snap.refresh_from(view, view.viewport_offset);
+        return Some(model.build_full_tree());
+    }
+
+    let snap = model.panes.get_mut(&pane_id).expect("presence checked");
+    let outcome = apply_to_snapshot(snap, view, &event)?;
+
+    let announcement = if let A11yEvent::Render { dirty_rows } = event {
+        model.output_announcement(dirty_rows, grid.rows)
+    } else {
+        None
+    };
+    Some(build_update(
+        model,
+        pane_id,
+        grid,
+        &outcome,
+        announcement.as_ref(),
+    ))
+}
+
+/// Build the incremental update from the (already mutated) snapshot. For
+/// announcement-only pushes the pane may be untracked — the terminal node
+/// is not rebuilt then, so the snapshot-derived fields are unused defaults.
+fn build_update(
+    model: &A11yModel,
+    pane_id: u32,
+    grid: &ClientGrid,
+    outcome: &EventOutcome<'_>,
+    announcement: Option<&Announcement>,
+) -> accesskit::TreeUpdate {
+    let empty = PaneA11ySnapshot {
+        rows: 0,
+        cols: 0,
+        row_texts: Vec::new(),
+        cursor_row: 0,
+        cursor_col: 0,
+        title: String::new(),
+        scrollback_lines: 0,
+        scroll_offset: 0,
+        selection: None,
+    };
+    let snap = model.panes.get(&pane_id).unwrap_or(&empty);
+    let cursor_row_text = grid.row_text(grid.cursor_y);
+    let input = oakterm_a11y::IncrementalInput {
+        pane_id,
+        focused: model.focused,
+        rows: grid.rows,
+        cols: grid.cols,
+        dirty_rows: &outcome.dirty_rows,
+        cursor_row: grid.cursor_y,
+        cursor_col: grid.cursor_x,
+        cursor_changed: outcome.cursor_changed,
+        cursor_row_text: &cursor_row_text,
+        title: &snap.title,
+        title_changed: outcome.title_changed,
+        scrollback_lines: snap.scrollback_lines,
+        scroll_offset: snap.scroll_offset,
+        selection: snap.selection.map(|s| clamp_selection_cols(s, grid)),
+        selection_changed: outcome.selection_changed,
+        announcement,
+        cell_width: model.cell_width,
+        cell_height: model.cell_height,
+        origin: (0.0, 0.0),
+    };
+    oakterm_a11y::build_incremental_update(&input)
 }
 
 /// Resolve cell pixel dimensions, falling back to 8x16 before the font is
@@ -93,52 +421,6 @@ pub(crate) fn cell_dims(metrics: Option<&FontMetrics>) -> (f64, f64) {
     metrics.map_or((8.0, 16.0), |m| {
         (f64::from(m.cell_width), f64::from(m.cell_height))
     })
-}
-
-/// Read a pane's title from the shared model, defaulting to empty when the
-/// lock is poisoned or the pane is not yet tracked.
-pub(crate) fn model_title(state: &Mutex<Option<A11yModel>>, pane_id: u32) -> String {
-    state
-        .lock()
-        .ok()
-        .and_then(|guard| {
-            guard
-                .as_ref()
-                .and_then(|model| model.panes.get(&pane_id).map(|snap| snap.title.clone()))
-        })
-        .unwrap_or_default()
-}
-
-/// The cursor row's text is read from `grid` for clamping.
-pub(crate) fn build_incremental(
-    grid: &ClientGrid,
-    (cell_width, cell_height): (f64, f64),
-    delta: &A11yDelta<'_>,
-) -> accesskit::TreeUpdate {
-    let cursor_row_text = grid.row_text(grid.cursor_y);
-    let input = oakterm_a11y::IncrementalInput {
-        pane_id: delta.pane_id,
-        focused: delta.focused,
-        rows: grid.rows,
-        cols: grid.cols,
-        dirty_row_indices: delta.dirty_row_indices,
-        dirty_row_texts: delta.dirty_row_texts,
-        cursor_row: grid.cursor_y,
-        cursor_col: grid.cursor_x,
-        cursor_changed: delta.cursor_changed,
-        cursor_row_text: &cursor_row_text,
-        title: delta.title,
-        title_changed: delta.title_changed,
-        scrollback_lines: delta.scrollback_lines,
-        scroll_offset: delta.scroll_offset,
-        selection: delta.selection.map(|s| clamp_selection_cols(s, grid)),
-        selection_changed: delta.selection_changed,
-        announcement: delta.announcement,
-        cell_width,
-        cell_height,
-        origin: (0.0, 0.0),
-    };
-    oakterm_a11y::build_incremental_update(&input)
 }
 
 /// Clamp selection character positions to each row's trimmed text length.
@@ -248,20 +530,20 @@ pub(crate) fn selection_from_a11y(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oakterm_a11y::row_node_id;
+    use oakterm_a11y::{ANNOUNCEMENT_ID, row_node_id, terminal_node_id};
 
-    fn snapshot(title: &str) -> PaneA11ySnapshot {
-        PaneA11ySnapshot {
-            rows: 24,
-            cols: 80,
-            row_texts: Vec::new(),
-            cursor_row: 0,
-            cursor_col: 0,
-            title: title.to_string(),
-            scrollback_lines: 0,
-            scroll_offset: 0,
-            selection: None,
-        }
+    fn tracked_model(pane_id: u32, view: &PaneView) -> Mutex<Option<A11yModel>> {
+        let mut model = A11yModel::new(pane_id, (8.0, 16.0));
+        model.register_pane(pane_id, view);
+        Mutex::new(Some(model))
+    }
+
+    fn announcement_value(update: &accesskit::TreeUpdate) -> Option<String> {
+        update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == ANNOUNCEMENT_ID)
+            .and_then(|(_, n)| n.value().map(str::to_string))
     }
 
     #[test]
@@ -270,52 +552,270 @@ mod tests {
     }
 
     #[test]
-    fn model_title_empty_when_unpopulated() {
+    fn apply_untracked_pane_returns_none() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        assert!(apply(&state, 9, &view, A11yEvent::SelectionChanged).is_none());
+    }
+
+    #[test]
+    fn apply_unpopulated_model_returns_none() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
         let state: Mutex<Option<A11yModel>> = Mutex::new(None);
-        assert_eq!(model_title(&state, 0), "");
+        assert!(apply(&state, 0, &view, A11yEvent::Resize).is_none());
     }
 
     #[test]
-    fn model_title_reads_pane_title() {
-        let mut panes = HashMap::new();
-        panes.insert(2, snapshot("vim"));
-        let state = Mutex::new(Some(A11yModel {
-            panes,
-            focused: 2,
-            cell_width: 8.0,
-            cell_height: 16.0,
-        }));
-        assert_eq!(model_title(&state, 2), "vim");
-        assert_eq!(model_title(&state, 7), "");
+    fn apply_render_pushes_dirty_rows_and_announces() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let dirty = vec![(23u16, "hello".to_string())];
+        let update = apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &dirty })
+            .expect("dirty rows push");
+        assert!(update.nodes.iter().any(|(id, _)| *id == row_node_id(0, 23)));
+        assert_eq!(announcement_value(&update).as_deref(), Some("hello"));
     }
 
     #[test]
-    fn full_tree_orders_panes_by_id() {
-        let mut panes = HashMap::new();
-        panes.insert(5, snapshot("b"));
-        panes.insert(1, snapshot("a"));
-        let model = A11yModel {
-            panes,
-            focused: 5,
-            cell_width: 8.0,
-            cell_height: 16.0,
-        };
-        let update = model.build_full_tree();
-        let window = &update
+    fn apply_render_nothing_changed_returns_none() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        // No dirty rows and the cursor still matches the snapshot.
+        assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
+    }
+
+    #[test]
+    fn apply_render_announcement_debounced() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let dirty = vec![(23u16, "first".to_string())];
+        let first =
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &dirty }).expect("push");
+        assert_eq!(announcement_value(&first).as_deref(), Some("first"));
+        // Immediately after, the debounce window suppresses the next one.
+        let dirty2 = vec![(23u16, "second".to_string())];
+        let second = apply(
+            &state,
+            0,
+            &view,
+            A11yEvent::Render {
+                dirty_rows: &dirty2,
+            },
+        )
+        .expect("push");
+        assert_eq!(announcement_value(&second).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn apply_selection_change_dedups() {
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        let mut sel = Selection::new(SelectionType::Normal, 1, 2, AnchorSide::Left);
+        sel.update(1, 5, AnchorSide::Right);
+        view.selection = Some(sel);
+        let state = tracked_model(0, &view);
+        // register_pane snapshotted the selection, so the first event is a no-op...
+        assert!(apply(&state, 0, &view, A11yEvent::SelectionChanged).is_none());
+        // ...clearing it is a change...
+        view.selection = None;
+        let update = apply(&state, 0, &view, A11yEvent::SelectionChanged).expect("change");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == terminal_node_id(0))
+        );
+        // ...and repeating the cleared state is a no-op again.
+        assert!(apply(&state, 0, &view, A11yEvent::SelectionChanged).is_none());
+    }
+
+    #[test]
+    fn apply_title_updates_snapshot_and_pushes() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let update = apply(&state, 0, &view, A11yEvent::Title("vim")).expect("title push");
+        let terminal = update
             .nodes
             .iter()
-            .find(|(id, _)| *id == oakterm_a11y::WINDOW_ID)
-            .expect("window")
-            .1;
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
+        assert_eq!(terminal.1.label(), Some("vim"));
+        // The stored title survives into the next full tree.
+        let full = state.lock().unwrap().as_ref().unwrap().build_full_tree();
+        let terminal = full
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
+        assert_eq!(terminal.1.label(), Some("vim"));
+    }
+
+    #[test]
+    fn apply_scrollback_carries_scroll_state() {
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        view.scroll_up(5);
+        let state = tracked_model(0, &view);
+        let update = apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 })
+            .expect("scrollback push");
+        let terminal = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
+        assert_eq!(terminal.1.scroll_y(), Some(5.0));
+        assert_eq!(terminal.1.scroll_y_max(), Some(100.0));
+        // All visible rows are pushed.
+        assert!(update.nodes.iter().any(|(id, _)| *id == row_node_id(0, 0)));
+        assert!(update.nodes.iter().any(|(id, _)| *id == row_node_id(0, 23)));
+    }
+
+    #[test]
+    fn apply_resize_returns_full_tree_from_refreshed_snapshot() {
+        // Scroll first so a stale snapshot would carry scroll_y = 5; resize
+        // (viewport reset to 0 by the caller) must rebuild from fresh state.
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        view.scroll_up(5);
+        let state = tracked_model(0, &view);
+        apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
+        view.scroll_down(5);
+        view.grid.exit_scrollback();
+        let update = apply(&state, 0, &view, A11yEvent::Resize).expect("full rebuild");
+        assert!(update.tree.is_some(), "resize must rebuild the full tree");
+        let terminal = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
+        assert_eq!(terminal.1.scroll_y(), Some(0.0));
+    }
+
+    #[test]
+    fn apply_announce_and_clear() {
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let ann = Announcement {
+            text: "Bell".into(),
+            level: accesskit::Live::Assertive,
+        };
+        let bell = apply(&state, 0, &view, A11yEvent::Announce(&ann)).expect("announce");
+        assert_eq!(announcement_value(&bell).as_deref(), Some("Bell"));
+        let clear = apply(&state, 0, &view, A11yEvent::ClearAnnouncement).expect("clear");
+        assert_eq!(announcement_value(&clear).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn apply_render_empty_candidate_does_not_stamp_debounce() {
+        // An empty-text candidate must not consume the debounce window: the
+        // next real announcement still fires.
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let empty = vec![(23u16, String::new())];
+        let first =
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &empty }).expect("push");
+        assert_eq!(announcement_value(&first).as_deref(), Some(""));
+        let dirty = vec![(23u16, "hello".to_string())];
+        let second =
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &dirty }).expect("push");
+        assert_eq!(announcement_value(&second).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn apply_render_announcement_window_expires_and_suppression_does_not_stamp() {
+        use std::time::Duration;
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let dirty = vec![(23u16, "first".to_string())];
+        apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &dirty }).expect("push");
+
+        // A suppressed candidate inside the window must not re-stamp it.
+        let backdated = Instant::now()
+            .checked_sub(Duration::from_millis(60))
+            .expect("clock predates test");
+        state.lock().unwrap().as_mut().unwrap().last_announcement = Some(backdated);
+        let dirty2 = vec![(23u16, "second".to_string())];
+        let suppressed = apply(
+            &state,
+            0,
+            &view,
+            A11yEvent::Render {
+                dirty_rows: &dirty2,
+            },
+        )
+        .expect("push");
+        assert_eq!(announcement_value(&suppressed).as_deref(), Some(""));
         assert_eq!(
-            window.children(),
-            &[
-                oakterm_a11y::terminal_node_id(1),
-                oakterm_a11y::terminal_node_id(5),
-                oakterm_a11y::ANNOUNCEMENT_ID
-            ]
+            state.lock().unwrap().as_ref().unwrap().last_announcement,
+            Some(backdated),
+            "suppressed candidate must not consume the window"
         );
-        assert_eq!(update.focus, oakterm_a11y::terminal_node_id(5));
+
+        // Once the window expires, the next candidate announces.
+        state.lock().unwrap().as_mut().unwrap().last_announcement =
+            Instant::now().checked_sub(Duration::from_millis(150));
+        let dirty3 = vec![(23u16, "third".to_string())];
+        let third = apply(
+            &state,
+            0,
+            &view,
+            A11yEvent::Render {
+                dirty_rows: &dirty3,
+            },
+        )
+        .expect("push");
+        assert_eq!(announcement_value(&third).as_deref(), Some("third"));
+    }
+
+    #[test]
+    fn apply_render_cursor_move_pushes_terminal_then_settles() {
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        view.grid.cursor_x = 5;
+        // Cursor moved with no dirty rows: the terminal node (which carries
+        // the cursor as a text selection) must be rebuilt...
+        let update =
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).expect("cursor push");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == terminal_node_id(0))
+        );
+        // ...and the comparison uses the refreshed snapshot: repeating the
+        // same state is a no-op.
+        assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
+    }
+
+    #[test]
+    fn apply_render_none_still_refreshes_snapshot() {
+        // A no-push frame still refreshes the snapshot, so an AT connecting
+        // later sees the current scroll position, not a stale one.
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        view.scroll_up(5);
+        let state = tracked_model(0, &view);
+        apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
+        view.scroll_down(5);
+        view.grid.exit_scrollback();
+        assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
+        let full = state.lock().unwrap().as_ref().unwrap().build_full_tree();
+        let terminal = full
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
+        assert_eq!(terminal.1.scroll_y(), Some(0.0));
+    }
+
+    #[test]
+    fn apply_announce_bypasses_pane_tracking() {
+        // The announcement node is window-level; a bell must reach AT even
+        // for a pane the model does not track.
+        let view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        let ann = Announcement {
+            text: "Bell".into(),
+            level: accesskit::Live::Assertive,
+        };
+        let bell = apply(&state, 9, &view, A11yEvent::Announce(&ann)).expect("announce");
+        assert_eq!(announcement_value(&bell).as_deref(), Some("Bell"));
     }
 
     #[test]
@@ -422,35 +922,18 @@ mod tests {
     }
 
     #[test]
-    fn build_incremental_clamps_line_selection_to_row_text() {
+    fn apply_render_clamps_line_selection_to_row_text() {
         // The Line-selection end-of-row sentinel must resolve against the
         // trimmed row text (empty here), not the column count.
-        let grid = ClientGrid::new(80, 24);
-        let delta = A11yDelta {
-            pane_id: 0,
-            focused: 0,
-            dirty_row_indices: &[],
-            dirty_row_texts: &[],
-            cursor_changed: false,
-            title: "",
-            title_changed: false,
-            scrollback_lines: 0,
-            scroll_offset: 0,
-            selection: Some(SelectionRange {
-                anchor_row: 0,
-                anchor_col: 0,
-                focus_row: 1,
-                focus_col: usize::MAX,
-            }),
-            selection_changed: true,
-            announcement: None,
-        };
-        let update = build_incremental(&grid, (8.0, 16.0), &delta);
+        let mut view = PaneView::new(ClientGrid::new(80, 24));
+        let state = tracked_model(0, &view);
+        view.selection = Some(Selection::new(SelectionType::Line, 1, 0, AnchorSide::Left));
+        let update = apply(&state, 0, &view, A11yEvent::SelectionChanged).expect("line selection");
         let terminal = update
             .nodes
             .iter()
-            .find(|(id, _)| *id == oakterm_a11y::terminal_node_id(0))
-            .expect("terminal");
+            .find(|(id, _)| *id == terminal_node_id(0))
+            .expect("terminal node");
         let sel = terminal.1.text_selection().expect("selection");
         assert_eq!(sel.focus.character_index, 0);
     }
@@ -478,19 +961,6 @@ mod tests {
         // The exclusive focus position 7 excludes cell 7 via the Left side.
         assert!(sel.contains(4, 6));
         assert!(!sel.contains(4, 7));
-    }
-
-    #[test]
-    fn selection_from_a11y_collapsed_clears() {
-        let pos = accesskit::TextPosition {
-            node: row_node_id(0, 2),
-            character_index: 5,
-        };
-        let at_sel = accesskit::TextSelection {
-            anchor: pos,
-            focus: pos,
-        };
-        assert_eq!(selection_from_a11y(&at_sel, 0, 24), Some((0, None)));
     }
 
     #[test]
@@ -540,6 +1010,19 @@ mod tests {
     }
 
     #[test]
+    fn selection_from_a11y_collapsed_clears() {
+        let pos = accesskit::TextPosition {
+            node: row_node_id(0, 2),
+            character_index: 5,
+        };
+        let at_sel = accesskit::TextSelection {
+            anchor: pos,
+            focus: pos,
+        };
+        assert_eq!(selection_from_a11y(&at_sel, 0, 24), Some((0, None)));
+    }
+
+    #[test]
     fn selection_from_a11y_rejects_rows_outside_viewport() {
         // A row node beyond the pane's visible rows selects nothing on
         // screen; reject rather than let the AT request "succeed".
@@ -575,7 +1058,7 @@ mod tests {
     fn selection_from_a11y_rejects_non_row_nodes() {
         let at_sel = accesskit::TextSelection {
             anchor: accesskit::TextPosition {
-                node: oakterm_a11y::terminal_node_id(0),
+                node: terminal_node_id(0),
                 character_index: 0,
             },
             focus: accesskit::TextPosition {

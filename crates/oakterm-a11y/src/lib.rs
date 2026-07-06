@@ -171,10 +171,8 @@ pub struct IncrementalInput<'a> {
     pub focused: u32,
     pub rows: u16,
     pub cols: u16,
-    /// Indices of rows whose content changed this frame.
-    pub dirty_row_indices: &'a [u16],
-    /// Text for each dirty row (parallel to `dirty_row_indices`).
-    pub dirty_row_texts: &'a [String],
+    /// `(row index, text)` for each row whose content changed this frame.
+    pub dirty_rows: &'a [(u16, String)],
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub cursor_changed: bool,
@@ -198,25 +196,19 @@ pub struct IncrementalInput<'a> {
 /// Build an incremental tree update containing only changed nodes.
 #[must_use]
 pub fn build_incremental_update(input: &IncrementalInput<'_>) -> TreeUpdate {
-    debug_assert_eq!(
-        input.dirty_row_indices.len(),
-        input.dirty_row_texts.len(),
-        "dirty row indices and texts must be parallel"
-    );
     let mut nodes = Vec::new();
 
     // Rebuild dirty row TextRuns.
-    for (i, &row_idx) in input.dirty_row_indices.iter().enumerate() {
-        let text = input.dirty_row_texts.get(i).map_or("", String::as_str);
+    for (row_idx, text) in input.dirty_rows {
         let text_run = build_text_run(
             text,
-            usize::from(row_idx),
+            usize::from(*row_idx),
             input.cols,
             input.cell_width,
             input.cell_height,
             input.origin,
         );
-        nodes.push((row_node_id(input.pane_id, row_idx), text_run));
+        nodes.push((row_node_id(input.pane_id, *row_idx), text_run));
     }
 
     // AccessKit overwrites entire nodes, so the terminal rebuild must
@@ -405,17 +397,13 @@ mod tests {
         }
     }
 
-    fn incremental_input<'a>(
-        dirty_row_indices: &'a [u16],
-        dirty_row_texts: &'a [String],
-    ) -> IncrementalInput<'a> {
+    fn incremental_input(dirty_rows: &[(u16, String)]) -> IncrementalInput<'_> {
         IncrementalInput {
             pane_id: 1,
             focused: 1,
             rows: 24,
             cols: 80,
-            dirty_row_indices,
-            dirty_row_texts,
+            dirty_rows,
             cursor_row: 0,
             cursor_col: 0,
             cursor_changed: false,
@@ -692,8 +680,8 @@ mod tests {
 
     #[test]
     fn incremental_only_dirty_rows() {
-        let texts = vec!["changed".to_string()];
-        let input = incremental_input(&[5], &texts);
+        let dirty = vec![(5u16, "changed".to_string())];
+        let input = incremental_input(&dirty);
         let update = build_incremental_update(&input);
         assert!(update.tree.is_none());
         // Dirty row + announcement (cleared).
@@ -704,8 +692,8 @@ mod tests {
 
     #[test]
     fn incremental_cursor_change_includes_terminal() {
-        let texts = vec!["hello".to_string()];
-        let mut input = incremental_input(&[0], &texts);
+        let dirty = vec![(0u16, "hello".to_string())];
+        let mut input = incremental_input(&dirty);
         input.cursor_col = 3;
         input.cursor_changed = true;
         input.cursor_row_text = "hello";
@@ -722,7 +710,7 @@ mod tests {
 
     #[test]
     fn incremental_cursor_clamped_to_cursor_row_text() {
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.cursor_col = 70;
         input.cursor_changed = true;
         input.cursor_row_text = "short";
@@ -733,7 +721,7 @@ mod tests {
 
     #[test]
     fn incremental_no_change_omits_terminal() {
-        let input = incremental_input(&[], &[]);
+        let input = incremental_input(&[]);
         let update = build_incremental_update(&input);
         // Only the announcement node (cleared to "").
         assert_eq!(update.nodes.len(), 1);
@@ -742,7 +730,7 @@ mod tests {
 
     #[test]
     fn incremental_title_change_includes_terminal() {
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.title = "new title";
         input.title_changed = true;
         let update = build_incremental_update(&input);
@@ -754,7 +742,7 @@ mod tests {
 
     #[test]
     fn incremental_terminal_rebuild_carries_scroll_state() {
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.cursor_changed = true;
         input.scrollback_lines = 300;
         input.scroll_offset = 17;
@@ -768,7 +756,7 @@ mod tests {
 
     #[test]
     fn incremental_selection_change_includes_terminal() {
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.selection = Some(SelectionRange {
             anchor_row: 1,
             anchor_col: 2,
@@ -790,7 +778,7 @@ mod tests {
         // Incremental rebuilds have no row texts; the Line-selection
         // usize::MAX sentinel must still be bounded (callers pre-clamp
         // against real text, cols is the crate-side backstop).
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.selection = Some(SelectionRange {
             anchor_row: 0,
             anchor_col: 0,
@@ -805,7 +793,7 @@ mod tests {
 
     #[test]
     fn incremental_focus_tracks_focused_pane() {
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.pane_id = 2;
         input.focused = 5;
         let update = build_incremental_update(&input);
@@ -814,8 +802,8 @@ mod tests {
 
     #[test]
     fn incremental_multiple_dirty_rows() {
-        let texts = vec!["aaa".to_string(), "bbb".to_string()];
-        let mut input = incremental_input(&[2, 7], &texts);
+        let dirty = vec![(2u16, "aaa".to_string()), (7u16, "bbb".to_string())];
+        let mut input = incremental_input(&dirty);
         input.rows = 10;
         input.cols = 40;
         let update = build_incremental_update(&input);
@@ -831,7 +819,7 @@ mod tests {
             text: "hello world".into(),
             level: Live::Polite,
         };
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.announcement = Some(&ann);
         let update = build_incremental_update(&input);
         assert_eq!(update.nodes.len(), 1);
@@ -846,7 +834,7 @@ mod tests {
             text: "Bell".into(),
             level: Live::Assertive,
         };
-        let mut input = incremental_input(&[], &[]);
+        let mut input = incremental_input(&[]);
         input.announcement = Some(&ann);
         let update = build_incremental_update(&input);
         assert_eq!(update.nodes[0].1.live(), Some(Live::Assertive));
@@ -854,7 +842,7 @@ mod tests {
 
     #[test]
     fn incremental_no_announcement_clears_node() {
-        let input = incremental_input(&[], &[]);
+        let input = incremental_input(&[]);
         let update = build_incremental_update(&input);
         // Announcement node is always pushed (cleared to "" when no announcement).
         assert_eq!(update.nodes.len(), 1);
@@ -923,8 +911,8 @@ mod tests {
             };
             let mut tree = accesskit_consumer::Tree::new(build_initial_tree(&input), true);
 
-            let dirty_texts = vec!["changed".to_string()];
-            let mut inc = incremental_input(&[1], &dirty_texts);
+            let dirty = vec![(1u16, "changed".to_string())];
+            let mut inc = incremental_input(&dirty);
             inc.pane_id = 0;
             inc.focused = 0;
             inc.rows = 2;

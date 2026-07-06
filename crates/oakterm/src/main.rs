@@ -30,7 +30,7 @@ use oakterm_renderer::pipeline::{BgUniforms, RenderPipeline, TextUniforms};
 use oakterm_renderer::shaper::FontKey;
 use oakterm_renderer::swash_shaper::SwashShaper;
 
-use a11y_bridge::{A11yDelta, A11yModel, PaneA11ySnapshot};
+use a11y_bridge::{A11yEvent, A11yModel};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
 use pane_view::{PaneView, ScrollbackClampOutcome, clamp_viewport};
 use render_grid::ClientGrid;
@@ -213,8 +213,6 @@ struct App {
     focused: bool,
     /// Shared state for the AccessKit activation handler.
     a11y_state: Arc<Mutex<Option<A11yModel>>>,
-    /// Debounce: last time an a11y announcement was sent.
-    last_announcement: Option<std::time::Instant>,
     /// Left mouse button held for drag tracking.
     mouse_pressed: bool,
     /// Click count for double/triple click detection.
@@ -257,7 +255,6 @@ impl App {
             blink_deadline: None,
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
-            last_announcement: None,
             mouse_pressed: false,
             click_count: 0,
             last_click_time: None,
@@ -452,49 +449,9 @@ impl App {
         let Some(view) = self.panes.get(&pane_id) else {
             return;
         };
-        let sel_range = view
-            .selection
-            .as_ref()
-            .and_then(|s| a11y_bridge::selection_range(s, view.viewport_offset, view.grid.rows));
-        let scroll_offset = u64::from(view.viewport_offset);
-        let scrollback_lines = match self.a11y_state.lock() {
-            Ok(mut model) => {
-                let Some(s) = model.as_mut().and_then(|m| m.panes.get_mut(&pane_id)) else {
-                    debug!(pane_id, "a11y: selection change for pane not in a11y model");
-                    return;
-                };
-                if s.selection == sel_range {
-                    return;
-                }
-                s.selection = sel_range;
-                s.scrollback_lines
-            }
-            Err(e) => {
-                warn!(error = %e, "a11y: mutex poisoned on selection change");
-                return;
-            }
-        };
-        let title = a11y_bridge::model_title(&self.a11y_state, pane_id);
-        let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
-        if let (Some(view), Some(adapter)) = (self.panes.get(&pane_id), &mut self.accesskit) {
-            let update = a11y_bridge::build_incremental(
-                &view.grid,
-                cell,
-                &A11yDelta {
-                    pane_id,
-                    focused: self.focused_pane,
-                    dirty_row_indices: &[],
-                    dirty_row_texts: &[],
-                    cursor_changed: false,
-                    title: &title,
-                    title_changed: false,
-                    scrollback_lines,
-                    scroll_offset,
-                    selection: sel_range,
-                    selection_changed: true,
-                    announcement: None,
-                },
-            );
+        let update =
+            a11y_bridge::apply(&self.a11y_state, pane_id, view, A11yEvent::SelectionChanged);
+        if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
             adapter.update_if_active(|| update);
         }
     }
@@ -618,30 +575,17 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
 
+        let view = PaneView::new(grid);
+
         // Populate the a11y model so the activation handler can build a tree.
         match self.a11y_state.lock() {
             Ok(mut model) => {
-                let mut panes = std::collections::HashMap::new();
-                panes.insert(
+                let mut m = A11yModel::new(
                     self.focused_pane,
-                    PaneA11ySnapshot {
-                        rows: grid.rows,
-                        cols: grid.cols,
-                        row_texts: grid.row_texts(),
-                        cursor_row: grid.cursor_y,
-                        cursor_col: grid.cursor_x,
-                        title: String::new(),
-                        scrollback_lines: 0,
-                        scroll_offset: 0,
-                        selection: None,
-                    },
+                    a11y_bridge::cell_dims(Some(&font_state.metrics)),
                 );
-                *model = Some(A11yModel {
-                    panes,
-                    focused: self.focused_pane,
-                    cell_width: f64::from(font_state.metrics.cell_width),
-                    cell_height: f64::from(font_state.metrics.cell_height),
-                });
+                m.register_pane(self.focused_pane, &view);
+                *model = Some(m);
             }
             Err(e) => warn!(error = %e, "a11y: mutex poisoned during init"),
         }
@@ -649,7 +593,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
         self.gpu = Some(gpu);
         self.font = Some(font_state);
-        self.panes.insert(self.focused_pane, PaneView::new(grid));
+        self.panes.insert(self.focused_pane, view);
         self.config = config;
         self.config_error = cr.error;
         self.event_registry = cr.registry;
@@ -728,34 +672,12 @@ impl ApplicationHandler<UserEvent> for App {
 
                             // Full a11y tree rebuild on resize (row count changed).
                             if dims_changed {
-                                let sel_range = view
-                                    .selection
-                                    .as_ref()
-                                    .and_then(|s| a11y_bridge::selection_range(s, 0, rows));
-                                let full_tree = match self.a11y_state.lock() {
-                                    Ok(mut m) => m.as_mut().map(|model| {
-                                        if let Some(snap) = model.panes.get_mut(&self.focused_pane)
-                                        {
-                                            snap.rows = rows;
-                                            snap.cols = cols;
-                                            snap.row_texts = grid.row_texts();
-                                            snap.cursor_row = grid.cursor_y;
-                                            snap.cursor_col = grid.cursor_x;
-                                            snap.scroll_offset = 0;
-                                            snap.selection = sel_range;
-                                        } else {
-                                            debug!(
-                                                pane_id = self.focused_pane,
-                                                "a11y: resize for pane not in a11y model"
-                                            );
-                                        }
-                                        model.build_full_tree()
-                                    }),
-                                    Err(e) => {
-                                        warn!(error = %e, "a11y: mutex poisoned during resize");
-                                        None
-                                    }
-                                };
+                                let full_tree = a11y_bridge::apply(
+                                    &self.a11y_state,
+                                    self.focused_pane,
+                                    view,
+                                    A11yEvent::Resize,
+                                );
                                 if let (Some(adapter), Some(full_tree)) =
                                     (&mut self.accesskit, full_tree)
                                 {
@@ -1291,129 +1213,37 @@ impl ApplicationHandler<UserEvent> for App {
                     );
                     return;
                 };
-                {
-                    view.bracketed_paste = update.bracketed_paste;
-                    let grid = &mut view.grid;
-                    if grid.is_scrolled() {
-                        grid.apply_update_while_scrolled(&update);
-                    } else {
-                        grid.apply_update(&update);
+                view.bracketed_paste = update.bracketed_paste;
+                if view.grid.is_scrolled() {
+                    view.grid.apply_update_while_scrolled(&update);
+                } else {
+                    view.grid.apply_update(&update);
 
-                        // Build incremental a11y update from dirty rows.
-                        let dirty_indices: Vec<u16> =
-                            update.dirty_rows.iter().map(|r| r.row_index).collect();
-                        let dirty_texts: Vec<String> =
-                            dirty_indices.iter().map(|&i| grid.row_text(i)).collect();
+                    let dirty_rows: Vec<(u16, String)> = update
+                        .dirty_rows
+                        .iter()
+                        .map(|r| (r.row_index, view.grid.row_text(r.row_index)))
+                        .collect();
+                    a11y_update = a11y_bridge::apply(
+                        &self.a11y_state,
+                        update.pane_id,
+                        view,
+                        A11yEvent::Render {
+                            dirty_rows: &dirty_rows,
+                        },
+                    );
 
-                        let sel_range = view
-                            .selection
-                            .as_ref()
-                            .and_then(|s| a11y_bridge::selection_range(s, 0, grid.rows));
-                        // None when the pane is untracked or the lock is
-                        // poisoned — nothing may be pushed then: the tree
-                        // never parented this pane's row nodes.
-                        let snapshot = match self.a11y_state.lock() {
-                            Ok(mut model) => {
-                                if let Some(s) = model
-                                    .as_mut()
-                                    .and_then(|m| m.panes.get_mut(&update.pane_id))
-                                {
-                                    let cc = s.cursor_row != grid.cursor_y
-                                        || s.cursor_col != grid.cursor_x;
-                                    let title = s.title.clone();
-                                    s.rows = grid.rows;
-                                    s.cols = grid.cols;
-                                    s.row_texts = grid.row_texts();
-                                    s.cursor_row = grid.cursor_y;
-                                    s.cursor_col = grid.cursor_x;
-                                    s.scroll_offset = 0;
-                                    s.selection = sel_range;
-                                    Some((cc, title, s.scrollback_lines))
-                                } else {
-                                    debug!(
-                                        pane_id = update.pane_id,
-                                        "a11y: render update for pane not in a11y model"
-                                    );
-                                    None
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "a11y: mutex poisoned");
-                                None
-                            }
-                        };
-
-                        if let Some((cursor_changed, current_title, scrollback_lines)) = snapshot {
-                            // Computed inside the gate so an undeliverable
-                            // announcement never consumes the debounce window.
-                            let announcement = if dirty_indices.is_empty() || grid.rows == 0 {
-                                None
-                            } else {
-                                let bottom = grid.rows.saturating_sub(1);
-                                let has_bottom = dirty_indices.contains(&bottom);
-                                let debounce_ok = self
-                                    .last_announcement
-                                    .is_none_or(|t| t.elapsed().as_millis() >= 100);
-                                if has_bottom && debounce_ok {
-                                    let text: String = dirty_indices
-                                        .iter()
-                                        .zip(dirty_texts.iter())
-                                        .filter(|(i, _)| **i >= bottom.saturating_sub(2))
-                                        .map(|(_, t)| t.as_str())
-                                        .filter(|t| !t.is_empty())
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    if text.is_empty() {
-                                        None
-                                    } else {
-                                        self.last_announcement = Some(std::time::Instant::now());
-                                        Some(oakterm_a11y::Announcement {
-                                            text,
-                                            level: accesskit::Live::Polite,
-                                        })
-                                    }
-                                } else {
-                                    None
-                                }
-                            };
-
-                            if !dirty_indices.is_empty() || cursor_changed {
-                                let cell =
-                                    a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
-                                a11y_update = Some(a11y_bridge::build_incremental(
-                                    grid,
-                                    cell,
-                                    &A11yDelta {
-                                        pane_id: update.pane_id,
-                                        focused: self.focused_pane,
-                                        dirty_row_indices: &dirty_indices,
-                                        dirty_row_texts: &dirty_texts,
-                                        cursor_changed,
-                                        title: &current_title,
-                                        title_changed: false,
-                                        scrollback_lines,
-                                        scroll_offset: 0,
-                                        selection: sel_range,
-                                        selection_changed: false,
-                                        announcement: announcement.as_ref(),
-                                    },
-                                ));
-                            }
+                    if is_focused {
+                        // Restart blink — cursor style may have changed.
+                        if self.blink_deadline.is_none() && self.should_blink() {
+                            self.reset_blink();
                         }
-
-                        if is_focused {
-                            // Restart blink — cursor style may have changed.
-                            if self.blink_deadline.is_none() && self.should_blink() {
-                                self.reset_blink();
-                            }
-                            if let Some(w) = &self.window {
-                                w.request_redraw();
-                            }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
                         }
                     }
                 }
 
-                // Send incremental a11y update (grid borrow is released).
                 if let (Some(adapter), Some(tree_update)) = (&mut self.accesskit, a11y_update) {
                     adapter.update_if_active(|| tree_update);
                 }
@@ -1434,74 +1264,20 @@ impl ApplicationHandler<UserEvent> for App {
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     let scroll_indicator = self.config.scroll_indicator;
                     if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                        let grid = &mut view.grid;
                         #[allow(clippy::cast_possible_truncation)]
                         let offset = view.viewport_offset.min(u32::from(u16::MAX)) as u16;
-                        grid.apply_scrollback(&data.rows, offset);
+                        view.grid.apply_scrollback(&data.rows, offset);
                         if scroll_indicator {
-                            grid.set_scroll_indicator(view.viewport_offset);
+                            view.grid.set_scroll_indicator(view.viewport_offset);
                         }
-                        // All visible rows changed — update a11y with full row set
-                        // and the new scroll position.
-                        let all_indices: Vec<u16> = (0..grid.rows).collect();
-                        let all_texts: Vec<String> =
-                            all_indices.iter().map(|&i| grid.row_text(i)).collect();
-                        let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
-                        let scroll_offset = u64::from(view.viewport_offset);
-                        let scrollback_lines = u64::from(data.total_rows);
-                        let sel_range = view.selection.as_ref().and_then(|s| {
-                            a11y_bridge::selection_range(s, view.viewport_offset, grid.rows)
-                        });
-                        // Push only when the pane is tracked: the tree never
-                        // parented an untracked pane's row nodes.
-                        let tracked = match self.a11y_state.lock() {
-                            Ok(mut model) => {
-                                if let Some(s) = model
-                                    .as_mut()
-                                    .and_then(|m| m.panes.get_mut(&self.focused_pane))
-                                {
-                                    s.row_texts.clone_from(&all_texts);
-                                    s.cursor_row = grid.cursor_y;
-                                    s.cursor_col = grid.cursor_x;
-                                    s.scroll_offset = scroll_offset;
-                                    s.scrollback_lines = scrollback_lines;
-                                    s.selection = sel_range;
-                                    true
-                                } else {
-                                    debug!(
-                                        pane_id = self.focused_pane,
-                                        "a11y: scrollback for pane not in a11y model"
-                                    );
-                                    false
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "a11y: mutex poisoned in scrollback");
-                                false
-                            }
-                        };
-                        if tracked {
-                            let title =
-                                a11y_bridge::model_title(&self.a11y_state, self.focused_pane);
-                            a11y_scrollback_update = Some(a11y_bridge::build_incremental(
-                                grid,
-                                cell,
-                                &A11yDelta {
-                                    pane_id: self.focused_pane,
-                                    focused: self.focused_pane,
-                                    dirty_row_indices: &all_indices,
-                                    dirty_row_texts: &all_texts,
-                                    cursor_changed: true,
-                                    title: &title,
-                                    title_changed: false,
-                                    scrollback_lines,
-                                    scroll_offset,
-                                    selection: sel_range,
-                                    selection_changed: false,
-                                    announcement: None,
-                                },
-                            ));
-                        }
+                        a11y_scrollback_update = a11y_bridge::apply(
+                            &self.a11y_state,
+                            self.focused_pane,
+                            view,
+                            A11yEvent::Scrollback {
+                                total_rows: u64::from(data.total_rows),
+                            },
+                        );
                     }
                     if let (Some(adapter), Some(tree_update)) =
                         (&mut self.accesskit, a11y_scrollback_update)
@@ -1542,49 +1318,22 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 // Push immediately since no render event follows a title
-                // change. None means the pane isn't tracked — pushing would
-                // give AccessKit a node the tree never parented.
-                let snapshot = match self.a11y_state.lock() {
-                    Ok(mut model) => {
-                        if let Some(s) = model.as_mut().and_then(|m| m.panes.get_mut(&pane_id)) {
-                            s.title = title;
-                            Some((s.scrollback_lines, s.selection))
-                        } else {
-                            // Title is dropped, not stored: another client's
-                            // pane on a shared daemon lands here.
-                            debug!(pane_id, "a11y: title change for pane not in a11y model");
-                            None
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "a11y: mutex poisoned on title change");
-                        None
-                    }
-                };
-                if let (Some((scrollback_lines, sel_range)), Some(view), Some(adapter)) =
-                    (snapshot, self.panes.get(&pane_id), &mut self.accesskit)
-                {
-                    let current_title = a11y_bridge::model_title(&self.a11y_state, pane_id);
-                    let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
-                    let update = a11y_bridge::build_incremental(
-                        &view.grid,
-                        cell,
-                        &A11yDelta {
-                            pane_id,
-                            focused: self.focused_pane,
-                            dirty_row_indices: &[],
-                            dirty_row_texts: &[],
-                            cursor_changed: false,
-                            title: &current_title,
-                            title_changed: true,
-                            scrollback_lines,
-                            scroll_offset: u64::from(view.viewport_offset),
-                            selection: sel_range,
-                            selection_changed: false,
-                            announcement: None,
-                        },
+                // change. The snapshot mutation happens whenever the view
+                // exists; only the push depends on the adapter.
+                if let Some(view) = self.panes.get(&pane_id) {
+                    let update = a11y_bridge::apply(
+                        &self.a11y_state,
+                        pane_id,
+                        view,
+                        A11yEvent::Title(&title),
                     );
-                    adapter.update_if_active(|| update);
+                    if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
+                        adapter.update_if_active(|| update);
+                    }
+                } else {
+                    // Title is dropped, not stored: another client's pane on
+                    // a shared daemon lands here.
+                    debug!(pane_id, "a11y: title change dropped (no client view)");
                 }
             }
             UserEvent::Bell => {
@@ -1592,32 +1341,27 @@ impl ApplicationHandler<UserEvent> for App {
                 if let (Some(view), Some(adapter)) =
                     (self.panes.get(&self.focused_pane), &mut self.accesskit)
                 {
-                    let title = a11y_bridge::model_title(&self.a11y_state, self.focused_pane);
-                    let cell = a11y_bridge::cell_dims(self.font.as_ref().map(|f| &f.metrics));
                     let ann = oakterm_a11y::Announcement {
                         text: "Bell".into(),
                         level: accesskit::Live::Assertive,
                     };
-                    let mut delta = A11yDelta {
-                        pane_id: self.focused_pane,
-                        focused: self.focused_pane,
-                        dirty_row_indices: &[],
-                        dirty_row_texts: &[],
-                        cursor_changed: false,
-                        title: &title,
-                        title_changed: false,
-                        scrollback_lines: 0,
-                        scroll_offset: 0,
-                        selection: None,
-                        selection_changed: false,
-                        announcement: Some(&ann),
-                    };
-                    let bell_update = a11y_bridge::build_incremental(&view.grid, cell, &delta);
-                    adapter.update_if_active(|| bell_update);
+                    if let Some(update) = a11y_bridge::apply(
+                        &self.a11y_state,
+                        self.focused_pane,
+                        view,
+                        A11yEvent::Announce(&ann),
+                    ) {
+                        adapter.update_if_active(|| update);
+                    }
                     // Clear so a repeated bell is a fresh text transition.
-                    delta.announcement = None;
-                    let clear = a11y_bridge::build_incremental(&view.grid, cell, &delta);
-                    adapter.update_if_active(|| clear);
+                    if let Some(clear) = a11y_bridge::apply(
+                        &self.a11y_state,
+                        self.focused_pane,
+                        view,
+                        A11yEvent::ClearAnnouncement,
+                    ) {
+                        adapter.update_if_active(|| clear);
+                    }
                 }
             }
             UserEvent::AccessKitAction(request) => {
