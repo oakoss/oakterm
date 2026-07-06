@@ -144,7 +144,7 @@ pub(crate) async fn save_session(
     panes: &Arc<Mutex<PaneManager>>,
     state_dir: &Path,
 ) -> io::Result<PathBuf> {
-    let session = build_session(panes).await?;
+    let (session, pane_count) = build_session(panes).await?;
     let json = serde_json::to_vec_pretty(&session)?;
 
     std::fs::create_dir_all(state_dir)?;
@@ -154,10 +154,11 @@ pub(crate) async fn save_session(
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    info!(path = %path.display(), panes = session.workspaces[0].tabs[0].pane_count(), "session saved");
+    info!(path = %path.display(), panes = pane_count, "session saved");
     Ok(path)
 }
 
+#[cfg(test)]
 impl SavedTab {
     fn pane_count(&self) -> usize {
         fn leaves(n: &SavedLayoutNode) -> usize {
@@ -171,18 +172,20 @@ impl SavedTab {
 }
 
 /// Snapshot the manager topology, then read each pane's data one pane
-/// lock at a time (manager→pane lock order).
-async fn build_session(panes: &Arc<Mutex<PaneManager>>) -> io::Result<SessionFile> {
-    let (layout, focused, pane_list) = {
+/// lock at a time (manager→pane lock order). Returns the session file and
+/// the number of panes saved (for the caller's log).
+async fn build_session(panes: &Arc<Mutex<PaneManager>>) -> io::Result<(SessionFile, usize)> {
+    let snapshot = {
         let pm = panes.lock().await;
-        let Some(layout) = pm.layout().cloned() else {
+        let Some(snapshot) = pm.topology_snapshot() else {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no panes to save"));
         };
-        (layout, pm.focused(), pm.snapshot())
+        snapshot
     };
+    let (layout, focused) = (snapshot.layout, snapshot.focused);
 
     let mut pane_data: HashMap<u32, SavedPane> = HashMap::new();
-    for (id, pane) in pane_list {
+    for (id, pane) in snapshot.panes {
         let pane = pane.lock().await;
         let g = pane.screens.active_grid();
         pane_data.insert(
@@ -199,6 +202,7 @@ async fn build_session(panes: &Arc<Mutex<PaneManager>>) -> io::Result<SessionFil
         );
     }
 
+    let pane_count = pane_data.len();
     let focused_index = focused
         .and_then(|f| layout.pane_ids().iter().position(|p| p.0 == f))
         .unwrap_or(0);
@@ -207,22 +211,25 @@ async fn build_session(panes: &Arc<Mutex<PaneManager>>) -> io::Result<SessionFil
         .unwrap_or_default()
         .as_secs();
 
-    Ok(SessionFile {
-        version: SESSION_VERSION,
-        saved_at,
-        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-        workspaces: vec![SavedWorkspace {
-            name: "default".to_string(),
-            tabs: vec![SavedTab {
-                name: String::new(),
-                layout: to_saved_node(&layout, &pane_data)?,
-                floating: Vec::new(),
-                focused_pane: SavedFocusTarget::Tiled(focused_index),
+    Ok((
+        SessionFile {
+            version: SESSION_VERSION,
+            saved_at,
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            workspaces: vec![SavedWorkspace {
+                name: "default".to_string(),
+                tabs: vec![SavedTab {
+                    name: String::new(),
+                    layout: to_saved_node(&layout, &pane_data)?,
+                    floating: Vec::new(),
+                    focused_pane: SavedFocusTarget::Tiled(focused_index),
+                }],
+                active_tab: 0,
             }],
-            active_tab: 0,
-        }],
-        active_workspace: 0,
-    })
+            active_workspace: 0,
+        },
+        pane_count,
+    ))
 }
 
 /// Tree and map are snapshotted under one manager lock, so every leaf has

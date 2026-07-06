@@ -133,6 +133,32 @@ async fn malformed_payload_returns_error() {
     assert_eq!(err.code, ErrorCode::MalformedPayload as u32);
 }
 
+#[tokio::test]
+async fn corrupt_framing_closes_connection() {
+    let (mut stream, _codec, _handle) = connect_and_handshake().await;
+
+    // Bytes that fail frame decoding (bad magic): the daemon must close the
+    // connection — corrupt framing can never resync, and leaving the bytes
+    // buffered would retry the same error forever.
+    stream
+        .write_all(&[0xFF; 16])
+        .await
+        .expect("write corrupt bytes");
+
+    let mut read_buf = BytesMut::with_capacity(256);
+    let eof = async {
+        loop {
+            let n = stream.read_buf(&mut read_buf).await.expect("read");
+            if n == 0 {
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), eof)
+        .await
+        .expect("daemon did not close the connection on corrupt framing");
+}
+
 /// Connect to a daemon, complete the handshake, and return the stream.
 /// The returned `TestDaemon` must be held alive for the socket to remain valid.
 async fn connect_and_handshake() -> (UnixStream, FrameCodec, TestDaemon) {

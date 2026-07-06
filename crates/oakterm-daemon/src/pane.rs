@@ -101,6 +101,13 @@ pub(crate) fn build_command_spec(
 /// never contend with another pane's traffic.
 pub(crate) type SharedPane = Arc<Mutex<PaneState>>;
 
+/// Atomic view of the manager topology; see `PaneManager::topology_snapshot`.
+pub(crate) struct TopologySnapshot {
+    pub(crate) layout: LayoutNode,
+    pub(crate) focused: Option<u32>,
+    pub(crate) panes: Vec<(u32, SharedPane)>,
+}
+
 /// Tracks all panes with monotonic ID assignment. Guards topology only
 /// (create/lookup/remove/focus) plus the Spec-0007 layout tree; pane
 /// contents live behind per-pane locks.
@@ -312,6 +319,21 @@ impl PaneManager {
     /// (TREK-106).
     pub(crate) fn layout(&self) -> Option<&LayoutNode> {
         self.layout.as_ref()
+    }
+
+    /// Snapshot the topology under one lock: the cloned layout tree, the
+    /// focused pane, and every `(id, SharedPane)` pair. `None` when there
+    /// is no layout (no panes). The three reads must stay atomic — a split
+    /// landing between them would desync the tree from the focus/pane set;
+    /// session saving (Spec-0010) relies on that atomicity. Callers release
+    /// the manager lock before locking panes (manager->pane lock order).
+    pub(crate) fn topology_snapshot(&self) -> Option<TopologySnapshot> {
+        let layout = self.layout()?.clone();
+        Some(TopologySnapshot {
+            layout,
+            focused: self.focused(),
+            panes: self.snapshot(),
+        })
     }
 
     /// Focus a pane. Returns false if the pane is unknown.
