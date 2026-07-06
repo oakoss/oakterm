@@ -15,6 +15,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use wgpu::CurrentSurfaceTexture;
@@ -942,16 +943,19 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::KeyboardInput {
                 event:
-                    winit::event::KeyEvent {
+                    event @ winit::event::KeyEvent {
                         state: ElementState::Pressed,
-                        logical_key,
-                        text,
                         ..
                     },
                 ..
             } => {
-                // Look up keybind BEFORE clearing selection so Copy can read it.
-                if let Some(chord) = winit_to_chord(self.modifiers, &logical_key) {
+                // Look up keybind BEFORE clearing selection so Copy can read
+                // it. Chords resolve against the layout key, not the
+                // platform-composed character — macOS Option+H arrives as
+                // "˙" in logical_key, which can never match an alt+h
+                // binding (Spec-0011 Keybind Lookup Layer).
+                let chord_key = event.key_without_modifiers();
+                if let Some(chord) = winit_to_chord(self.modifiers, &chord_key) {
                     if let Some(idx) = self.keybind_registry.lookup_index(&chord) {
                         if self.dispatch_action_at(idx) {
                             self.reset_blink();
@@ -961,6 +965,7 @@ impl ApplicationHandler<UserEvent> for App {
                         // scrolled) — let the key fall through to PTY.
                     }
                 }
+                let (logical_key, text) = (event.logical_key, event.text);
 
                 // Clear selection on non-copy keystrokes.
                 let cleared = self
