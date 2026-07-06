@@ -446,14 +446,19 @@ impl App {
 
     /// The focused pane's scrollback offset; 0 (live view) when no pane exists.
     fn viewport_offset(&self) -> u32 {
-        self.focused_view().map_or(0, |v| v.viewport_offset)
+        self.pane_viewport_offset(self.focused_pane)
     }
 
-    /// Request scrollback rows from the daemon for the current viewport offset.
-    fn request_scrollback(&self) {
-        if let (Some(daemon), Some(view)) = (&self.daemon, self.focused_view()) {
+    /// A pane's scrollback offset; 0 (live view) when it has no view.
+    fn pane_viewport_offset(&self, pane_id: u32) -> u32 {
+        self.panes.get(&pane_id).map_or(0, |v| v.viewport_offset)
+    }
+
+    /// Request scrollback rows from the daemon for the pane's viewport offset.
+    fn request_scrollback(&self, pane_id: u32) {
+        if let (Some(daemon), Some(view)) = (&self.daemon, self.panes.get(&pane_id)) {
             let req = GetScrollback {
-                pane_id: self.focused_pane,
+                pane_id,
                 start_row: -i64::from(view.viewport_offset),
                 count: u32::from(view.grid.rows),
             };
@@ -488,37 +493,38 @@ impl App {
         }
     }
 
-    /// Scroll the viewport by `lines`. Positive = up (into scrollback),
-    /// negative = down (toward live). Handles enter/exit scrollback.
-    fn scroll_viewport(&mut self, lines: i32) {
+    /// Scroll a pane's viewport by `lines`. Positive = up (into
+    /// scrollback), negative = down (toward live). Handles enter/exit
+    /// scrollback.
+    fn scroll_viewport(&mut self, pane_id: u32, lines: i32) {
         if lines > 0 {
-            if let Some(view) = self.focused_view_mut() {
+            if let Some(view) = self.panes.get_mut(&pane_id) {
                 #[allow(clippy::cast_sign_loss)]
                 view.scroll_up(lines as u32);
             }
-            self.request_scrollback();
-        } else if lines < 0 && self.viewport_offset() > 0 {
-            let Some(view) = self.focused_view_mut() else {
+            self.request_scrollback(pane_id);
+        } else if lines < 0 && self.pane_viewport_offset(pane_id) > 0 {
+            let Some(view) = self.panes.get_mut(&pane_id) else {
                 return;
             };
             if view.scroll_down(lines.unsigned_abs()) {
-                self.return_to_live();
+                self.return_to_live(pane_id);
             } else {
-                self.request_scrollback();
+                self.request_scrollback(pane_id);
             }
         }
     }
 
-    /// Return to live view from scrollback.
-    fn return_to_live(&mut self) {
-        if let Some(view) = self.focused_view_mut() {
+    /// Return a pane to live view from scrollback.
+    fn return_to_live(&mut self, pane_id: u32) {
+        if let Some(view) = self.panes.get_mut(&pane_id) {
             view.viewport_offset = 0;
             view.grid.exit_scrollback();
         }
         // Request a full refresh to ensure live view is current.
         if let Some(daemon) = &self.daemon {
             let req = GetRenderUpdate {
-                pane_id: self.focused_pane,
+                pane_id,
                 since_seqno: 0,
             };
             match Frame::new(MSG_GET_RENDER_UPDATE, 1, req.encode()) {
@@ -969,7 +975,7 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // Any unbound key while scrolled: snap back to live first.
                 if self.viewport_offset() > 0 {
-                    self.return_to_live();
+                    self.return_to_live(self.focused_pane);
                 }
 
                 let bytes = key_to_bytes(&logical_key, text.as_deref());
@@ -1148,7 +1154,7 @@ impl ApplicationHandler<UserEvent> for App {
                     -scroll_lines
                 };
                 if self.viewport_offset() > 0 || shift || !alt_screen {
-                    self.scroll_viewport(delta);
+                    self.scroll_viewport(self.focused_pane, delta);
                 } else if let Some(daemon) = &mut self.daemon {
                     let (x, y) = self.last_mouse_cell;
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
@@ -1378,21 +1384,29 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::ScrollbackData(data) => {
-                if self.viewport_offset() > 0 {
-                    match clamp_viewport(self.viewport_offset(), data.total_rows) {
+                // Route by the response's pane: AT can scroll a
+                // background pane, so the reply must not land on the
+                // focused one.
+                let pane_id = data.pane_id;
+                if self.pane_viewport_offset(pane_id) == 0 {
+                    debug!(pane_id, "dropping stale scrollback response");
+                    return;
+                }
+                {
+                    match clamp_viewport(self.pane_viewport_offset(pane_id), data.total_rows) {
                         ScrollbackClampOutcome::ReturnToLive => {
-                            self.return_to_live();
+                            self.return_to_live(pane_id);
                             return;
                         }
                         ScrollbackClampOutcome::Clamp(clamped) => {
-                            if let Some(view) = self.focused_view_mut() {
+                            if let Some(view) = self.panes.get_mut(&pane_id) {
                                 view.viewport_offset = clamped;
                             }
                         }
                     }
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     let scroll_indicator = self.config.scroll_indicator;
-                    if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                    if let Some(view) = self.panes.get_mut(&pane_id) {
                         #[allow(clippy::cast_possible_truncation)]
                         let offset = view.viewport_offset.min(u32::from(u16::MAX)) as u16;
                         view.grid.apply_scrollback(&data.rows, offset);
@@ -1401,7 +1415,7 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         a11y_scrollback_update = a11y_bridge::apply(
                             &self.a11y_state,
-                            self.focused_pane,
+                            pane_id,
                             view,
                             A11yEvent::Scrollback {
                                 total_rows: u64::from(data.total_rows),
@@ -1427,7 +1441,7 @@ impl ApplicationHandler<UserEvent> for App {
                         return;
                     };
                     if new_offset == 0 {
-                        self.return_to_live();
+                        self.return_to_live(self.focused_pane);
                     } else {
                         if let Some(view) = self.focused_view_mut() {
                             view.viewport_offset = new_offset;
@@ -1435,7 +1449,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 view.grid.enter_scrollback();
                             }
                         }
-                        self.request_scrollback();
+                        self.request_scrollback(self.focused_pane);
                     }
                 }
             }
@@ -1494,34 +1508,53 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::AccessKitAction(request) => {
+                // AT actions name a target node; route to its pane
+                // (Spec-0006 advertises the actions per pane terminal).
+                // The window and announcement nodes decode to None and
+                // fall back to the focused pane.
+                let target_pane = oakterm_a11y::decode_node_id(request.target_node)
+                    .map_or(self.focused_pane, |(pane_id, _)| pane_id);
                 match request.action {
                     accesskit::Action::Focus => {
                         if let Some(w) = &self.window {
                             w.focus_window();
                         }
+                        if target_pane == self.focused_pane {
+                        } else if self.panes.contains_key(&target_pane) {
+                            self.focus_pane(target_pane);
+                        } else {
+                            debug!(target_pane, "a11y: focus action for untracked pane");
+                        }
                     }
-                    accesskit::Action::ScrollUp => {
-                        let page = self.focused_view().map_or(24, |v| i32::from(v.grid.rows));
-                        self.scroll_viewport(page);
-                    }
-                    accesskit::Action::ScrollDown => {
-                        let page = self.focused_view().map_or(24, |v| i32::from(v.grid.rows));
-                        self.scroll_viewport(-page);
+                    accesskit::Action::ScrollUp | accesskit::Action::ScrollDown => {
+                        let Some(view) = self.panes.get(&target_pane) else {
+                            // Stale node after a pane closed; diagnosable
+                            // like the SetTextSelection rejections below.
+                            debug!(target_pane, "a11y: scroll action for untracked pane");
+                            return;
+                        };
+                        let mut page = i32::from(view.grid.rows);
+                        if request.action == accesskit::Action::ScrollDown {
+                            page = -page;
+                        }
+                        self.scroll_viewport(target_pane, page);
                     }
                     accesskit::Action::SetScrollOffset => {
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         if let Some(accesskit::ActionData::SetScrollOffset(point)) = request.data {
                             let target = point.y.max(0.0) as u32;
-                            if target == 0 {
-                                self.return_to_live();
+                            if !self.panes.contains_key(&target_pane) {
+                                debug!(target_pane, "a11y: scroll offset for untracked pane");
+                            } else if target == 0 {
+                                self.return_to_live(target_pane);
                             } else {
-                                if let Some(view) = self.focused_view_mut() {
+                                if let Some(view) = self.panes.get_mut(&target_pane) {
                                     if !view.grid.is_scrolled() {
                                         view.grid.enter_scrollback();
                                     }
                                     view.viewport_offset = target;
                                 }
-                                self.request_scrollback();
+                                self.request_scrollback(target_pane);
                             }
                         } else {
                             debug!("a11y: SetScrollOffset without offset data");
@@ -1693,7 +1726,7 @@ impl App {
                     };
                     view.scroll_up(amount);
                 }
-                self.request_scrollback();
+                self.request_scrollback(self.focused_pane);
                 true
             }
             ActionDesc::ScrollDown(lines) => {
@@ -1709,9 +1742,9 @@ impl App {
                     lines
                 };
                 if view.scroll_down(amount) {
-                    self.return_to_live();
+                    self.return_to_live(self.focused_pane);
                 } else {
-                    self.request_scrollback();
+                    self.request_scrollback(self.focused_pane);
                 }
                 true
             }
