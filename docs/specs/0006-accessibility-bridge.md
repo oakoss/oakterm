@@ -36,7 +36,8 @@ Window (Role::Window, WINDOW_NODE_ID)
 terminals in ascending pane-id order, then the announcement node — the
 announcement's only parent is the Window (AccessKit requires exactly one
 parent per node). The tree update's `focus` is the focused pane's terminal
-node.
+node, falling back to the window node when that pane is not yet in the tree
+(see **Focus fallback** under Multi-Pane).
 
 **Terminal node:** `Role::Terminal`. Contains all visible rows as TextRun children. Properties:
 
@@ -486,12 +487,30 @@ When the user scrolls through scrollback (viewport offset changes):
 
 Each pane gets its own Terminal subtree in its own node-ID block (see NodeId
 Strategy); the announcement node is shared across panes. Incremental updates
-target a single pane's subtree and always carry the focused pane's terminal
-as the update focus, so focus follows pane switches without a full rebuild.
+target a single pane's subtree and carry the focused pane's terminal as the
+update focus, so focus follows pane switches without a full rebuild.
 Because AccessKit overwrites entire nodes, any terminal-node rebuild
 (cursor, title, or selection change) re-sets every property — including
 `scroll_y`/`scroll_y_min`/`scroll_y_max` and the text selection — so scroll
 position and selection survive incremental updates.
+
+Row bounds are window coordinates: each pane's rows position at the pane's
+pixel origin from the layout geometry, adopted by the bridge's layout sync
+whenever the split topology or geometry changes.
+
+**Focus fallback.** Every update's `focus` must name a node present in the
+tree, and the tracked focus can transiently name a pane that is not: a focus
+intent recorded before the pane's first layout sync, or a focused pane that
+left the layout. The resolution order is:
+
+1. Full trees focus the tracked pane's terminal when it is in the tree, else
+   the window node.
+2. Incremental updates focus the tracked pane's terminal when tracked, else
+   the updating pane's terminal, else the window node
+   (`IncrementalInput::focused` is optional; `None` means the window).
+3. A focus request for a not-yet-tracked pane is recorded, not emitted; the
+   next full tree carries it. A focused pane pruned from the layout falls
+   back to the window until the client re-focuses a live pane.
 
 ## Constraints
 

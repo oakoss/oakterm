@@ -155,6 +155,18 @@ pub fn build_initial_tree(input: &TreeInput<'_>) -> TreeUpdate {
     }
 }
 
+/// A tree update that only moves focus to `pane_id`'s terminal node —
+/// no node content changes. The pane must already be in the tree.
+#[must_use]
+pub fn build_focus_update(pane_id: u32) -> TreeUpdate {
+    TreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        tree_id: TreeId::ROOT,
+        focus: terminal_node_id(pane_id),
+    }
+}
+
 /// Text to announce to screen readers via the live region node.
 pub struct Announcement {
     pub text: String,
@@ -165,10 +177,10 @@ pub struct Announcement {
 /// pane's subtree; the shared announcement node rides along.
 pub struct IncrementalInput<'a> {
     pub pane_id: u32,
-    /// Pane whose terminal node receives focus (may differ from `pane_id`).
-    /// Callers must pass a pane that exists in the tree — the update's
-    /// focus points at its terminal node unconditionally.
-    pub focused: u32,
+    /// Pane whose terminal node receives focus (may differ from
+    /// `pane_id`); must exist in the tree. `None` focuses the window —
+    /// the caller has no tracked pane to point at.
+    pub focused: Option<u32>,
     pub rows: u16,
     pub cols: u16,
     /// `(row index, text)` for each row whose content changed this frame.
@@ -248,7 +260,7 @@ pub fn build_incremental_update(input: &IncrementalInput<'_>) -> TreeUpdate {
         nodes,
         tree: None,
         tree_id: TreeId::ROOT,
-        focus: terminal_node_id(input.focused),
+        focus: input.focused.map_or(WINDOW_ID, terminal_node_id),
     }
 }
 
@@ -400,7 +412,7 @@ mod tests {
     fn incremental_input(dirty_rows: &[(u16, String)]) -> IncrementalInput<'_> {
         IncrementalInput {
             pane_id: 1,
-            focused: 1,
+            focused: Some(1),
             rows: 24,
             cols: 80,
             dirty_rows,
@@ -795,9 +807,17 @@ mod tests {
     fn incremental_focus_tracks_focused_pane() {
         let mut input = incremental_input(&[]);
         input.pane_id = 2;
-        input.focused = 5;
+        input.focused = Some(5);
         let update = build_incremental_update(&input);
         assert_eq!(update.focus, terminal_node_id(5));
+    }
+
+    #[test]
+    fn incremental_focus_falls_back_to_window_without_a_pane() {
+        let mut input = incremental_input(&[]);
+        input.focused = None;
+        let update = build_incremental_update(&input);
+        assert_eq!(update.focus, WINDOW_ID);
     }
 
     #[test]
@@ -914,7 +934,7 @@ mod tests {
             let dirty = vec![(1u16, "changed".to_string())];
             let mut inc = incremental_input(&dirty);
             inc.pane_id = 0;
-            inc.focused = 0;
+            inc.focused = Some(0);
             inc.rows = 2;
             inc.cursor_changed = true;
             inc.selection = Some(SelectionRange {
@@ -931,5 +951,13 @@ mod tests {
             inc.announcement = Some(&ann);
             tree.update_and_process_changes(build_incremental_update(&inc), &mut NoOpChanges);
         }
+    }
+
+    #[test]
+    fn focus_update_moves_focus_without_node_changes() {
+        let update = build_focus_update(7);
+        assert!(update.nodes.is_empty());
+        assert!(update.tree.is_none());
+        assert_eq!(update.focus, terminal_node_id(7));
     }
 }

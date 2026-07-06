@@ -838,6 +838,9 @@ impl ApplicationHandler<UserEvent> for App {
                         if self.initial_resize_sent {
                             self.sync_panes_to_geometry();
                         }
+                        // Pane origins and dimensions moved; row bounds
+                        // derive from both.
+                        self.sync_a11y_layout();
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
@@ -1901,15 +1904,41 @@ impl App {
         }
     }
 
-    /// Move focus to `pane_id` and keep the daemon's Spec-0007 focus
-    /// state in step — session persistence saves it. a11y focus follows
-    /// in TREK-190 (multi-pane a11y wiring).
+    /// Move focus to `pane_id`, keeping the daemon's Spec-0007 focus
+    /// state (session persistence saves it) and assistive technology's
+    /// focus in step.
     fn focus_pane(&mut self, pane_id: u32) {
         self.focused_pane = pane_id;
+        if let (Some(update), Some(adapter)) = (
+            a11y_bridge::set_focus(&self.a11y_state, pane_id),
+            &mut self.accesskit,
+        ) {
+            adapter.update_if_active(|| update);
+        }
         self.send_request(MSG_FOCUS_PANE, FocusPane { pane_id }.encode(), "FocusPane");
         self.reset_blink();
         if let Some(w) = &self.window {
             w.request_redraw();
+        }
+    }
+
+    /// Reconcile the a11y tree with the visible split layout: new panes
+    /// join as terminal subtrees at their pixel origins, departed panes
+    /// leave. Call after any layout adoption or geometry recompute.
+    /// Keyed on the unfiltered geometry so a collapse to a single-leaf
+    /// tree still prunes departed panes from the AT tree.
+    fn sync_a11y_layout(&mut self) {
+        let origins: Vec<(u32, (f64, f64))> = match self.layout.geometry() {
+            Some(geo) => geo
+                .panes
+                .iter()
+                .map(|p| (p.pane_id, (f64::from(p.rect.x), f64::from(p.rect.y))))
+                .collect(),
+            None => return,
+        };
+        let update = a11y_bridge::sync_layout(&self.a11y_state, &self.panes, &origins);
+        if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
+            adapter.update_if_active(|| update);
         }
     }
 
@@ -2034,6 +2063,7 @@ impl App {
         let content = self.content_rect();
         let pending_focus = self.layout.adopt_tree(tree, content);
         self.sync_panes_to_geometry();
+        self.sync_a11y_layout();
         if let Some(id) = pending_focus {
             if self.panes.contains_key(&id) {
                 self.focus_pane(id);

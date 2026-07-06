@@ -3,9 +3,11 @@
 //! terminal's cell-based `Selection` and AccessKit's between-character
 //! `TextSelection` positions.
 //!
-//! [`apply`] is the single entry point: it mutates the pane's snapshot and
-//! builds the matching tree update under one lock, so snapshot state can
-//! never diverge from what assistive technology was told.
+//! Three entry points, each mutating the model and building the matching
+//! tree update under one lock so snapshot state can never diverge from
+//! what assistive technology was told: [`apply`] for per-pane content
+//! events, [`sync_layout`] for split-topology and geometry changes, and
+//! [`set_focus`] for focus moves between panes.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -29,6 +31,9 @@ struct PaneA11ySnapshot {
     scrollback_lines: u64,
     scroll_offset: u64,
     selection: Option<SelectionRange>,
+    /// Pane pixel origin; row bounds are positioned relative to it.
+    /// Updated by [`sync_layout`] whenever the split geometry changes.
+    origin: (f64, f64),
 }
 
 impl PaneA11ySnapshot {
@@ -44,6 +49,7 @@ impl PaneA11ySnapshot {
             scrollback_lines: 0,
             scroll_offset: u64::from(view.viewport_offset),
             selection: view_selection(view, view.viewport_offset),
+            origin: (0.0, 0.0),
         }
     }
 
@@ -106,8 +112,9 @@ impl A11yEvent<'_> {
 
 /// Snapshot of all panes for the accessibility tree. Shared between `App`
 /// and the AccessKit activation handler via `Arc<Mutex<Option<_>>>`; all
-/// mutation goes through [`apply`] so the snapshot and the updates sent to
-/// AT stay consistent.
+/// mutation goes through the module's entry points ([`apply`],
+/// [`sync_layout`], [`set_focus`]) so the snapshot and the updates sent
+/// to AT stay consistent.
 pub(crate) struct A11yModel {
     panes: HashMap<u32, PaneA11ySnapshot>,
     focused: u32,
@@ -128,8 +135,8 @@ impl A11yModel {
         }
     }
 
-    /// Track a pane, snapshotting its current view state. Pane create and
-    /// close must keep this map in step with `App::panes` (TREK-190).
+    /// Split panes register through [`sync_layout`]; this direct path
+    /// seeds pane 0 at startup.
     pub(crate) fn register_pane(&mut self, pane_id: u32, view: &PaneView) {
         self.panes
             .insert(pane_id, PaneA11ySnapshot::from_view(view));
@@ -163,8 +170,7 @@ impl A11yModel {
                     scrollback_lines: snap.scrollback_lines,
                     scroll_offset: snap.scroll_offset,
                     selection: snap.selection,
-                    // Pane pixel origins arrive with GUI split rendering (TREK-99).
-                    origin: (0.0, 0.0),
+                    origin: snap.origin,
                 }
             })
             .collect();
@@ -376,6 +382,105 @@ pub(crate) fn apply(
     ))
 }
 
+/// Reconcile the model with the visible split layout: register panes new
+/// to `origins`, drop panes that left it, and adopt per-pane pixel
+/// origins. Returns the full tree to push when anything changed — row
+/// bounds derive from origins, so any origin or dimension shift rebuilds
+/// the tree. Callers keep `origins` equal to the set of panes on screen.
+pub(crate) fn sync_layout(
+    state: &Mutex<Option<A11yModel>>,
+    panes: &HashMap<u32, PaneView>,
+    origins: &[(u32, (f64, f64))],
+) -> Option<accesskit::TreeUpdate> {
+    let mut guard = match state.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(error = %e, "a11y: mutex poisoned in layout sync");
+            return None;
+        }
+    };
+    let Some(model) = guard.as_mut() else {
+        debug!("a11y: layout sync before model init");
+        return None;
+    };
+
+    let mut changed = false;
+    for &(pane_id, origin) in origins {
+        let Some(view) = panes.get(&pane_id) else {
+            // A visible pane absent from the a11y tree is a caller-
+            // contract breach, not routine degradation.
+            warn!(pane_id, "a11y: layout pane without a view; not tracked");
+            continue;
+        };
+        if let Some(snap) = model.panes.get_mut(&pane_id) {
+            let dims_changed = snap.rows != view.grid.rows || snap.cols != view.grid.cols;
+            if dims_changed {
+                snap.refresh_from(view, view.viewport_offset);
+                snap.origin = origin;
+                changed = true;
+            } else if snap.origin != origin {
+                // Origin-only shift (live divider drag): row bounds
+                // derive from the origin at build time, so skip the
+                // full row-text refresh; carry the scroll offset the
+                // resize path may have reset.
+                snap.origin = origin;
+                snap.scroll_offset = u64::from(view.viewport_offset);
+                changed = true;
+            }
+        } else {
+            let mut snap = PaneA11ySnapshot::from_view(view);
+            snap.origin = origin;
+            model.panes.insert(pane_id, snap);
+            changed = true;
+        }
+    }
+    let before = model.panes.len();
+    model
+        .panes
+        .retain(|id, _| origins.iter().any(|&(o, _)| o == *id));
+    if model.panes.len() != before {
+        changed = true;
+        if !model.panes.contains_key(&model.focused) {
+            debug!(
+                focused = model.focused,
+                "a11y: focused pane left the layout; focus falls back to the window"
+            );
+        }
+    }
+
+    changed.then(|| model.build_full_tree())
+}
+
+/// Move accessibility focus to `pane_id`'s terminal node. Returns the
+/// focus-only update to push, or `None` when focus is already there or
+/// the pane isn't in the tree yet — the intent is still recorded then,
+/// so the next full tree carries this focus.
+pub(crate) fn set_focus(
+    state: &Mutex<Option<A11yModel>>,
+    pane_id: u32,
+) -> Option<accesskit::TreeUpdate> {
+    let mut guard = match state.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(error = %e, "a11y: mutex poisoned in focus change");
+            return None;
+        }
+    };
+    let Some(model) = guard.as_mut() else {
+        debug!(pane_id, "a11y: focus change before model init");
+        return None;
+    };
+    if model.focused == pane_id {
+        return None;
+    }
+    model.focused = pane_id;
+    if !model.panes.contains_key(&pane_id) {
+        debug!(pane_id, "a11y: focus target not yet in a11y model");
+        return None;
+    }
+    Some(oakterm_a11y::build_focus_update(pane_id))
+}
+
 /// Build the incremental update from the (already mutated) snapshot. For
 /// announcement-only pushes the pane may be untracked — the terminal node
 /// is not rebuilt then, so the snapshot-derived fields are unused defaults.
@@ -396,12 +501,25 @@ fn build_update(
         scrollback_lines: 0,
         scroll_offset: 0,
         selection: None,
+        origin: (0.0, 0.0),
     };
     let snap = model.panes.get(&pane_id).unwrap_or(&empty);
     let cursor_row_text = grid.row_text(grid.cursor_y);
+    // The update's focus must name a live node. `model.focused` can
+    // transiently name an untracked pane (focus intent recorded before
+    // its pane's layout sync, or the focused pane pruned); fall back to
+    // the updating pane, then to the window (announce-only pushes may
+    // come from an untracked pane too).
+    let focused = if model.panes.contains_key(&model.focused) {
+        Some(model.focused)
+    } else if model.panes.contains_key(&pane_id) {
+        Some(pane_id)
+    } else {
+        None
+    };
     let input = oakterm_a11y::IncrementalInput {
         pane_id,
-        focused: model.focused,
+        focused,
         rows: grid.rows,
         cols: grid.cols,
         dirty_rows: &outcome.dirty_rows,
@@ -418,7 +536,7 @@ fn build_update(
         announcement,
         cell_width: model.cell_width,
         cell_height: model.cell_height,
-        origin: (0.0, 0.0),
+        origin: snap.origin,
     };
     oakterm_a11y::build_incremental_update(&input)
 }
@@ -557,6 +675,240 @@ mod tests {
     #[test]
     fn cell_dims_falls_back_without_font() {
         assert_eq!(cell_dims(None), (8.0, 16.0));
+    }
+
+    #[test]
+    fn sync_layout_registers_new_panes_and_dedups_unchanged() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        let origins = [(0, (0.0, 0.0)), (1, (200.0, 0.0))];
+
+        let update = sync_layout(&state, &panes, &origins).expect("new pane changes the tree");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == terminal_node_id(1)),
+            "full tree parents the new pane"
+        );
+
+        assert!(
+            sync_layout(&state, &panes, &origins).is_none(),
+            "unchanged layout pushes nothing"
+        );
+    }
+
+    #[test]
+    fn sync_layout_origin_shift_rebuilds_the_tree() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        assert!(sync_layout(&state, &panes, &[(0, (0.0, 0.0))]).is_none());
+        assert!(
+            sync_layout(&state, &panes, &[(0, (12.0, 0.0))]).is_some(),
+            "row bounds derive from origins"
+        );
+    }
+
+    #[test]
+    fn sync_layout_drops_panes_that_left_the_layout() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        let both = [(0, (0.0, 0.0)), (1, (200.0, 0.0))];
+        sync_layout(&state, &panes, &both).expect("registers pane 1");
+
+        let update =
+            sync_layout(&state, &panes, &[(0, (0.0, 0.0))]).expect("removal changes the tree");
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == terminal_node_id(1)),
+            "departed pane's subtree is gone"
+        );
+        let view = &panes[&1];
+        assert!(
+            apply(&state, 1, view, A11yEvent::SelectionChanged).is_none(),
+            "departed pane is untracked again"
+        );
+    }
+
+    #[test]
+    fn set_focus_moves_focus_once_and_dedups() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        sync_layout(&state, &panes, &[(0, (0.0, 0.0)), (1, (200.0, 0.0))])
+            .expect("registers pane 1");
+
+        let update = set_focus(&state, 1).expect("focus moved");
+        assert_eq!(update.focus, terminal_node_id(1));
+        assert!(update.nodes.is_empty(), "focus-only update");
+        assert!(set_focus(&state, 1).is_none(), "already focused");
+    }
+
+    #[test]
+    fn set_focus_untracked_pane_records_intent_for_next_full_tree() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view9 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        assert!(
+            set_focus(&state, 9).is_none(),
+            "no update while the pane isn't in the tree"
+        );
+
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(9, view9);
+        let update = sync_layout(&state, &panes, &[(0, (0.0, 0.0)), (9, (200.0, 0.0))])
+            .expect("registers pane 9");
+        assert_eq!(
+            update.focus,
+            terminal_node_id(9),
+            "the recorded intent rides the next full tree"
+        );
+    }
+
+    #[test]
+    fn incremental_updates_clamp_focus_to_a_tracked_pane() {
+        let view = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view);
+        assert!(
+            set_focus(&state, 9).is_none(),
+            "intent recorded for untracked pane"
+        );
+
+        let dirty = vec![(0u16, "hi".to_string())];
+        let update = apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &dirty })
+            .expect("dirty row pushes an update");
+        assert_eq!(
+            update.focus,
+            terminal_node_id(0),
+            "incremental focus must name a live node, not the recorded intent"
+        );
+    }
+
+    #[test]
+    fn sync_layout_positions_row_bounds_at_pane_origins() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+
+        let update = sync_layout(&state, &panes, &[(0, (0.0, 0.0)), (1, (200.0, 48.0))])
+            .expect("new pane changes the tree");
+        let bounds = |node_id| {
+            update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == node_id)
+                .and_then(|(_, n)| n.bounds())
+                .expect("row node has bounds")
+        };
+        assert!((bounds(row_node_id(0, 0)).x0 - 0.0).abs() < f64::EPSILON);
+        assert!((bounds(row_node_id(1, 0)).x0 - 200.0).abs() < f64::EPSILON);
+        assert!((bounds(row_node_id(1, 0)).y0 - 48.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn incremental_updates_carry_the_pane_origin() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        sync_layout(&state, &panes, &[(0, (0.0, 0.0)), (1, (200.0, 0.0))])
+            .expect("registers pane 1");
+
+        let dirty = vec![(0u16, "hi".to_string())];
+        let view = &panes[&1];
+        let update = apply(&state, 1, view, A11yEvent::Render { dirty_rows: &dirty })
+            .expect("dirty row pushes an update");
+        let row = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == row_node_id(1, 0))
+            .and_then(|(_, n)| n.bounds())
+            .expect("dirty row carries bounds");
+        assert!(
+            (row.x0 - 200.0).abs() < f64::EPSILON,
+            "incremental rows position at the pane origin, not (0,0)"
+        );
+    }
+
+    #[test]
+    fn sync_layout_dimension_change_refreshes_and_rebuilds() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        let origins = [(0, (0.0, 0.0))];
+        assert!(sync_layout(&state, &panes, &origins).is_none());
+
+        panes.insert(0, PaneView::new(ClientGrid::new(10, 6)));
+        let update = sync_layout(&state, &panes, &origins)
+            .expect("dimension change rebuilds even at the same origin");
+        assert!(
+            update.nodes.iter().any(|(id, _)| *id == row_node_id(0, 5)),
+            "tree carries the new row count"
+        );
+    }
+
+    #[test]
+    fn sync_layout_dropping_focused_pane_falls_back_to_window_focus() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        sync_layout(&state, &panes, &[(0, (0.0, 0.0)), (1, (200.0, 0.0))])
+            .expect("registers pane 1");
+
+        let update =
+            sync_layout(&state, &panes, &[(1, (0.0, 0.0))]).expect("removal changes the tree");
+        assert_eq!(update.focus, oakterm_a11y::WINDOW_ID);
+
+        // The dangling focus must not leak into later incremental
+        // updates either — they clamp to the updating pane.
+        let dirty = vec![(0u16, "hi".to_string())];
+        let view = &panes[&1];
+        let update = apply(&state, 1, view, A11yEvent::Render { dirty_rows: &dirty })
+            .expect("surviving pane still updates");
+        assert_eq!(update.focus, terminal_node_id(1));
+    }
+
+    #[test]
+    fn announce_from_untracked_pane_focuses_the_window() {
+        let view = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view);
+        assert!(
+            set_focus(&state, 9).is_none(),
+            "intent recorded for a pane that never joins the tree"
+        );
+
+        let ann = Announcement {
+            text: "Bell".into(),
+            level: accesskit::Live::Assertive,
+        };
+        let update = apply(&state, 9, &view, A11yEvent::Announce(&ann))
+            .expect("announcements bypass pane tracking");
+        assert_eq!(update.focus, oakterm_a11y::WINDOW_ID);
     }
 
     #[test]
