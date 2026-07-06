@@ -548,7 +548,7 @@ Agents output structured information (file paths, diffs, tool calls, status upda
 - Diff output gets syntax highlighting (tree-sitter plugin)
 - Tool call sections could be collapsible (stretch goal — needs semantic output understanding)
 
-This is plugin territory — an `agent-output-parser` plugin that enhances how agent output renders.
+This is plugin territory — an `agent-output-parser` plugin that enhances how agent output renders. Collapsible sections fall on the plugin side of the block decision in [ADR-0015](../adrs/0015-command-blocks.md) (folding requires the projected-viewport primitive).
 
 ---
 

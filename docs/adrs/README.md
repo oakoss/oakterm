@@ -43,7 +43,7 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0012](0012-copy-mode-scrollback-access.md)  | Copy Mode Scrollback Access     | accepted | core                                  |
 | [0013](0013-fig-autocomplete-schema.md)      | Fig Autocomplete Schema         | proposed | context-engine, completion, plugins   |
 | [0014](0014-input-classifier.md)             | Input Mode Classification       | proposed | context-engine, ai, shell-integration |
-| [0015](0015-command-blocks.md)               | Command Blocks UX               | proposed | renderer, shell-integration, plugins  |
+| [0015](0015-command-blocks.md)               | Command Blocks UX               | accepted | renderer, shell-integration, plugins  |
 | [0016](0016-tmux-coexistence.md)             | tmux Coexistence Stance         | accepted | core, multiplexer                     |
 | [0017](0017-rust-implementation-language.md) | Rust Implementation Language    | accepted | core, renderer, security              |
 | [0018](0018-gpu-rendering-wgpu.md)           | GPU Rendering via wgpu          | accepted | renderer, core, abstraction           |

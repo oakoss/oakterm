@@ -118,7 +118,7 @@ Protect against accidental input — useful for production terminals. Contour im
 
 ### Jupyter-style Command Cells
 
-Breaks the Unix stream model. We address the useful parts (scroll-to-prompt, semantic zones) without fundamentally changing how terminal output works.
+Breaks the Unix stream model. We address the useful parts (scroll-to-prompt, semantic zones) without fundamentally changing how terminal output works. The full block decision is [ADR-0015](../adrs/0015-command-blocks.md): toggleable block decorations in core, heavy block UI (folding, re-run) in an optional plugin.
 
 ### Transaction/Undo for Filesystem Operations
 
