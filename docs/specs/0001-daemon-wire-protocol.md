@@ -104,12 +104,13 @@ The negotiation rules above describe how a mismatch is _handled_; these rules de
 
 **Version history:**
 
-This spec defines protocol version **major 1, minor 1**. Minor bumps are recorded here; the advertised `VERSION_MINOR` constant ships with the first implementation of each bump's messages, so binaries may lag the spec by one minor version.
+This spec defines protocol version **major 1, minor 2**. Minor bumps are recorded here; the advertised `VERSION_MINOR` constant ships with the first implementation of each bump's messages, so binaries may lag the spec by one minor version.
 
-| Version | Change                                                                                                                                                                                                                                                                 |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.0     | Initial Phase 0 protocol: framing, handshake, version negotiation, and the message catalog.                                                                                                                                                                            |
-| 1.1     | Added `RequestShutdown` (0x07) and `ShutdownAck` (0x08) for client-initiated save-then-exit ([ADR-0020](../adrs/0020-daemon-upgrade-version-skew.md)). Additive — no existing message or field changed; unknown to older daemons, which fall back to a manual restart. |
+| Version | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0     | Initial Phase 0 protocol: framing, handshake, version negotiation, and the message catalog.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 1.1     | Added `RequestShutdown` (0x07) and `ShutdownAck` (0x08) for client-initiated save-then-exit ([ADR-0020](../adrs/0020-daemon-upgrade-version-skew.md)). Additive — no existing message or field changed; unknown to older daemons, which fall back to a manual restart.                                                                                                                                                                                                                                           |
+| 1.2     | Inserted `input_flags` and `kitty_kbd_flags` into the `RenderUpdate` (0x72) payload after `alt_screen` ([Spec-0011](0011-input-encoding.md)), growing the fixed prefix 25 → 27 bytes. Layout exception: a positional insertion is breaking under this spec's own rule, recorded as a minor bump only because client and daemon still ship in lockstep with no independently versioned client released; once one exists, positional insertions are major bumps. Ships with the protocol-1.2 implementation batch. |
 
 ### Message Catalog
 
@@ -207,6 +208,14 @@ alt_screen         u8          1 if the active grid is the alternate screen
                                (smcup). Clients use this to route wheel
                                events: alt → forward to app, primary →
                                host scrollback.
+input_flags        u8          Since 1.2 (Spec-0011). bit0: DECCKM cursor-key
+                               mode; bit1: application keypad mode (mode 66);
+                               bits2-3: modifyOtherKeys level (0-2);
+                               bits4-7: reserved, must be 0.
+kitty_kbd_flags    u8          Since 1.2 (Spec-0011). Kitty keyboard
+                               progressive-enhancement flags at the top of the
+                               active grid's flag stack; 0 = protocol disabled
+                               (legacy encoding).
 dirty_row_count    u16 LE      Number of dirty row entries
 dirty_rows         [DirtyRow]  Array of dirty row data (see below)
 ```
