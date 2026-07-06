@@ -7,8 +7,9 @@ use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::Resize;
 use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
-    HandshakeStatus, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE,
-    MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
+    GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE,
+    MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR,
+    MSG_GET_LAYOUT_TREE, MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
     MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
     MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
     MSG_SWAP_PANE_RESPONSE, PaneExited, RequestShutdown, RequestShutdownReason, ResizePane,
@@ -648,6 +649,55 @@ async fn split_pane_creates_pane_and_swap_round_trips() {
     write_frame(&mut stream, &mut codec, frame).await;
     let resp = read_response_with_serial(&mut stream, &mut codec, 302).await;
     assert_eq!(resp.msg_type, MSG_SWAP_PANE_RESPONSE);
+}
+
+#[tokio::test]
+async fn get_layout_tree_returns_split_topology() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Vertical, 310).await;
+
+    let req = GetLayoutTree {
+        workspace_id: 0,
+        tab_id: 0,
+    };
+    let frame = Frame::new(MSG_GET_LAYOUT_TREE, 311, req.encode()).expect("get-layout frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 311).await;
+    assert_eq!(resp.msg_type, MSG_LAYOUT_TREE);
+
+    let tree = LayoutTree::decode(&resp.payload)
+        .expect("decode LayoutTree")
+        .tree;
+    let LayoutTreeNode::Container {
+        children, weights, ..
+    } = tree
+    else {
+        panic!("expected container root after split, got {tree:?}");
+    };
+    assert_eq!(children.len(), 2);
+    assert_eq!(weights.len(), 2);
+    let leaf_ids: Vec<u32> = children
+        .iter()
+        .map(|c| match c {
+            LayoutTreeNode::Leaf { pane_id } => *pane_id,
+            LayoutTreeNode::Container { .. } => panic!("unexpected nested container"),
+        })
+        .collect();
+    assert!(
+        leaf_ids.contains(&0) && leaf_ids.contains(&new_pane),
+        "leaves: {leaf_ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_layout_tree_malformed_payload_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let frame = Frame::new(MSG_GET_LAYOUT_TREE, 320, vec![0xFF; 3]).expect("short frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 320).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
 }
 
 #[tokio::test]

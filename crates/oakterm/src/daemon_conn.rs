@@ -4,10 +4,11 @@
 use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ErrorMessage, HandshakeStatus, MSG_BELL, MSG_DIRTY_NOTIFY, MSG_ERROR,
-    MSG_GET_RENDER_UPDATE, MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA,
-    MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, Shutdown,
-    TitleChanged,
+    ClientHello, ClientType, ErrorCode, ErrorMessage, HandshakeStatus, LayoutTree, MSG_BELL,
+    MSG_DIRTY_NOTIFY, MSG_ERROR, MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_PROMPT_POSITION,
+    MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_SHUTDOWN,
+    MSG_SPLIT_PANE_RESPONSE, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, Shutdown,
+    SplitPaneResponse, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,16 @@ impl DaemonWriter {
         let data = frame.encode_to_vec();
         let mut stream = self.stream.lock().expect("daemon writer lock poisoned");
         stream.write_all(&data)
+    }
+
+    /// Shut the socket down both ways. The reader thread holds a clone of
+    /// this handle, so dropping the App's copy alone leaves the fd open
+    /// and the reader blocked in `read_exact` forever; shutdown makes its
+    /// read fail immediately and drives the `Disconnected` exit path.
+    pub(crate) fn shutdown(&self) {
+        if let Ok(stream) = self.stream.lock() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 
@@ -404,40 +415,13 @@ fn daemon_reader(
                         break;
                     }
                 },
-                MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
-                    Ok(msg) => {
-                        let _ = proxy.send_event(UserEvent::TitleChanged(msg.pane_id, msg.title));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode TitleChanged");
-                    }
-                },
-                MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
-                    Ok(data) => {
-                        let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode ScrollbackData");
-                    }
-                },
-                MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
-                    Ok(pos) => {
-                        let _ = proxy.send_event(UserEvent::PromptPosition(pos));
-                    }
-                    Err(e) => {
-                        error!(error = %e, "failed to decode PromptPosition");
-                    }
-                },
-                MSG_BELL => {
-                    let _ = proxy.send_event(UserEvent::Bell);
-                }
-                MSG_ERROR => log_daemon_error(&frame),
-                MSG_SHUTDOWN => log_daemon_shutdown(&frame),
                 other => {
-                    warn!(
-                        msg_type = format_args!("0x{other:04x}"),
-                        "unhandled daemon message"
-                    );
+                    if !forward_event_frame(&frame, proxy) {
+                        warn!(
+                            msg_type = format_args!("0x{other:04x}"),
+                            "unhandled daemon message"
+                        );
+                    }
                 }
             },
             Err(e) => {
@@ -447,6 +431,72 @@ fn daemon_reader(
             }
         }
     }
+}
+
+/// Decode-and-forward for frames that carry no reader state: each becomes
+/// a `UserEvent` (or a log line). Returns false for message types this
+/// helper doesn't own — `DirtyNotify`/`RenderUpdate` stay in
+/// `daemon_reader` because they drive its in-flight state machine.
+fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool {
+    match frame.msg_type {
+        MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
+            Ok(msg) => {
+                let _ = proxy.send_event(UserEvent::TitleChanged(msg.pane_id, msg.title));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode TitleChanged");
+            }
+        },
+        MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
+            Ok(data) => {
+                let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode ScrollbackData");
+            }
+        },
+        MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
+            Ok(pos) => {
+                let _ = proxy.send_event(UserEvent::PromptPosition(pos));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode PromptPosition");
+            }
+        },
+        MSG_BELL => {
+            let _ = proxy.send_event(UserEvent::Bell);
+        }
+        MSG_SPLIT_PANE_RESPONSE => match SplitPaneResponse::decode(&frame.payload) {
+            Ok(resp) => {
+                let _ = proxy.send_event(UserEvent::SplitCreated(resp.new_pane_id));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode SplitPaneResponse");
+            }
+        },
+        MSG_LAYOUT_TREE => match LayoutTree::decode(&frame.payload) {
+            Ok(msg) => {
+                let _ = proxy.send_event(UserEvent::LayoutTree(Box::new(msg.tree)));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode LayoutTree");
+            }
+        },
+        MSG_ERROR => {
+            log_daemon_error(frame);
+            // A rejected layout operation (split below minimum size) is a
+            // routine user-triggered outcome; ring the bell so the keybind
+            // doesn't appear silently dead.
+            if let Ok(err) = ErrorMessage::decode(&frame.payload) {
+                if err.code == ErrorCode::LayoutRejected as u32 {
+                    let _ = proxy.send_event(UserEvent::Bell);
+                }
+            }
+        }
+        MSG_SHUTDOWN => log_daemon_shutdown(frame),
+        _ => return false,
+    }
+    true
 }
 
 /// Read a single frame from a blocking stream.

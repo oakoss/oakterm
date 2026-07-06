@@ -1043,4 +1043,150 @@ mod tests {
             assert_eq!(ErrorCode::try_from(code as u32).unwrap(), code);
         }
     }
+
+    #[test]
+    fn get_layout_tree_roundtrip() {
+        let msg = GetLayoutTree {
+            workspace_id: 1,
+            tab_id: 2,
+        };
+        let decoded = GetLayoutTree::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn get_layout_tree_too_short() {
+        assert!(GetLayoutTree::decode(&[0u8; 7]).is_err());
+    }
+
+    fn sample_tree() -> LayoutTreeNode {
+        LayoutTreeNode::Container {
+            direction: LayoutDirection::Horizontal,
+            children: vec![
+                LayoutTreeNode::Leaf { pane_id: 1 },
+                LayoutTreeNode::Container {
+                    direction: LayoutDirection::Vertical,
+                    children: vec![
+                        LayoutTreeNode::Leaf { pane_id: 2 },
+                        LayoutTreeNode::Leaf { pane_id: 3 },
+                    ],
+                    weights: vec![0.5, 0.5],
+                },
+            ],
+            weights: vec![0.3, 0.7],
+        }
+    }
+
+    #[test]
+    fn layout_tree_nested_roundtrip() {
+        let msg = LayoutTree {
+            tree: sample_tree(),
+        };
+        let decoded = LayoutTree::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn layout_tree_single_leaf_roundtrip() {
+        let msg = LayoutTree {
+            tree: LayoutTreeNode::Leaf { pane_id: 42 },
+        };
+        let decoded = LayoutTree::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn layout_tree_json_shape_pinned() {
+        // Pins the Spec-0001 wire contract: externally tagged snake_case
+        // variants, Spec-0010 lowercase direction strings, pane_id leaves.
+        let json = serde_json::to_string(&LayoutTreeNode::Container {
+            direction: LayoutDirection::Vertical,
+            children: vec![
+                LayoutTreeNode::Leaf { pane_id: 7 },
+                LayoutTreeNode::Leaf { pane_id: 9 },
+            ],
+            weights: vec![0.5, 0.5],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"container":{"direction":"vertical","children":[{"leaf":{"pane_id":7}},{"leaf":{"pane_id":9}}],"weights":[0.5,0.5]}}"#
+        );
+    }
+
+    #[test]
+    fn layout_tree_invalid_json_rejected() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5u32.to_le_bytes());
+        buf.extend_from_slice(b"nope!");
+        assert!(LayoutTree::decode(&buf).is_err());
+    }
+
+    #[test]
+    fn layout_tree_truncated_payload_rejected() {
+        let msg = LayoutTree {
+            tree: sample_tree(),
+        };
+        let encoded = msg.encode().unwrap();
+        // tree_len claims more bytes than the payload carries.
+        assert!(LayoutTree::decode(&encoded[..encoded.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn layout_tree_mismatched_weights_rejected() {
+        let json = r#"{"container":{"direction":"horizontal","children":[{"leaf":{"pane_id":1}},{"leaf":{"pane_id":2}}],"weights":[1.0]}}"#;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        assert!(LayoutTree::decode(&buf).is_err());
+    }
+
+    #[test]
+    fn layout_tree_single_child_container_rejected() {
+        let json = r#"{"container":{"direction":"horizontal","children":[{"leaf":{"pane_id":1}}],"weights":[1.0]}}"#;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        assert!(LayoutTree::decode(&buf).is_err());
+    }
+
+    fn decode_tree_json(json: &str) -> std::io::Result<LayoutTree> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        LayoutTree::decode(&buf)
+    }
+
+    #[test]
+    fn layout_tree_nonpositive_weight_rejected() {
+        // Negative weights make the cumulative geometry walk non-monotonic
+        // (u32 underflow); zero weights degenerate the sum.
+        let negative = r#"{"container":{"direction":"horizontal","children":[{"leaf":{"pane_id":1}},{"leaf":{"pane_id":2}},{"leaf":{"pane_id":3}}],"weights":[1.0,-0.5,0.5]}}"#;
+        assert!(decode_tree_json(negative).is_err());
+        let zero = r#"{"container":{"direction":"horizontal","children":[{"leaf":{"pane_id":1}},{"leaf":{"pane_id":2}}],"weights":[0.0,0.0]}}"#;
+        assert!(decode_tree_json(zero).is_err());
+    }
+
+    #[test]
+    fn layout_tree_encode_rejects_invalid_tree() {
+        let msg = LayoutTree {
+            tree: LayoutTreeNode::Container {
+                direction: LayoutDirection::Horizontal,
+                children: vec![
+                    LayoutTreeNode::Leaf { pane_id: 1 },
+                    LayoutTreeNode::Leaf { pane_id: 2 },
+                ],
+                weights: vec![1.0],
+            },
+        };
+        assert!(msg.encode().is_err());
+    }
+
+    #[test]
+    fn layout_tree_max_length_prefix_rejected() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u32::MAX.to_le_bytes());
+        buf.extend_from_slice(b"{}");
+        assert!(LayoutTree::decode(&buf).is_err());
+    }
 }

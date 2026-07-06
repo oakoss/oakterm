@@ -25,6 +25,29 @@ pub struct BgUniforms {
     pub pad_top: f32,
 }
 
+/// One background draw: a cell grid positioned by its uniforms. A pane's
+/// backgrounds use its grid dimensions; a solid rectangle (pane border,
+/// focus highlight) is a 1x1 grid whose cell size is the rectangle.
+pub struct BgSection {
+    pub uniforms: BgUniforms,
+    pub colors: Vec<u32>,
+}
+
+impl BgSection {
+    /// Build a section, asserting `colors` matches the grid size at
+    /// construction (debug builds) so a mismatch blames the producer, not
+    /// the draw loop.
+    #[must_use]
+    pub fn new(uniforms: BgUniforms, colors: Vec<u32>) -> Self {
+        debug_assert_eq!(
+            colors.len(),
+            (uniforms.cols * uniforms.rows) as usize,
+            "colors length must match cols * rows"
+        );
+        Self { uniforms, colors }
+    }
+}
+
 /// Uniform data for the text pass.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -286,8 +309,7 @@ impl RenderPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
-        bg_uniforms: &BgUniforms,
-        bg_colors: &[u32],
+        bg_sections: &[BgSection],
         text_uniforms: &TextUniforms,
         glyph_instances: &[GlyphVertex],
         atlas_view: &wgpu::TextureView,
@@ -299,9 +321,9 @@ impl RenderPipeline {
             label: Some("render_encoder"),
         });
 
-        // Pass 1: backgrounds.
-        // Skip buffer creation when grid is empty — wgpu rejects zero-size
-        // storage buffers. The render pass still runs to clear the target.
+        // Pass 1: backgrounds, one draw per section (pane grids, borders).
+        // Empty sections are skipped — wgpu rejects zero-size storage
+        // buffers — but the pass still runs to clear the target.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bg_pass"),
@@ -316,25 +338,29 @@ impl RenderPipeline {
                 })],
                 ..Default::default()
             });
+            pass.set_pipeline(&self.bg_pipeline);
 
-            let cell_count = bg_uniforms.cols * bg_uniforms.rows;
-            debug_assert_eq!(
-                bg_colors.len(),
-                cell_count as usize,
-                "bg_colors length ({}) must match cols * rows ({})",
-                bg_colors.len(),
-                cell_count,
-            );
-            if cell_count > 0 {
+            for section in bg_sections {
+                let cell_count = section.uniforms.cols * section.uniforms.rows;
+                debug_assert_eq!(
+                    section.colors.len(),
+                    cell_count as usize,
+                    "section colors length ({}) must match cols * rows ({})",
+                    section.colors.len(),
+                    cell_count,
+                );
+                if cell_count == 0 {
+                    continue;
+                }
                 let bg_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("bg_uniforms"),
-                    contents: bytemuck::bytes_of(bg_uniforms),
+                    contents: bytemuck::bytes_of(&section.uniforms),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
 
                 let bg_colors_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("bg_colors"),
-                    contents: bytemuck::cast_slice(bg_colors),
+                    contents: bytemuck::cast_slice(&section.colors),
                     usage: wgpu::BufferUsages::STORAGE,
                 });
 
@@ -353,7 +379,6 @@ impl RenderPipeline {
                     ],
                 });
 
-                pass.set_pipeline(&self.bg_pipeline);
                 pass.set_bind_group(0, &bg_bind_group, &[]);
                 pass.draw(0..4, 0..cell_count);
             }

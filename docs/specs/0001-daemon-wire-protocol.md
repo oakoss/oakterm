@@ -373,6 +373,20 @@ See Spec-0007 for the layout tree model.
 
 **GetLayoutTree response:** The `tree` payload is a JSON-encoded layout tree for a single tab. Based on Spec-0010's `SavedLayoutNode` structure but with live `pane_id: u32` at each leaf instead of `SavedPane`. This gives the GUI the pane IDs it needs to correlate with render updates. JSON is used because layout tree queries are infrequent (on tab switch, not per frame) and the tree is small (~1-5 KB).
 
+The JSON shape is externally tagged snake_case (Spec-0010 serialization must match this casing):
+
+```json
+{
+  "container": {
+    "direction": "horizontal",
+    "children": [{ "leaf": { "pane_id": 0 } }, { "leaf": { "pane_id": 1 } }],
+    "weights": [0.5, 0.5]
+  }
+}
+```
+
+Receivers reject trees whose containers have mismatched `children`/`weights` lengths, fewer than 2 children, or non-finite/non-positive weights.
+
 #### Control Protocol (0xC8-0xDF)
 
 Used by `oakterm ctl` and automation. Only available on connections with `client_type=1`.

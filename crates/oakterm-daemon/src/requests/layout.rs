@@ -5,11 +5,11 @@
 
 use super::{RequestResult, make_error_response};
 use crate::pane::{PaneManager, lock_live_pane};
-use oakterm_mux::{BorderExtents, LayoutError, SplitDirection, SplitPreview};
+use oakterm_mux::{BorderExtents, LayoutError, LayoutNode, SplitDirection, SplitPreview};
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    ErrorCode, ResizePane, SplitDirection as WireSplitDirection, SplitPane, SplitPaneResponse,
-    SwapPane, SwapPaneResponse,
+    ErrorCode, GetLayoutTree, LayoutDirection, LayoutTree, LayoutTreeNode, ResizePane,
+    SplitDirection as WireSplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwapPaneResponse,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -273,10 +273,75 @@ pub(super) async fn swap_pane(
     }
 }
 
+/// Convert the in-memory layout tree to the Spec-0001 wire DTO
+/// (parallel-array `LayoutTreeNode` with live pane IDs at the leaves).
+fn to_wire_tree(node: &LayoutNode) -> LayoutTreeNode {
+    match node {
+        LayoutNode::Leaf(pane_id) => LayoutTreeNode::Leaf { pane_id: pane_id.0 },
+        LayoutNode::Container(c) => LayoutTreeNode::Container {
+            direction: match c.direction {
+                SplitDirection::Horizontal => LayoutDirection::Horizontal,
+                SplitDirection::Vertical => LayoutDirection::Vertical,
+            },
+            children: c.children.iter().map(|ch| to_wire_tree(&ch.node)).collect(),
+            weights: c.children.iter().map(|ch| ch.weight).collect(),
+        },
+    }
+}
+
+pub(super) async fn get_layout_tree(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> RequestResult {
+    let Ok(msg) = GetLayoutTree::decode(&frame.payload) else {
+        warn!(conn_id, "malformed GetLayoutTree payload");
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::MalformedPayload,
+            "malformed GetLayoutTree",
+        );
+    };
+    // Single implicit workspace/tab until EPIC-9 lands the multiplexer
+    // data model; the ids select nothing yet.
+    debug!(
+        conn_id,
+        workspace_id = msg.workspace_id,
+        tab_id = msg.tab_id,
+        "layout tree requested"
+    );
+    let tree = {
+        let pm = panes.lock().await;
+        pm.topology_snapshot().map(|s| to_wire_tree(&s.layout))
+    };
+    let Some(tree) = tree else {
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::UnknownPane,
+            "no panes exist",
+        );
+    };
+    match (LayoutTree { tree }).to_frame(frame.serial) {
+        Ok(f) => RequestResult::Response(f),
+        Err(e) => {
+            error!(conn_id, error = %e, "failed to encode LayoutTree");
+            make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::InternalError,
+                "LayoutTree encode error",
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::resize_weights;
-    use oakterm_mux::{BorderExtents, SplitDirection};
+    use super::{resize_weights, to_wire_tree};
+    use oakterm_mux::{BorderExtents, Child, Container, LayoutNode, PaneId, SplitDirection};
+    use oakterm_protocol::message::{LayoutDirection, LayoutTreeNode};
 
     #[test]
     fn resize_weights_horizontal_uses_cols() {
@@ -317,6 +382,51 @@ mod tests {
         assert!(resize_weights(&ext, 80, 24, 5).unwrap().0 > 0.0);
         assert!(resize_weights(&ext, 80, 24, -5).unwrap().0 < 0.0);
         assert!(resize_weights(&ext, 80, 24, 0).unwrap().0.abs() < 1e-9);
+    }
+
+    #[test]
+    fn to_wire_tree_leaf() {
+        let wire = to_wire_tree(&LayoutNode::Leaf(PaneId(42)));
+        assert_eq!(wire, LayoutTreeNode::Leaf { pane_id: 42 });
+    }
+
+    #[test]
+    fn to_wire_tree_nested_container() {
+        let tree = LayoutNode::Container(Container {
+            direction: SplitDirection::Horizontal,
+            children: vec![
+                Child::new(LayoutNode::Leaf(PaneId(1)), 0.3),
+                Child::new(
+                    LayoutNode::Container(Container {
+                        direction: SplitDirection::Vertical,
+                        children: vec![
+                            Child::new(LayoutNode::Leaf(PaneId(2)), 0.5),
+                            Child::new(LayoutNode::Leaf(PaneId(3)), 0.5),
+                        ],
+                    }),
+                    0.7,
+                ),
+            ],
+        });
+        let wire = to_wire_tree(&tree);
+        assert_eq!(
+            wire,
+            LayoutTreeNode::Container {
+                direction: LayoutDirection::Horizontal,
+                children: vec![
+                    LayoutTreeNode::Leaf { pane_id: 1 },
+                    LayoutTreeNode::Container {
+                        direction: LayoutDirection::Vertical,
+                        children: vec![
+                            LayoutTreeNode::Leaf { pane_id: 2 },
+                            LayoutTreeNode::Leaf { pane_id: 3 },
+                        ],
+                        weights: vec![0.5, 0.5],
+                    },
+                ],
+                weights: vec![0.3, 0.7],
+            }
+        );
     }
 
     #[test]

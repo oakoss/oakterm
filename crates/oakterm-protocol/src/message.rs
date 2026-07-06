@@ -1,6 +1,7 @@
 //! Protocol message types per Spec-0001.
 
 use crate::frame::Frame;
+use serde::{Deserialize, Serialize};
 use std::io;
 
 // Infrastructure (0x00-0x09).
@@ -57,6 +58,8 @@ pub const MSG_SPLIT_PANE_RESPONSE: u16 = 0xA1;
 pub const MSG_RESIZE_PANE: u16 = 0xA2;
 pub const MSG_SWAP_PANE: u16 = 0xA3;
 pub const MSG_SWAP_PANE_RESPONSE: u16 = 0xA4;
+pub const MSG_GET_LAYOUT_TREE: u16 = 0xA5;
+pub const MSG_LAYOUT_TREE: u16 = 0xA6;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -1577,5 +1580,161 @@ impl SwapPane {
             pane_id_a: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
             pane_id_b: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
         })
+    }
+}
+
+/// `GetLayoutTree` (0xA5): client requests a tab's layout tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetLayoutTree {
+    pub workspace_id: u32,
+    pub tab_id: u32,
+}
+
+impl GetLayoutTree {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&self.workspace_id.to_le_bytes());
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "GetLayoutTree too short",
+            ));
+        }
+        Ok(Self {
+            workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            tab_id: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        })
+    }
+}
+
+/// Split direction inside a [`LayoutTreeNode`]. Serializes to the
+/// Spec-0010 `"horizontal"`/`"vertical"` strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutDirection {
+    /// Children arranged left-to-right.
+    Horizontal,
+    /// Children arranged top-to-bottom.
+    Vertical,
+}
+
+/// JSON layout tree carried by `LayoutTree` (0xA6). The Spec-0010
+/// `SavedLayoutNode` parallel-array shape with live pane IDs at the
+/// leaves (Spec-0001 `GetLayoutTree` response).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutTreeNode {
+    Container {
+        direction: LayoutDirection,
+        children: Vec<LayoutTreeNode>,
+        weights: Vec<f32>,
+    },
+    Leaf {
+        pane_id: u32,
+    },
+}
+
+impl LayoutTreeNode {
+    /// Check the invariants the wire form can misrepresent and geometry
+    /// consumers rely on: parallel-array length mismatch, containers with
+    /// fewer than two children, and non-finite or non-positive weights.
+    fn validate(&self) -> io::Result<()> {
+        match self {
+            Self::Leaf { .. } => Ok(()),
+            Self::Container {
+                children, weights, ..
+            } => {
+                if children.len() != weights.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "layout container has {} children but {} weights",
+                            children.len(),
+                            weights.len()
+                        ),
+                    ));
+                }
+                if children.len() < 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "layout container has fewer than 2 children",
+                    ));
+                }
+                if let Some(w) = weights.iter().find(|w| !w.is_finite() || **w <= 0.0) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("layout container has invalid weight {w}"),
+                    ));
+                }
+                children.iter().try_for_each(Self::validate)
+            }
+        }
+    }
+}
+
+/// `LayoutTree` (0xA6): daemon returns a tab's layout tree as
+/// length-prefixed JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutTree {
+    pub tree: LayoutTreeNode,
+}
+
+impl LayoutTree {
+    /// # Errors
+    /// Returns an error if the tree violates the structural invariants or
+    /// the serialized form exceeds u32 length. Validating on encode makes
+    /// a buggy producer fail sender-side with a real error instead of a
+    /// receiver-side decode log.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        self.tree.validate()?;
+        let json = serde_json::to_vec(&self.tree)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len: u32 = json
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "layout tree exceeds u32"))?;
+        let mut buf = Vec::with_capacity(4 + json.len());
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(&json);
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is truncated, the JSON is
+    /// malformed, or the tree violates Spec-0007 structural invariants.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "LayoutTree too short",
+            ));
+        }
+        let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let end = 4usize.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "LayoutTree length overflow")
+        })?;
+        let json = data.get(4..end).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "LayoutTree JSON truncated")
+        })?;
+        let tree: LayoutTreeNode = serde_json::from_slice(json)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        tree.validate()?;
+        Ok(Self { tree })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_LAYOUT_TREE, serial, self.encode()?)
     }
 }
