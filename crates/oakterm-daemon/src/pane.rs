@@ -1,7 +1,8 @@
 //! Pane domain: PTY lifecycle state, per-pane locking, and topology tracking.
 
 use oakterm_mux::{
-    BorderExtents, CloseOutcome, LayoutError, LayoutNode, PaneId, SplitDirection, SplitPreview,
+    BorderExtents, LayoutError, LayoutNode, MultiplexerState, PaneCloseOutcome, PaneId,
+    SplitDirection, SplitPreview, Tab,
 };
 use oakterm_terminal::grid::ScreenSet;
 use std::ffi::OsString;
@@ -9,7 +10,7 @@ use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::error;
+use tracing::{debug, error};
 
 /// PTY lifecycle state machine.
 ///
@@ -108,38 +109,31 @@ pub(crate) struct TopologySnapshot {
     pub(crate) panes: Vec<(u32, SharedPane)>,
 }
 
-/// Tracks all panes with monotonic ID assignment. Guards topology only
-/// (create/lookup/remove/focus) plus the Spec-0007 layout tree; pane
-/// contents live behind per-pane locks.
+/// Tracks all panes. Guards topology only (create/lookup/remove/focus);
+/// the Spec-0007 workspace/tab/layout model lives in [`MultiplexerState`]
+/// and pane contents live behind per-pane locks.
 ///
-/// Invariant: the layout tree's leaves are exactly the pane map's keys.
-/// `create`/`split_create` insert into both; `remove` closes the leaf.
+/// Invariant: the mux tabs' pane IDs are exactly the pane map's keys.
+/// `create`/`split_create` insert into both; `remove` closes the pane out
+/// of its tab.
 ///
 /// Lock order: take the manager lock, clone the `SharedPane`, release,
 /// then lock the pane — never hold the manager lock across a pane lock,
 /// and never hold two pane locks at once.
 pub(crate) struct PaneManager {
     panes: std::collections::HashMap<u32, SharedPane>,
-    next_id: u32,
-    focused_pane: Option<u32>,
-    /// Layout tree for the single implicit tab; `None` while no panes
-    /// exist. Tabs and workspaces (TREK-103) will move this into a `Tab`.
-    layout: Option<LayoutNode>,
+    mux: MultiplexerState,
 }
 
 impl PaneManager {
     pub(crate) fn new() -> Self {
         Self {
             panes: std::collections::HashMap::new(),
-            next_id: 0,
-            focused_pane: None,
-            layout: None,
+            mux: MultiplexerState::new(),
         }
     }
 
-    fn insert_pane_state(&mut self, cols: u16, rows: u16, command: String, cwd: String) -> u32 {
-        let id = self.next_id;
-        self.next_id += 1;
+    fn insert_pane_state(&mut self, id: u32, cols: u16, rows: u16, command: String, cwd: String) {
         self.panes.insert(
             id,
             Arc::new(Mutex::new(PaneState {
@@ -151,54 +145,53 @@ impl PaneManager {
                 closed: false,
             })),
         );
-        id
     }
 
     /// Create a pane with the given grid dimensions. Returns the assigned ID.
     ///
-    /// The pane also enters the layout tree: the first pane seeds the
-    /// root; without a tab model, later ones split the focused pane
-    /// horizontally. `SplitPane` requests pick their own target and
-    /// direction via [`PaneManager::split_create`].
+    /// The pane also enters the mux model: the first pane seeds the
+    /// default workspace and tab; later ones split the active tab's
+    /// focused pane horizontally without moving focus. `SplitPane`
+    /// requests pick their own target and direction via
+    /// [`PaneManager::split_create`].
     pub(crate) fn create(&mut self, cols: u16, rows: u16, command: String, cwd: String) -> u32 {
-        let id = self.insert_pane_state(cols, rows, command, cwd);
-        match &mut self.layout {
-            None => self.layout = Some(LayoutNode::leaf(PaneId(id))),
-            Some(tree) => {
-                // A non-empty map always has a focused pane, and it is in
-                // the tree by the leaves==keys invariant; a failure here
-                // means the tree is out of sync — log, never panic. The
-                // debug_asserts make a future invariant regression fail
-                // tests instead of degrading quietly in production.
-                let target = self.focused_pane;
-                match target.map(|t| tree.split(PaneId(t), PaneId(id), SplitDirection::Horizontal))
-                {
-                    Some(Ok(())) => {}
-                    Some(Err(e)) => {
-                        error!(pane_id = id, target = ?target, error = %e, "layout insert failed; tree out of sync");
-                        debug_assert!(false, "layout insert failed: {e}");
-                    }
-                    None => {
-                        error!(pane_id = id, "no focused pane while layout is non-empty");
-                        debug_assert!(false, "no focused pane while layout is non-empty");
-                    }
+        let id = self.mux.allocate_pane_id();
+        if self.mux.has_panes() {
+            // A seeded mux always has an active tab with a focused pane in
+            // its tree; a failure here means the model is out of sync —
+            // log, never panic. The debug_asserts make a future invariant
+            // regression fail tests instead of degrading quietly in
+            // production.
+            if let Some(target) = self.mux.active_tab().map(Tab::focused_pane) {
+                if let Err(e) = self.mux.split_pane(target, id, SplitDirection::Horizontal) {
+                    error!(pane_id = id.0, target = target.0, error = %e, "layout insert failed; mux out of sync, pane will exist outside any layout");
+                    debug_assert!(false, "layout insert failed: {e}");
                 }
+            } else {
+                error!(
+                    pane_id = id.0,
+                    "no active tab while mux has panes; pane will exist outside any layout"
+                );
+                debug_assert!(false, "no active tab while mux has panes");
             }
+        } else if !self.mux.seed(id) {
+            error!(
+                pane_id = id.0,
+                "seed refused on a non-empty mux; pane will exist outside any layout"
+            );
+            debug_assert!(false, "seed refused on a non-empty mux");
         }
-        // Auto-focus the first pane created.
-        if self.focused_pane.is_none() {
-            self.focused_pane = Some(id);
-        }
-        id
+        self.insert_pane_state(id.0, cols, rows, command, cwd);
+        id.0
     }
 
-    /// Create a pane and insert it beside `target` in the layout
+    /// Create a pane and insert it beside `target` in its tab's layout
     /// (Spec-0007 Split). Focus moves to the new pane. The caller owns
     /// the minimum-size pre-check via [`PaneManager::split_preview`].
     ///
     /// # Errors
-    /// [`LayoutError::PaneNotFound`] if `target` is not in the layout;
-    /// the pane map is unchanged on error.
+    /// [`LayoutError::PaneNotFound`] if no tab contains `target`; the
+    /// pane map and mux are unchanged on error.
     pub(crate) fn split_create(
         &mut self,
         target: u32,
@@ -208,21 +201,22 @@ impl PaneManager {
         command: String,
         cwd: String,
     ) -> Result<u32, LayoutError> {
-        // Split the tree first with the id the map insert will assign;
-        // each mutation is then infallible relative to the other, so no
-        // rollback path exists to get wrong.
-        let id = self.next_id;
-        let Some(tree) = self.layout.as_mut() else {
-            return Err(LayoutError::PaneNotFound(PaneId(target)));
-        };
-        tree.split(PaneId(target), PaneId(id), direction)?;
-        let inserted = self.insert_pane_state(cols, rows, command, cwd);
-        debug_assert_eq!(
-            inserted, id,
-            "insert_pane_state must assign the reserved id"
-        );
-        self.focused_pane = Some(id);
-        Ok(id)
+        let target = PaneId(target);
+        // Split the tree first with a freshly allocated id; the map insert
+        // is then infallible relative to the split, so no rollback path
+        // exists to get wrong. An error path burns the allocated id, which
+        // is harmless for a monotonic u32.
+        let id = self.mux.allocate_pane_id();
+        self.mux.split_pane(target, id, direction)?;
+        if !self.mux.focus_pane(id) {
+            error!(
+                pane_id = id.0,
+                "freshly split pane not focusable; focus left unchanged"
+            );
+            debug_assert!(false, "freshly split pane must be focusable");
+        }
+        self.insert_pane_state(id.0, cols, rows, command, cwd);
+        Ok(id.0)
     }
 
     /// Predicted extents for a split of `target`, for the Spec-0007
@@ -232,10 +226,12 @@ impl PaneManager {
         target: u32,
         direction: SplitDirection,
     ) -> Result<SplitPreview, LayoutError> {
-        self.layout
-            .as_ref()
-            .ok_or(LayoutError::PaneNotFound(PaneId(target)))?
-            .split_preview(PaneId(target), direction)
+        let target = PaneId(target);
+        self.mux
+            .tab_containing(target)
+            .ok_or(LayoutError::PaneNotFound(target))?
+            .layout()
+            .split_preview(target, direction)
     }
 
     /// Geometry of the border shared by two panes, for converting a
@@ -245,10 +241,12 @@ impl PaneManager {
         pane: u32,
         neighbor: u32,
     ) -> Result<BorderExtents, LayoutError> {
-        self.layout
-            .as_ref()
-            .ok_or(LayoutError::PaneNotFound(PaneId(pane)))?
-            .border_extents(PaneId(pane), PaneId(neighbor))
+        let pane = PaneId(pane);
+        self.mux
+            .tab_containing(pane)
+            .ok_or(LayoutError::PaneNotFound(pane))?
+            .layout()
+            .border_extents(pane, PaneId(neighbor))
     }
 
     /// Move the border between two panes by `delta_weight` (Spec-0007
@@ -260,17 +258,12 @@ impl PaneManager {
         delta_weight: f32,
         min_weight: f32,
     ) -> Result<(), LayoutError> {
-        self.layout
-            .as_mut()
-            .ok_or(LayoutError::PaneNotFound(PaneId(pane)))?
-            .resize(PaneId(pane), PaneId(neighbor), delta_weight, min_weight)
+        self.mux
+            .resize_pane(PaneId(pane), PaneId(neighbor), delta_weight, min_weight)
     }
 
     pub(crate) fn swap_layout(&mut self, a: u32, b: u32) -> Result<(), LayoutError> {
-        self.layout
-            .as_mut()
-            .ok_or(LayoutError::PaneNotFound(PaneId(a)))?
-            .swap(PaneId(a), PaneId(b))
+        self.mux.swap_panes(PaneId(a), PaneId(b))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -281,44 +274,45 @@ impl PaneManager {
         self.panes.get(&id).cloned()
     }
 
-    /// The pane's leaf is closed out of the layout tree; if the removed
-    /// pane was focused, focus moves to the tree's nearest-sibling hint
-    /// (Spec-0007 Close), falling back to any remaining pane. Callers
+    /// The pane is closed out of its tab; if the removed pane was focused,
+    /// focus moves to the tab's nearest-sibling hint (Spec-0007 Close).
+    /// The last pane closes its tab, cascading to the workspace. Callers
     /// enforce the last-pane rule (`ClosePane` refuses to remove the
     /// final pane); `remove` itself will empty the topology if asked.
     pub(crate) fn remove(&mut self, id: u32) -> Option<SharedPane> {
         let removed = self.panes.remove(&id)?;
-        match self.layout.as_mut().map(|t| t.close(PaneId(id))) {
-            Some(Ok(CloseOutcome::LastPane)) => self.layout = None,
-            Some(Ok(CloseOutcome::Removed { focus_hint })) => {
-                if self.focused_pane == Some(id) {
-                    self.focused_pane = Some(focus_hint.0);
-                }
+        match self.mux.close_pane(PaneId(id)) {
+            Ok(PaneCloseOutcome::Removed { .. }) => {}
+            Ok(PaneCloseOutcome::TabClosed {
+                tab,
+                workspace_closed,
+            }) => {
+                // Clients learn about tab lifecycle via the wire protocol
+                // once tab messages land (TREK-104).
+                debug!(
+                    pane_id = id,
+                    tab = tab.0,
+                    workspace = workspace_closed.map(|w| w.0),
+                    "pane close cascaded to its tab"
+                );
             }
-            Some(Err(e)) => {
-                error!(pane_id = id, error = %e, "removed pane missing from layout tree");
-                debug_assert!(false, "removed pane missing from layout tree: {e}");
+            Err(e) => {
+                error!(pane_id = id, error = %e, "removed pane missing from mux model");
+                debug_assert!(false, "removed pane missing from mux model: {e}");
             }
-            None => {
-                error!(pane_id = id, "layout tree empty while removing a pane");
-                debug_assert!(false, "layout tree empty while removing a pane");
-            }
-        }
-        if self.focused_pane == Some(id) {
-            self.focused_pane = self.panes.keys().next().copied();
         }
         Some(removed)
     }
 
     pub(crate) fn focused(&self) -> Option<u32> {
-        self.focused_pane
+        self.mux.active_tab().map(|t| t.focused_pane().0)
     }
 
-    /// Mutations go through the split/resize/swap methods; this read-only
-    /// view serves session saving (Spec-0010) and, later, `GetLayoutTree`
-    /// (TREK-106).
+    /// The active tab's layout tree. Mutations go through the
+    /// split/resize/swap methods; this read-only view serves session
+    /// saving (Spec-0010) and `GetLayoutTree`.
     pub(crate) fn layout(&self) -> Option<&LayoutNode> {
-        self.layout.as_ref()
+        self.mux.active_tab().map(Tab::layout)
     }
 
     /// Snapshot the topology under one lock: the cloned layout tree, the
@@ -327,6 +321,11 @@ impl PaneManager {
     /// landing between them would desync the tree from the focus/pane set;
     /// session saving (Spec-0010) relies on that atomicity. Callers release
     /// the manager lock before locking panes (manager->pane lock order).
+    ///
+    /// Single-tab assumption: `layout` is the active tab's tree while
+    /// `panes` spans the whole map. Consumers must aggregate all tabs once
+    /// tab creation is wired up (TREK-104), or background-tab panes would
+    /// silently vanish from saved sessions.
     pub(crate) fn topology_snapshot(&self) -> Option<TopologySnapshot> {
         let layout = self.layout()?.clone();
         Some(TopologySnapshot {
@@ -336,14 +335,19 @@ impl PaneManager {
         })
     }
 
-    /// Focus a pane. Returns false if the pane is unknown.
+    /// Focus a pane, activating its workspace and tab. Returns false if
+    /// the pane is unknown.
     pub(crate) fn focus(&mut self, id: u32) -> bool {
-        if self.panes.contains_key(&id) {
-            self.focused_pane = Some(id);
-            true
-        } else {
-            false
+        let focused = self.mux.focus_pane(PaneId(id));
+        if focused != self.panes.contains_key(&id) {
+            error!(
+                pane_id = id,
+                in_mux = focused,
+                "mux model and pane map disagree on pane"
+            );
+            debug_assert!(false, "mux model and pane map disagree on pane {id}");
         }
+        focused
     }
 
     /// Clone out `(id, SharedPane)` pairs for iterate-all paths, so
@@ -604,6 +608,17 @@ mod tests {
         pm.remove(a);
         assert!(pm.layout().is_none());
         assert_eq!(pm.focused(), None);
+    }
+
+    #[test]
+    fn create_after_removing_last_pane_reseeds() {
+        let mut pm = PaneManager::new();
+        let a = pm.create(80, 24, String::new(), String::new());
+        pm.remove(a);
+        let b = pm.create(80, 24, String::new(), String::new());
+        assert_ne!(a, b, "pane IDs are never reused");
+        assert_eq!(pm.focused(), Some(b));
+        assert!(pm.layout().expect("layout").is_leaf());
     }
 
     #[test]
