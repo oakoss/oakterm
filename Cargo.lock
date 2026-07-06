@@ -2022,6 +2022,7 @@ name = "oakterm-a11y"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "accesskit_consumer",
 ]
 
 [[package]]

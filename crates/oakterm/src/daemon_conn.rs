@@ -406,7 +406,7 @@ fn daemon_reader(
                 },
                 MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
                     Ok(msg) => {
-                        let _ = proxy.send_event(UserEvent::TitleChanged(msg.title));
+                        let _ = proxy.send_event(UserEvent::TitleChanged(msg.pane_id, msg.title));
                     }
                     Err(e) => {
                         error!(error = %e, "failed to decode TitleChanged");

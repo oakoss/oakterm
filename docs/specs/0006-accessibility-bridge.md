@@ -17,21 +17,28 @@ Defines how the GUI process constructs and maintains an AccessKit accessibility 
 
 ### Tree Structure
 
-The AccessKit tree for a terminal window:
+The AccessKit tree for a terminal window holds one Terminal subtree per pane
+plus a single shared announcement node (amended 2026-07-05 for the Phase 1
+multiplexer; the Phase 0 tree is the one-pane case):
 
 ```text
 Window (Role::Window, WINDOW_NODE_ID)
-  └── Terminal (Role::Terminal, TERMINAL_NODE_ID)
-        ├── TextRun (Role::TextRun, row_node_id(0))   -- visible row 0
-        ├── TextRun (Role::TextRun, row_node_id(1))   -- visible row 1
-        ├── ...
-        ├── TextRun (Role::TextRun, row_node_id(N-1)) -- visible row N-1
-        └── Announcement (Role::Label, ANNOUNCEMENT_NODE_ID)
+  ├── Terminal (Role::Terminal, terminal_node_id(pane_a))
+  │     ├── TextRun (Role::TextRun, row_node_id(pane_a, 0))   -- visible row 0
+  │     ├── ...
+  │     └── TextRun (Role::TextRun, row_node_id(pane_a, N-1)) -- visible row N-1
+  ├── Terminal (Role::Terminal, terminal_node_id(pane_b))
+  │     └── ...
+  └── Announcement (Role::Label, ANNOUNCEMENT_NODE_ID)
 ```
 
-**Window node:** Top-level container. `Role::Window`. Holds the terminal as its only child.
+**Window node:** Top-level container. `Role::Window`. Children are the pane
+terminals in ascending pane-id order, then the announcement node — the
+announcement's only parent is the Window (AccessKit requires exactly one
+parent per node). The tree update's `focus` is the focused pane's terminal
+node.
 
-**Terminal node:** `Role::Terminal`. Contains all visible rows as TextRun children plus the announcement node. Properties:
+**Terminal node:** `Role::Terminal`. Contains all visible rows as TextRun children. Properties:
 
 - `label`: pane title (from OSC 0/2)
 - `scroll_y`: current viewport offset (0 = bottom of scrollback)
@@ -53,17 +60,29 @@ Window (Role::Window, WINDOW_NODE_ID)
 
 ### NodeId Strategy
 
+Node IDs are namespaced per pane so subtrees never collide. Each pane owns
+the ID block starting at `(pane_id + 1) * PANE_STRIDE`: the terminal node
+sits at the block base, visible rows at base + 1 + row. IDs are keyed by the
+daemon's PaneId (not a positional index) so they stay stable when an
+unrelated pane closes.
+
 ```rust
 const WINDOW_NODE_ID: NodeId = NodeId(0);
-const TERMINAL_NODE_ID: NodeId = NodeId(1);
-const ANNOUNCEMENT_NODE_ID: NodeId = NodeId(2);
+const ANNOUNCEMENT_NODE_ID: NodeId = NodeId(1);
+const PANE_STRIDE: u64 = 1 << 20; // rows are u16, so blocks never overlap
 
-/// Row node IDs start at offset 1000 to avoid collision with fixed IDs.
+fn terminal_node_id(pane_id: u32) -> NodeId {
+    NodeId((pane_id as u64 + 1) * PANE_STRIDE)
+}
+
 /// Uses the visible row index (0-based), not the absolute scrollback line number.
-fn row_node_id(visible_row: usize) -> NodeId {
-    NodeId((visible_row as u64) + 1000)
+fn row_node_id(pane_id: u32, visible_row: usize) -> NodeId {
+    NodeId(terminal_node_id(pane_id).0 + 1 + visible_row as u64)
 }
 ```
+
+A reverse mapping (`decode_node_id`) recovers the pane and row from an
+AT-supplied node ID, used when handling `SetTextSelection` requests.
 
 IDs are stable across updates as long as the grid dimensions don't change. When the grid resizes, all row node IDs are recalculated and a full tree update is sent.
 
@@ -267,28 +286,29 @@ Maps the terminal cursor and selection to AccessKit's `TextSelection`.
 /// Only selections within the visible viewport are represented in the a11y tree.
 /// Scrollback selections (negative row indices) are clamped to the viewport boundary.
 fn build_text_selection(
+    pane_id: u32,
     cursor: &Cursor,
     selection: Option<&Selection>,
     visible_rows: u16,
 ) -> TextSelection {
     if let Some(sel) = selection {
         // Clamp to visible viewport (row 0..visible_rows)
-        let start_row = sel.start.row.clamp(0, visible_rows as i64 - 1) as usize;
-        let end_row = sel.end.row.clamp(0, visible_rows as i64 - 1) as usize;
+        let start_row = sel.start.row.clamp(0, visible_rows as i64 - 1) as u16;
+        let end_row = sel.end.row.clamp(0, visible_rows as i64 - 1) as u16;
         TextSelection {
             anchor: TextPosition {
-                node: row_node_id(start_row),
+                node: row_node_id(pane_id, start_row),
                 character_index: sel.start.col as usize,
             },
             focus: TextPosition {
-                node: row_node_id(end_row),
+                node: row_node_id(pane_id, end_row),
                 character_index: sel.end.col as usize,
             },
         }
     } else {
         // Cursor only (zero-width selection)
         let pos = TextPosition {
-            node: row_node_id(cursor.row as usize),
+            node: row_node_id(pane_id, cursor.row as u16),
             character_index: cursor.col as usize,
         };
         TextSelection {
@@ -298,6 +318,15 @@ fn build_text_selection(
     }
 }
 ```
+
+AccessKit positions are between-character indices, while terminal selections
+are cell-inclusive: a selection covering cells `a..=b` maps to anchor
+position `a` and focus position `b + 1` (half-cell `AnchorSide` boundaries
+shift the position by one accordingly). Character indices are clamped to the
+row's trimmed text length so positions never point past the text. A selection
+partially outside the viewport clamps to the viewport edge; a selection
+entirely outside it is omitted from the tree rather than clamped, so AT is
+never told an off-screen selection sits on a visible row.
 
 ### Lazy Activation
 
@@ -357,7 +386,10 @@ fn handle_action(request: ActionRequest, viewport: &mut ViewportState) {
 
         Action::SetTextSelection => {
             if let Some(ActionData::SetTextSelection(selection)) = request.data {
-                // AT is requesting a text selection change.
+                // AT is requesting a text selection change. The endpoints'
+                // node IDs identify the pane and visible rows (decode_node_id);
+                // both must land in the same pane. A collapsed request
+                // (anchor == focus) clears the selection.
                 viewport.update_selection_from_a11y(selection);
             }
         }
@@ -450,9 +482,16 @@ When the user scrolls through scrollback (viewport offset changes):
 - All visible row TextRuns are rebuilt (the content has changed).
 - The screen reader can use `ScrollUp`/`ScrollDown` actions to navigate scrollback.
 
-### Multi-Pane (Future)
+### Multi-Pane
 
-Phase 0 supports a single pane. In Phase 1 (multiplexer), each pane gets its own Terminal node in the tree. The window node's children expand to include multiple Terminal nodes. This spec covers the single-pane case; multi-pane a11y is deferred.
+Each pane gets its own Terminal subtree in its own node-ID block (see NodeId
+Strategy); the announcement node is shared across panes. Incremental updates
+target a single pane's subtree and always carry the focused pane's terminal
+as the update focus, so focus follows pane switches without a full rebuild.
+Because AccessKit overwrites entire nodes, any terminal-node rebuild
+(cursor, title, or selection change) re-sets every property — including
+`scroll_y`/`scroll_y_min`/`scroll_y_max` and the text selection — so scroll
+position and selection survive incremental updates.
 
 ## Constraints
 

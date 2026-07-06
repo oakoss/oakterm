@@ -10,5 +10,8 @@ repository.workspace = true
 [dependencies]
 accesskit = { workspace = true }
 
+[dev-dependencies]
+accesskit_consumer = "0.37"
+
 [lints]
 workspace = true
