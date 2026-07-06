@@ -16,7 +16,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use wgpu::CurrentSurfaceTexture;
 
@@ -25,8 +25,8 @@ use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
     FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LayoutTreeNode, MSG_DETACH,
     MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE,
-    MSG_GET_SCROLLBACK, MSG_SPLIT_PANE, PromptPosition, ScrollbackData, SearchDirection,
-    SplitDirection as WireSplitDirection, SplitPane,
+    MSG_GET_SCROLLBACK, MSG_RESIZE_PANE, MSG_SPLIT_PANE, PromptPosition, ResizePane,
+    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -145,6 +145,23 @@ enum ActionDesc {
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
 const FOCUSED_BORDER_RGB: [u8; 3] = [92, 148, 255];
+
+/// Pixel slop around a 1px split border that still grabs it.
+const BORDER_GRAB_PAD: f64 = 3.0;
+
+/// An active split-border drag. The flanked pane pair is captured at
+/// press time and fixed for the drag (Spec-0007 Resize adjusts one
+/// sibling pair); whole-cell deltas are sent as the cursor crosses
+/// cell boundaries, with the remainder carried in `last_pos`.
+struct BorderDrag {
+    /// Flanked pair in layout order; a positive wire delta grows `before`.
+    before: u32,
+    after: u32,
+    /// Vertical border: the drag moves horizontally.
+    vertical: bool,
+    /// Cursor position on the drag axis as of the last sent delta.
+    last_pos: f64,
+}
 
 /// Build a whole-window `Resize`, clamping pixel dimensions to the
 /// wire's u16 range.
@@ -395,6 +412,10 @@ struct App {
     /// Split layout state: the daemon's tree, its pixel geometry, and
     /// pending split focus.
     layout: PaneLayout,
+    /// Split border currently under the cursor (drives the cursor icon).
+    hovered_border: Option<usize>,
+    /// Split border drag in progress; owns the left button while set.
+    border_drag: Option<BorderDrag>,
     /// Monotonic request serial. Pushes use 0 and the reader thread owns
     /// 1; App requests start above both so error frames attribute.
     next_serial: u32,
@@ -433,6 +454,8 @@ impl App {
             last_mouse_pixel: (0.0, 0.0),
             wheel_accum_y: 0.0,
             layout: PaneLayout::default(),
+            hovered_border: None,
+            border_drag: None,
             next_serial: 10,
         }
     }
@@ -936,6 +959,13 @@ impl ApplicationHandler<UserEvent> for App {
                     // Drop any pending wheel pixels so they don't apply to a
                     // future scroll in a different pane / window state.
                     self.wheel_accum_y = 0.0;
+                    // A mid-drag focus steal (Cmd+Tab, modal) sends the
+                    // release to the other app; a surviving drag would resize
+                    // with no button held and eat the next click's release.
+                    if self.border_drag.take().is_some() {
+                        let (x, y) = self.last_mouse_pixel;
+                        self.update_border_hover(x, y);
+                    }
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -1004,6 +1034,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse_pixel = (position.x, position.y);
+                if self.border_drag.is_some() {
+                    self.drag_border(position.x, position.y);
+                    return;
+                }
+                self.update_border_hover(position.x, position.y);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -1065,6 +1100,26 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // A split border under the cursor owns the left button:
+                // the press starts a drag instead of a selection or a
+                // PTY mouse event, and the matching release ends it.
+                if button == winit::event::MouseButton::Left {
+                    match state {
+                        ElementState::Pressed if self.border_drag.is_none() => {
+                            if let Some(drag) = self.begin_border_drag() {
+                                self.border_drag = Some(drag);
+                                return;
+                            }
+                        }
+                        ElementState::Released if self.border_drag.is_some() => {
+                            self.border_drag = None;
+                            let (x, y) = self.last_mouse_pixel;
+                            self.update_border_hover(x, y);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 let btn = match button {
                     winit::event::MouseButton::Middle => 1u8,
                     winit::event::MouseButton::Right => 2,
@@ -1980,6 +2035,110 @@ impl App {
         }
     }
 
+    /// Start a border drag when the cursor is on a split border,
+    /// capturing the flanked pane pair at the cursor's cross-axis
+    /// position (Spec-0007 Resize adjusts exactly that pair).
+    fn begin_border_drag(&self) -> Option<BorderDrag> {
+        let (x, y) = self.last_mouse_pixel;
+        let geo = self.layout.active_geometry()?;
+        let border = layout::border_at(geo, x, y, BORDER_GRAB_PAD)?;
+        let vertical = geo.borders.get(border)?.is_vertical_border();
+        let (axis_pos, cross) = if vertical { (x, y) } else { (y, x) };
+        let Some(pair) = layout::border_panes(geo, border, cross) else {
+            // Distinguishes a declined resize from a normal click when
+            // the hover icon promised a drag (degenerate geometry).
+            debug!(border, "border press without a flanking pane pair");
+            return None;
+        };
+        Some(BorderDrag {
+            before: pair.before,
+            after: pair.after,
+            vertical,
+            last_pos: axis_pos,
+        })
+    }
+
+    /// Advance an active border drag: send one `ResizePane` per whole
+    /// cell the cursor crossed (positive grows the before-pane, matching
+    /// the wire's grow-`pane_id` sign), then refetch the layout tree so
+    /// the geometry tracks the drag live.
+    fn drag_border(&mut self, x: f64, y: f64) {
+        let Some(metrics) = self.font.as_ref().map(|f| f.metrics) else {
+            return;
+        };
+        let msg = {
+            let Some(drag) = self.border_drag.as_mut() else {
+                return;
+            };
+            let (pos, cell) = if drag.vertical {
+                (x, f64::from(metrics.cell_width))
+            } else {
+                (y, f64::from(metrics.cell_height))
+            };
+            if cell <= 0.0 {
+                return;
+            }
+            let cells = ((pos - drag.last_pos) / cell).trunc();
+            if cells == 0.0 {
+                return;
+            }
+            drag.last_pos += cells * cell;
+            #[allow(clippy::cast_possible_truncation)]
+            let delta = cells.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+            ResizePane {
+                pane_id: drag.before,
+                neighbor_pane_id: drag.after,
+                delta,
+            }
+        };
+        // ResizePane is a push (serial 0) per Spec-0001.
+        match Frame::new(MSG_RESIZE_PANE, 0, msg.encode()) {
+            Ok(frame) => {
+                if self.send_or_disconnect(&frame, "ResizePane") {
+                    self.request_layout_tree();
+                } else {
+                    self.border_drag = None;
+                }
+            }
+            Err(e) => error!(error = %e, "failed to encode ResizePane"),
+        }
+    }
+
+    /// Track which split border is under the cursor and set the resize
+    /// cursor icon accordingly. Suppressed while a selection drag is in
+    /// progress so sweeping across a border doesn't flip the cursor.
+    fn update_border_hover(&mut self, x: f64, y: f64) {
+        let hovered = if self.mouse_pressed {
+            None
+        } else {
+            self.layout
+                .active_geometry()
+                .and_then(|geo| layout::border_at(geo, x, y, BORDER_GRAB_PAD))
+        };
+        if hovered == self.hovered_border {
+            return;
+        }
+        let icon = match hovered {
+            Some(i) => {
+                let vertical = self
+                    .layout
+                    .active_geometry()
+                    .and_then(|geo| geo.borders.get(i))
+                    .is_some_and(|b| b.is_vertical_border());
+                if vertical {
+                    CursorIcon::ColResize
+                } else {
+                    CursorIcon::RowResize
+                }
+            }
+            None => CursorIcon::Default,
+        };
+        self.hovered_border = hovered;
+        if let Some(w) = &self.window {
+            w.set_cursor(icon);
+        }
+    }
+
     /// Send a frame to the daemon. On write failure the connection is
     /// dropped — a partial write leaves a truncated frame on the stream,
     /// so continuing to write through it would corrupt framing. Returns
@@ -2100,6 +2259,19 @@ impl App {
     fn apply_layout_tree(&mut self, tree: LayoutTreeNode) {
         let content = self.content_rect();
         let pending_focus = self.layout.adopt_tree(tree, content);
+        // A drag whose pane pair left the topology must not keep sending
+        // ResizePane for a dead id.
+        let drag_stale = self.border_drag.as_ref().is_some_and(|drag| {
+            let alive = |id: u32| {
+                self.layout
+                    .geometry()
+                    .is_some_and(|g| g.panes.iter().any(|p| p.pane_id == id))
+            };
+            !alive(drag.before) || !alive(drag.after)
+        });
+        if drag_stale {
+            self.border_drag = None;
+        }
         self.sync_panes_to_geometry();
         self.sync_a11y_layout();
         if let Some(id) = pending_focus {

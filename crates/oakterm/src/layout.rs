@@ -13,6 +13,16 @@ pub struct PixelRect {
     pub height: u32,
 }
 
+impl PixelRect {
+    /// Whether a border rect separates panes side-by-side (a vertical
+    /// 1px line) rather than stacked. Split borders are exactly 1px on
+    /// their thin axis; this is the one place that encodes it.
+    #[must_use]
+    pub fn is_vertical_border(self) -> bool {
+        self.width == 1
+    }
+}
+
 /// A pane's computed screen area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRect {
@@ -141,7 +151,7 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         .iter()
         .enumerate()
         .filter(|(_, b)| {
-            if b.width == 1 {
+            if b.is_vertical_border() {
                 // Vertical border: touches the pane's left or right edge.
                 let touches = b.x + 1 == r.x || b.x == r.x + r.width;
                 let overlaps = b.y < r.y + r.height && r.y < b.y + b.height;
@@ -155,6 +165,81 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         })
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Index of the border under the pixel position, if any. The 1px border
+/// rect is expanded by `pad` on its thin axis so it is grabbable; the
+/// long axis is exact. Overlapping grab zones resolve to the first
+/// border in traversal order.
+#[must_use]
+pub fn border_at(geometry: &LayoutGeometry, x: f64, y: f64, pad: f64) -> Option<usize> {
+    geometry.borders.iter().position(|b| {
+        let (x0, y0) = (f64::from(b.x), f64::from(b.y));
+        let (x1, y1) = (x0 + f64::from(b.width), y0 + f64::from(b.height));
+        if b.is_vertical_border() {
+            x >= x0 - pad && x < x1 + pad && y >= y0 && y < y1
+        } else {
+            y >= y0 - pad && y < y1 + pad && x >= x0 && x < x1
+        }
+    })
+}
+
+/// The two panes flanking a border, in layout order. A positive wire
+/// `ResizePane` delta grows `before` (Spec-0001 0xA2), so the field
+/// names carry the sign convention the drag code relies on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlankedPanes {
+    pub before: u32,
+    pub after: u32,
+}
+
+/// The two panes flanking a border at the given cross-axis position
+/// (`y` in window pixels for a vertical border, `x` for a horizontal
+/// one). A border can span several panes on either side
+/// (`H[A, V[B, C]]`); the cross position picks the pair the cursor is
+/// actually between — Spec-0007 Resize sends exactly that pair.
+/// `None` when either side has no pane there.
+#[must_use]
+pub fn border_panes(
+    geometry: &LayoutGeometry,
+    border_index: usize,
+    cross: f64,
+) -> Option<FlankedPanes> {
+    let b = *geometry.borders.get(border_index)?;
+    let vertical = b.is_vertical_border();
+    let covers_cross = |r: PixelRect| {
+        let (lo, len) = if vertical {
+            (f64::from(r.y), f64::from(r.height))
+        } else {
+            (f64::from(r.x), f64::from(r.width))
+        };
+        cross >= lo && cross < lo + len
+    };
+    let touches_before = |r: PixelRect| {
+        if vertical {
+            r.x + r.width == b.x
+        } else {
+            r.y + r.height == b.y
+        }
+    };
+    let touches_after = |r: PixelRect| {
+        if vertical {
+            r.x == b.x + 1
+        } else {
+            r.y == b.y + 1
+        }
+    };
+    let find = |touches: &dyn Fn(PixelRect) -> bool| {
+        geometry
+            .panes
+            .iter()
+            .find(|p| touches(p.rect) && covers_cross(p.rect))
+            .map(|p| p.pane_id)
+    };
+    Some(FlankedPanes {
+        before: find(&touches_before)?,
+        after: find(&touches_after)?,
+    })
 }
 
 /// Direction for `focus_target` (Spec-0007 Focus Navigation).
@@ -711,6 +796,151 @@ mod tests {
             "fixture: corner contact between panes 1 and 4"
         );
         assert_eq!(focus_target(&g, 4, Left), Some(2));
+    }
+
+    // --- border hit-testing and pane pairs ---
+
+    fn pair(before: u32, after: u32) -> FlankedPanes {
+        FlankedPanes { before, after }
+    }
+
+    #[test]
+    fn border_at_hits_within_pad_and_misses_outside() {
+        // H[1, 2] over 800px: border at x = 400 (even split of 799).
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let bx = f64::from(g.borders[0].x);
+        assert_eq!(border_at(&g, bx, 300.0, 3.0), Some(0));
+        assert_eq!(border_at(&g, bx - 3.0, 300.0, 3.0), Some(0), "pad left");
+        assert_eq!(border_at(&g, bx + 3.9, 300.0, 3.0), Some(0), "pad right");
+        assert_eq!(border_at(&g, bx - 10.0, 300.0, 3.0), None, "outside pad");
+        assert_eq!(border_at(&g, bx, 700.0, 3.0), None, "outside long axis");
+    }
+
+    #[test]
+    fn border_panes_returns_flanking_pair_in_layout_order() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(border_panes(&g, 0, 300.0), Some(pair(1, 2)));
+        assert_eq!(border_panes(&g, 9, 300.0), None, "unknown border");
+    }
+
+    #[test]
+    fn border_at_hits_horizontal_border() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Vertical,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let by = f64::from(g.borders[0].y);
+        assert_eq!(border_at(&g, 400.0, by, 3.0), Some(0));
+        assert_eq!(border_at(&g, 400.0, by - 3.0, 3.0), Some(0), "pad above");
+        assert_eq!(border_at(&g, 400.0, by + 3.9, 3.0), Some(0), "pad below");
+        assert_eq!(border_at(&g, 400.0, by + 4.0, 3.0), None, "exact pad edge");
+        assert_eq!(border_at(&g, 400.0, by - 10.0, 3.0), None, "outside pad");
+        assert_eq!(border_at(&g, 800.0, by, 3.0), None, "long axis is exact");
+    }
+
+    #[test]
+    fn border_at_overlapping_pads_pick_the_first_border() {
+        // A 2px-wide three-way split: both borders sit 1px apart with
+        // zero-width panes between them, so their pad zones overlap.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2), leaf(3)],
+                vec![1.0, 1.0, 1.0],
+            ),
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 600,
+            },
+        );
+        let shared = f64::from(g.borders[0].x);
+        assert_eq!(border_at(&g, shared, 300.0, 3.0), Some(0));
+        // Zero-width flanking panes never cover any cross position, so
+        // this returns None; the assertion is that it doesn't panic.
+        let _ = border_panes(&g, 0, 300.0);
+    }
+
+    #[test]
+    fn border_panes_dead_row_on_the_inner_border() {
+        // On the outer vertical border, the cursor row of the inner
+        // horizontal border belongs to neither flanking pane: the 1px
+        // row resolves no pair, and the rows either side pin the
+        // transition.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    leaf(1),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(2), leaf(3)],
+                        vec![0.5, 0.5],
+                    ),
+                ],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let inner_y = f64::from(
+            g.borders
+                .iter()
+                .find(|b| !b.is_vertical_border())
+                .expect("inner border exists")
+                .y,
+        );
+        assert_eq!(border_panes(&g, 0, inner_y), None);
+        assert_eq!(border_panes(&g, 0, inner_y - 1.0), Some(pair(1, 2)));
+        assert_eq!(border_panes(&g, 0, inner_y + 1.0), Some(pair(1, 3)));
+    }
+
+    #[test]
+    fn border_panes_picks_the_pair_at_the_cross_position() {
+        // H[1, V[2, 3]]: the full-height vertical border touches pane 1
+        // on the left and panes 2 (top) / 3 (bottom) on the right — the
+        // cursor's y picks which pair a drag adjusts (Spec-0007 Resize).
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    leaf(1),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(2), leaf(3)],
+                        vec![0.5, 0.5],
+                    ),
+                ],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(border_panes(&g, 0, 100.0), Some(pair(1, 2)));
+        assert_eq!(border_panes(&g, 0, 500.0), Some(pair(1, 3)));
+        let horizontal = g
+            .borders
+            .iter()
+            .position(|b| b.height == 1)
+            .expect("inner border exists");
+        assert_eq!(border_panes(&g, horizontal, 600.0), Some(pair(2, 3)));
     }
 
     #[test]
