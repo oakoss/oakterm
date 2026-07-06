@@ -1,6 +1,7 @@
 mod a11y_bridge;
 mod daemon_conn;
 mod layout;
+mod layout_state;
 mod pane_view;
 mod render_grid;
 
@@ -35,6 +36,7 @@ use oakterm_renderer::swash_shaper::SwashShaper;
 
 use a11y_bridge::{A11yEvent, A11yModel};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
+use layout_state::PaneLayout;
 use pane_view::{PaneView, ScrollbackClampOutcome, clamp_viewport};
 use render_grid::ClientGrid;
 
@@ -177,6 +179,86 @@ fn plan_pane_syncs(
     resizes
 }
 
+/// Split from the GPU upload/draw so frame assembly is testable without
+/// a device. `uploads`/`color_uploads` must reach the GPU atlas textures
+/// before `glyphs` is drawn.
+#[derive(Default)]
+struct FrameAssembly {
+    bg_sections: Vec<BgSection>,
+    glyphs: Vec<oakterm_renderer::pipeline::GlyphVertex>,
+    uploads: Vec<render_grid::GlyphUpload>,
+    color_uploads: Vec<render_grid::GlyphUpload>,
+}
+
+/// Cursor and selection render only in the focused pane; the cursor
+/// honors the blink phase.
+#[allow(clippy::cast_precision_loss)] // pixel origins fit in f32
+fn assemble_frame(
+    font: &mut FontState,
+    panes: &HashMap<u32, PaneView>,
+    render_list: &[(u32, layout::PixelRect)],
+    focused_pane: u32,
+    blink_visible: bool,
+    viewport: (f32, f32),
+) -> FrameAssembly {
+    let mut assembly = FrameAssembly::default();
+    let keys = render_grid::FontKeys {
+        regular: font.font_key,
+        bold: font.bold_key,
+        italic: font.italic_key,
+        bold_italic: font.bold_italic_key,
+    };
+    for &(pane_id, rect) in render_list {
+        let Some(pane) = panes.get(&pane_id) else {
+            continue;
+        };
+        let grid = &pane.grid;
+        let is_focused = pane_id == focused_pane;
+        let cursor_vis = is_focused
+            && grid.cursor_visible
+            && (blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
+        let selection = if is_focused {
+            pane.selection.as_ref()
+        } else {
+            None
+        };
+
+        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset);
+        let (glyphs, uploads, color_uploads) = grid.glyph_instances(
+            &font.metrics,
+            &keys,
+            font.font_size,
+            &font.shaper,
+            &mut font.atlas,
+            &mut font.color_atlas,
+            &mut font.color_keys,
+            cursor_vis,
+            selection,
+            pane.viewport_offset,
+            rect.x as f32,
+            rect.y as f32,
+        );
+
+        assembly.bg_sections.push(BgSection::new(
+            BgUniforms {
+                cols: u32::from(grid.cols),
+                rows: u32::from(grid.rows),
+                cell_width: font.metrics.cell_width,
+                cell_height: font.metrics.cell_height,
+                viewport_width: viewport.0,
+                viewport_height: viewport.1,
+                pad_left: rect.x as f32,
+                pad_top: rect.y as f32,
+            },
+            bg,
+        ));
+        assembly.glyphs.extend(glyphs);
+        assembly.uploads.extend(uploads);
+        assembly.color_uploads.extend(color_uploads);
+    }
+    assembly
+}
+
 /// A solid rectangle drawn through the bg pipeline as a 1x1 cell grid
 /// whose cell size is the rectangle.
 fn solid_section(rect: layout::PixelRect, rgb: [u8; 3], viewport: (f32, f32)) -> BgSection {
@@ -294,16 +376,9 @@ struct App {
     /// `cell_height` pixels so high-frequency macOS smooth-scroll events
     /// don't flood the daemon with arrow keys.
     wheel_accum_y: f64,
-    /// Layout tree from the daemon (`GetLayoutTree`). `None` until the
-    /// first split; single-pane rendering needs no tree.
-    layout_tree: Option<LayoutTreeNode>,
-    /// Pixel geometry computed from `layout_tree` for the current window
-    /// size. Recomputed on window resize and topology change.
-    layout_geometry: Option<layout::LayoutGeometry>,
-    /// Pane awaiting focus once its view exists. Focus must not move to a
-    /// split's new pane before `LayoutTree` arrives — the render fallback
-    /// draws the focused pane, and a viewless focus blanks the window.
-    pending_focus: Option<u32>,
+    /// Split layout state: the daemon's tree, its pixel geometry, and
+    /// pending split focus.
+    layout: PaneLayout,
     /// Monotonic request serial. Pushes use 0 and the reader thread owns
     /// 1; App requests start above both so error frames attribute.
     next_serial: u32,
@@ -341,9 +416,7 @@ impl App {
             last_click_pos: (0, 0),
             last_mouse_pixel: (0.0, 0.0),
             wheel_accum_y: 0.0,
-            layout_tree: None,
-            layout_geometry: None,
-            pending_focus: None,
+            layout: PaneLayout::default(),
             next_serial: 10,
         }
     }
@@ -723,105 +796,95 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if size.width > 0 && size.height > 0 {
-                    let Some(gpu) = &mut self.gpu else { return };
-                    {
-                        let pixel_dims_changed =
-                            gpu.config.width != size.width || gpu.config.height != size.height;
-                        if pixel_dims_changed {
-                            gpu.config.width = size.width;
-                            gpu.config.height = size.height;
-                            gpu.surface.configure(&gpu.device, &gpu.config);
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
+                let Some(gpu) = &mut self.gpu else { return };
+                let pixel_dims_changed =
+                    gpu.config.width != size.width || gpu.config.height != size.height;
+                if pixel_dims_changed {
+                    gpu.config.width = size.width;
+                    gpu.config.height = size.height;
+                    gpu.surface.configure(&gpu.device, &gpu.config);
+                }
+
+                // Resize exits scrollback for the focused pane.
+                if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                    view.viewport_offset = 0;
+                }
+
+                // With splits, every pane's rect changes: recompute the
+                // geometry and resize each PTY to its rect. The
+                // single-pane path below sizes to the whole window.
+                if self.layout.has_tree() {
+                    let content = self.content_rect();
+                    self.layout.recompute(content);
+                    if self.layout.active_geometry().is_some() {
+                        if self.initial_resize_sent {
+                            self.sync_panes_to_geometry();
                         }
-
-                        // Resize exits scrollback for the focused pane.
-                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                            view.viewport_offset = 0;
-                        }
-
-                        // With splits, every pane's rect changes: recompute
-                        // the geometry and resize each PTY to its rect. The
-                        // single-pane path below sizes to the whole window.
-                        // Keyed on the tree, not the geometry it produces —
-                        // keying on geometry would wedge single-pane mode
-                        // if a recompute was ever skipped.
-                        if self.layout_tree.is_some() {
-                            self.recompute_layout_geometry();
-                            let multi_pane = self
-                                .layout_geometry
-                                .as_ref()
-                                .is_some_and(|g| g.panes.len() > 1);
-                            if multi_pane {
-                                if self.initial_resize_sent {
-                                    self.sync_panes_to_geometry();
-                                }
-                                if let Some(w) = &self.window {
-                                    w.request_redraw();
-                                }
-                                return;
-                            }
-                        }
-
-                        #[allow(clippy::cast_possible_truncation)]
-                        if let (Some(font), Some(view)) =
-                            (&self.font, self.panes.get_mut(&self.focused_pane))
-                        {
-                            let grid = &mut view.grid;
-                            let (cols, rows) =
-                                window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                            let dims_changed = grid.rows != rows || grid.cols != cols;
-                            if dims_changed {
-                                grid.resize(cols, rows);
-                            } else {
-                                // Dims unchanged but viewport_offset was reset;
-                                // still need to exit scrollback mode.
-                                grid.exit_scrollback();
-                            }
-
-                            // Full a11y tree rebuild on resize (row count changed).
-                            if dims_changed {
-                                let full_tree = a11y_bridge::apply(
-                                    &self.a11y_state,
-                                    self.focused_pane,
-                                    view,
-                                    A11yEvent::Resize,
-                                );
-                                if let (Some(adapter), Some(full_tree)) =
-                                    (&mut self.accesskit, full_tree)
-                                {
-                                    adapter.update_if_active(|| full_tree);
-                                }
-                            }
-
-                            // Defer until RedrawRequested; startup fires multiple Resized events.
-                            if self.initial_resize_sent && (cols, rows) != view.last_sent_dims {
-                                view.last_sent_dims = (cols, rows);
-                                if let Some(daemon) = &mut self.daemon {
-                                    let msg = Resize {
-                                        pane_id: self.focused_pane,
-                                        cols,
-                                        rows,
-                                        pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                                        pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                                    };
-                                    match msg.to_frame() {
-                                        Ok(frame) => {
-                                            if let Err(e) = daemon.send_frame(&frame) {
-                                                error!(error = %e, "daemon write failed");
-                                                self.daemon = None;
-                                                event_loop.exit();
-                                            }
-                                        }
-                                        Err(e) => error!(error = %e, "failed to encode resize"),
-                                    }
-                                }
-                            }
-                        }
-
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
+                        return;
                     }
+                }
+
+                #[allow(clippy::cast_possible_truncation)]
+                let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
+                    (Some(font), Some(view)) => {
+                        let grid = &mut view.grid;
+                        let (cols, rows) =
+                            window_to_grid_dims(size, &font.metrics, &self.config.padding);
+                        let dims_changed = grid.rows != rows || grid.cols != cols;
+                        if dims_changed {
+                            grid.resize(cols, rows);
+                        } else {
+                            // Dims unchanged but viewport_offset was reset;
+                            // still need to exit scrollback mode.
+                            grid.exit_scrollback();
+                        }
+
+                        // Full a11y tree rebuild on resize (row count changed).
+                        if dims_changed {
+                            let full_tree = a11y_bridge::apply(
+                                &self.a11y_state,
+                                self.focused_pane,
+                                view,
+                                A11yEvent::Resize,
+                            );
+                            if let (Some(adapter), Some(full_tree)) =
+                                (&mut self.accesskit, full_tree)
+                            {
+                                adapter.update_if_active(|| full_tree);
+                            }
+                        }
+
+                        // Defer until RedrawRequested; startup fires multiple
+                        // Resized events.
+                        (self.initial_resize_sent && (cols, rows) != view.last_sent_dims).then(
+                            || Resize {
+                                pane_id: self.focused_pane,
+                                cols,
+                                rows,
+                                pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+                                pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+                            },
+                        )
+                    }
+                    _ => None,
+                };
+                if let Some(msg) = pending_resize {
+                    let dims = (msg.cols, msg.rows);
+                    if self.send_resize(msg) {
+                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                            view.last_sent_dims = dims;
+                        }
+                    }
+                }
+
+                if let Some(w) = &self.window {
+                    w.request_redraw();
                 }
             }
             WindowEvent::ModifiersChanged(mods) => {
@@ -1110,48 +1173,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             #[allow(clippy::cast_precision_loss)] // viewport dimensions fit in f32
             WindowEvent::RedrawRequested => {
-                let Some(gpu) = &mut self.gpu else { return };
-
-                // First RedrawRequested: window dimensions have settled. Send the
-                // initial Resize that triggers PTY spawn on the daemon side.
                 if !self.initial_resize_sent {
-                    #[allow(clippy::cast_possible_truncation)]
-                    if let (Some(font), Some(view), Some(daemon)) = (
-                        &self.font,
-                        self.panes.get_mut(&self.focused_pane),
-                        &mut self.daemon,
-                    ) {
-                        let size =
-                            winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
-                        let (cols, rows) =
-                            window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                        view.last_sent_dims = (cols, rows);
-                        let msg = Resize {
-                            pane_id: self.focused_pane,
-                            cols,
-                            rows,
-                            pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                            pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                        };
-                        match msg.to_frame() {
-                            Ok(frame) => {
-                                if let Err(e) = daemon.send_frame(&frame) {
-                                    error!(error = %e, "daemon write failed");
-                                    self.daemon = None;
-                                    event_loop.exit();
-                                    return;
-                                }
-                                self.initial_resize_sent = true;
-                            }
-                            Err(e) => {
-                                error!(error = %e, "fatal: failed to encode initial resize");
-                                event_loop.exit();
-                                return;
-                            }
-                        }
-                    }
-                    // If font/grid/daemon not ready, retry on next RedrawRequested.
+                    // Retries on the next RedrawRequested while font, view,
+                    // or daemon are still initializing.
+                    self.try_send_initial_resize();
                 }
+
+                // In single-pane mode the focused pane fills the content
+                // area. Computed before the GPU borrow below.
+                let Some(fallback) = self.content_rect() else {
+                    return;
+                };
+                let render_list = self.layout.visible_panes(self.focused_pane, fallback);
+
+                let Some(gpu) = &mut self.gpu else { return };
                 let frame = match gpu.surface.get_current_texture() {
                     CurrentSurfaceTexture::Success(frame)
                     | CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -1174,109 +1209,49 @@ impl ApplicationHandler<UserEvent> for App {
                     ..Default::default()
                 });
 
-                let render_list: Vec<(u32, u32, u32)> = match &self.layout_geometry {
-                    Some(geo) if geo.panes.len() > 1 => geo
-                        .panes
-                        .iter()
-                        .map(|p| (p.pane_id, p.rect.x, p.rect.y))
-                        .collect(),
-                    _ => vec![(
-                        self.focused_pane,
-                        self.config.padding.left,
-                        self.config.padding.top,
-                    )],
-                };
-
+                let viewport = (gpu.config.width as f32, gpu.config.height as f32);
                 let mut bg_sections: Vec<BgSection> = Vec::new();
-                let mut glyph_instances = Vec::new();
+                let mut glyph_instances: Vec<oakterm_renderer::pipeline::GlyphVertex> = Vec::new();
                 if let Some(font) = &mut self.font {
-                    let keys = render_grid::FontKeys {
-                        regular: font.font_key,
-                        bold: font.bold_key,
-                        italic: font.italic_key,
-                        bold_italic: font.bold_italic_key,
-                    };
-                    for &(pane_id, origin_x, origin_y) in &render_list {
-                        let Some(pane) = self.panes.get(&pane_id) else {
-                            continue;
-                        };
-                        let grid = &pane.grid;
-                        let is_focused = pane_id == self.focused_pane;
-                        // Cursor and selection render only in the focused
-                        // pane; cursor hidden during blink-off phase.
-                        let cursor_vis = is_focused
-                            && grid.cursor_visible
-                            && (self.blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
-                        let selection = if is_focused {
-                            pane.selection.as_ref()
-                        } else {
-                            None
-                        };
-
-                        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset);
-                        let (glyphs, uploads, color_uploads) = grid.glyph_instances(
-                            &font.metrics,
-                            &keys,
-                            font.font_size,
-                            &font.shaper,
-                            &mut font.atlas,
-                            &mut font.color_atlas,
-                            &mut font.color_keys,
-                            cursor_vis,
-                            selection,
-                            pane.viewport_offset,
-                            origin_x as f32,
-                            origin_y as f32,
-                        );
-
-                        upload_glyphs_to_atlas(
-                            &gpu.device,
-                            &gpu.queue,
-                            &mut gpu.atlas_texture,
-                            &mut gpu.atlas_view,
-                            &font.atlas,
-                            &uploads,
-                        );
-                        upload_color_glyphs_to_atlas(
-                            &gpu.device,
-                            &gpu.queue,
-                            &mut gpu.color_atlas_texture,
-                            &mut gpu.color_atlas_view,
-                            &font.color_atlas,
-                            &color_uploads,
-                        );
-
-                        bg_sections.push(BgSection::new(
-                            BgUniforms {
-                                cols: u32::from(grid.cols),
-                                rows: u32::from(grid.rows),
-                                cell_width: font.metrics.cell_width,
-                                cell_height: font.metrics.cell_height,
-                                viewport_width: gpu.config.width as f32,
-                                viewport_height: gpu.config.height as f32,
-                                pad_left: origin_x as f32,
-                                pad_top: origin_y as f32,
-                            },
-                            bg,
-                        ));
-                        glyph_instances.extend(glyphs);
-                    }
+                    let assembly = assemble_frame(
+                        font,
+                        &self.panes,
+                        &render_list,
+                        self.focused_pane,
+                        self.blink_visible,
+                        viewport,
+                    );
+                    upload_glyphs_to_atlas(
+                        &gpu.device,
+                        &gpu.queue,
+                        &mut gpu.atlas_texture,
+                        &mut gpu.atlas_view,
+                        &font.atlas,
+                        &assembly.uploads,
+                    );
+                    upload_color_glyphs_to_atlas(
+                        &gpu.device,
+                        &gpu.queue,
+                        &mut gpu.color_atlas_texture,
+                        &mut gpu.color_atlas_view,
+                        &font.color_atlas,
+                        &assembly.color_uploads,
+                    );
+                    bg_sections = assembly.bg_sections;
+                    glyph_instances = assembly.glyphs;
                 }
 
                 // Pane borders; segments adjacent to the focused pane get
                 // the highlight color.
-                if let Some(geo) = &self.layout_geometry {
-                    if geo.panes.len() > 1 {
-                        let focused = layout::focused_border_indices(geo, self.focused_pane);
-                        let viewport = (gpu.config.width as f32, gpu.config.height as f32);
-                        for (i, border) in geo.borders.iter().enumerate() {
-                            let rgb = if focused.contains(&i) {
-                                FOCUSED_BORDER_RGB
-                            } else {
-                                PANE_BORDER_RGB
-                            };
-                            bg_sections.push(solid_section(*border, rgb, viewport));
-                        }
+                if let Some(geo) = self.layout.active_geometry() {
+                    let focused = layout::focused_border_indices(geo, self.focused_pane);
+                    for (i, border) in geo.borders.iter().enumerate() {
+                        let rgb = if focused.contains(&i) {
+                            FOCUSED_BORDER_RGB
+                        } else {
+                            PANE_BORDER_RGB
+                        };
+                        bg_sections.push(solid_section(*border, rgb, viewport));
                     }
                 }
 
@@ -1383,11 +1358,10 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     // Background panes produce output too; any visible
                     // pane's update schedules a repaint.
-                    let visible = is_focused
-                        || self.layout_geometry.as_ref().is_some_and(|g| {
-                            g.panes.len() > 1 && g.panes.iter().any(|p| p.pane_id == update.pane_id)
-                        });
-                    if visible {
+                    if self
+                        .layout
+                        .pane_is_visible(update.pane_id, self.focused_pane)
+                    {
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
@@ -1602,7 +1576,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // Spec-0007 moves focus to the new pane, but only once its
                 // view exists (after LayoutTree lands) — focusing a
                 // viewless pane blanks the render fallback.
-                self.pending_focus = Some(new_pane_id);
+                self.layout.set_pending_focus(new_pane_id);
                 self.request_layout_tree();
             }
             UserEvent::LayoutTree(tree) => {
@@ -1877,13 +1851,9 @@ impl App {
                     command: String::new(),
                     cwd: String::new(),
                 };
-                let serial = self.take_serial();
-                match msg
-                    .encode()
-                    .and_then(|payload| Frame::new(MSG_SPLIT_PANE, serial, payload))
-                {
-                    Ok(frame) => {
-                        self.send_or_disconnect(&frame, "SplitPane");
+                match msg.encode() {
+                    Ok(payload) => {
+                        self.send_request(MSG_SPLIT_PANE, payload, "SplitPane");
                     }
                     Err(e) => error!(error = %e, "failed to encode SplitPane"),
                 }
@@ -1923,18 +1893,78 @@ impl App {
         serial
     }
 
+    /// Frame `payload` as a fresh-serial request and send it. Returns
+    /// whether the frame was sent.
+    fn send_request(&mut self, msg_type: u16, payload: Vec<u8>, what: &str) -> bool {
+        let serial = self.take_serial();
+        match Frame::new(msg_type, serial, payload) {
+            Ok(frame) => self.send_or_disconnect(&frame, what),
+            Err(e) => {
+                error!(error = %e, what, "failed to encode request");
+                false
+            }
+        }
+    }
+
+    /// Encode and send a `Resize`. Every PTY resize routes through here
+    /// so the write-failure policy (disconnect) is uniform. Returns
+    /// whether the frame was sent; callers commit `last_sent_dims` only
+    /// on success so failed sends are retried.
+    fn send_resize(&mut self, msg: Resize) -> bool {
+        match msg.to_frame() {
+            Ok(frame) => self.send_or_disconnect(&frame, "Resize"),
+            Err(e) => {
+                error!(error = %e, pane_id = msg.pane_id, "failed to encode Resize");
+                false
+            }
+        }
+    }
+
+    /// First `RedrawRequested`: window dimensions have settled. Send the
+    /// initial `Resize` that triggers PTY spawn on the daemon side
+    /// (Spec-0001). No-op (caller retries next frame) while font, view,
+    /// or daemon are still unavailable.
+    fn try_send_initial_resize(&mut self) {
+        #[allow(clippy::cast_possible_truncation)]
+        let pending = match (
+            &self.gpu,
+            &self.font,
+            self.panes.get(&self.focused_pane),
+            &self.daemon,
+        ) {
+            (Some(gpu), Some(font), Some(_), Some(_)) => {
+                let size = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
+                let (cols, rows) = window_to_grid_dims(size, &font.metrics, &self.config.padding);
+                Some(Resize {
+                    pane_id: self.focused_pane,
+                    cols,
+                    rows,
+                    pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+                    pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+                })
+            }
+            _ => None,
+        };
+        let Some(msg) = pending else { return };
+        let dims = (msg.cols, msg.rows);
+        if self.send_resize(msg) {
+            self.initial_resize_sent = true;
+            if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                view.last_sent_dims = dims;
+            }
+        } else if let Some(w) = &self.window {
+            // Without a spawned PTY no output event will produce the next
+            // redraw, so the retry must drive itself.
+            w.request_redraw();
+        }
+    }
+
     fn request_layout_tree(&mut self) {
         let req = GetLayoutTree {
             workspace_id: 0,
             tab_id: 0,
         };
-        let serial = self.take_serial();
-        match Frame::new(MSG_GET_LAYOUT_TREE, serial, req.encode()) {
-            Ok(frame) => {
-                self.send_or_disconnect(&frame, "GetLayoutTree");
-            }
-            Err(e) => error!(error = %e, "failed to encode GetLayoutTree"),
-        }
+        self.send_request(MSG_GET_LAYOUT_TREE, req.encode(), "GetLayoutTree");
     }
 
     /// The window's content area in pixels (window minus padding), where
@@ -1950,42 +1980,24 @@ impl App {
         })
     }
 
-    /// Recompute pixel geometry from the stored layout tree for the
-    /// current window size. Stale geometry is kept (not cleared) when the
-    /// GPU is briefly unavailable — vanishing panes are worse than
-    /// one-frame-stale rects.
-    fn recompute_layout_geometry(&mut self) {
-        match (&self.layout_tree, self.content_rect()) {
-            (Some(tree), Some(content)) => {
-                self.layout_geometry = Some(layout::compute_layout(tree, content));
-            }
-            (Some(_), None) => {
-                warn!("layout geometry not recomputed: gpu unavailable");
-            }
-            (None, _) => self.layout_geometry = None,
-        }
-    }
-
     /// Adopt a layout tree from the daemon: create views for new panes,
     /// size every pane's PTY to its computed rect, apply any pending
     /// focus, and redraw.
     fn apply_layout_tree(&mut self, tree: LayoutTreeNode) {
-        self.layout_tree = Some(tree);
-        self.recompute_layout_geometry();
+        let content = self.content_rect();
+        let pending_focus = self.layout.adopt_tree(tree, content);
         self.sync_panes_to_geometry();
-        if let Some(id) = self.pending_focus.take() {
+        if let Some(id) = pending_focus {
             if self.panes.contains_key(&id) {
                 // a11y focus follows in TREK-190 (multi-pane a11y wiring).
                 self.focused_pane = id;
                 // Keep the daemon's Spec-0007 focus state in step —
                 // session persistence saves it.
-                let serial = self.take_serial();
-                match Frame::new(MSG_FOCUS_PANE, serial, FocusPane { pane_id: id }.encode()) {
-                    Ok(frame) => {
-                        self.send_or_disconnect(&frame, "FocusPane");
-                    }
-                    Err(e) => error!(error = %e, "failed to encode FocusPane"),
-                }
+                self.send_request(
+                    MSG_FOCUS_PANE,
+                    FocusPane { pane_id: id }.encode(),
+                    "FocusPane",
+                );
             } else {
                 warn!(pane_id = id, "pending focus target missing from layout");
             }
@@ -1998,34 +2010,29 @@ impl App {
     /// Create views for panes new to the geometry and send `Resize` to
     /// every pane whose computed grid dimensions changed. The first
     /// `Resize` for a fresh pane spawns its PTY (Spec-0001 `SplitPane`).
-    /// `last_sent_dims` commits only after a successful send, so a failed
-    /// spawn-`Resize` is retried by the next sync instead of being
-    /// deduplicated away.
     fn sync_panes_to_geometry(&mut self) {
-        let Some(geometry) = self.layout_geometry.clone() else {
-            warn!("layout tree adopted but no geometry; panes not synced");
-            return;
-        };
         let Some(metrics) = self.font.as_ref().map(|f| f.metrics) else {
             warn!("layout geometry present but font unavailable; panes not synced");
             return;
         };
-        let resizes = plan_pane_syncs(
-            &geometry,
-            (metrics.cell_width, metrics.cell_height),
-            &mut self.panes,
-        );
+        let resizes = {
+            let Some(geometry) = self.layout.geometry() else {
+                warn!("layout tree adopted but no geometry; panes not synced");
+                return;
+            };
+            plan_pane_syncs(
+                geometry,
+                (metrics.cell_width, metrics.cell_height),
+                &mut self.panes,
+            )
+        };
         for msg in resizes {
             let pane_id = msg.pane_id;
-            match msg.to_frame() {
-                Ok(frame) => {
-                    if self.send_or_disconnect(&frame, "Resize") {
-                        if let Some(view) = self.panes.get_mut(&pane_id) {
-                            view.last_sent_dims = (msg.cols, msg.rows);
-                        }
-                    }
+            let dims = (msg.cols, msg.rows);
+            if self.send_resize(msg) {
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.last_sent_dims = dims;
                 }
-                Err(e) => error!(error = %e, pane_id, "failed to encode Resize"),
             }
         }
     }
@@ -2082,7 +2089,8 @@ impl App {
                 };
 
                 #[allow(clippy::cast_possible_truncation)]
-                if let (Some(gpu), Some(view)) = (&self.gpu, self.panes.get_mut(&self.focused_pane))
+                let pending_resize = if let (Some(gpu), Some(view)) =
+                    (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
                     let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
                     let (cols, rows) =
@@ -2093,7 +2101,6 @@ impl App {
                     // grid.resize exits scrollback; keep the viewport field
                     // in step (mirrors WindowEvent::Resized).
                     view.viewport_offset = 0;
-                    view.last_sent_dims = (cols, rows);
 
                     // Row bounds derive from cell dimensions; rebuild the
                     // a11y tree at the new metrics.
@@ -2115,30 +2122,27 @@ impl App {
                         adapter.update_if_active(|| full_tree);
                     }
 
-                    if let Some(daemon) = &self.daemon {
-                        let msg = Resize {
-                            pane_id: self.focused_pane,
-                            cols,
-                            rows,
-                            pixel_width: phys.width.min(u32::from(u16::MAX)) as u16,
-                            pixel_height: phys.height.min(u32::from(u16::MAX)) as u16,
-                        };
-                        match msg.to_frame() {
-                            Ok(frame) => {
-                                if let Err(e) = daemon.send_frame(&frame) {
-                                    error!(error = %e, "daemon write failed during config reload");
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "failed to encode resize after config reload");
-                            }
-                        }
-                    }
+                    Some(Resize {
+                        pane_id: self.focused_pane,
+                        cols,
+                        rows,
+                        pixel_width: phys.width.min(u32::from(u16::MAX)) as u16,
+                        pixel_height: phys.height.min(u32::from(u16::MAX)) as u16,
+                    })
                 } else {
                     // The renderer adopts the new metrics below; without a
                     // grid resize the a11y model and daemon keep the old
                     // geometry.
                     warn!("config reload: font changed but gpu/view unavailable");
+                    None
+                };
+                if let Some(msg) = pending_resize {
+                    let dims = (msg.cols, msg.rows);
+                    if self.send_resize(msg) {
+                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+                            view.last_sent_dims = dims;
+                        }
+                    }
                 }
 
                 self.font = Some(font_state);
@@ -2881,13 +2885,38 @@ fn version_string() -> String {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{drain_wheel_notches, plan_pane_syncs};
+    use super::{assemble_frame, drain_wheel_notches, plan_pane_syncs, try_init_font};
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
     use crate::render_grid::ClientGrid;
     use std::collections::HashMap;
     use winit::dpi::PhysicalPosition;
     use winit::event::MouseScrollDelta;
+
+    #[test]
+    fn assemble_frame_emits_one_bg_section_per_pane_at_its_origin() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            eprintln!("skipping: no system monospace font available");
+            return;
+        };
+        let mut panes = HashMap::new();
+        panes.insert(1, PaneView::new(ClientGrid::new(10, 5)));
+        panes.insert(2, PaneView::new(ClientGrid::new(10, 5)));
+        let rect = |x| PixelRect {
+            x,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        // Pane 9 has no view and must be skipped, not rendered empty.
+        let render_list = [(1, rect(0)), (2, rect(120)), (9, rect(240))];
+
+        let assembly = assemble_frame(&mut font, &panes, &render_list, 1, true, (400.0, 300.0));
+
+        assert_eq!(assembly.bg_sections.len(), 2);
+        assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
+        assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
 
     fn geometry_of(panes: &[(u32, u32, u32)]) -> LayoutGeometry {
         LayoutGeometry {
