@@ -66,3 +66,4 @@ Not every review needs every section. Competitive research reviews may only have
 | 2026-06-22 | [Ultimate Terminal Alignment Audit](2026-06-22-144218-ultimate-terminal-alignment-audit.md) | 2026 terminal landscape vs OakTerm vision — 2 ADR candidates    |
 | 2026-07-01 | [Decisions & Architecture Audit](2026-07-01-214630-decisions-architecture-audit.md)         | All ADRs + specs vs code, crate architecture, review carryovers |
 | 2026-07-02 | [wgpu Parity Benchmark](2026-07-02-114749-wgpu-parity-benchmark.md)                         | ADR-0018 gate: ingest parity PASS; frame/latency open (192)     |
+| 2026-07-06 | [Codebase Improvement Audit](2026-07-06-232328-codebase-improvement-audit.md)               | Whole-workspace code audit at 60c80c4 — 14 findings, 4 batches  |
