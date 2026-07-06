@@ -157,6 +157,80 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         .collect()
 }
 
+/// Direction for `focus_target` (Spec-0007 Focus Navigation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The pane to focus when moving from `focused_pane` in `direction`
+/// (Spec-0007 Focus Navigation): project a ray from the focused pane's
+/// center in the requested direction. Among panes beyond the focused
+/// edge whose extent overlaps the pane's band, the nearest by edge
+/// distance wins; ties break toward the pane the ray passes through
+/// (smallest ray distance), then toward the smallest cross-axis
+/// position for determinism. Purely geometric, not tree-structural.
+/// `None` at the screen edge (no wrap) or when `focused_pane` is not
+/// in the geometry.
+#[must_use]
+pub fn focus_target(
+    geometry: &LayoutGeometry,
+    focused_pane: u32,
+    direction: FocusDirection,
+) -> Option<u32> {
+    let from = geometry
+        .panes
+        .iter()
+        .find(|p| p.pane_id == focused_pane)?
+        .rect;
+    let row_overlap = |r: PixelRect| r.y < from.y + from.height && from.y < r.y + r.height;
+    let col_overlap = |r: PixelRect| r.x < from.x + from.width && from.x < r.x + r.width;
+    let ray_y = from.y + from.height / 2;
+    let ray_x = from.x + from.width / 2;
+    // Distance from the ray to the candidate's extent; 0 if the ray passes through it.
+    let ray_dist =
+        |lo: u32, len: u32, ray: u32| ray.clamp(lo, lo + len.saturating_sub(1)).abs_diff(ray);
+    geometry
+        .panes
+        .iter()
+        .filter(|p| p.pane_id != focused_pane)
+        .filter_map(|p| {
+            let r = p.rect;
+            let (beyond, distance, ray, cross) = match direction {
+                FocusDirection::Left => (
+                    row_overlap(r) && r.x + r.width <= from.x,
+                    from.x.saturating_sub(r.x + r.width),
+                    ray_dist(r.y, r.height, ray_y),
+                    r.y,
+                ),
+                FocusDirection::Right => (
+                    row_overlap(r) && r.x >= from.x + from.width,
+                    r.x.saturating_sub(from.x + from.width),
+                    ray_dist(r.y, r.height, ray_y),
+                    r.y,
+                ),
+                FocusDirection::Up => (
+                    col_overlap(r) && r.y + r.height <= from.y,
+                    from.y.saturating_sub(r.y + r.height),
+                    ray_dist(r.x, r.width, ray_x),
+                    r.x,
+                ),
+                FocusDirection::Down => (
+                    col_overlap(r) && r.y >= from.y + from.height,
+                    r.y.saturating_sub(from.y + from.height),
+                    ray_dist(r.x, r.width, ray_x),
+                    r.x,
+                ),
+            };
+            beyond.then_some((distance, ray, cross, p.pane_id))
+        })
+        .min_by_key(|&(distance, ray, cross, _)| (distance, ray, cross))
+        .map(|(_, _, _, pane_id)| pane_id)
+}
+
 /// Convert a pane's pixel rect to grid dimensions (Spec-0007: floor,
 /// minimum 1x1).
 #[must_use]
@@ -495,5 +569,198 @@ mod tests {
         };
         assert_eq!(grid_dims(tiny, 8.0, 16.0), (1, 1));
         assert_eq!(grid_dims(rect, 0.0, -1.0), (1, 1));
+    }
+
+    use super::FocusDirection::{Down, Left, Right, Up};
+
+    #[test]
+    fn focus_target_two_pane_horizontal() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(focus_target(&g, 1, Right), Some(2));
+        assert_eq!(focus_target(&g, 2, Left), Some(1));
+        assert_eq!(focus_target(&g, 1, Left), None, "screen edge: no wrap");
+        assert_eq!(focus_target(&g, 1, Up), None);
+        assert_eq!(focus_target(&g, 1, Down), None);
+    }
+
+    #[test]
+    fn focus_target_unknown_focused_pane_is_none() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(focus_target(&g, 99, Right), None);
+    }
+
+    #[test]
+    fn focus_target_full_ties_break_toward_smallest_cross_position() {
+        // H[1, V[2, 3]] at even weights: panes 2 (top) and 3 (bottom)
+        // are equidistant right of 1, and 1's center ray lands on their
+        // shared border so ray distance ties too; the topmost wins.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    leaf(1),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(2), leaf(3)],
+                        vec![0.5, 0.5],
+                    ),
+                ],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(focus_target(&g, 1, Right), Some(2));
+        assert_eq!(focus_target(&g, 2, Down), Some(3));
+        assert_eq!(focus_target(&g, 3, Up), Some(2));
+        assert_eq!(focus_target(&g, 3, Left), Some(1));
+    }
+
+    #[test]
+    fn focus_target_follows_center_ray_in_asymmetric_splits() {
+        // H[1, V[2, 3]] with the right column split 25/75: pane 1's
+        // center ray passes through pane 3, so it wins over the
+        // topmost-but-off-ray pane 2 (Spec-0007: the projected ray, not
+        // band order, picks among equidistant panes).
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    leaf(1),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(2), leaf(3)],
+                        vec![0.25, 0.75],
+                    ),
+                ],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        assert_eq!(focus_target(&g, 1, Right), Some(3));
+    }
+
+    #[test]
+    fn focus_target_nearest_beats_ray_and_cross_position() {
+        // H[1, V[2, 3], 4]: from pane 1 moving right, panes 2 and 3 sit
+        // one border away while pane 4 (full height, dead on the ray) is
+        // a whole column farther. Edge distance is the primary key, so
+        // pane 2 wins; an ordering that consulted the ray or cross
+        // position first would pick 4.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    leaf(1),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(2), leaf(3)],
+                        vec![0.5, 0.5],
+                    ),
+                    leaf(4),
+                ],
+                vec![1.0, 1.0, 1.0],
+            ),
+            CONTENT,
+        );
+        assert_eq!(focus_target(&g, 1, Right), Some(2));
+        assert_eq!(focus_target(&g, 4, Left), Some(2));
+    }
+
+    #[test]
+    fn focus_target_excludes_corner_touching_panes() {
+        // Left column split so pane 1's bottom edge exactly meets pane
+        // 4's top: corner contact is not band overlap, so moving left
+        // from 4 lands on 2.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(1), leaf(2)],
+                        vec![301.0, 298.0],
+                    ),
+                    container(
+                        LayoutDirection::Vertical,
+                        vec![leaf(3), leaf(4)],
+                        vec![0.5, 0.5],
+                    ),
+                ],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let pane = |id: u32| g.panes.iter().find(|p| p.pane_id == id).unwrap().rect;
+        assert_eq!(
+            pane(1).y + pane(1).height,
+            pane(4).y,
+            "fixture: corner contact between panes 1 and 4"
+        );
+        assert_eq!(focus_target(&g, 4, Left), Some(2));
+    }
+
+    #[test]
+    fn focus_target_degenerate_zero_size_panes_do_not_panic() {
+        // A 2px-wide three-way split saturates every pane to zero width;
+        // focus navigation over coincident rects must stay total. The
+        // winner among coincident panes is arbitrary but stable.
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2), leaf(3)],
+                vec![1.0, 1.0, 1.0],
+            ),
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 600,
+            },
+        );
+        for direction in [Left, Right, Up, Down] {
+            let _ = focus_target(&g, 2, direction);
+        }
+        assert!(focus_target(&g, 2, Left).is_some());
+    }
+
+    #[test]
+    fn focus_target_requires_band_overlap() {
+        // H[V[1, 2], V[3, 4]] quadrants: moving left from the bottom-right
+        // pane must land on the bottom-left pane, never the top-left one.
+        let quadrants = container(
+            LayoutDirection::Horizontal,
+            vec![
+                container(
+                    LayoutDirection::Vertical,
+                    vec![leaf(1), leaf(2)],
+                    vec![0.5, 0.5],
+                ),
+                container(
+                    LayoutDirection::Vertical,
+                    vec![leaf(3), leaf(4)],
+                    vec![0.5, 0.5],
+                ),
+            ],
+            vec![0.5, 0.5],
+        );
+        let g = compute_layout(&quadrants, CONTENT);
+        assert_eq!(focus_target(&g, 4, Left), Some(2));
+        assert_eq!(focus_target(&g, 4, Up), Some(3));
+        assert_eq!(focus_target(&g, 1, Right), Some(3));
+        assert_eq!(focus_target(&g, 1, Down), Some(2));
     }
 }

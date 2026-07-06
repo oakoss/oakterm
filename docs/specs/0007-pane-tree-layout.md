@@ -244,9 +244,9 @@ Resize adjusts the weight boundary between two adjacent siblings in the same con
 
 Directional focus (left, right, up, down) finds the nearest pane in the requested direction:
 
-1. From the focused pane's pixel bounds, project a ray in the requested direction.
-2. Among all visible panes (tiled and floating), find the pane whose bounds intersect the ray and are closest to the origin pane.
-3. If no pane is found (edge of screen), wrap or do nothing (configurable).
+1. Candidates are all visible panes (tiled and floating) strictly beyond the focused pane's edge in the requested direction whose extent overlaps the focused pane's cross-axis band. Band overlap — not intersection with a single projected ray — defines candidacy: a pure ray filter dead-ends when the center ray threads the 1px border between two neighbors, and would skip an adjacent column whose panes straddle the ray.
+2. Order candidates by (edge distance, distance from the focused pane's center ray to the candidate's extent, cross-axis position) and focus the minimum. Edge distance keeps focus in the adjacent column; the ray term makes asymmetric splits follow the user's sightline; the cross-axis term makes exact ties deterministic (topmost/leftmost wins).
+3. If no candidate exists (edge of screen), do nothing. A wrap option is future configuration.
 
 Focus navigation is purely geometric, not tree-structural. This avoids confusing behavior when the tree structure does not match the visual layout.
 

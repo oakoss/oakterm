@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
@@ -136,12 +137,26 @@ enum ActionDesc {
     ReloadConfig,
     Callback(usize),
     SplitPane(WireSplitDirection),
+    FocusPane(layout::FocusDirection),
     Stub,
 }
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
 const FOCUSED_BORDER_RGB: [u8; 3] = [92, 148, 255];
+
+/// Build a whole-window `Resize`, clamping pixel dimensions to the
+/// wire's u16 range.
+fn window_resize(pane_id: u32, (cols, rows): (u16, u16), size: PhysicalSize<u32>) -> Resize {
+    #[allow(clippy::cast_possible_truncation)]
+    Resize {
+        pane_id,
+        cols,
+        rows,
+        pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
+        pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+    }
+}
 
 /// Reconcile the pane map with a computed geometry and plan the `Resize`
 /// messages to send: creates a view for each new pane, resizes stale
@@ -830,7 +845,6 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
-                #[allow(clippy::cast_possible_truncation)]
                 let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
                     (Some(font), Some(view)) => {
                         let grid = &mut view.grid;
@@ -862,25 +876,13 @@ impl ApplicationHandler<UserEvent> for App {
 
                         // Defer until RedrawRequested; startup fires multiple
                         // Resized events.
-                        (self.initial_resize_sent && (cols, rows) != view.last_sent_dims).then(
-                            || Resize {
-                                pane_id: self.focused_pane,
-                                cols,
-                                rows,
-                                pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                                pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                            },
-                        )
+                        (self.initial_resize_sent && (cols, rows) != view.last_sent_dims)
+                            .then(|| window_resize(self.focused_pane, (cols, rows), size))
                     }
                     _ => None,
                 };
                 if let Some(msg) = pending_resize {
-                    let dims = (msg.cols, msg.rows);
-                    if self.send_resize(msg) {
-                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                            view.last_sent_dims = dims;
-                        }
-                    }
+                    self.send_resize(msg);
                 }
 
                 if let Some(w) = &self.window {
@@ -1650,17 +1652,30 @@ impl App {
                     "left" | "right" => ActionDesc::SplitPane(WireSplitDirection::Horizontal),
                     "up" | "down" => ActionDesc::SplitPane(WireSplitDirection::Vertical),
                     other => {
+                        // Consume the chord: a config typo must not leak
+                        // the bound key's bytes into the shell.
                         warn!(direction = other, "unknown split direction in keybind");
-                        return false;
+                        return true;
+                    }
+                }
+            }
+            Some(Action::FocusPaneDirection(direction)) => {
+                use layout::FocusDirection;
+                match direction.as_str() {
+                    "left" => ActionDesc::FocusPane(FocusDirection::Left),
+                    "right" => ActionDesc::FocusPane(FocusDirection::Right),
+                    "up" => ActionDesc::FocusPane(FocusDirection::Up),
+                    "down" => ActionDesc::FocusPane(FocusDirection::Down),
+                    other => {
+                        // Consume the chord: a config typo must not leak
+                        // the bound key's bytes into the shell.
+                        warn!(direction = other, "unknown focus direction in keybind");
+                        return true;
                     }
                 }
             }
             Some(
-                Action::ClosePane
-                | Action::FocusPaneDirection(_)
-                | Action::NewTab
-                | Action::CloseTab
-                | Action::ShowCommandPalette,
+                Action::ClosePane | Action::NewTab | Action::CloseTab | Action::ShowCommandPalette,
             ) => ActionDesc::Stub,
             None => return false,
         };
@@ -1859,7 +1874,42 @@ impl App {
                 }
                 true
             }
+            ActionDesc::FocusPane(direction) => {
+                // Consumed even when nothing changes (single pane, screen
+                // edge): a focus chord must never leak bytes to the PTY.
+                let target = match self.layout.active_geometry() {
+                    Some(geo) if geo.panes.iter().any(|p| p.pane_id == self.focused_pane) => {
+                        layout::focus_target(geo, self.focused_pane, direction)
+                    }
+                    Some(_) => {
+                        // Would render focus navigation silently dead;
+                        // distinguish it from the intentional edge no-op.
+                        warn!(
+                            focused_pane = self.focused_pane,
+                            "focused pane missing from split geometry"
+                        );
+                        None
+                    }
+                    None => None,
+                };
+                if let Some(pane_id) = target {
+                    self.focus_pane(pane_id);
+                }
+                true
+            }
             ActionDesc::Stub => false,
+        }
+    }
+
+    /// Move focus to `pane_id` and keep the daemon's Spec-0007 focus
+    /// state in step — session persistence saves it. a11y focus follows
+    /// in TREK-190 (multi-pane a11y wiring).
+    fn focus_pane(&mut self, pane_id: u32) {
+        self.focused_pane = pane_id;
+        self.send_request(MSG_FOCUS_PANE, FocusPane { pane_id }.encode(), "FocusPane");
+        self.reset_blink();
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -1906,18 +1956,26 @@ impl App {
         }
     }
 
-    /// Encode and send a `Resize`. Every PTY resize routes through here
-    /// so the write-failure policy (disconnect) is uniform. Returns
-    /// whether the frame was sent; callers commit `last_sent_dims` only
-    /// on success so failed sends are retried.
+    /// Encode and send a `Resize`, committing the pane's
+    /// `last_sent_dims` only on success so failed sends are re-planned.
+    /// Every PTY resize routes through here so the write-failure policy
+    /// (disconnect) and the commit-after-send contract live in one
+    /// place. Returns whether the frame was sent.
     fn send_resize(&mut self, msg: Resize) -> bool {
-        match msg.to_frame() {
+        let (pane_id, dims) = (msg.pane_id, (msg.cols, msg.rows));
+        let sent = match msg.to_frame() {
             Ok(frame) => self.send_or_disconnect(&frame, "Resize"),
             Err(e) => {
-                error!(error = %e, pane_id = msg.pane_id, "failed to encode Resize");
+                error!(error = %e, pane_id, "failed to encode Resize");
                 false
             }
+        };
+        if sent {
+            if let Some(view) = self.panes.get_mut(&pane_id) {
+                view.last_sent_dims = dims;
+            }
         }
+        sent
     }
 
     /// First `RedrawRequested`: window dimensions have settled. Send the
@@ -1925,7 +1983,6 @@ impl App {
     /// (Spec-0001). No-op (caller retries next frame) while font, view,
     /// or daemon are still unavailable.
     fn try_send_initial_resize(&mut self) {
-        #[allow(clippy::cast_possible_truncation)]
         let pending = match (
             &self.gpu,
             &self.font,
@@ -1933,25 +1990,15 @@ impl App {
             &self.daemon,
         ) {
             (Some(gpu), Some(font), Some(_), Some(_)) => {
-                let size = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
+                let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
                 let (cols, rows) = window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                Some(Resize {
-                    pane_id: self.focused_pane,
-                    cols,
-                    rows,
-                    pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
-                    pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
-                })
+                Some(window_resize(self.focused_pane, (cols, rows), size))
             }
             _ => None,
         };
         let Some(msg) = pending else { return };
-        let dims = (msg.cols, msg.rows);
         if self.send_resize(msg) {
             self.initial_resize_sent = true;
-            if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                view.last_sent_dims = dims;
-            }
         } else if let Some(w) = &self.window {
             // Without a spawned PTY no output event will produce the next
             // redraw, so the retry must drive itself.
@@ -1989,15 +2036,7 @@ impl App {
         self.sync_panes_to_geometry();
         if let Some(id) = pending_focus {
             if self.panes.contains_key(&id) {
-                // a11y focus follows in TREK-190 (multi-pane a11y wiring).
-                self.focused_pane = id;
-                // Keep the daemon's Spec-0007 focus state in step —
-                // session persistence saves it.
-                self.send_request(
-                    MSG_FOCUS_PANE,
-                    FocusPane { pane_id: id }.encode(),
-                    "FocusPane",
-                );
+                self.focus_pane(id);
             } else {
                 warn!(pane_id = id, "pending focus target missing from layout");
             }
@@ -2027,13 +2066,7 @@ impl App {
             )
         };
         for msg in resizes {
-            let pane_id = msg.pane_id;
-            let dims = (msg.cols, msg.rows);
-            if self.send_resize(msg) {
-                if let Some(view) = self.panes.get_mut(&pane_id) {
-                    view.last_sent_dims = dims;
-                }
-            }
+            self.send_resize(msg);
         }
     }
 
@@ -2088,11 +2121,10 @@ impl App {
                     }
                 };
 
-                #[allow(clippy::cast_possible_truncation)]
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
-                    let phys = winit::dpi::PhysicalSize::new(gpu.config.width, gpu.config.height);
+                    let phys = PhysicalSize::new(gpu.config.width, gpu.config.height);
                     let (cols, rows) =
                         window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
                     let cols = cols.max(1);
@@ -2122,13 +2154,7 @@ impl App {
                         adapter.update_if_active(|| full_tree);
                     }
 
-                    Some(Resize {
-                        pane_id: self.focused_pane,
-                        cols,
-                        rows,
-                        pixel_width: phys.width.min(u32::from(u16::MAX)) as u16,
-                        pixel_height: phys.height.min(u32::from(u16::MAX)) as u16,
-                    })
+                    Some(window_resize(self.focused_pane, (cols, rows), phys))
                 } else {
                     // The renderer adopts the new metrics below; without a
                     // grid resize the a11y model and daemon keep the old
@@ -2137,12 +2163,7 @@ impl App {
                     None
                 };
                 if let Some(msg) = pending_resize {
-                    let dims = (msg.cols, msg.rows);
-                    if self.send_resize(msg) {
-                        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                            view.last_sent_dims = dims;
-                        }
-                    }
+                    self.send_resize(msg);
                 }
 
                 self.font = Some(font_state);
