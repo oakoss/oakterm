@@ -1756,7 +1756,30 @@ impl App {
                     let cols = cols.max(1);
                     let rows = rows.max(1);
                     view.grid.resize(cols, rows);
+                    // grid.resize exits scrollback; keep the viewport field
+                    // in step (mirrors WindowEvent::Resized).
+                    view.viewport_offset = 0;
                     view.last_sent_dims = (cols, rows);
+
+                    // Row bounds derive from cell dimensions; rebuild the
+                    // a11y tree at the new metrics.
+                    match self.a11y_state.lock() {
+                        Ok(mut model) => {
+                            if let Some(m) = model.as_mut() {
+                                m.set_cell_dims(a11y_bridge::cell_dims(Some(&font_state.metrics)));
+                            }
+                        }
+                        Err(e) => warn!(error = %e, "a11y: mutex poisoned on font change"),
+                    }
+                    let full_tree = a11y_bridge::apply(
+                        &self.a11y_state,
+                        self.focused_pane,
+                        view,
+                        A11yEvent::Resize,
+                    );
+                    if let (Some(adapter), Some(full_tree)) = (&mut self.accesskit, full_tree) {
+                        adapter.update_if_active(|| full_tree);
+                    }
 
                     if let Some(daemon) = &self.daemon {
                         let msg = Resize {
@@ -1777,6 +1800,11 @@ impl App {
                             }
                         }
                     }
+                } else {
+                    // The renderer adopts the new metrics below; without a
+                    // grid resize the a11y model and daemon keep the old
+                    // geometry.
+                    warn!("config reload: font changed but gpu/view unavailable");
                 }
 
                 self.font = Some(font_state);

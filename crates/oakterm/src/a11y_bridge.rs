@@ -135,6 +135,14 @@ impl A11yModel {
             .insert(pane_id, PaneA11ySnapshot::from_view(view));
     }
 
+    /// Update cell pixel dimensions after a runtime font change. Row bounds
+    /// derive from these, so the caller should follow with an
+    /// [`A11yEvent::Resize`] to rebuild the tree.
+    pub(crate) fn set_cell_dims(&mut self, (cell_width, cell_height): (f64, f64)) {
+        self.cell_width = cell_width;
+        self.cell_height = cell_height;
+    }
+
     /// Build the full tree from every pane snapshot, in stable pane-id
     /// order so repeated builds produce identical child lists.
     pub(crate) fn build_full_tree(&self) -> accesskit::TreeUpdate {
