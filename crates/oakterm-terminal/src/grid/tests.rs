@@ -197,6 +197,24 @@ fn grid_dirty_tracking() {
 }
 
 #[test]
+fn grid_resize_clamps_to_max_dimension() {
+    let mut grid = Grid::new(80, 24);
+    // A hostile oversized resize must not allocate past the cap.
+    grid.resize(u16::MAX, u16::MAX);
+    assert_eq!(grid.cols, MAX_GRID_DIMENSION);
+    assert_eq!(grid.rows, MAX_GRID_DIMENSION);
+    assert_eq!(grid.lines.len(), MAX_GRID_DIMENSION as usize);
+}
+
+#[test]
+fn grid_resize_below_max_is_unclamped() {
+    let mut grid = Grid::new(80, 24);
+    grid.resize(120, 40);
+    assert_eq!(grid.cols, 120);
+    assert_eq!(grid.rows, 40);
+}
+
+#[test]
 fn grid_touch_all_marks_everything_dirty() {
     let mut grid = Grid::new(80, 24);
     let before = grid.seqno;

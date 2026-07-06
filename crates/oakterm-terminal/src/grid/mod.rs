@@ -79,6 +79,14 @@ pub enum ScreenId {
 /// Maximum title stack depth (matches xterm).
 pub(crate) const TITLE_STACK_MAX: usize = 10;
 
+/// Maximum grid dimension (columns or rows) the terminal will allocate.
+/// Any real display is far below this; the cap bounds a hostile or buggy
+/// oversized resize, turning a would-be multi-terabyte allocation into a
+/// bounded one. [`Grid::resize`] clamps to it as a safety net; the daemon's
+/// resize handler rejects requests above it outright so the grid and the PTY
+/// window size stay consistent.
+pub const MAX_GRID_DIMENSION: u16 = 2000;
+
 /// The visible terminal screen.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Grid {
@@ -202,11 +210,15 @@ impl Grid {
 
     /// Resize the grid to new dimensions.
     /// Returns rows removed when shrinking vertically (for scrollback capture).
-    /// Rejects zero-dimension resizes (no-op, returns empty).
+    /// Rejects zero-dimension resizes (no-op, returns empty) and clamps each
+    /// dimension to [`MAX_GRID_DIMENSION`] as a defense-in-depth cap against an
+    /// unbounded allocation.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Vec<Row> {
         if cols == 0 || rows == 0 {
             return Vec::new();
         }
+        let cols = cols.min(MAX_GRID_DIMENSION);
+        let rows = rows.min(MAX_GRID_DIMENSION);
 
         let new_rows = rows as usize;
         let captured = if new_rows < self.lines.len() {

@@ -8,7 +8,7 @@ use crate::requests::{RequestResult, handle_request};
 use crate::session::default_state_dir;
 use crate::socket::socket_path;
 use bytes::BytesMut;
-use oakterm_protocol::frame::{Frame, FrameCodec};
+use oakterm_protocol::frame::{Frame, FrameCodec, HEADER_SIZE};
 use oakterm_protocol::message::{
     Bell, ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DIRTY_NOTIFY, MSG_REQUEST_SHUTDOWN,
     PaneExited, ServerHello, Shutdown, ShutdownReason, TitleChanged,
@@ -28,6 +28,11 @@ use tracing::{debug, error, info, warn};
 
 /// Handshake timeout per Spec-0001.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound on the buffered bytes of an in-progress `ClientHello`. A real
+/// hello is a few dozen bytes; this caps pre-auth buffering so a client can't
+/// make the daemon reserve up to `MAX_PAYLOAD` before it has authenticated.
+const MAX_HANDSHAKE_BYTES: usize = 4096;
 
 /// Configuration for the cold disk scrollback archive.
 pub struct ArchiveConfig {
@@ -469,9 +474,44 @@ async fn dispatch_incoming(
 /// reply with `ServerHello`. On version mismatch it sends the mismatch
 /// response and returns an error so the caller closes the connection.
 async fn perform_handshake(conn_id: u64, mut io: FrameIo<'_>) -> io::Result<()> {
-    read_frame(io.stream, io.read_buf).await?;
-    let Ok(Some(frame)) = io.codec.decode(io.read_buf) else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "no frame"));
+    // Accumulate reads until a full ClientHello decodes: on a loaded system or
+    // with a large client_name the hello can arrive split across reads, where a
+    // single read+decode would see a fragment and reject it. The outer
+    // HANDSHAKE_TIMEOUT and EOF (read_frame errors on n==0) bound the loop.
+    let frame = loop {
+        read_frame(io.stream, io.read_buf).await?;
+        // Reject an oversized hello by its advertised payload length before
+        // decoding: FrameCodec::decode reserves the full payload capacity
+        // before it returns Ok(None), so an unauthenticated client could
+        // otherwise make the daemon reserve up to MAX_PAYLOAD. The length lives
+        // at bytes 9..13 of the front frame's header; a real ClientHello is a
+        // few dozen bytes. Checking only the front frame preserves a client
+        // that pipelines the hello with a larger first request.
+        if io.read_buf.len() >= HEADER_SIZE {
+            let payload_len = u32::from_le_bytes([
+                io.read_buf[9],
+                io.read_buf[10],
+                io.read_buf[11],
+                io.read_buf[12],
+            ]);
+            if payload_len as usize > MAX_HANDSHAKE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "handshake frame exceeds the maximum size",
+                ));
+            }
+        }
+        match io.codec.decode(io.read_buf) {
+            Ok(Some(frame)) => break frame,
+            // Ok(None) is a partial frame; loop to read the rest.
+            Ok(None) => {}
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("handshake frame decode failed: {e}"),
+                ));
+            }
+        }
     };
     if frame.msg_type != MSG_CLIENT_HELLO {
         return Err(io::Error::new(

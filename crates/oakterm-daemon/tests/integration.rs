@@ -135,6 +135,45 @@ async fn malformed_payload_returns_error() {
 }
 
 #[tokio::test]
+async fn oversized_resize_is_rejected() {
+    let (mut stream, mut codec, _handle) = connect_and_handshake().await;
+
+    // Create a pane; it stays NotSpawned until a Resize arrives.
+    let create = CreatePane {
+        command: "/bin/sleep 60".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        10,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 10).await;
+    let pane_id = CreatePaneResponse::decode(&resp.payload)
+        .expect("decode CreatePaneResponse")
+        .pane_id;
+
+    // A resize whose dimensions exceed the maximum must be rejected before any
+    // grid allocation or PTY spawn, rather than driving a multi-terabyte alloc.
+    let resize = Resize {
+        pane_id,
+        cols: u16::MAX,
+        rows: u16::MAX,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let frame = Frame::new(0x66, 11, resize.encode()).expect("resize frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    let response = read_response_with_serial(&mut stream, &mut codec, 11).await;
+    assert_eq!(response.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&response.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::MalformedPayload as u32);
+}
+
+#[tokio::test]
 async fn corrupt_framing_closes_connection() {
     let (mut stream, _codec, _handle) = connect_and_handshake().await;
 
@@ -1075,6 +1114,78 @@ async fn handshake_accepts_older_minor_version() {
     let server_hello = ServerHello::decode(&resp.payload).expect("decode ServerHello");
     assert_eq!(server_hello.status, HandshakeStatus::Accepted);
     assert_eq!(server_hello.protocol_version_minor, 1);
+}
+
+#[tokio::test]
+async fn handshake_rejects_newer_major_version() {
+    let td = TestDaemon::start().await;
+    let mut stream = UnixStream::connect(&td.socket).await.expect("connect");
+    let mut codec = FrameCodec;
+
+    let hello = ClientHello {
+        protocol_version_major: ClientHello::VERSION_MAJOR + 1,
+        protocol_version_minor: 0,
+        client_type: ClientType::Gui,
+        client_name: "future-client".to_string(),
+    };
+    write_frame(&mut stream, &mut codec, hello.to_frame(1).expect("encode")).await;
+
+    let resp = read_response_with_serial(&mut stream, &mut codec, 1).await;
+    assert_eq!(resp.msg_type, MSG_SERVER_HELLO);
+    let server_hello = ServerHello::decode(&resp.payload).expect("decode ServerHello");
+    assert_eq!(server_hello.status, HandshakeStatus::VersionMismatch);
+    assert_eq!(
+        server_hello.protocol_version_major,
+        ClientHello::VERSION_MAJOR
+    );
+
+    // The daemon closes the connection after rejecting the version.
+    let mut read_buf = BytesMut::with_capacity(64);
+    let eof = async {
+        loop {
+            let n = stream.read_buf(&mut read_buf).await.expect("read");
+            if n == 0 {
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), eof)
+        .await
+        .expect("daemon did not close the connection after a version mismatch");
+}
+
+#[tokio::test]
+async fn oversized_handshake_frame_is_rejected() {
+    let td = TestDaemon::start().await;
+    let mut stream = UnixStream::connect(&td.socket).await.expect("connect");
+
+    // A frame header advertising a payload far larger than a real ClientHello.
+    // The daemon must reject by advertised length (before reserving the payload)
+    // and close the connection, rather than buffer megabytes for an
+    // unauthenticated client.
+    let mut header = Vec::new();
+    header.extend_from_slice(&[0x4F, 0x54]); // MAGIC "OT"
+    header.push(0); // flags
+    header.extend_from_slice(&1u16.to_le_bytes()); // msg_type
+    header.extend_from_slice(&1u32.to_le_bytes()); // serial
+    header.extend_from_slice(&5000u32.to_le_bytes()); // payload_length > handshake cap
+    stream
+        .write_all(&header)
+        .await
+        .expect("write oversized handshake header");
+
+    let mut read_buf = BytesMut::with_capacity(64);
+    let eof = async {
+        loop {
+            let n = stream.read_buf(&mut read_buf).await.expect("read");
+            if n == 0 {
+                break;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), eof)
+        .await
+        .expect("daemon did not close the connection on an oversized handshake frame");
 }
 
 #[tokio::test]

@@ -3,6 +3,7 @@
 //! drawing. Pure functions — no GPU or protocol state.
 
 use oakterm_protocol::message::{LayoutDirection, LayoutTreeNode};
+use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 /// A pixel-space rectangle. Origin is the window's top-left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,9 +326,13 @@ pub fn grid_dims(rect: PixelRect, cell_width: f32, cell_height: f32) -> (u16, u1
             return 1;
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        // floor of a positive ratio, clamped to the u16 grid range.
+        // floor of a positive ratio, clamped to the grid range.
         let cells = (f64::from(pixels) / f64::from(cell)).floor() as u32;
-        u16::try_from(cells.max(1)).unwrap_or(u16::MAX)
+        // Clamp to the daemon's cap so the client never emits a Resize the
+        // daemon would reject (which, for a fresh pane, would leave it blank).
+        u16::try_from(cells.max(1))
+            .unwrap_or(u16::MAX)
+            .min(MAX_GRID_DIMENSION)
     };
     (dim(rect.width, cell_width), dim(rect.height, cell_height))
 }
@@ -654,6 +659,22 @@ mod tests {
         };
         assert_eq!(grid_dims(tiny, 8.0, 16.0), (1, 1));
         assert_eq!(grid_dims(rect, 0.0, -1.0), (1, 1));
+    }
+
+    #[test]
+    fn grid_dims_clamps_to_the_daemon_max() {
+        // A very wide/tall rect with 1px cells would compute dims far above the
+        // daemon's cap; the client must clamp so its Resize is never rejected.
+        let huge = PixelRect {
+            x: 0,
+            y: 0,
+            width: 100_000,
+            height: 100_000,
+        };
+        assert_eq!(
+            grid_dims(huge, 1.0, 1.0),
+            (MAX_GRID_DIMENSION, MAX_GRID_DIMENSION)
+        );
     }
 
     use super::FocusDirection::{Down, Left, Right, Up};

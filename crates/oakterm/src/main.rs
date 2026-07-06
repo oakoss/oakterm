@@ -35,6 +35,7 @@ use oakterm_renderer::font;
 use oakterm_renderer::pipeline::{BgSection, BgUniforms, RenderPipeline, TextUniforms};
 use oakterm_renderer::shaper::FontKey;
 use oakterm_renderer::swash_shaper::SwashShaper;
+use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 use a11y_bridge::{A11yEvent, A11yModel};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
@@ -2571,8 +2572,10 @@ fn window_to_grid_dims(
 ) -> (u16, u16) {
     let usable_w = size.width.saturating_sub(padding.left + padding.right);
     let usable_h = size.height.saturating_sub(padding.top + padding.bottom);
-    let cols = ((usable_w as f32 / metrics.cell_width) as u16).max(1);
-    let rows = ((usable_h as f32 / metrics.cell_height) as u16).max(1);
+    // Clamp to the daemon's cap (as grid_dims does) so a very wide display or
+    // tiny font can't produce a Resize the daemon rejects.
+    let cols = ((usable_w as f32 / metrics.cell_width) as u16).clamp(1, MAX_GRID_DIMENSION);
+    let rows = ((usable_h as f32 / metrics.cell_height) as u16).clamp(1, MAX_GRID_DIMENSION);
     (cols, rows)
 }
 

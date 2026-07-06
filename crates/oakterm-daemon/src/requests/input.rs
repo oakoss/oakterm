@@ -6,7 +6,7 @@ use crate::pty_io::pty_read_loop;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::ErrorCode;
-use oakterm_terminal::grid::ScreenId;
+use oakterm_terminal::grid::{MAX_GRID_DIMENSION, ScreenId};
 use std::sync::Arc;
 use tokio::sync::{Mutex, watch};
 use tracing::{debug, error, info, warn};
@@ -143,6 +143,25 @@ pub(super) async fn resize(
             "malformed Resize",
         );
     };
+    // Reject oversized dimensions before touching the grid or the PTY: a huge
+    // Resize would otherwise drive a multi-terabyte grid allocation and OOM the
+    // shared daemon. Rejecting (rather than clamping here) keeps the grid and
+    // the PTY window size consistent — neither is changed on a bad request.
+    if msg.cols > MAX_GRID_DIMENSION || msg.rows > MAX_GRID_DIMENSION {
+        warn!(
+            conn_id,
+            cols = msg.cols,
+            rows = msg.rows,
+            max = MAX_GRID_DIMENSION,
+            "Resize rejected: dimensions exceed the maximum"
+        );
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::MalformedPayload,
+            "resize dimensions exceed the maximum",
+        );
+    }
     let Some(mut pane) = lock_live_pane(panes, msg.pane_id).await else {
         return make_error_response(
             conn_id,
@@ -279,11 +298,11 @@ fn spawn_pty(
 fn encode_mouse_sgr(msg: &MouseInput, sgr: bool) -> String {
     // SGR button encoding: 0=left, 1=middle, 2=right, 64+=scroll
     let button = match msg.event_type {
-        0 => msg.button,      // press
-        1 => msg.button,      // release
-        2 => 32 + msg.button, // motion (add 32)
-        3 => 64,              // scroll up
-        4 => 65,              // scroll down
+        0 => msg.button,                    // press
+        1 => msg.button,                    // release
+        2 => msg.button.saturating_add(32), // motion (add 32) — client-controlled byte
+        3 => 64,                            // scroll up
+        4 => 65,                            // scroll down
         _ => return String::new(),
     };
     // Encode modifier bits: shift=4, alt=8, ctrl=16.
@@ -300,9 +319,72 @@ fn encode_mouse_sgr(msg: &MouseInput, sgr: bool) -> String {
         // Legacy X10 format (limited to 223 cols/rows).
         // Release is signaled by button=3 (no M/m distinction in X10).
         let legacy_button = if msg.event_type == 1 { 3 } else { button };
-        let cx = ((x + 32).min(255)) as u8;
-        let cy = ((y + 32).min(255)) as u8;
+        // Saturating add: a client-controlled coordinate near u16::MAX would
+        // otherwise overflow the `+ 32` (panic in debug, wrap in release)
+        // before the .min(255) can cap it.
+        let cx = (x.saturating_add(32).min(255)) as u8;
+        let cy = (y.saturating_add(32).min(255)) as u8;
         let cb = legacy_button.saturating_add(32);
         format!("\x1b[M{}{}{}", cb as char, cx as char, cy as char)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_mouse_sgr;
+    use oakterm_protocol::input::MouseInput;
+
+    #[test]
+    fn x10_mouse_encode_saturates_extreme_coordinates() {
+        // Coordinates near u16::MAX must not overflow the X10 `+ 32` offset;
+        // the byte saturates at 255 ('\u{ff}') instead.
+        let msg = MouseInput {
+            pane_id: 1,
+            x: u16::MAX,
+            y: u16::MAX,
+            button: 0,
+            event_type: 0,
+            modifiers: 0,
+        };
+        let seq = encode_mouse_sgr(&msg, false);
+        assert_eq!(
+            seq,
+            format!("\x1b[M{}{}{}", 32u8 as char, 255u8 as char, 255u8 as char)
+        );
+    }
+
+    #[test]
+    fn sgr_motion_button_saturates_extreme_button() {
+        // event_type 2 (motion) adds 32 to a client-controlled button byte;
+        // an extreme value must saturate rather than overflow u8.
+        let msg = MouseInput {
+            pane_id: 1,
+            x: 0,
+            y: 0,
+            button: u8::MAX,
+            event_type: 2,
+            modifiers: 0,
+        };
+        // No panic; SGR form encodes the saturated button (255 | modifiers=0).
+        let seq = encode_mouse_sgr(&msg, true);
+        assert_eq!(seq, "\x1b[<255;1;1M");
+    }
+
+    #[test]
+    fn x10_mouse_encode_offsets_normal_coordinates() {
+        let msg = MouseInput {
+            pane_id: 1,
+            x: 9,
+            y: 4,
+            button: 0,
+            event_type: 0,
+            modifiers: 0,
+        };
+        // 1-based, then +32: x=(9+1)+32=42, y=(4+1)+32=37.
+        let seq = encode_mouse_sgr(&msg, false);
+        assert_eq!(
+            seq,
+            format!("\x1b[M{}{}{}", 32u8 as char, 42u8 as char, 37u8 as char)
+        );
     }
 }
