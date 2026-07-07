@@ -38,7 +38,7 @@ struct PaneA11ySnapshot {
 
 impl PaneA11ySnapshot {
     fn from_view(view: &PaneView) -> Self {
-        let grid = &view.grid;
+        let grid = view.grid();
         Self {
             rows: grid.rows,
             cols: grid.cols,
@@ -47,15 +47,15 @@ impl PaneA11ySnapshot {
             cursor_col: grid.cursor_x,
             title: String::new(),
             scrollback_lines: 0,
-            scroll_offset: u64::from(view.viewport_offset),
-            selection: view_selection(view, view.viewport_offset),
+            scroll_offset: u64::from(view.viewport_offset()),
+            selection: view_selection(view, view.viewport_offset()),
             origin: (0.0, 0.0),
         }
     }
 
     /// Refresh the grid-derived fields at the given viewport offset.
     fn refresh_from(&mut self, view: &PaneView, offset: u32) {
-        let grid = &view.grid;
+        let grid = view.grid();
         self.rows = grid.rows;
         self.cols = grid.cols;
         self.row_texts = grid.row_texts();
@@ -69,7 +69,7 @@ impl PaneA11ySnapshot {
 fn view_selection(view: &PaneView, offset: u32) -> Option<SelectionRange> {
     view.selection
         .as_ref()
-        .and_then(|s| selection_range(s, offset, view.grid.rows))
+        .and_then(|s| selection_range(s, offset, view.grid().rows))
 }
 
 /// What changed this frame; drives which snapshot fields [`apply`] mutates
@@ -238,14 +238,14 @@ fn apply_to_snapshot<'a>(
     view: &PaneView,
     event: &A11yEvent<'a>,
 ) -> Option<EventOutcome<'a>> {
-    let grid = &view.grid;
+    let grid = view.grid();
     match event {
         A11yEvent::Render { dirty_rows } => {
             let cursor_changed =
                 snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
             // The render path only runs on the live view, so the offset is
             // 0 whenever that contract holds — and stays truthful if not.
-            snap.refresh_from(view, view.viewport_offset);
+            snap.refresh_from(view, view.viewport_offset());
             if dirty_rows.is_empty() && !cursor_changed {
                 return None;
             }
@@ -256,7 +256,7 @@ fn apply_to_snapshot<'a>(
             })
         }
         A11yEvent::Scrollback { total_rows } => {
-            snap.refresh_from(view, view.viewport_offset);
+            snap.refresh_from(view, view.viewport_offset());
             snap.scrollback_lines = *total_rows;
             // Every visible row changed; cursor_changed forces the terminal
             // rebuild that carries the new scroll position.
@@ -273,19 +273,19 @@ fn apply_to_snapshot<'a>(
             snap.title = (*title).to_string();
             // The rebuilt terminal node carries scroll state; keep it
             // current even when no scroll event refreshed the snapshot yet.
-            snap.scroll_offset = u64::from(view.viewport_offset);
+            snap.scroll_offset = u64::from(view.viewport_offset());
             Some(EventOutcome {
                 title_changed: true,
                 ..Default::default()
             })
         }
         A11yEvent::SelectionChanged => {
-            let sel = view_selection(view, view.viewport_offset);
+            let sel = view_selection(view, view.viewport_offset());
             if snap.selection == sel {
                 return None;
             }
             snap.selection = sel;
-            snap.scroll_offset = u64::from(view.viewport_offset);
+            snap.scroll_offset = u64::from(view.viewport_offset());
             Some(EventOutcome {
                 selection_changed: true,
                 ..Default::default()
@@ -322,7 +322,7 @@ pub(crate) fn apply(
         );
         return None;
     };
-    let grid = &view.grid;
+    let grid = view.grid();
 
     // Announcements touch only the shared window-level live region, so
     // they need no pane snapshot and skip the pane-presence gate.
@@ -361,7 +361,7 @@ pub(crate) fn apply(
         // Row node IDs are recalculated when dimensions change; the
         // viewport was reset to 0 by the caller.
         let snap = model.panes.get_mut(&pane_id).expect("presence checked");
-        snap.refresh_from(view, view.viewport_offset);
+        snap.refresh_from(view, view.viewport_offset());
         return Some(model.build_full_tree());
     }
 
@@ -413,9 +413,9 @@ pub(crate) fn sync_layout(
             continue;
         };
         if let Some(snap) = model.panes.get_mut(&pane_id) {
-            let dims_changed = snap.rows != view.grid.rows || snap.cols != view.grid.cols;
+            let dims_changed = snap.rows != view.grid().rows || snap.cols != view.grid().cols;
             if dims_changed {
-                snap.refresh_from(view, view.viewport_offset);
+                snap.refresh_from(view, view.viewport_offset());
                 snap.origin = origin;
                 changed = true;
             } else if snap.origin != origin {
@@ -424,7 +424,7 @@ pub(crate) fn sync_layout(
                 // full row-text refresh; carry the scroll offset the
                 // resize path may have reset.
                 snap.origin = origin;
-                snap.scroll_offset = u64::from(view.viewport_offset);
+                snap.scroll_offset = u64::from(view.viewport_offset());
                 changed = true;
             }
         } else {
@@ -1037,7 +1037,6 @@ mod tests {
         let state = tracked_model(0, &view);
         apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
         view.scroll_down(5);
-        view.grid.exit_scrollback();
         let update = apply(&state, 0, &view, A11yEvent::Resize).expect("full rebuild");
         assert!(update.tree.is_some(), "resize must rebuild the full tree");
         let terminal = update
@@ -1128,7 +1127,7 @@ mod tests {
     fn apply_render_cursor_move_pushes_terminal_then_settles() {
         let mut view = PaneView::new(ClientGrid::new(80, 24));
         let state = tracked_model(0, &view);
-        view.grid.cursor_x = 5;
+        view.grid_mut().cursor_x = 5;
         // Cursor moved with no dirty rows: the terminal node (which carries
         // the cursor as a text selection) must be rebuilt...
         let update =
@@ -1153,7 +1152,6 @@ mod tests {
         let state = tracked_model(0, &view);
         apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
         view.scroll_down(5);
-        view.grid.exit_scrollback();
         assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
         let full = state.lock().unwrap().as_ref().unwrap().build_full_tree();
         let terminal = full

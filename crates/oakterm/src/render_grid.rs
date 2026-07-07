@@ -185,6 +185,9 @@ impl ClientGrid {
 
     /// Save the current live view and enter scrollback mode.
     /// No-op if already scrolled.
+    ///
+    /// Only `PaneView` may drive this: it keeps the viewport offset and
+    /// the snapshot in lockstep.
     pub fn enter_scrollback(&mut self) {
         if self.live_snapshot.is_some() {
             return;
@@ -199,6 +202,9 @@ impl ClientGrid {
     }
 
     /// Restore the live view and exit scrollback mode.
+    ///
+    /// Only `PaneView` may drive this: it keeps the viewport offset and
+    /// the snapshot in lockstep.
     pub fn exit_scrollback(&mut self) {
         if let Some(snap) = self.live_snapshot.take() {
             self.cells = snap.cells;

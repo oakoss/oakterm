@@ -40,7 +40,7 @@ use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 use a11y_bridge::{A11yEvent, A11yModel};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
 use layout_state::PaneLayout;
-use pane_view::{PaneView, ScrollbackClampOutcome, clamp_viewport};
+use pane_view::{PaneView, ScrollbackClampOutcome};
 use render_grid::ClientGrid;
 
 // AccessKit handlers per Spec-0006.
@@ -196,8 +196,8 @@ fn plan_pane_syncs(
         let view = panes
             .entry(pane.pane_id)
             .or_insert_with(|| PaneView::new(ClientGrid::new(cols, rows)));
-        if view.grid.cols != cols || view.grid.rows != rows {
-            view.grid.resize(cols, rows);
+        if view.grid().cols != cols || view.grid().rows != rows {
+            view.resize(cols, rows);
         }
         if view.last_sent_dims == (cols, rows) {
             continue;
@@ -246,7 +246,7 @@ fn assemble_frame(
         let Some(pane) = panes.get(&pane_id) else {
             continue;
         };
-        let grid = &pane.grid;
+        let grid = pane.grid();
         let is_focused = pane_id == focused_pane;
         let cursor_vis = is_focused
             && grid.cursor_visible
@@ -257,7 +257,7 @@ fn assemble_frame(
             None
         };
 
-        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset);
+        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset());
         let (glyphs, uploads, color_uploads) = grid.glyph_instances(
             &font.metrics,
             &keys,
@@ -268,7 +268,7 @@ fn assemble_frame(
             &mut font.color_keys,
             cursor_vis,
             selection,
-            pane.viewport_offset,
+            pane.viewport_offset(),
             rect.x as f32,
             rect.y as f32,
         );
@@ -476,7 +476,9 @@ impl App {
 
     /// A pane's scrollback offset; 0 (live view) when it has no view.
     fn pane_viewport_offset(&self, pane_id: u32) -> u32 {
-        self.panes.get(&pane_id).map_or(0, |v| v.viewport_offset)
+        self.panes
+            .get(&pane_id)
+            .map_or(0, PaneView::viewport_offset)
     }
 
     /// Request scrollback rows from the daemon for the pane's viewport offset.
@@ -484,8 +486,8 @@ impl App {
         if let (Some(daemon), Some(view)) = (&self.daemon, self.panes.get(&pane_id)) {
             let req = GetScrollback {
                 pane_id,
-                start_row: -i64::from(view.viewport_offset),
-                count: u32::from(view.grid.rows),
+                start_row: -i64::from(view.viewport_offset()),
+                count: u32::from(view.grid().rows),
             };
             match Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
                 Ok(frame) => {
@@ -543,8 +545,7 @@ impl App {
     /// Return a pane to live view from scrollback.
     fn return_to_live(&mut self, pane_id: u32) {
         if let Some(view) = self.panes.get_mut(&pane_id) {
-            view.viewport_offset = 0;
-            view.grid.exit_scrollback();
+            view.return_to_live();
         }
         // Request a full refresh to ensure live view is current.
         if let Some(daemon) = &self.daemon {
@@ -605,8 +606,8 @@ impl App {
             2 => {
                 // Semantic (word) selection.
                 if let Some(view) = self.focused_view_mut() {
-                    if row < view.grid.rows {
-                        let text: Vec<char> = view.grid.row_text(row).chars().collect();
+                    if row < view.grid().rows {
+                        let text: Vec<char> = view.grid().row_text(row).chars().collect();
                         // Click past end of text: no word to select.
                         if (col as usize) < text.len() {
                             let (start_col, end_col) = word_boundaries(&text, col);
@@ -678,11 +679,11 @@ impl App {
         let Some(view) = self.focused_view() else {
             return false;
         };
-        if !view.grid.cursor_visible || view.grid.is_scrolled() {
+        if !view.grid().cursor_visible || view.is_scrolled() {
             return false;
         }
         // Blinking styles: 0=BlinkingBlock, 2=BlinkingUnderline, 4=BlinkingBar
-        matches!(view.grid.cursor_style, 0 | 2 | 4)
+        matches!(view.grid().cursor_style, 0 | 2 | 4)
     }
 }
 
@@ -856,7 +857,7 @@ impl ApplicationHandler<UserEvent> for App {
 
                 // Resize exits scrollback for the focused pane.
                 if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                    view.viewport_offset = 0;
+                    view.return_to_live();
                 }
 
                 // With splits, every pane's rect changes: recompute the
@@ -881,16 +882,11 @@ impl ApplicationHandler<UserEvent> for App {
 
                 let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
                     (Some(font), Some(view)) => {
-                        let grid = &mut view.grid;
                         let (cols, rows) =
                             window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                        let dims_changed = grid.rows != rows || grid.cols != cols;
+                        let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
                         if dims_changed {
-                            grid.resize(cols, rows);
-                        } else {
-                            // Dims unchanged but viewport_offset was reset;
-                            // still need to exit scrollback mode.
-                            grid.exit_scrollback();
+                            view.resize(cols, rows);
                         }
 
                         // Full a11y tree rebuild on resize (row count changed).
@@ -1066,13 +1062,21 @@ impl ApplicationHandler<UserEvent> for App {
                             AnchorSide::Left
                         };
                         if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                            let sel_row = i64::from(row) - i64::from(view.viewport_offset);
-                            let grid = &view.grid;
+                            let sel_row = i64::from(row) - i64::from(view.viewport_offset());
+                            let grid_rows = view.grid().rows;
+                            let semantic = view
+                                .selection
+                                .as_ref()
+                                .is_some_and(|s| s.ty == SelectionType::Semantic);
+                            let text: Vec<char> = if semantic && row < grid_rows {
+                                view.grid().row_text(row).chars().collect()
+                            } else {
+                                Vec::new()
+                            };
                             if let Some(sel) = &mut view.selection {
                                 if sel.ty == SelectionType::Semantic {
                                     // Snap drag to word boundaries.
-                                    if row < grid.rows {
-                                        let text: Vec<char> = grid.row_text(row).chars().collect();
+                                    if row < grid_rows {
                                         if (col as usize) < text.len() {
                                             let (start_col, end_col) = word_boundaries(&text, col);
                                             // Snap to near edge based on drag direction.
@@ -1203,7 +1207,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let scroll_lines = (3 * count) as i32;
 
                 let shift = self.modifiers.state().shift_key();
-                let alt_screen = self.focused_view().is_some_and(|v| v.grid.alt_screen);
+                let alt_screen = self.focused_view().is_some_and(|v| v.grid().alt_screen);
 
                 // Routing (matches alacritty/kitty/wezterm):
                 // - Already in host scrollback: keep scrolling host until offset == 0.
@@ -1355,7 +1359,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.panes
                         .get(&self.focused_pane)
                         .map_or(wgpu::Color::BLACK, |v| {
-                            let [r, g, b] = v.grid.bg_color;
+                            let [r, g, b] = v.grid().bg_color;
                             wgpu::Color {
                                 r: f64::from(r) / 255.0,
                                 g: f64::from(g) / 255.0,
@@ -1403,15 +1407,12 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 };
                 view.bracketed_paste = update.bracketed_paste;
-                if view.grid.is_scrolled() {
-                    view.grid.apply_update_while_scrolled(&update);
-                } else {
-                    view.grid.apply_update(&update);
-
+                view.apply_update(&update);
+                if !view.is_scrolled() {
                     let dirty_rows: Vec<(u16, String)> = update
                         .dirty_rows
                         .iter()
-                        .map(|r| (r.row_index, view.grid.row_text(r.row_index)))
+                        .map(|r| (r.row_index, view.grid().row_text(r.row_index)))
                         .collect();
                     a11y_update = a11y_bridge::apply(
                         &self.a11y_state,
@@ -1454,26 +1455,18 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 {
-                    match clamp_viewport(self.pane_viewport_offset(pane_id), data.total_rows) {
-                        ScrollbackClampOutcome::ReturnToLive => {
-                            self.return_to_live(pane_id);
-                            return;
-                        }
-                        ScrollbackClampOutcome::Clamp(clamped) => {
-                            if let Some(view) = self.panes.get_mut(&pane_id) {
-                                view.viewport_offset = clamped;
-                            }
-                        }
+                    let clamp = self
+                        .panes
+                        .get_mut(&pane_id)
+                        .map(|view| view.clamp_scrollback(data.total_rows));
+                    if clamp == Some(ScrollbackClampOutcome::ReturnToLive) {
+                        self.return_to_live(pane_id);
+                        return;
                     }
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     let scroll_indicator = self.config.scroll_indicator;
                     if let Some(view) = self.panes.get_mut(&pane_id) {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let offset = view.viewport_offset.min(u32::from(u16::MAX)) as u16;
-                        view.grid.apply_scrollback(&data.rows, offset);
-                        if scroll_indicator {
-                            view.grid.set_scroll_indicator(view.viewport_offset);
-                        }
+                        view.apply_scrollback(&data.rows, scroll_indicator);
                         a11y_scrollback_update = a11y_bridge::apply(
                             &self.a11y_state,
                             pane_id,
@@ -1505,10 +1498,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.return_to_live(self.focused_pane);
                     } else {
                         if let Some(view) = self.focused_view_mut() {
-                            view.viewport_offset = new_offset;
-                            if !view.grid.is_scrolled() {
-                                view.grid.enter_scrollback();
-                            }
+                            view.set_scroll_offset(new_offset);
                         }
                         self.request_scrollback(self.focused_pane);
                     }
@@ -1594,7 +1584,7 @@ impl ApplicationHandler<UserEvent> for App {
                             debug!(target_pane, "a11y: scroll action for untracked pane");
                             return;
                         };
-                        let mut page = i32::from(view.grid.rows);
+                        let mut page = i32::from(view.grid().rows);
                         if request.action == accesskit::Action::ScrollDown {
                             page = -page;
                         }
@@ -1610,10 +1600,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.return_to_live(target_pane);
                             } else {
                                 if let Some(view) = self.panes.get_mut(&target_pane) {
-                                    if !view.grid.is_scrolled() {
-                                        view.grid.enter_scrollback();
-                                    }
-                                    view.viewport_offset = target;
+                                    view.set_scroll_offset(target);
                                 }
                                 self.request_scrollback(target_pane);
                             }
@@ -1638,7 +1625,7 @@ impl ApplicationHandler<UserEvent> for App {
                             .map(|(pane_id, _)| pane_id);
                         let (offset, rows) = pane_hint
                             .and_then(|id| self.panes.get(&id))
-                            .map_or((0, 0), |v| (v.viewport_offset, v.grid.rows));
+                            .map_or((0, 0), |v| (v.viewport_offset(), v.grid().rows));
                         let Some((pane_id, sel)) =
                             a11y_bridge::selection_from_a11y(&at_sel, offset, rows)
                         else {
@@ -1781,7 +1768,7 @@ impl App {
             ActionDesc::ScrollUp(lines) => {
                 if let Some(view) = self.focused_view_mut() {
                     let amount = if lines == 0 {
-                        u32::from(view.grid.rows)
+                        u32::from(view.grid().rows)
                     } else {
                         lines
                     };
@@ -1798,7 +1785,7 @@ impl App {
                     return false;
                 };
                 let amount = if lines == 0 {
-                    u32::from(view.grid.rows)
+                    u32::from(view.grid().rows)
                 } else {
                     lines
                 };
@@ -1817,9 +1804,7 @@ impl App {
                 };
                 if dir == SearchDirection::Older {
                     if let Some(view) = self.focused_view_mut() {
-                        if !view.grid.is_scrolled() {
-                            view.grid.enter_scrollback();
-                        }
+                        view.freeze_live();
                     }
                     self.request_find_prompt(dir);
                 } else if self.viewport_offset() > 0 {
@@ -1903,7 +1888,9 @@ impl App {
                     .focused_view()
                     .and_then(|v| v.selection.as_ref().map(|sel| (sel, v)))
                 {
-                    let text = view.grid.extract_selection_text(sel, view.viewport_offset);
+                    let text = view
+                        .grid()
+                        .extract_selection_text(sel, view.viewport_offset());
                     if !text.is_empty() {
                         match arboard::Clipboard::new() {
                             Ok(mut cb) => {
@@ -2370,10 +2357,7 @@ impl App {
                         window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
                     let cols = cols.max(1);
                     let rows = rows.max(1);
-                    view.grid.resize(cols, rows);
-                    // grid.resize exits scrollback; keep the viewport field
-                    // in step (mirrors WindowEvent::Resized).
-                    view.viewport_offset = 0;
+                    view.resize(cols, rows);
 
                     // Row bounds derive from cell dimensions; rebuild the
                     // a11y tree at the new metrics.
@@ -3115,8 +3099,26 @@ mod tests {
         assert_eq!(resizes.len(), 1);
         assert_eq!((resizes[0].cols, resizes[0].rows), (80, 10));
         let view = &panes[&7];
-        assert_eq!((view.grid.cols, view.grid.rows), (80, 10));
+        assert_eq!((view.grid().cols, view.grid().rows), (80, 10));
         assert_eq!(view.last_sent_dims, (40, 10), "plan must not commit");
+    }
+
+    /// A background pane in scrollback must return to live when a layout
+    /// resize forces a grid resize, or its stale offset drives `GetScrollback`
+    /// at a bad `start_row` — the D2/TREK-139 desync class via `plan_pane_syncs`.
+    #[test]
+    fn plan_pane_syncs_resize_returns_scrolled_pane_to_live() {
+        let geometry = geometry_of(&[(7, 400, 200)]);
+        let mut panes = HashMap::new();
+        plan_pane_syncs(&geometry, CELL, &mut panes);
+        panes.get_mut(&7).unwrap().scroll_up(5);
+        assert!(panes[&7].is_scrolled());
+
+        let grown = geometry_of(&[(7, 800, 200)]);
+        plan_pane_syncs(&grown, CELL, &mut panes);
+        let view = &panes[&7];
+        assert_eq!(view.viewport_offset(), 0, "resize must return to live");
+        assert!(!view.is_scrolled(), "offset and snapshot both reset");
     }
 
     #[test]
