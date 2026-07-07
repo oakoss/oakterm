@@ -6,7 +6,7 @@ use oakterm_mux::{
 };
 use oakterm_terminal::grid::ScreenSet;
 use std::ffi::OsString;
-use std::os::unix::io::RawFd;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,7 +27,11 @@ pub(crate) enum PtyState {
     /// and `Pty::Drop` kills + reaps the child. Without this, an idle shell
     /// (no output) leaves the loop blocked on `readable()` indefinitely.
     Running {
-        fd: RawFd,
+        /// Write handle to the read loop's master. Owned by this variant so
+        /// it can only be written while holding the pane guard, and closes
+        /// when the state leaves `Running` — a handler can never write to a
+        /// stale, kernel-reused fd number (TREK-242).
+        fd: WriterFd,
         pid: u32,
         cancel: tokio::sync::oneshot::Sender<()>,
     },
@@ -36,6 +40,29 @@ pub(crate) enum PtyState {
     Failed(String),
     /// PTY read loop exited (master fd EOF or error).
     Exited { exit_code: i32 },
+}
+
+/// Dup of a PTY master prepared for handler writes: `O_NONBLOCK` is set
+/// before the dup, so a write under the pane guard can never stall the
+/// lock. This is the only way to put an fd into [`PtyState::Running`],
+/// making the non-blocking guarantee a property of the type rather than
+/// of the spawn call site. The flag lives on the shared open file
+/// description, so the read loop's `AsyncFd` sees it too.
+pub(crate) struct WriterFd(OwnedFd);
+
+impl WriterFd {
+    pub(crate) fn new(pty: &oakterm_pty::Pty) -> Result<Self, rustix::io::Errno> {
+        let master = pty.master_fd();
+        let flags = rustix::fs::fcntl_getfl(master)?;
+        rustix::fs::fcntl_setfl(master, flags | rustix::fs::OFlags::NONBLOCK)?;
+        Ok(Self(rustix::io::dup(master)?))
+    }
+}
+
+impl std::os::fd::AsFd for WriterFd {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
+    }
 }
 
 /// Per-pane state: screen buffer, PTY lifecycle, and dirty tracking.

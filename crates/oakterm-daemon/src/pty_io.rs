@@ -25,76 +25,83 @@ pub(crate) async fn pty_read_loop(
     let raw_fd = pty.master_raw_fd();
     let pid = pty.child_pid();
 
-    // Set non-blocking for tokio `AsyncFd`.
-    let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
-    match rustix::fs::fcntl_getfl(borrowed) {
-        Ok(flags) => {
-            if let Err(e) = rustix::fs::fcntl_setfl(borrowed, flags | rustix::fs::OFlags::NONBLOCK)
-            {
-                error!(error = %e, "failed to set PTY non-blocking");
-                return;
+    // Setup failures break to the shared teardown below rather than
+    // returning: a bare return here would strand the pane in `Running` with
+    // no `PaneExited` push — a silent wedge invisible to clients.
+    let exit_reason = 'lifecycle: {
+        // `AsyncFd` and the read below require `O_NONBLOCK`; `WriterFd::new`
+        // sets it before `PtyState::Running` is published. Verify rather than
+        // trust: a blocking master here would stall a tokio worker thread
+        // silently on the readable-then-drained race instead of failing
+        // loudly.
+        let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
+        match rustix::fs::fcntl_getfl(borrowed) {
+            Ok(flags) if flags.contains(rustix::fs::OFlags::NONBLOCK) => {}
+            Ok(_) => {
+                error!(pane_id, "PTY master is not non-blocking");
+                break 'lifecycle "master not non-blocking";
+            }
+            Err(e) => {
+                error!(pane_id, error = %e, "failed to read PTY fd flags");
+                break 'lifecycle "fd flags read failed";
             }
         }
-        Err(e) => {
-            error!(error = %e, "failed to get PTY fd flags");
-            return;
-        }
-    }
 
-    let Ok(async_fd) = AsyncFd::new(raw_fd) else {
-        error!("failed to create AsyncFd for PTY");
-        return;
-    };
-
-    debug!(pid, pane_id, "PTY read loop started");
-    let mut buf = [0u8; 4096];
-
-    let exit_reason = loop {
-        // `biased` so a rapid close-after-spawn always wins over a pending
-        // read — avoids one last guaranteed-stale read after cancellation.
-        // Both branches are cancellation-safe: `oneshot::Receiver` and
-        // `AsyncFd::readable` both document drop-safety.
-        let read_ready = async_fd.readable();
-        let read_outcome = tokio::select! {
-            biased;
-            _ = &mut cancel_rx => break "cancelled",
-            ready = read_ready => ready,
+        let Ok(async_fd) = AsyncFd::new(raw_fd) else {
+            error!(pane_id, "failed to create AsyncFd for PTY");
+            break 'lifecycle "AsyncFd setup failed";
         };
 
-        let Ok(mut guard) = read_outcome else {
-            break "readable poll failed";
-        };
+        debug!(pid, pane_id, "PTY read loop started");
+        let mut buf = [0u8; 4096];
 
-        match guard.try_io(|inner| {
-            let fd = inner.get_ref();
-            let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(*fd) };
-            rustix::io::read(borrowed, &mut buf)
-                .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
-        }) {
-            Ok(Ok(0)) => break "EOF",
-            Ok(Ok(n)) => {
-                // Re-lookup per read so pane removal is still detected;
-                // the topology lock is held only for the map lookup.
-                let Some(mut pane) = lock_live_pane(&panes, pane_id).await else {
-                    warn!(pane_id, "pane removed while PTY read loop active, exiting");
-                    break "pane removed";
-                };
-                let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
-                let mut pty_writer = FdWriter(borrowed_wr);
-                pane.screens.process_bytes(&buf[..n], &mut pty_writer);
-                pane.bump_dirty();
-                drop(pane);
-                // The seqno bump must happen-before this send: a client
-                // woken by the watch reads the seqno next, and a stale
-                // read would mark-seen and stall until unrelated output.
-                let _ = dirty_tx.send(pane_id.into());
+        loop {
+            // `biased` so a rapid close-after-spawn always wins over a pending
+            // read — avoids one last guaranteed-stale read after cancellation.
+            // Both branches are cancellation-safe: `oneshot::Receiver` and
+            // `AsyncFd::readable` both document drop-safety.
+            let read_ready = async_fd.readable();
+            let read_outcome = tokio::select! {
+                biased;
+                _ = &mut cancel_rx => break "cancelled",
+                ready = read_ready => ready,
+            };
+
+            let Ok(mut guard) = read_outcome else {
+                break "readable poll failed";
+            };
+
+            match guard.try_io(|inner| {
+                let fd = inner.get_ref();
+                let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(*fd) };
+                rustix::io::read(borrowed, &mut buf)
+                    .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
+            }) {
+                Ok(Ok(0)) => break "EOF",
+                Ok(Ok(n)) => {
+                    // Re-lookup per read so pane removal is still detected;
+                    // the topology lock is held only for the map lookup.
+                    let Some(mut pane) = lock_live_pane(&panes, pane_id).await else {
+                        warn!(pane_id, "pane removed while PTY read loop active, exiting");
+                        break "pane removed";
+                    };
+                    let borrowed_wr = unsafe { rustix::fd::BorrowedFd::borrow_raw(raw_fd) };
+                    let mut pty_writer = FdWriter(borrowed_wr);
+                    pane.screens.process_bytes(&buf[..n], &mut pty_writer);
+                    pane.bump_dirty();
+                    drop(pane);
+                    // The seqno bump must happen-before this send: a client
+                    // woken by the watch reads the seqno next, and a stale
+                    // read would mark-seen and stall until unrelated output.
+                    let _ = dirty_tx.send(pane_id.into());
+                }
+                Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Ok(Err(e)) => {
+                    warn!(error = %e, pane_id, "PTY read error");
+                    break "read error";
+                }
+                Err(_would_block) => {}
             }
-            Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Ok(Err(e)) => {
-                warn!(error = %e, pane_id, "PTY read error");
-                break "read error";
-            }
-            Err(_would_block) => {}
         }
     };
 

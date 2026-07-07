@@ -4,16 +4,16 @@
 
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
-use oakterm_protocol::input::Resize;
+use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
     ClientHello, ClientType, ClosePane, CloseTab, CreatePane, CreatePaneResponse, ErrorCode,
     ErrorMessage, GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse,
     MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE,
-    MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_LAYOUT_TREE,
-    MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE,
-    MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN,
-    MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE,
-    MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
+    MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT,
+    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE,
+    MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG,
+    MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK,
+    MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
     MSG_SWITCH_WORKSPACE, NewTab, NewTabResponse, NewWorkspace, NewWorkspaceResponse, PaneExited,
     RequestShutdown, RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck,
     ShutdownAckStatus, ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane,
@@ -431,6 +431,200 @@ async fn close_pane_kills_streaming_child_promptly() {
         !alive,
         "streaming child {pid} should have been killed within 500ms of ClosePane"
     );
+}
+
+#[tokio::test]
+async fn key_input_reaches_child() {
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    // The child blocks on stdin and exits with a distinctive code once a
+    // line arrives, so PaneExited proves the KeyInput bytes traversed the
+    // PTY write path end-to-end.
+    let create = CreatePane {
+        command: "/bin/sh -c 'read line; exit 9'".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        170,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 170).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    // Wait for the spawn to complete so the write hits a Running pane.
+    poll_for_pid(&mut stream, &mut codec, pane_id).await;
+
+    let key = KeyInput {
+        pane_id,
+        key_data: b"go\n".to_vec(),
+    };
+    let frame = Frame::new(MSG_KEY_INPUT, 171, key.encode().expect("encode KeyInput"))
+        .expect("key-input frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    let frame = read_push_with_msg_type(&mut stream, &mut codec, MSG_PANE_EXITED).await;
+    let exited = PaneExited::decode(&frame.payload).expect("decode PaneExited");
+    assert_eq!(exited.pane_id, pane_id);
+    assert_eq!(exited.exit_code, 9);
+}
+
+#[tokio::test]
+async fn resize_applies_to_running_pane() {
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    let create = CreatePane {
+        command: "/bin/sh -c 'sleep 30'".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        175,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 175).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+    poll_for_pid(&mut stream, &mut codec, pane_id).await;
+
+    // Second Resize hits the Running arm (resize_fd on the write handle)
+    // rather than the spawn path the first Resize took.
+    let resize = Resize {
+        pane_id,
+        cols: 100,
+        rows: 30,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    let mut serial = 2000;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        serial += 1;
+        let frame = Frame::new(MSG_LIST_PANES, serial, vec![]).expect("list-panes frame");
+        write_frame(&mut stream, &mut codec, frame).await;
+        let resp = read_response_with_serial(&mut stream, &mut codec, serial).await;
+        let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+        let info = list
+            .panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .expect("pane listed");
+        if info.cols == 100 && info.rows == 30 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pane never reached 100x30 (last saw {}x{})",
+            info.cols,
+            info.rows
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+// Multi-thread flavor so a regression to a blocking write stalls one worker
+// and the ListPanes probe times out with a panic, instead of freezing the
+// whole single-threaded runtime (timeout timer included) into a silent hang.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_key_input_does_not_wedge_daemon() {
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    // The daemon must stay responsive after large input bursts to a child
+    // that never reads stdin. On Linux a full PTY queue backpressures the
+    // writer (EAGAIN, exercising the drop path); macOS discards excess
+    // canonical-mode input instead, so here the test only proves the write
+    // path doesn't stall the pane lock.
+    let create = CreatePane {
+        command: "/bin/sh -c 'sleep 30'".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(
+        MSG_CREATE_PANE,
+        185,
+        create.encode().expect("encode CreatePane"),
+    )
+    .expect("create-pane frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 185).await;
+    assert_eq!(resp.msg_type, MSG_CREATE_PANE_RESPONSE);
+    let create_resp = CreatePaneResponse::decode(&resp.payload).expect("decode CreatePaneResponse");
+    let pane_id = create_resp.pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+    poll_for_pid(&mut stream, &mut codec, pane_id).await;
+
+    for i in 0..4u32 {
+        let key = KeyInput {
+            pane_id,
+            key_data: vec![b'x'; 60_000],
+        };
+        let frame = Frame::new(
+            MSG_KEY_INPUT,
+            186 + i,
+            key.encode().expect("encode KeyInput"),
+        )
+        .expect("key-input frame");
+        write_frame(&mut stream, &mut codec, frame).await;
+    }
+
+    let frame = Frame::new(MSG_LIST_PANES, 195, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 195).await;
+    assert_eq!(resp.msg_type, MSG_LIST_PANES_RESPONSE);
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 //! Input family: `KeyInput`, `MouseInput`, `Resize` (0x64-0x66).
 
 use super::{RequestResult, make_error_response};
-use crate::pane::{PaneManager, PaneState, PtyState, build_command_spec, lock_live_pane};
+use crate::pane::{PaneManager, PaneState, PtyState, WriterFd, build_command_spec, lock_live_pane};
 use crate::pty_io::pty_read_loop;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
@@ -36,12 +36,10 @@ pub(super) async fn key_input(
             "unknown pane",
         );
     };
-    match pane.pty_state {
+    match &pane.pty_state {
         PtyState::Running { fd, .. } => {
-            drop(pane);
             if !msg.key_data.is_empty() {
-                let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
-                if let Err(e) = rustix::io::write(borrowed, &msg.key_data) {
+                if let Err(e) = rustix::io::write(fd, &msg.key_data) {
                     warn!(conn_id, error = %e, "PTY write failed");
                 }
             }
@@ -78,7 +76,7 @@ pub(super) async fn mouse_input(
             "unknown pane",
         );
     };
-    if let PtyState::Running { fd, .. } = pane.pty_state {
+    if let PtyState::Running { fd, .. } = &pane.pty_state {
         let g = pane.screens.active_grid();
         let sgr = g.modes.get(1006);
         let click = g.modes.get(1000);
@@ -87,7 +85,6 @@ pub(super) async fn mouse_input(
         let alt_scroll = g.modes.get(1007);
         let decckm = g.modes.get(1);
         let on_alt = pane.screens.active_screen() == ScreenId::Alternate;
-        drop(pane);
 
         let mouse_reporting = click || cell_motion || all_motion;
         let shift_held = msg.modifiers & 4 != 0;
@@ -104,8 +101,7 @@ pub(super) async fn mouse_input(
         if should_send {
             let seq = encode_mouse_sgr(&msg, sgr);
             if !seq.is_empty() {
-                let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
-                if let Err(e) = rustix::io::write(borrowed, seq.as_bytes()) {
+                if let Err(e) = rustix::io::write(fd, seq.as_bytes()) {
                     warn!(conn_id, error = %e, "PTY mouse write failed");
                 }
             }
@@ -116,9 +112,8 @@ pub(super) async fn mouse_input(
                 (4, true) => b"\x1bOB",
                 (_, _) => b"\x1b[B",
             };
-            let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
             for _ in 0..ALT_SCROLL_LINES {
-                if let Err(e) = rustix::io::write(borrowed, arrow) {
+                if let Err(e) = rustix::io::write(fd, arrow) {
                     warn!(conn_id, error = %e, "PTY alt-scroll write failed");
                     break;
                 }
@@ -170,19 +165,14 @@ pub(super) async fn resize(
             "unknown pane",
         );
     };
-    match pane.pty_state {
+    match &pane.pty_state {
         PtyState::NotSpawned => {
             return spawn_pty(conn_id, frame.serial, &msg, pane, panes, dirty_tx);
         }
         PtyState::Running { fd, .. } => {
-            let borrowed = unsafe { rustix::fd::BorrowedFd::borrow_raw(fd) };
-            if let Err(e) = oakterm_pty::resize_fd(
-                borrowed,
-                msg.cols,
-                msg.rows,
-                msg.pixel_width,
-                msg.pixel_height,
-            ) {
+            if let Err(e) =
+                oakterm_pty::resize_fd(fd, msg.cols, msg.rows, msg.pixel_width, msg.pixel_height)
+            {
                 warn!(conn_id, error = %e, "PTY resize failed");
             } else {
                 pane.screens.resize_all(msg.cols, msg.rows);
@@ -192,7 +182,7 @@ pub(super) async fn resize(
                 let _ = dirty_tx.send(u64::from(msg.pane_id));
             }
         }
-        PtyState::Failed(ref reason) => {
+        PtyState::Failed(reason) => {
             warn!(conn_id, reason, "Resize ignored: PTY previously failed");
             return make_error_response(
                 conn_id,
@@ -202,7 +192,11 @@ pub(super) async fn resize(
             );
         }
         PtyState::Exited { exit_code } => {
-            debug!(conn_id, exit_code, "Resize ignored: PTY exited");
+            debug!(
+                conn_id,
+                exit_code = *exit_code,
+                "Resize ignored: PTY exited"
+            );
             return make_error_response(
                 conn_id,
                 frame.serial,
@@ -261,11 +255,24 @@ fn spawn_pty(
         },
     ) {
         Ok(pty) => {
-            let fd = pty.master_raw_fd();
+            let write_fd = match WriterFd::new(&pty) {
+                Ok(fd) => fd,
+                Err(e) => {
+                    // Dropping `pty` kills and reaps the child via `Pty::Drop`.
+                    error!(conn_id, error = %e, "failed to prepare PTY master for writes");
+                    pane.pty_state = PtyState::Failed(e.to_string());
+                    return make_error_response(
+                        conn_id,
+                        serial,
+                        ErrorCode::InternalError,
+                        &format!("PTY write setup failed: {e}"),
+                    );
+                }
+            };
             let pid = pty.child_pid();
             let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
             pane.pty_state = PtyState::Running {
-                fd,
+                fd: write_fd,
                 pid,
                 cancel: cancel_tx,
             };
