@@ -317,6 +317,32 @@ impl ClientGrid {
         }
     }
 
+    /// Write one cell. Out-of-bounds positions are ignored. Serves
+    /// synthetic chrome grids (the tab bar) that never see a
+    /// `RenderUpdate`.
+    pub fn set_cell(&mut self, col: u16, row: u16, ch: char, fg: [u8; 3], bg: [u8; 3]) {
+        if col >= self.cols || row >= self.rows {
+            return;
+        }
+        let idx = usize::from(row) * usize::from(self.cols) + usize::from(col);
+        self.cells[idx] = RenderCell {
+            codepoint: ch as u32,
+            fg,
+            bg,
+            flags: 0,
+        };
+    }
+
+    /// Fill every cell's background, keeping default fg and no glyph.
+    pub fn fill_bg(&mut self, bg: [u8; 3]) {
+        for cell in &mut self.cells {
+            *cell = RenderCell {
+                bg,
+                ..RenderCell::default()
+            };
+        }
+    }
+
     /// Linear cell index of the cursor, if visible and in-bounds.
     fn cursor_cell_index(&self, visible: bool) -> Option<usize> {
         if visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
@@ -1196,5 +1222,32 @@ mod tests {
         assert_eq!(texts.len(), 2);
         assert_eq!(texts[0], "A");
         assert_eq!(texts[1], "B");
+    }
+
+    #[test]
+    fn set_cell_writes_glyph_and_colors() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.set_cell(2, 1, 'x', [1, 2, 3], [4, 5, 6]);
+        let cell = &grid.cells[6];
+        assert_eq!(cell.codepoint, u32::from('x'));
+        assert_eq!(cell.fg, [1, 2, 3]);
+        assert_eq!(cell.bg, [4, 5, 6]);
+    }
+
+    #[test]
+    fn set_cell_out_of_bounds_is_noop() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.set_cell(4, 0, 'x', [1, 1, 1], [2, 2, 2]);
+        grid.set_cell(0, 2, 'x', [1, 1, 1], [2, 2, 2]);
+        assert!(grid.cells.iter().all(|c| c.codepoint == 0));
+    }
+
+    #[test]
+    fn fill_bg_resets_glyphs_and_sets_bg() {
+        let mut grid = ClientGrid::new(4, 1);
+        grid.set_cell(1, 0, 'x', [1, 2, 3], [4, 5, 6]);
+        grid.fill_bg([9, 9, 9]);
+        assert!(grid.cells.iter().all(|c| c.codepoint == 0));
+        assert!(grid.cells.iter().all(|c| c.bg == [9, 9, 9]));
     }
 }

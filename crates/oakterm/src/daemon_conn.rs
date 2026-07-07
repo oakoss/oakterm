@@ -5,10 +5,11 @@ use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
     ClientHello, ClientType, ErrorCode, ErrorMessage, HandshakeStatus, LayoutTree, MSG_BELL,
-    MSG_DIRTY_NOTIFY, MSG_ERROR, MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_PROMPT_POSITION,
-    MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_SHUTDOWN,
-    MSG_SPLIT_PANE_RESPONSE, MSG_TITLE_CHANGED, PromptPosition, ScrollbackData, Shutdown,
-    SplitPaneResponse, TitleChanged,
+    MSG_CLOSE_TAB_RESPONSE, MSG_DIRTY_NOTIFY, MSG_ERROR, MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE,
+    MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA,
+    MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED,
+    NewTabResponse, PromptPosition, ScrollbackData, Shutdown, SplitPaneResponse, TabList,
+    TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
@@ -42,13 +43,22 @@ impl DaemonWriter {
     }
 }
 
+/// A connected daemon: the frame writer, the spawned child (when this
+/// client started the daemon), and the server's advertised protocol
+/// minor version for gating newer request types (Spec-0001).
+pub(crate) struct DaemonConnection {
+    pub(crate) writer: DaemonWriter,
+    pub(crate) child: Option<std::process::Child>,
+    pub(crate) server_minor: u16,
+}
+
 /// Connect to the daemon, spawning it if needed.
 ///
 /// Uses tmux-style connect-and-check with a lock file to handle stale
 /// sockets and prevent two clients from racing to start the daemon.
 pub(crate) fn connect_to_daemon(
     proxy: &EventLoopProxy<UserEvent>,
-) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
+) -> std::io::Result<DaemonConnection> {
     let socket_path = oakterm_daemon::socket::socket_path()?;
 
     // Try connecting to an existing daemon first.
@@ -151,14 +161,14 @@ fn finish_connect(
     stream: UnixStream,
     proxy: &EventLoopProxy<UserEvent>,
     child: Option<std::process::Child>,
-) -> std::io::Result<(DaemonWriter, Option<std::process::Child>)> {
+) -> std::io::Result<DaemonConnection> {
     let mut read_stream = stream.try_clone()?;
     let write_stream = Arc::new(Mutex::new(stream));
 
     let writer = DaemonWriter {
         stream: Arc::clone(&write_stream),
     };
-    handshake(&writer, &mut read_stream)?;
+    let server_minor = handshake(&writer, &mut read_stream)?;
 
     let reader_writer = writer.clone();
     let proxy = proxy.clone();
@@ -166,11 +176,16 @@ fn finish_connect(
         daemon_reader(read_stream, &reader_writer, &proxy);
     });
 
-    Ok((writer, child))
+    Ok(DaemonConnection {
+        writer,
+        child,
+        server_minor,
+    })
 }
 
-/// Perform the protocol handshake per Spec-0001.
-fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Result<()> {
+/// Perform the protocol handshake per Spec-0001. Returns the server's
+/// advertised protocol minor version.
+fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Result<u16> {
     let hello = ClientHello {
         protocol_version_major: ClientHello::VERSION_MAJOR,
         protocol_version_minor: ClientHello::VERSION_MINOR,
@@ -196,7 +211,7 @@ fn handshake(writer: &DaemonWriter, read_stream: &mut UnixStream) -> std::io::Re
         ));
     }
 
-    Ok(())
+    Ok(server_hello.protocol_version_minor)
 }
 
 /// Per-pane bookkeeping for the daemon read loop's request/response
@@ -482,13 +497,40 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
                 error!(error = %e, "failed to decode LayoutTree");
             }
         },
+        MSG_TAB_LIST => match TabList::decode(&frame.payload) {
+            Ok(msg) => {
+                let _ = proxy.send_event(UserEvent::TabList(Box::new(msg)));
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode TabList");
+            }
+        },
+        MSG_NEW_TAB_RESPONSE => match NewTabResponse::decode(&frame.payload) {
+            Ok(resp) => {
+                let _ = proxy.send_event(UserEvent::TabCreated {
+                    tab_id: resp.tab_id,
+                    pane_id: resp.pane_id,
+                });
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode NewTabResponse");
+            }
+        },
+        MSG_CLOSE_TAB_RESPONSE => {
+            let _ = proxy.send_event(UserEvent::TabClosed);
+        }
         MSG_ERROR => {
             log_daemon_error(frame);
-            // A rejected layout operation (split below minimum size) is a
-            // routine user-triggered outcome; ring the bell so the keybind
-            // doesn't appear silently dead.
+            // Rejected layout/tab operations are routine user-triggered
+            // outcomes; ring the bell so the keybind or click doesn't
+            // appear silently dead.
             if let Ok(err) = ErrorMessage::decode(&frame.payload) {
-                if err.code == ErrorCode::LayoutRejected as u32 {
+                if matches!(
+                    ErrorCode::try_from(err.code),
+                    Ok(ErrorCode::LayoutRejected
+                        | ErrorCode::UnknownTab
+                        | ErrorCode::UnknownWorkspace)
+                ) {
                     let _ = proxy.send_event(UserEvent::Bell);
                 }
             }

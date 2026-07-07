@@ -5,6 +5,7 @@ mod layout;
 mod layout_state;
 mod pane_view;
 mod render_grid;
+mod tab_bar;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,10 +24,12 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LayoutTreeNode, MSG_DETACH,
-    MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE,
-    MSG_GET_SCROLLBACK, MSG_RESIZE_PANE, MSG_SPLIT_PANE, PromptPosition, ResizePane,
-    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane,
+    CloseTab, FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR,
+    LayoutTreeNode, MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE,
+    MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB,
+    MSG_RESIZE_PANE, MSG_SPLIT_PANE, MSG_SWITCH_TAB, NewTab, PromptPosition, ResizePane,
+    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab,
+    TabList,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -92,6 +95,15 @@ enum UserEvent {
     SplitCreated(u32),
     /// The daemon's layout tree for the current tab.
     LayoutTree(Box<LayoutTreeNode>),
+    /// The active workspace's tabs (`ListTabs` response).
+    TabList(Box<TabList>),
+    /// A `NewTab` was accepted; the tab is now active daemon-side.
+    TabCreated {
+        tab_id: u32,
+        pane_id: u32,
+    },
+    /// A `CloseTab` completed; another tab is now active daemon-side.
+    TabClosed,
 }
 
 /// GPU state created after the window and surface are available.
@@ -125,6 +137,17 @@ struct FontState {
     metrics: oakterm_renderer::shaper::FontMetrics,
 }
 
+impl FontState {
+    fn font_keys(&self) -> render_grid::FontKeys {
+        render_grid::FontKeys {
+            regular: self.font_key,
+            bold: self.bold_key,
+            italic: self.italic_key,
+            bold_italic: self.bold_italic_key,
+        }
+    }
+}
+
 /// Copyable action descriptor to break the borrow on `keybind_registry`
 /// during `dispatch_action_at`. `Callback` stores the index back into the
 /// registry since `RegistryKey` is not `Clone`.
@@ -140,12 +163,21 @@ enum ActionDesc {
     Callback(usize),
     SplitPane(WireSplitDirection),
     FocusPane(layout::FocusDirection),
+    NewTab,
+    CloseTab,
     Stub,
 }
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
 const FOCUSED_BORDER_RGB: [u8; 3] = [92, 148, 255];
+
+/// Tab bar colors, fixed until the theme system (TREK-212) lands.
+const TAB_BAR_BG_RGB: [u8; 3] = [16, 16, 16];
+const TAB_ACTIVE_BG_RGB: [u8; 3] = [72, 72, 72];
+const TAB_ACTIVE_FG_RGB: [u8; 3] = [255, 255, 255];
+const TAB_INACTIVE_BG_RGB: [u8; 3] = [36, 36, 36];
+const TAB_INACTIVE_FG_RGB: [u8; 3] = [160, 160, 160];
 
 /// Pixel slop around a 1px split border that still grabs it.
 const BORDER_GRAB_PAD: f64 = 3.0;
@@ -236,12 +268,7 @@ fn assemble_frame(
     viewport: (f32, f32),
 ) -> FrameAssembly {
     let mut assembly = FrameAssembly::default();
-    let keys = render_grid::FontKeys {
-        regular: font.font_key,
-        bold: font.bold_key,
-        italic: font.italic_key,
-        bold_italic: font.bold_italic_key,
-    };
+    let keys = font.font_keys();
     for &(pane_id, rect) in render_list {
         let Some(pane) = panes.get(&pane_id) else {
             continue;
@@ -291,6 +318,79 @@ fn assemble_frame(
         assembly.color_uploads.extend(color_uploads);
     }
     assembly
+}
+
+/// Append the tab bar to `assembly`: a full-width underlay at the
+/// window's top edge plus a one-row synthetic grid of tab labels
+/// rendered through the normal glyph path.
+fn assemble_tab_bar(
+    font: &mut FontState,
+    tabs: &tab_bar::TabsState,
+    viewport: (f32, f32),
+    assembly: &mut FrameAssembly,
+) {
+    let metrics = font.metrics;
+    let bar_h = tab_bar_height(true, Some(&metrics));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let width_px = viewport.0.max(0.0) as u32;
+    assembly.bg_sections.push(solid_section(
+        layout::PixelRect {
+            x: 0,
+            y: 0,
+            width: width_px,
+            height: bar_h,
+        },
+        TAB_BAR_BG_RGB,
+        viewport,
+    ));
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let cols = ((viewport.0 / metrics.cell_width).max(0.0) as u16).clamp(1, MAX_GRID_DIMENSION);
+    let spans = tab_bar::layout_strip(tabs.tabs(), cols);
+    let cells = tab_bar::strip_cells(tabs.tabs(), tabs.active_tab(), &spans);
+    let mut grid = ClientGrid::new(cols, 1);
+    grid.fill_bg(TAB_BAR_BG_RGB);
+    for (col, cell) in cells {
+        let (fg, bg) = if cell.active {
+            (TAB_ACTIVE_FG_RGB, TAB_ACTIVE_BG_RGB)
+        } else {
+            (TAB_INACTIVE_FG_RGB, TAB_INACTIVE_BG_RGB)
+        };
+        grid.set_cell(col, 0, cell.ch, fg, bg);
+    }
+
+    let keys = font.font_keys();
+    let bg = grid.bg_colors(false, None, 0);
+    let (glyphs, uploads, color_uploads) = grid.glyph_instances(
+        &metrics,
+        &keys,
+        font.font_size,
+        &font.shaper,
+        &mut font.atlas,
+        &mut font.color_atlas,
+        &mut font.color_keys,
+        false,
+        None,
+        0,
+        0.0,
+        0.0,
+    );
+    assembly.bg_sections.push(BgSection::new(
+        BgUniforms {
+            cols: u32::from(grid.cols),
+            rows: 1,
+            cell_width: metrics.cell_width,
+            cell_height: metrics.cell_height,
+            viewport_width: viewport.0,
+            viewport_height: viewport.1,
+            pad_left: 0.0,
+            pad_top: 0.0,
+        },
+        bg,
+    ));
+    assembly.glyphs.extend(glyphs);
+    assembly.uploads.extend(uploads);
+    assembly.color_uploads.extend(color_uploads);
 }
 
 /// A solid rectangle drawn through the bg pipeline as a 1x1 cell grid
@@ -413,6 +513,14 @@ struct App {
     /// Split layout state: the daemon's tree, its pixel geometry, and
     /// pending split focus.
     layout: PaneLayout,
+    /// The active workspace's tabs, mirrored from `TabList`.
+    tabs: tab_bar::TabsState,
+    /// Buttons whose press the tab bar consumed; their release is
+    /// swallowed too.
+    tab_bar_pressed_buttons: u8,
+    /// The daemon's advertised protocol minor version; gates request
+    /// types newer than the daemon (Spec-0001 client obligation).
+    server_minor: u16,
     /// Split border currently under the cursor (drives the cursor icon).
     hovered_border: Option<usize>,
     /// Split border drag in progress; owns the left button while set.
@@ -455,6 +563,9 @@ impl App {
             last_mouse_pixel: (0.0, 0.0),
             wheel_accum_y: 0.0,
             layout: PaneLayout::default(),
+            tabs: tab_bar::TabsState::default(),
+            tab_bar_pressed_buttons: 0,
+            server_minor: 0,
             hovered_border: None,
             border_drag: None,
             next_serial: 10,
@@ -764,13 +875,14 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         let size = window.inner_size();
-        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics, &config.padding);
+        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics, &config.padding, 0);
         let grid = ClientGrid::new(cols.max(1), rows.max(1));
 
         match connect_to_daemon(&self.proxy) {
-            Ok((writer, child)) => {
-                self.daemon = Some(writer);
-                self.daemon_process = child;
+            Ok(conn) => {
+                self.daemon = Some(conn.writer);
+                self.daemon_process = conn.child;
+                self.server_minor = conn.server_minor;
             }
             Err(e) => {
                 error!(error = %e, "fatal: failed to connect to daemon");
@@ -820,6 +932,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.config_watcher = start_config_watcher(&self.proxy);
+        // Seed tab state; matters when the daemon already has tabs.
+        self.request_list_tabs();
     }
 
     #[allow(clippy::too_many_lines)]
@@ -854,70 +968,7 @@ impl ApplicationHandler<UserEvent> for App {
                     gpu.config.height = size.height;
                     gpu.surface.configure(&gpu.device, &gpu.config);
                 }
-
-                // Resize exits scrollback for the focused pane.
-                if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-                    view.return_to_live();
-                }
-
-                // With splits, every pane's rect changes: recompute the
-                // geometry and resize each PTY to its rect. The
-                // single-pane path below sizes to the whole window.
-                if self.layout.has_tree() {
-                    let content = self.content_rect();
-                    self.layout.recompute(content);
-                    if self.layout.active_geometry().is_some() {
-                        if self.initial_resize_sent {
-                            self.sync_panes_to_geometry();
-                        }
-                        // Pane origins and dimensions moved; row bounds
-                        // derive from both.
-                        self.sync_a11y_layout();
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
-                        return;
-                    }
-                }
-
-                let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
-                    (Some(font), Some(view)) => {
-                        let (cols, rows) =
-                            window_to_grid_dims(size, &font.metrics, &self.config.padding);
-                        let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
-                        if dims_changed {
-                            view.resize(cols, rows);
-                        }
-
-                        // Full a11y tree rebuild on resize (row count changed).
-                        if dims_changed {
-                            let full_tree = a11y_bridge::apply(
-                                &self.a11y_state,
-                                self.focused_pane,
-                                view,
-                                A11yEvent::Resize,
-                            );
-                            if let (Some(adapter), Some(full_tree)) =
-                                (&mut self.accesskit, full_tree)
-                            {
-                                adapter.update_if_active(|| full_tree);
-                            }
-                        }
-
-                        // Defer until RedrawRequested; startup fires multiple
-                        // Resized events.
-                        (self.initial_resize_sent && (cols, rows) != view.last_sent_dims)
-                            .then(|| window_resize(self.focused_pane, (cols, rows), size))
-                    }
-                    _ => None,
-                };
-                if let Some(msg) = pending_resize {
-                    self.send_resize(msg);
-                }
-
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                self.relayout_panes();
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods;
@@ -1036,15 +1087,18 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 self.update_border_hover(position.x, position.y);
+                let tab_px = self.tab_bar_px();
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
                     clippy::cast_precision_loss // padding values are small
                 )]
                 if let Some(font) = &self.font {
-                    // Subtract padding so clicks in the gutter map to cell 0.
+                    // Subtract padding and tab bar so clicks in the gutter
+                    // map to cell 0.
                     let px = (position.x as f32 - self.config.padding.left as f32).max(0.0);
-                    let py = (position.y as f32 - self.config.padding.top as f32).max(0.0);
+                    let py = (position.y as f32 - self.config.padding.top as f32 - tab_px as f32)
+                        .max(0.0);
                     let col = (px / font.metrics.cell_width) as u16;
                     let row = (py / font.metrics.cell_height) as u16;
                     self.last_mouse_cell = (col, row);
@@ -1105,6 +1159,28 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // The tab bar owns presses in its strip: a left press
+                // switches tabs, and the press's own release is swallowed
+                // too. Releases of pane-started presses fall through so
+                // selection and shift-bypass state still clear. An active
+                // border drag keeps the button (its release ends the drag).
+                let bar_bit = tab_bar_button_bit(button);
+                if self.border_drag.is_none()
+                    && state == ElementState::Pressed
+                    && self.last_mouse_pixel.1 < f64::from(self.tab_bar_px())
+                {
+                    if button == winit::event::MouseButton::Left {
+                        if let Some(tab_id) = self.tab_at_pixel(self.last_mouse_pixel.0) {
+                            self.switch_tab(tab_id);
+                        }
+                    }
+                    self.tab_bar_pressed_buttons |= bar_bit;
+                    return;
+                }
+                if state == ElementState::Released && self.tab_bar_pressed_buttons & bar_bit != 0 {
+                    self.tab_bar_pressed_buttons &= !bar_bit;
+                    return;
+                }
                 // A split border under the cursor owns the left button:
                 // the press starts a drag instead of a selection or a
                 // PTY mouse event, and the matching release ends it.
@@ -1289,7 +1365,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let mut bg_sections: Vec<BgSection> = Vec::new();
                 let mut glyph_instances: Vec<oakterm_renderer::pipeline::GlyphVertex> = Vec::new();
                 if let Some(font) = &mut self.font {
-                    let assembly = assemble_frame(
+                    let mut assembly = assemble_frame(
                         font,
                         &self.panes,
                         &render_list,
@@ -1297,6 +1373,9 @@ impl ApplicationHandler<UserEvent> for App {
                         self.blink_visible,
                         viewport,
                     );
+                    if self.tabs.bar_visible() {
+                        assemble_tab_bar(font, &self.tabs, viewport, &mut assembly);
+                    }
                     upload_glyphs_to_atlas(
                         &gpu.device,
                         &gpu.queue,
@@ -1511,6 +1590,11 @@ impl ApplicationHandler<UserEvent> for App {
                         w.set_title(display);
                     }
                 }
+                // Unnamed tab labels mirror pane titles; re-ask the daemon
+                // (its naming rule is authoritative) while the bar shows.
+                if self.tabs.bar_visible() {
+                    self.request_list_tabs();
+                }
                 // Push immediately since no render event follows a title
                 // change. The snapshot mutation happens whenever the view
                 // exists; only the push depends on the adapter.
@@ -1668,6 +1752,22 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::LayoutTree(tree) => {
                 self.apply_layout_tree(*tree);
             }
+            UserEvent::TabList(list) => {
+                self.apply_tab_list(*list);
+            }
+            UserEvent::TabCreated { tab_id, pane_id } => {
+                info!(tab_id, pane_id, "tab created; refreshing tab state");
+                // apply_tab_list re-sets this on the TabList path; on the
+                // pre-1.2 fallback (no TabList ever arrives) it is the
+                // only focus driver for the incoming tree.
+                self.layout.set_pending_focus(pane_id);
+                self.request_list_tabs();
+            }
+            UserEvent::TabClosed => {
+                // Another tab is active now; which one is the daemon's
+                // call, so refresh and let apply_tab_list follow it.
+                self.request_list_tabs();
+            }
             UserEvent::ConfigReloaded(cr) => {
                 self.handle_config_reload(*cr);
             }
@@ -1758,9 +1858,9 @@ impl App {
                     }
                 }
             }
-            Some(
-                Action::ClosePane | Action::NewTab | Action::CloseTab | Action::ShowCommandPalette,
-            ) => ActionDesc::Stub,
+            Some(Action::NewTab) => ActionDesc::NewTab,
+            Some(Action::CloseTab) => ActionDesc::CloseTab,
+            Some(Action::ClosePane | Action::ShowCommandPalette) => ActionDesc::Stub,
             None => return false,
         };
 
@@ -1981,6 +2081,29 @@ impl App {
                 }
                 true
             }
+            ActionDesc::NewTab => {
+                // workspace_id targets nothing yet: the daemon routes new
+                // tabs to the active workspace (Spec-0001 NewTab).
+                let msg = NewTab {
+                    workspace_id: 0,
+                    command: String::new(),
+                    cwd: String::new(),
+                };
+                match msg.encode() {
+                    Ok(payload) => {
+                        self.send_request(MSG_NEW_TAB, payload, "NewTab");
+                    }
+                    Err(e) => error!(error = %e, "failed to encode NewTab"),
+                }
+                true
+            }
+            ActionDesc::CloseTab => {
+                // Before the first TabList the only tab is the seeded 0;
+                // closing the last tab is the daemon's refusal to make.
+                let tab_id = self.tabs.active_tab().unwrap_or(0);
+                self.send_request(MSG_CLOSE_TAB, CloseTab { tab_id }.encode(), "CloseTab");
+                true
+            }
             ActionDesc::Stub => false,
         }
     }
@@ -2197,6 +2320,7 @@ impl App {
     /// (Spec-0001). No-op (caller retries next frame) while font, view,
     /// or daemon are still unavailable.
     fn try_send_initial_resize(&mut self) {
+        let tab_px = self.tab_bar_px();
         let pending = match (
             &self.gpu,
             &self.font,
@@ -2205,7 +2329,8 @@ impl App {
         ) {
             (Some(gpu), Some(font), Some(_), Some(_)) => {
                 let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
-                let (cols, rows) = window_to_grid_dims(size, &font.metrics, &self.config.padding);
+                let (cols, rows) =
+                    window_to_grid_dims(size, &font.metrics, &self.config.padding, tab_px);
                 Some(window_resize(self.focused_pane, (cols, rows), size))
             }
             _ => None,
@@ -2220,25 +2345,191 @@ impl App {
         }
     }
 
+    /// Fetch the active tab's layout tree. `GetLayoutTree` takes a
+    /// literal tab id; the seeded default tab is 0, so the fallback is
+    /// correct before the first `TabList` arrives.
     fn request_layout_tree(&mut self) {
+        let tab_id = self.tabs.active_tab().unwrap_or(0);
         let req = GetLayoutTree {
             workspace_id: 0,
-            tab_id: 0,
+            tab_id,
         };
         self.send_request(MSG_GET_LAYOUT_TREE, req.encode(), "GetLayoutTree");
     }
 
-    /// The window's content area in pixels (window minus padding), where
-    /// the layout tree's panes tile.
+    /// Refresh tab state, or degrade gracefully against a pre-1.2 daemon
+    /// that would ignore `ListTabs`: fetch the active tab's layout
+    /// directly (old daemons serve the active tab for any `tab_id`), so
+    /// tab operations still refresh panes — the bar just never shows.
+    fn request_list_tabs(&mut self) {
+        if self.server_minor < LIST_TABS_MIN_MINOR {
+            debug!(
+                server_minor = self.server_minor,
+                "daemon predates ListTabs; falling back to layout fetch"
+            );
+            self.request_layout_tree();
+            return;
+        }
+        self.send_request(MSG_LIST_TABS, vec![], "ListTabs");
+    }
+
+    /// Switch to `tab_id`. The daemon confirms nothing for the push, so
+    /// the refreshed `TabList` (handled in `user_event`) drives the
+    /// layout refetch and focus move.
+    fn switch_tab(&mut self, tab_id: u32) {
+        if self.tabs.active_tab() == Some(tab_id) {
+            return;
+        }
+        self.send_request(MSG_SWITCH_TAB, SwitchTab { tab_id }.encode(), "SwitchTab");
+        self.request_list_tabs();
+    }
+
+    /// Adopt a `TabList`: relayout when the bar appeared or vanished,
+    /// and follow an active-tab change by fetching the now-active tab's
+    /// tree and moving focus to its focused pane. Every tab mutation
+    /// funnels through here — switch, create, and close all end with a
+    /// `ListTabs` refresh.
+    fn apply_tab_list(&mut self, list: TabList) {
+        let was_visible = self.tabs.bar_visible();
+        let previous_active = self.tabs.apply(list);
+        if self.tabs.bar_visible() != was_visible {
+            // The content area gained or lost the bar row: every pane's
+            // rect and PTY size shifts.
+            self.relayout_panes();
+        }
+        let active = self.tabs.active_tab();
+        if active != previous_active {
+            if let Some(active) = active {
+                // Overwrite any pending focus: an older target (a tab
+                // created moments ago) belongs to a tab that is no longer
+                // active, and the incoming tree would drain it into a
+                // failed focus.
+                if let Some(focus) = self.tabs.focused_pane_of(active) {
+                    self.layout.set_pending_focus(focus);
+                }
+                self.request_layout_tree();
+            }
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Tab bar height in pixels: one cell row when the bar is visible
+    /// (Spec-0009: tabs > 1), else 0.
+    fn tab_bar_px(&self) -> u32 {
+        tab_bar_height(
+            self.tabs.bar_visible(),
+            self.font.as_ref().map(|f| &f.metrics),
+        )
+    }
+
+    /// The tab under pixel column `x` of the tab bar, resolved through
+    /// the same strip layout the renderer draws.
+    fn tab_at_pixel(&self, x: f64) -> Option<u32> {
+        let metrics = &self.font.as_ref()?.metrics;
+        let gpu = self.gpu.as_ref()?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let col = (x.max(0.0) / f64::from(metrics.cell_width)) as u16;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let cols = ((gpu.config.width as f32 / metrics.cell_width).max(0.0) as u16)
+            .clamp(1, MAX_GRID_DIMENSION);
+        let spans = tab_bar::layout_strip(self.tabs.tabs(), cols);
+        tab_bar::hit_test(&spans, col)
+    }
+
+    /// The window's content area in pixels (window minus padding and the
+    /// tab bar), where the layout tree's panes tile.
     fn content_rect(&self) -> Option<layout::PixelRect> {
         let gpu = self.gpu.as_ref()?;
         let pad = &self.config.padding;
+        let tab_px = self.tab_bar_px();
         Some(layout::PixelRect {
             x: pad.left,
-            y: pad.top,
+            y: pad.top.saturating_add(tab_px),
             width: gpu.config.width.saturating_sub(pad.left + pad.right),
-            height: gpu.config.height.saturating_sub(pad.top + pad.bottom),
+            height: gpu
+                .config
+                .height
+                .saturating_sub(pad.top + pad.bottom)
+                .saturating_sub(tab_px),
         })
+    }
+
+    /// Recompute pane geometry and PTY sizes for the current window size
+    /// and chrome. Shared by window resizes and tab-bar visibility
+    /// changes — both move the content area.
+    fn relayout_panes(&mut self) {
+        // Resize exits scrollback for the focused pane.
+        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
+            view.return_to_live();
+        }
+
+        // With splits, every pane's rect changes: recompute the
+        // geometry and resize each PTY to its rect. The
+        // single-pane path below sizes to the whole window.
+        if self.layout.has_tree() {
+            let content = self.content_rect();
+            self.layout.recompute(content);
+            if self.layout.active_geometry().is_some() {
+                if self.initial_resize_sent {
+                    self.sync_panes_to_geometry();
+                }
+                // Pane origins and dimensions moved; row bounds
+                // derive from both.
+                self.sync_a11y_layout();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            }
+        }
+
+        let size = match &self.gpu {
+            Some(gpu) => PhysicalSize::new(gpu.config.width, gpu.config.height),
+            None => return,
+        };
+        let tab_px = self.tab_bar_px();
+        let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
+            (Some(font), Some(view)) => {
+                let (cols, rows) =
+                    window_to_grid_dims(size, &font.metrics, &self.config.padding, tab_px);
+                let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
+                if dims_changed {
+                    view.resize(cols, rows);
+                }
+
+                // Full a11y tree rebuild on resize (row count changed).
+                if dims_changed {
+                    let full_tree = a11y_bridge::apply(
+                        &self.a11y_state,
+                        self.focused_pane,
+                        view,
+                        A11yEvent::Resize,
+                    );
+                    if let (Some(adapter), Some(full_tree)) = (&mut self.accesskit, full_tree) {
+                        adapter.update_if_active(|| full_tree);
+                    }
+                }
+
+                // Defer until RedrawRequested; startup fires multiple
+                // Resized events.
+                (self.initial_resize_sent && (cols, rows) != view.last_sent_dims)
+                    .then(|| window_resize(self.focused_pane, (cols, rows), size))
+            }
+            _ => None,
+        };
+        if let Some(msg) = pending_resize {
+            self.send_resize(msg);
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
     }
 
     /// Adopt a layout tree from the daemon: create views for new panes,
@@ -2349,12 +2640,18 @@ impl App {
                     }
                 };
 
+                // self.font still holds the old metrics; use font_state's.
+                let tab_px = tab_bar_height(self.tabs.bar_visible(), Some(&font_state.metrics));
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
                     let phys = PhysicalSize::new(gpu.config.width, gpu.config.height);
-                    let (cols, rows) =
-                        window_to_grid_dims(phys, &font_state.metrics, &self.config.padding);
+                    let (cols, rows) = window_to_grid_dims(
+                        phys,
+                        &font_state.metrics,
+                        &self.config.padding,
+                        tab_px,
+                    );
                     let cols = cols.max(1);
                     let rows = rows.max(1);
                     view.resize(cols, rows);
@@ -2436,6 +2733,26 @@ impl App {
     }
 }
 
+/// Bit for tracking a button press the tab bar consumed. Matches the
+/// PTY encoding's button order (left=0, middle=1, right=2).
+fn tab_bar_button_bit(button: winit::event::MouseButton) -> u8 {
+    match button {
+        winit::event::MouseButton::Middle => 1 << 1,
+        winit::event::MouseButton::Right => 1 << 2,
+        _ => 1 << 0,
+    }
+}
+
+/// One cell row of tab bar when visible, else 0 (Spec-0009).
+fn tab_bar_height(visible: bool, metrics: Option<&oakterm_renderer::shaper::FontMetrics>) -> u32 {
+    if visible {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        metrics.map_or(0, |m| m.cell_height.ceil().max(0.0) as u32)
+    } else {
+        0
+    }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -2445,9 +2762,13 @@ fn window_to_grid_dims(
     size: winit::dpi::PhysicalSize<u32>,
     metrics: &oakterm_renderer::shaper::FontMetrics,
     padding: &oakterm_config::Padding,
+    top_chrome_px: u32,
 ) -> (u16, u16) {
     let usable_w = size.width.saturating_sub(padding.left + padding.right);
-    let usable_h = size.height.saturating_sub(padding.top + padding.bottom);
+    let usable_h = size
+        .height
+        .saturating_sub(padding.top + padding.bottom)
+        .saturating_sub(top_chrome_px);
     // Clamp to the daemon's cap (as grid_dims does) so a very wide display or
     // tiny font can't produce a Resize the daemon rejects.
     let cols = ((usable_w as f32 / metrics.cell_width) as u16).clamp(1, MAX_GRID_DIMENSION);
@@ -3008,13 +3329,51 @@ fn version_string() -> String {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{assemble_frame, drain_wheel_notches, plan_pane_syncs, try_init_font};
+    use super::{
+        assemble_frame, drain_wheel_notches, plan_pane_syncs, tab_bar_height, try_init_font,
+        window_to_grid_dims,
+    };
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
     use crate::render_grid::ClientGrid;
     use std::collections::HashMap;
-    use winit::dpi::PhysicalPosition;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::event::MouseScrollDelta;
+
+    /// `FontMetrics` is `#[non_exhaustive]`; take a real one and pin the
+    /// cell dimensions the assertions depend on. `None` when no system
+    /// font is available (test then skips, matching sibling tests).
+    fn metrics(cell_width: f32, cell_height: f32) -> Option<oakterm_renderer::shaper::FontMetrics> {
+        let font = try_init_font(&oakterm_config::ConfigValues::default(), 14.0).ok()?;
+        let mut m = font.metrics;
+        m.cell_width = cell_width;
+        m.cell_height = cell_height;
+        Some(m)
+    }
+
+    #[test]
+    fn tab_bar_height_zero_when_hidden_or_fontless() {
+        assert_eq!(tab_bar_height(true, None), 0);
+        let Some(m) = metrics(8.0, 16.5) else { return };
+        assert_eq!(tab_bar_height(false, Some(&m)), 0);
+    }
+
+    #[test]
+    fn tab_bar_height_ceils_cell_height_when_visible() {
+        let Some(m) = metrics(8.0, 16.5) else { return };
+        assert_eq!(tab_bar_height(true, Some(&m)), 17);
+    }
+
+    #[test]
+    fn window_to_grid_dims_subtracts_top_chrome() {
+        let Some(m) = metrics(10.0, 20.0) else { return };
+        let size = PhysicalSize::new(800, 600);
+        let pad = oakterm_config::Padding::default();
+        let (cols_bare, rows_bare) = window_to_grid_dims(size, &m, &pad, 0);
+        let (cols_bar, rows_bar) = window_to_grid_dims(size, &m, &pad, 20);
+        assert_eq!(cols_bar, cols_bare);
+        assert_eq!(rows_bar, rows_bare - 1);
+    }
 
     #[test]
     fn assemble_frame_emits_one_bg_section_per_pane_at_its_origin() {
