@@ -1,0 +1,46 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/)
+# Run via `mise run deny` or `cargo deny check`.
+
+[advisories]
+yanked = "deny"
+ignore = [
+  # ttf-parser is unmaintained (author archived it); reaches us via fontdb and
+  # winit->sctk-adwaita->ab_glyph. No safe upgrade exists — the fix is migrating
+  # font parsing to skrifa, which is a renderer work item, not a config tweak.
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; skrifa migration tracked separately" },
+  # quick-xml DoS on untrusted XML input. Only reachable through wayland-scanner,
+  # a build-time codegen tool that parses vendored Wayland protocol XML — never
+  # untrusted input. Fix needs wayland-scanner to move to quick-xml >=0.41.
+  { id = "RUSTSEC-2026-0194", reason = "build-time only (wayland-scanner), input is trusted vendored XML" },
+  { id = "RUSTSEC-2026-0195", reason = "build-time only (wayland-scanner), input is trusted vendored XML" },
+]
+
+[licenses]
+# Derived from `cargo metadata` over the current lockfile. Workspace crates are
+# MPL-2.0; everything else resolves to a permissive license via these allows.
+allow = [
+  "MPL-2.0",
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",          # ring, untrusted, inotify, libloading
+  "Zlib",         # foldhash, slotmap
+  "BSL-1.0",      # clipboard-win, error-code
+  "CC0-1.0",      # hexf-parse, notify
+  "Unicode-3.0",  # unicode-ident (AND-ed with MIT OR Apache-2.0)
+  "0BSD",
+  "Unlicense",
+]
+
+[bans]
+# The wgpu/winit graph carries many transitive duplicate versions; warn keeps
+# them visible without failing CI on churn outside our control. Wildcards stay
+# at the default (allow): workspace path deps carry no version, and
+# allow-wildcard-paths only exempts publish = false crates.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

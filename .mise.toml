@@ -5,6 +5,7 @@ node = "25.9.0"
 "npm:markdownlint-cli2" = "0.22.1"
 lefthook = "2.1.9"
 "cargo:cocogitto" = "7"
+"cargo:cargo-deny" = "0.19"
 
 [tasks.fmt]
 description = "Format all non-Rust files"
@@ -42,6 +43,10 @@ run = "cargo clippy --workspace --all-targets -- -D warnings"
 description = "Type-check Rust code"
 run = "cargo check --workspace --all-targets"
 
+[tasks."cargo:deny"]
+description = "Check dependency advisories, licenses, bans, sources"
+run = "cargo deny check"
+
 [tasks."cargo:test"]
 description = "Run Rust tests"
 run = "cargo test --workspace"
@@ -61,6 +66,10 @@ depends = ["cargo:test"]
 [tasks.bench]
 description = "Run all benchmarks"
 depends = ["cargo:bench"]
+
+[tasks.deny]
+description = "Run cargo-deny dependency checks"
+depends = ["cargo:deny"]
 
 [tasks.check]
 description = "Run all checks (format + lint + Rust)"
