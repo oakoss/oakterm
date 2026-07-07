@@ -26,8 +26,9 @@ pub(super) async fn new_tab(
             "malformed NewTab",
         );
     };
-    // Single active workspace until the workspace messages land
-    // (TREK-105); workspace_id selects nothing yet.
+    // The tab lands in the active workspace regardless of workspace_id:
+    // the mux's new_tab op has no non-active-workspace target, so routing
+    // waits on that op.
     debug!(
         conn_id,
         workspace_id = msg.workspace_id,

@@ -65,6 +65,9 @@ pub const MSG_NEW_TAB_RESPONSE: u16 = 0xA8;
 pub const MSG_CLOSE_TAB: u16 = 0xA9;
 pub const MSG_CLOSE_TAB_RESPONSE: u16 = 0xAA;
 pub const MSG_SWITCH_TAB: u16 = 0xAB;
+pub const MSG_NEW_WORKSPACE: u16 = 0xAC;
+pub const MSG_NEW_WORKSPACE_RESPONSE: u16 = 0xAD;
+pub const MSG_SWITCH_WORKSPACE: u16 = 0xAE;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -1895,6 +1898,103 @@ impl SwitchTab {
         }
         Ok(Self {
             tab_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+}
+
+/// `NewWorkspace` (0xAC): client requests a new workspace holding one tab
+/// with one pane. The pane runs the default shell in the daemon's cwd —
+/// the payload carries only the workspace name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewWorkspace {
+    pub name: String,
+}
+
+impl NewWorkspace {
+    /// # Errors
+    /// Returns an error if the name exceeds u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(2 + self.name.len());
+        encode_str(&mut buf, &self.name)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        let (name, _) = decode_str(data, 0, "workspace name")?;
+        Ok(Self { name })
+    }
+}
+
+/// `NewWorkspaceResponse` (0xAD): daemon returns the new workspace, its
+/// tab, and its pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewWorkspaceResponse {
+    pub workspace_id: u32,
+    pub tab_id: u32,
+    pub pane_id: u32,
+}
+
+impl NewWorkspaceResponse {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(12);
+        buf.extend_from_slice(&self.workspace_id.to_le_bytes());
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "NewWorkspaceResponse too short",
+            ));
+        }
+        Ok(Self {
+            workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            tab_id: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+            pane_id: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_NEW_WORKSPACE_RESPONSE, serial, self.encode())
+    }
+}
+
+/// `SwitchWorkspace` (0xAE): client changes the active workspace. Push
+/// message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchWorkspace {
+    pub workspace_id: u32,
+}
+
+impl SwitchWorkspace {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.workspace_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SwitchWorkspace too short",
+            ));
+        }
+        Ok(Self {
+            workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
         })
     }
 }

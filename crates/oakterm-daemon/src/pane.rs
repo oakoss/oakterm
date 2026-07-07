@@ -2,7 +2,7 @@
 
 use oakterm_mux::{
     BorderExtents, LayoutError, LayoutNode, MultiplexerState, PaneCloseOutcome, PaneId,
-    SplitDirection, SplitPreview, Tab, TabId, Workspace,
+    SplitDirection, SplitPreview, Tab, TabId, Workspace, WorkspaceId,
 };
 use oakterm_terminal::grid::ScreenSet;
 use std::ffi::OsString;
@@ -251,6 +251,63 @@ impl PaneManager {
         };
         self.insert_pane_state(id.0, cols, rows, command, cwd);
         Some((tab_id.0, id.0))
+    }
+
+    /// Create a pane in a fresh workspace (one tab, one pane) and make
+    /// that workspace active (Spec-0001 `NewWorkspace`). The pane runs the
+    /// default shell in the daemon's cwd — the wire message carries no
+    /// command. Returns `(workspace_id, tab_id, pane_id)`, or `None` when
+    /// the mux refuses the insert — a model desync, since the pane ID is
+    /// freshly allocated.
+    pub(crate) fn new_workspace_create(
+        &mut self,
+        name: String,
+        cols: u16,
+        rows: u16,
+    ) -> Option<(u32, u32, u32)> {
+        // An error path burns the allocated pane ID, which is harmless
+        // for a monotonic u32.
+        let id = self.mux.allocate_pane_id();
+        let ws_id = self.mux.new_workspace(name, id)?;
+        // new_workspace made the fresh workspace active, so the active tab
+        // is its single tab.
+        let Some(tab) = self.mux.active_tab() else {
+            error!(
+                workspace_id = ws_id.0,
+                pane_id = id.0,
+                "fresh workspace has no active tab; mux out of sync"
+            );
+            debug_assert!(false, "fresh workspace must have an active tab");
+            return None;
+        };
+        let tab_id = tab.id();
+        self.insert_pane_state(id.0, cols, rows, String::new(), String::new());
+        Some((ws_id.0, tab_id.0, id.0))
+    }
+
+    /// Activate a workspace, keeping its own active tab and focused pane
+    /// (Spec-0001 `SwitchWorkspace`). Returns false when the workspace is
+    /// unknown.
+    pub(crate) fn switch_workspace(&mut self, workspace: u32) -> bool {
+        let Some(pane) = self
+            .mux
+            .workspaces()
+            .iter()
+            .find(|w| w.id() == WorkspaceId(workspace))
+            .map(|w| w.active_tab().focused_pane())
+        else {
+            return false;
+        };
+        let focused = self.mux.focus_pane(pane);
+        if !focused {
+            error!(
+                workspace_id = workspace,
+                pane_id = pane.0,
+                "workspace's focused pane not focusable; mux out of sync"
+            );
+            debug_assert!(false, "workspace's focused pane must be focusable");
+        }
+        focused
     }
 
     fn tab_by_id(&self, tab: TabId) -> Option<&Tab> {

@@ -10,12 +10,14 @@ use oakterm_protocol::message::{
     ErrorMessage, GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse,
     MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE,
     MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_LAYOUT_TREE,
-    MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_PANE_EXITED,
-    MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
-    MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
-    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, NewTab, NewTabResponse, PaneExited, RequestShutdown,
-    RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
-    ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
+    MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE,
+    MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN,
+    MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE,
+    MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
+    MSG_SWITCH_WORKSPACE, NewTab, NewTabResponse, NewWorkspace, NewWorkspaceResponse, PaneExited,
+    RequestShutdown, RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck,
+    ShutdownAckStatus, ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane,
+    SwitchTab, SwitchWorkspace,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -1006,9 +1008,9 @@ async fn close_tab_last_tab_multi_pane_refused() {
     assert!(ids.contains(&0) && ids.contains(&pane_b));
 }
 
-/// `NewTab` ignores `workspace_id` (Spec-0007 workspace routing is TREK-105);
-/// an unknown id is accepted, not rejected. Locks the contract so the change
-/// is visible when routing lands.
+/// `NewTab` ignores `workspace_id` (routing to a non-active workspace
+/// waits on a mux op that can target one); an unknown id is accepted, not
+/// rejected. Locks the contract so the change is visible when routing lands.
 #[tokio::test]
 async fn new_tab_ignores_unknown_workspace_id() {
     let (mut stream, mut codec, _td) = connect_and_handshake().await;
@@ -1058,6 +1060,125 @@ async fn malformed_tab_payloads_error() {
     );
 
     let frame = Frame::new(MSG_SWITCH_TAB, 0, vec![0x00]).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload)
+            .expect("decode ErrorMessage")
+            .code,
+        ErrorCode::MalformedPayload as u32
+    );
+}
+
+/// Send `NewWorkspace` and return `(workspace_id, tab_id, pane_id)`,
+/// asserting acceptance.
+async fn new_workspace_ok(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    serial: u32,
+) -> (u32, u32, u32) {
+    let msg = NewWorkspace { name: "dev".into() };
+    let frame = Frame::new(
+        MSG_NEW_WORKSPACE,
+        serial,
+        msg.encode().expect("encode NewWorkspace"),
+    )
+    .expect("new-workspace frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(
+        resp.msg_type, MSG_NEW_WORKSPACE_RESPONSE,
+        "new workspace rejected"
+    );
+    let resp = NewWorkspaceResponse::decode(&resp.payload).expect("decode NewWorkspaceResponse");
+    (resp.workspace_id, resp.tab_id, resp.pane_id)
+}
+
+#[tokio::test]
+async fn new_workspace_creates_workspace_with_one_tab_and_pane() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let (workspace_id, tab_id, pane_id) = new_workspace_ok(&mut stream, &mut codec, 480).await;
+    assert_ne!(workspace_id, 0, "seeded default workspace is 0");
+    assert_ne!(tab_id, 0, "seeded default tab is 0");
+    assert_ne!(pane_id, 0, "seeded default pane is 0");
+
+    // The new workspace is active and its tab holds exactly the new pane.
+    let tree = active_layout_tree(&mut stream, &mut codec, 481).await;
+    assert_eq!(tree, LayoutTreeNode::Leaf { pane_id });
+
+    // The default pane survives in its background workspace.
+    let frame = Frame::new(MSG_LIST_PANES, 482, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 482).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert!(ids.contains(&0) && ids.contains(&pane_id), "panes: {ids:?}");
+}
+
+#[tokio::test]
+async fn switch_workspace_changes_active_workspace() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let (workspace_id, _tab_id, pane_id) = new_workspace_ok(&mut stream, &mut codec, 490).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 491).await,
+        LayoutTreeNode::Leaf { pane_id }
+    );
+
+    // Frames on one connection are handled in order, so the query after
+    // the push observes the switch.
+    let switch = SwitchWorkspace { workspace_id: 0 };
+    let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 492).await,
+        LayoutTreeNode::Leaf { pane_id: 0 }
+    );
+
+    // And back to the new workspace.
+    let switch = SwitchWorkspace { workspace_id };
+    let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 493).await,
+        LayoutTreeNode::Leaf { pane_id }
+    );
+}
+
+#[tokio::test]
+async fn switch_workspace_unknown_workspace_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let switch = SwitchWorkspace { workspace_id: 99 };
+    let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    // SwitchWorkspace is a push, so the failure arrives as an Error push.
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+/// Truncated workspace payloads produce `MalformedPayload`: the
+/// request-shaped `NewWorkspace` replies on its serial; `SwitchWorkspace`
+/// (a push) reports via a serial-0 Error push.
+#[tokio::test]
+async fn malformed_workspace_payloads_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let frame = Frame::new(MSG_NEW_WORKSPACE, 500, vec![0x00]).expect("new-workspace frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 500).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload)
+            .expect("decode ErrorMessage")
+            .code,
+        ErrorCode::MalformedPayload as u32
+    );
+
+    let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, vec![0x00]).expect("switch frame");
     write_frame(&mut stream, &mut codec, frame).await;
     let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
     assert_eq!(

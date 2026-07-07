@@ -1272,4 +1272,62 @@ mod tests {
     fn switch_tab_too_short() {
         assert!(SwitchTab::decode(&[0; 3]).is_err());
     }
+
+    #[test]
+    fn new_workspace_roundtrip() {
+        let msg = NewWorkspace { name: "dev".into() };
+        let encoded = msg.encode().unwrap();
+        let decoded = NewWorkspace::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn new_workspace_empty_name_roundtrip() {
+        let msg = NewWorkspace {
+            name: String::new(),
+        };
+        let encoded = msg.encode().unwrap();
+        assert_eq!(encoded.len(), 2);
+        let decoded = NewWorkspace::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn new_workspace_too_short() {
+        // Name length prefix truncated.
+        assert!(NewWorkspace::decode(&[0; 1]).is_err());
+        // Length prefix claims more bytes than the payload holds.
+        assert!(NewWorkspace::decode(&[5, 0, b'a']).is_err());
+    }
+
+    #[test]
+    fn new_workspace_response_roundtrip_and_frame() {
+        let resp = NewWorkspaceResponse {
+            workspace_id: 1,
+            tab_id: 2,
+            pane_id: 9,
+        };
+        let decoded = NewWorkspaceResponse::decode(&resp.encode()).unwrap();
+        assert_eq!(decoded, resp);
+        let frame = resp.to_frame(41).unwrap();
+        assert_eq!(frame.msg_type, MSG_NEW_WORKSPACE_RESPONSE);
+        assert_eq!(frame.serial, 41);
+    }
+
+    #[test]
+    fn new_workspace_response_too_short() {
+        assert!(NewWorkspaceResponse::decode(&[0; 11]).is_err());
+    }
+
+    #[test]
+    fn switch_workspace_roundtrip() {
+        let msg = SwitchWorkspace { workspace_id: 6 };
+        let decoded = SwitchWorkspace::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn switch_workspace_too_short() {
+        assert!(SwitchWorkspace::decode(&[0; 3]).is_err());
+    }
 }
