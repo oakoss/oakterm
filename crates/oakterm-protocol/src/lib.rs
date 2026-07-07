@@ -1022,7 +1022,7 @@ mod tests {
     fn error_code_roundtrip_all_variants() {
         use ErrorCode::{
             InternalError, InvalidMessage, LayoutRejected, MalformedPayload, PaneExited,
-            PermissionDenied, UnknownPane,
+            PermissionDenied, UnknownPane, UnknownTab, UnknownWorkspace,
         };
         let all = [
             UnknownPane,
@@ -1032,13 +1032,15 @@ mod tests {
             PaneExited,
             PermissionDenied,
             LayoutRejected,
+            UnknownTab,
+            UnknownWorkspace,
         ];
         for code in all {
             // Exhaustive match: adding a variant without extending `all`
             // stops compiling.
             match code {
                 UnknownPane | InvalidMessage | MalformedPayload | InternalError | PaneExited
-                | PermissionDenied | LayoutRejected => {}
+                | PermissionDenied | LayoutRejected | UnknownTab | UnknownWorkspace => {}
             }
             assert_eq!(ErrorCode::try_from(code as u32).unwrap(), code);
         }
@@ -1329,5 +1331,78 @@ mod tests {
     #[test]
     fn switch_workspace_too_short() {
         assert!(SwitchWorkspace::decode(&[0; 3]).is_err());
+    }
+
+    fn sample_tab_list() -> TabList {
+        TabList {
+            workspace_id: 3,
+            workspace_name: "default".to_string(),
+            active_tab: 7,
+            tabs: vec![
+                TabEntry {
+                    tab_id: 0,
+                    focused_pane: 0,
+                    name: "vim ~/notes".to_string(),
+                },
+                TabEntry {
+                    tab_id: 7,
+                    focused_pane: 12,
+                    name: String::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn tab_list_roundtrip_and_frame() {
+        let msg = sample_tab_list();
+        let decoded = TabList::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+        let frame = msg.to_frame(90).unwrap();
+        assert_eq!(frame.msg_type, MSG_TAB_LIST);
+        assert_eq!(frame.serial, 90);
+    }
+
+    #[test]
+    fn tab_list_empty_roundtrip() {
+        // The transient empty multiplexer state: no workspace yet.
+        let msg = TabList {
+            workspace_id: 0,
+            workspace_name: String::new(),
+            active_tab: 0,
+            tabs: vec![],
+        };
+        let decoded = TabList::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn tab_list_truncated_errors() {
+        let encoded = sample_tab_list().encode().unwrap();
+        for len in [3, 5, encoded.len() - 1] {
+            assert!(TabList::decode(&encoded[..len]).is_err(), "len {len}");
+        }
+    }
+
+    #[test]
+    fn tab_list_workspace_name_utf8_enforced() {
+        let mut encoded = sample_tab_list().encode().unwrap();
+        // workspace_name starts after workspace_id (4) + name len (2).
+        encoded[6] = 0xFF;
+        assert!(TabList::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn tab_entry_name_utf8_enforced() {
+        let mut encoded = TabEntry {
+            tab_id: 1,
+            focused_pane: 2,
+            name: "ab".to_string(),
+        }
+        .encode()
+        .unwrap();
+        let name_start = encoded.len() - 2;
+        encoded[name_start] = 0xFF;
+        assert!(TabEntry::decode(&encoded).is_err());
     }
 }

@@ -90,7 +90,7 @@ pub(super) async fn switch_workspace(
         return make_error_response(
             conn_id,
             frame.serial,
-            ErrorCode::UnknownPane,
+            ErrorCode::UnknownWorkspace,
             "unknown workspace",
         );
     }

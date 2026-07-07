@@ -10,14 +10,15 @@ use oakterm_protocol::message::{
     ErrorMessage, GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse,
     MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE,
     MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT,
-    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE,
-    MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG,
-    MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK,
-    MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
-    MSG_SWITCH_WORKSPACE, NewTab, NewTabResponse, NewWorkspace, NewWorkspaceResponse, PaneExited,
-    RequestShutdown, RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck,
-    ShutdownAckStatus, ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane,
-    SwitchTab, SwitchWorkspace,
+    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_NEW_TAB,
+    MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING,
+    MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
+    MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
+    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, NewTab,
+    NewTabResponse, NewWorkspace, NewWorkspaceResponse, PaneExited, RequestShutdown,
+    RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
+    ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
+    SwitchWorkspace, TabList,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -1022,15 +1023,17 @@ async fn new_tab_ok(stream: &mut UnixStream, codec: &mut FrameCodec, serial: u32
     (resp.tab_id, resp.pane_id)
 }
 
-/// Fetch the active tab's layout tree via `GetLayoutTree`.
-async fn active_layout_tree(
+/// Fetch a tab's layout tree via `GetLayoutTree`. `tab_id` is literal;
+/// the seeded default tab is 0.
+async fn layout_tree(
     stream: &mut UnixStream,
     codec: &mut FrameCodec,
     serial: u32,
+    tab_id: u32,
 ) -> LayoutTreeNode {
     let req = GetLayoutTree {
         workspace_id: 0,
-        tab_id: 0,
+        tab_id,
     };
     let frame = Frame::new(MSG_GET_LAYOUT_TREE, serial, req.encode()).expect("get-layout frame");
     write_frame(stream, codec, frame).await;
@@ -1039,6 +1042,15 @@ async fn active_layout_tree(
     LayoutTree::decode(&resp.payload)
         .expect("decode LayoutTree")
         .tree
+}
+
+/// Fetch the active workspace's tab list via `ListTabs`.
+async fn list_tabs_ok(stream: &mut UnixStream, codec: &mut FrameCodec, serial: u32) -> TabList {
+    let frame = Frame::new(MSG_LIST_TABS, serial, vec![]).expect("list-tabs frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(resp.msg_type, MSG_TAB_LIST);
+    TabList::decode(&resp.payload).expect("decode TabList")
 }
 
 #[tokio::test]
@@ -1050,7 +1062,9 @@ async fn new_tab_creates_tab_with_one_pane() {
     assert_ne!(pane_id, 0, "seeded default pane is 0");
 
     // The new tab is active and holds exactly the new pane.
-    let tree = active_layout_tree(&mut stream, &mut codec, 401).await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 401).await;
+    assert_eq!(tabs.active_tab, tab_id);
+    let tree = layout_tree(&mut stream, &mut codec, 403, tab_id).await;
     assert_eq!(tree, LayoutTreeNode::Leaf { pane_id });
 
     // The default pane survives in its background tab.
@@ -1066,10 +1080,10 @@ async fn new_tab_creates_tab_with_one_pane() {
 async fn switch_tab_changes_active_tab() {
     let (mut stream, mut codec, _td) = connect_and_handshake().await;
 
-    let (tab_id, pane_id) = new_tab_ok(&mut stream, &mut codec, 410).await;
+    let (tab_id, _pane_id) = new_tab_ok(&mut stream, &mut codec, 410).await;
     assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 411).await,
-        LayoutTreeNode::Leaf { pane_id }
+        list_tabs_ok(&mut stream, &mut codec, 411).await.active_tab,
+        tab_id
     );
 
     // Frames on one connection are handled in order, so the query after
@@ -1078,8 +1092,8 @@ async fn switch_tab_changes_active_tab() {
     let frame = Frame::new(MSG_SWITCH_TAB, 0, switch.encode()).expect("switch frame");
     write_frame(&mut stream, &mut codec, frame).await;
     assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 412).await,
-        LayoutTreeNode::Leaf { pane_id: 0 }
+        list_tabs_ok(&mut stream, &mut codec, 412).await.active_tab,
+        0
     );
 
     // And back to the new tab.
@@ -1087,8 +1101,8 @@ async fn switch_tab_changes_active_tab() {
     let frame = Frame::new(MSG_SWITCH_TAB, 0, switch.encode()).expect("switch frame");
     write_frame(&mut stream, &mut codec, frame).await;
     assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 413).await,
-        LayoutTreeNode::Leaf { pane_id }
+        list_tabs_ok(&mut stream, &mut codec, 413).await.active_tab,
+        tab_id
     );
 }
 
@@ -1103,7 +1117,7 @@ async fn switch_tab_unknown_tab_pushes_error() {
     // SwitchTab is a push, so the failure arrives as an Error push.
     let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
     let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
-    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+    assert_eq!(err.code, ErrorCode::UnknownTab as u32);
 }
 
 #[tokio::test]
@@ -1136,7 +1150,11 @@ async fn close_tab_closes_all_panes_in_the_tab() {
     assert_eq!(ids, vec![0], "expected only the default pane, got {ids:?}");
     assert!(!ids.contains(&pane_b) && !ids.contains(&pane_c));
     assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 424).await,
+        list_tabs_ok(&mut stream, &mut codec, 424).await.active_tab,
+        0
+    );
+    assert_eq!(
+        layout_tree(&mut stream, &mut codec, 425, 0).await,
         LayoutTreeNode::Leaf { pane_id: 0 }
     );
 }
@@ -1151,7 +1169,7 @@ async fn close_tab_unknown_tab_errors() {
     let resp = read_response_with_serial(&mut stream, &mut codec, 430).await;
     assert_eq!(resp.msg_type, MSG_ERROR);
     let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
-    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+    assert_eq!(err.code, ErrorCode::UnknownTab as u32);
 }
 
 /// Closing the only tab would empty the daemon, mirroring the
@@ -1264,6 +1282,64 @@ async fn malformed_tab_payloads_error() {
     );
 }
 
+/// `GetLayoutTree` resolves `tab_id` literally: a background tab's tree
+/// is served as-is, not the active tab's.
+#[tokio::test]
+async fn get_layout_tree_honors_tab_id() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // The new tab becomes active; the default tab (0) is background.
+    let (tab_id, pane_id) = new_tab_ok(&mut stream, &mut codec, 510).await;
+
+    assert_eq!(
+        layout_tree(&mut stream, &mut codec, 511, 0).await,
+        LayoutTreeNode::Leaf { pane_id: 0 },
+        "background tab's own tree"
+    );
+    assert_eq!(
+        layout_tree(&mut stream, &mut codec, 512, tab_id).await,
+        LayoutTreeNode::Leaf { pane_id },
+        "active tab's own tree"
+    );
+}
+
+#[tokio::test]
+async fn get_layout_tree_unknown_tab_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let req = GetLayoutTree {
+        workspace_id: 0,
+        tab_id: 99,
+    };
+    let frame = Frame::new(MSG_GET_LAYOUT_TREE, 520, req.encode()).expect("get-layout frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 520).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownTab as u32);
+}
+
+#[tokio::test]
+async fn list_tabs_returns_workspace_tabs_in_order() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 530).await;
+    assert_eq!(tabs.workspace_name, "default");
+    assert_eq!(tabs.active_tab, 0);
+    assert_eq!(tabs.tabs.len(), 1);
+    assert_eq!(tabs.tabs[0].tab_id, 0);
+    assert_eq!(tabs.tabs[0].focused_pane, 0);
+    // No explicit tab name and no OSC title yet: the fallback is empty.
+    assert_eq!(tabs.tabs[0].name, "");
+
+    let (tab_id, pane_id) = new_tab_ok(&mut stream, &mut codec, 531).await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 532).await;
+    assert_eq!(tabs.active_tab, tab_id);
+    let ids: Vec<u32> = tabs.tabs.iter().map(|t| t.tab_id).collect();
+    assert_eq!(ids, vec![0, tab_id], "workspace tab order");
+    assert_eq!(tabs.tabs[1].focused_pane, pane_id);
+}
+
 /// Send `NewWorkspace` and return `(workspace_id, tab_id, pane_id)`,
 /// asserting acceptance.
 async fn new_workspace_ok(
@@ -1298,7 +1374,10 @@ async fn new_workspace_creates_workspace_with_one_tab_and_pane() {
     assert_ne!(pane_id, 0, "seeded default pane is 0");
 
     // The new workspace is active and its tab holds exactly the new pane.
-    let tree = active_layout_tree(&mut stream, &mut codec, 481).await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 481).await;
+    assert_eq!(tabs.workspace_id, workspace_id);
+    assert_eq!(tabs.active_tab, tab_id);
+    let tree = layout_tree(&mut stream, &mut codec, 483, tab_id).await;
     assert_eq!(tree, LayoutTreeNode::Leaf { pane_id });
 
     // The default pane survives in its background workspace.
@@ -1314,30 +1393,27 @@ async fn new_workspace_creates_workspace_with_one_tab_and_pane() {
 async fn switch_workspace_changes_active_workspace() {
     let (mut stream, mut codec, _td) = connect_and_handshake().await;
 
-    let (workspace_id, _tab_id, pane_id) = new_workspace_ok(&mut stream, &mut codec, 490).await;
-    assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 491).await,
-        LayoutTreeNode::Leaf { pane_id }
-    );
+    let (workspace_id, tab_id, _pane_id) = new_workspace_ok(&mut stream, &mut codec, 490).await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 491).await;
+    assert_eq!(tabs.workspace_id, workspace_id);
+    assert_eq!(tabs.active_tab, tab_id);
 
     // Frames on one connection are handled in order, so the query after
     // the push observes the switch.
     let switch = SwitchWorkspace { workspace_id: 0 };
     let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, switch.encode()).expect("switch frame");
     write_frame(&mut stream, &mut codec, frame).await;
-    assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 492).await,
-        LayoutTreeNode::Leaf { pane_id: 0 }
-    );
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 492).await;
+    assert_eq!(tabs.workspace_id, 0);
+    assert_eq!(tabs.active_tab, 0);
 
     // And back to the new workspace.
     let switch = SwitchWorkspace { workspace_id };
     let frame = Frame::new(MSG_SWITCH_WORKSPACE, 0, switch.encode()).expect("switch frame");
     write_frame(&mut stream, &mut codec, frame).await;
-    assert_eq!(
-        active_layout_tree(&mut stream, &mut codec, 493).await,
-        LayoutTreeNode::Leaf { pane_id }
-    );
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 493).await;
+    assert_eq!(tabs.workspace_id, workspace_id);
+    assert_eq!(tabs.active_tab, tab_id);
 }
 
 #[tokio::test]
@@ -1351,7 +1427,7 @@ async fn switch_workspace_unknown_workspace_pushes_error() {
     // SwitchWorkspace is a push, so the failure arrives as an Error push.
     let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
     let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
-    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+    assert_eq!(err.code, ErrorCode::UnknownWorkspace as u32);
 }
 
 /// Truncated workspace payloads produce `MalformedPayload`: the
@@ -1687,7 +1763,10 @@ async fn handshake_accepts_older_minor_version() {
     assert_eq!(resp.msg_type, MSG_SERVER_HELLO);
     let server_hello = ServerHello::decode(&resp.payload).expect("decode ServerHello");
     assert_eq!(server_hello.status, HandshakeStatus::Accepted);
-    assert_eq!(server_hello.protocol_version_minor, 1);
+    assert_eq!(
+        server_hello.protocol_version_minor,
+        ClientHello::VERSION_MINOR
+    );
 }
 
 #[tokio::test]

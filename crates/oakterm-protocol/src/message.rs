@@ -68,6 +68,11 @@ pub const MSG_SWITCH_TAB: u16 = 0xAB;
 pub const MSG_NEW_WORKSPACE: u16 = 0xAC;
 pub const MSG_NEW_WORKSPACE_RESPONSE: u16 = 0xAD;
 pub const MSG_SWITCH_WORKSPACE: u16 = 0xAE;
+pub const MSG_LIST_TABS: u16 = 0xAF;
+pub const MSG_TAB_LIST: u16 = 0xB0;
+/// Protocol minor that introduced `ListTabs`/`TabList` (Spec-0001 1.2).
+/// Clients gate the request on the peer's advertised minor.
+pub const LIST_TABS_MIN_MINOR: u16 = 2;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -137,6 +142,8 @@ pub enum ErrorCode {
     /// constraint (minimum pane size, or the panes share no resizable
     /// border).
     LayoutRejected = 7,
+    UnknownTab = 8,
+    UnknownWorkspace = 9,
 }
 
 impl TryFrom<u32> for ErrorCode {
@@ -150,6 +157,8 @@ impl TryFrom<u32> for ErrorCode {
             5 => Ok(Self::PaneExited),
             6 => Ok(Self::PermissionDenied),
             7 => Ok(Self::LayoutRejected),
+            8 => Ok(Self::UnknownTab),
+            9 => Ok(Self::UnknownWorkspace),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown error code: {v}"),
@@ -393,9 +402,9 @@ pub struct ClientHello {
 
 impl ClientHello {
     pub const VERSION_MAJOR: u16 = 1;
-    /// Minor 1 ships `RequestShutdown`/`ShutdownAck` (Spec-0001 1.1); the
-    /// constant tracks the spec's version-history table.
-    pub const VERSION_MINOR: u16 = 1;
+    /// Minor 2 ships `ListTabs`/`TabList` (Spec-0001 1.2); the constant
+    /// tracks the spec's version-history table.
+    pub const VERSION_MINOR: u16 = 2;
 
     /// # Errors
     /// Returns an error if the client name exceeds u16 max length.
@@ -1996,5 +2005,159 @@ impl SwitchWorkspace {
         Ok(Self {
             workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
         })
+    }
+}
+
+/// One tab in a `TabList` (0xB0), in workspace tab order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabEntry {
+    pub tab_id: u32,
+    /// The pane focus moves to when this tab activates.
+    pub focused_pane: u32,
+    /// Display name: the tab's explicit name, falling back to the focused
+    /// pane's title. Empty when neither is set.
+    pub name: String,
+}
+
+impl TabEntry {
+    /// # Errors
+    /// Returns an error if the name exceeds u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let name_bytes = self.name.as_bytes();
+        let nlen: u16 = name_bytes
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "tab name too long"))?;
+        let mut buf = Vec::with_capacity(10 + name_bytes.len());
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        buf.extend_from_slice(&self.focused_pane.to_le_bytes());
+        buf.extend_from_slice(&nlen.to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+        Ok(buf)
+    }
+
+    /// Decode a `TabEntry` from `data`, returning the struct and bytes
+    /// consumed.
+    ///
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<(Self, usize)> {
+        if data.len() < 10 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TabEntry too short",
+            ));
+        }
+        let tab_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let focused_pane = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let nlen = u16::from_le_bytes([data[8], data[9]]) as usize;
+        let total = 10 + nlen;
+        if data.len() < total {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TabEntry name truncated",
+            ));
+        }
+        let name = String::from_utf8(data[10..total].to_vec())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("tab name: {e}")))?;
+        Ok((
+            Self {
+                tab_id,
+                focused_pane,
+                name,
+            },
+            total,
+        ))
+    }
+}
+
+/// `TabList` (0xB0): the active workspace's tabs, answering `ListTabs`
+/// (0xAF, empty payload). All fields are zero/empty when no workspace
+/// exists yet (the transient empty multiplexer state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabList {
+    pub workspace_id: u32,
+    pub workspace_name: String,
+    /// The active tab's id. Meaningless when `tabs` is empty.
+    pub active_tab: u32,
+    pub tabs: Vec<TabEntry>,
+}
+
+impl TabList {
+    /// # Errors
+    /// Returns an error if strings exceed u16 length or there are too
+    /// many tabs.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let ws_bytes = self.workspace_name.as_bytes();
+        let wlen: u16 = ws_bytes
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "workspace name too long"))?;
+        let count: u16 = self
+            .tabs
+            .len()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many tabs"))?;
+        let mut buf = Vec::with_capacity(12 + ws_bytes.len());
+        buf.extend_from_slice(&self.workspace_id.to_le_bytes());
+        buf.extend_from_slice(&wlen.to_le_bytes());
+        buf.extend_from_slice(ws_bytes);
+        buf.extend_from_slice(&self.active_tab.to_le_bytes());
+        buf.extend_from_slice(&count.to_le_bytes());
+        for tab in &self.tabs {
+            buf.extend_from_slice(&tab.encode()?);
+        }
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 6 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TabList too short",
+            ));
+        }
+        let workspace_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let wlen = u16::from_le_bytes([data[4], data[5]]) as usize;
+        let fixed = 6 + wlen;
+        if data.len() < fixed + 6 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TabList truncated",
+            ));
+        }
+        let workspace_name = String::from_utf8(data[6..6 + wlen].to_vec()).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("workspace name: {e}"))
+        })?;
+        let active_tab = u32::from_le_bytes([
+            data[fixed],
+            data[fixed + 1],
+            data[fixed + 2],
+            data[fixed + 3],
+        ]);
+        let count = u16::from_le_bytes([data[fixed + 4], data[fixed + 5]]) as usize;
+        let mut tabs = Vec::with_capacity(count);
+        let mut offset = fixed + 6;
+        for _ in 0..count {
+            let (entry, consumed) = TabEntry::decode(&data[offset..])?;
+            tabs.push(entry);
+            offset += consumed;
+        }
+        Ok(Self {
+            workspace_id,
+            workspace_name,
+            active_tab,
+            tabs,
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if encoding or frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_TAB_LIST, serial, self.encode()?)
     }
 }

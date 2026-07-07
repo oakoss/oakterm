@@ -14,7 +14,7 @@ use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
     ErrorCode, ErrorMessage, MSG_CLOSE_PANE, MSG_CLOSE_TAB, MSG_CREATE_PANE, MSG_DETACH,
     MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE,
-    MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_LIST_PANES, MSG_MOUSE_INPUT, MSG_NEW_TAB,
+    MSG_GET_SCROLLBACK, MSG_KEY_INPUT, MSG_LIST_PANES, MSG_LIST_TABS, MSG_MOUSE_INPUT, MSG_NEW_TAB,
     MSG_NEW_WORKSPACE, MSG_PING, MSG_PONG, MSG_RESIZE, MSG_RESIZE_PANE, MSG_SEARCH_CLOSE,
     MSG_SEARCH_NEXT, MSG_SEARCH_PREV, MSG_SEARCH_SCROLLBACK, MSG_SPLIT_PANE, MSG_SWAP_PANE,
     MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE,
@@ -60,6 +60,7 @@ pub(crate) async fn handle_request(
         MSG_NEW_TAB => tabs::new_tab(conn_id, frame, panes).await,
         MSG_CLOSE_TAB => tabs::close_tab(conn_id, frame, panes).await,
         MSG_SWITCH_TAB => tabs::switch_tab(conn_id, frame, panes).await,
+        MSG_LIST_TABS => tabs::list_tabs(conn_id, frame, panes).await,
         MSG_NEW_WORKSPACE => workspaces::new_workspace(conn_id, frame, panes).await,
         MSG_SWITCH_WORKSPACE => workspaces::switch_workspace(conn_id, frame, panes).await,
         MSG_PING => match Frame::new(MSG_PONG, frame.serial, vec![]) {

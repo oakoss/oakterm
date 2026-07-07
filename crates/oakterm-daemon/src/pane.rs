@@ -136,6 +136,24 @@ pub(crate) struct TopologySnapshot {
     pub(crate) panes: Vec<(u32, SharedPane)>,
 }
 
+/// One tab in a [`TabListSnapshot`]: identity, focus target, explicit
+/// name, and the focused pane's handle for the title fallback.
+pub(crate) struct TabListEntry {
+    pub(crate) tab_id: u32,
+    pub(crate) focused_pane: u32,
+    pub(crate) name: String,
+    pub(crate) pane: Option<SharedPane>,
+}
+
+/// Atomic view of the active workspace's tabs (Spec-0001 `ListTabs`);
+/// see `PaneManager::tab_list_snapshot`.
+pub(crate) struct TabListSnapshot {
+    pub(crate) workspace_id: u32,
+    pub(crate) workspace_name: String,
+    pub(crate) active_tab: u32,
+    pub(crate) tabs: Vec<TabListEntry>,
+}
+
 /// Tracks all panes. Guards topology only (create/lookup/remove/focus);
 /// the Spec-0007 workspace/tab/layout model lives in [`MultiplexerState`]
 /// and pane contents live behind per-pane locks.
@@ -343,6 +361,36 @@ impl PaneManager {
             .iter()
             .flat_map(Workspace::tabs)
             .find(|t| t.id() == tab)
+    }
+
+    /// A tab's layout tree, searched across all workspaces. `None` when
+    /// the tab is unknown.
+    pub(crate) fn tab_layout(&self, tab: u32) -> Option<&LayoutNode> {
+        self.tab_by_id(TabId(tab)).map(Tab::layout)
+    }
+
+    /// Snapshot the active workspace's tabs under one lock. Each entry
+    /// carries the focused pane's `SharedPane` so the caller can read its
+    /// title after releasing the manager lock (manager->pane lock order).
+    /// `None` in the transient empty state (no workspace yet).
+    pub(crate) fn tab_list_snapshot(&self) -> Option<TabListSnapshot> {
+        let ws = self.mux.active_workspace()?;
+        let tabs = ws
+            .tabs()
+            .iter()
+            .map(|t| TabListEntry {
+                tab_id: t.id().0,
+                focused_pane: t.focused_pane().0,
+                name: t.name().to_string(),
+                pane: self.panes.get(&t.focused_pane().0).cloned(),
+            })
+            .collect();
+        Some(TabListSnapshot {
+            workspace_id: ws.id().0,
+            workspace_name: ws.name().to_string(),
+            active_tab: ws.active_tab().id().0,
+            tabs,
+        })
     }
 
     /// Every pane in a tab: layout leaves plus floating panes. `None`

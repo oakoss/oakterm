@@ -427,7 +427,7 @@ support level (modifyOtherKeys, Kitty) is adopted; until then both fields are 0
 and the client uses legacy encoding, so the amendment is safe to land ahead of
 the Kitty work.
 
-**Versioning classification (decided 2026-07-06): minor bump, 1.1 → 1.2.**
+**Versioning classification (decided 2026-07-06): minor bump; renumbered 1.2 → 1.3 when `ListTabs`/`TabList` shipped first as 1.2 (minors are assigned in implementation order).**
 Spec-0001's governance rules make a field insertion into a hand-rolled binary
 layout a _breaking_ (major) change, because the layout is positional and older
 decoders read fixed offsets. In Phase 0/1 the client and daemon ship in
@@ -435,7 +435,7 @@ lockstep at the same version, so growing the prefix is operationally safe: no
 released, independently versioned client exists yet. The layout exception is
 recorded alongside the amendment in Spec-0001; once independent clients ship,
 positional insertions revert to major bumps as the rule prescribes. The
-amendment ships with the protocol-1.2 batch (TREK-140/161/133/134/172/128/232)
+amendment ships with the protocol-1.3 batch (TREK-140/161/133/134/172/128/232)
 so the wire changes land as one bump.
 
 ## Behavior

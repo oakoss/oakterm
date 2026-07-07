@@ -1,12 +1,13 @@
-//! Tab family: `NewTab`, `CloseTab`, `SwitchTab` (0xA7-0xAB). Tab and
-//! workspace state lives in the Spec-0007 mux model behind `PaneManager`;
-//! the handlers translate wire IDs and drive the model's tab operations.
+//! Tab family: `NewTab`, `CloseTab`, `SwitchTab`, `ListTabs` (0xA7-0xAB,
+//! 0xAF). Tab and workspace state lives in the Spec-0007 mux model behind
+//! `PaneManager`; the handlers translate wire IDs and drive the model's
+//! tab operations.
 
 use super::{RequestResult, make_error_response};
 use crate::pane::{PaneManager, SharedPane};
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    CloseTab, CloseTabResponse, ErrorCode, NewTab, NewTabResponse, SwitchTab,
+    CloseTab, CloseTabResponse, ErrorCode, NewTab, NewTabResponse, SwitchTab, TabEntry, TabList,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -88,7 +89,7 @@ pub(super) async fn close_tab(
             return make_error_response(
                 conn_id,
                 frame.serial,
-                ErrorCode::UnknownPane,
+                ErrorCode::UnknownTab,
                 "unknown tab",
             );
         };
@@ -166,9 +167,75 @@ pub(super) async fn switch_tab(
     };
     if !panes.lock().await.switch_tab(msg.tab_id) {
         warn!(conn_id, tab_id = msg.tab_id, "switch to unknown tab");
-        return make_error_response(conn_id, frame.serial, ErrorCode::UnknownPane, "unknown tab");
+        return make_error_response(conn_id, frame.serial, ErrorCode::UnknownTab, "unknown tab");
     }
     debug!(conn_id, tab_id = msg.tab_id, "active tab switched");
     // SwitchTab is a push message (serial 0) per Spec-0001.
     RequestResult::NoResponse
+}
+
+pub(super) async fn list_tabs(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> RequestResult {
+    let snapshot = panes.lock().await.tab_list_snapshot();
+    // The transient empty state (no workspace yet) is a valid, empty list.
+    let Some(snapshot) = snapshot else {
+        let resp = TabList {
+            workspace_id: 0,
+            workspace_name: String::new(),
+            active_tab: 0,
+            tabs: vec![],
+        };
+        return tab_list_response(conn_id, frame.serial, &resp);
+    };
+    let mut tabs = Vec::with_capacity(snapshot.tabs.len());
+    for entry in snapshot.tabs {
+        let name = if entry.name.is_empty() {
+            // Spec-0007: an unnamed tab shows its focused pane's title.
+            if let Some(pane) = entry.pane {
+                let pane = pane.lock().await;
+                pane.screens.active_grid().title.clone().unwrap_or_default()
+            } else {
+                error!(
+                    conn_id,
+                    tab_id = entry.tab_id,
+                    pane_id = entry.focused_pane,
+                    "tab's focused pane missing from the pane map; mux out of sync"
+                );
+                debug_assert!(false, "tab's focused pane must be in the pane map");
+                String::new()
+            }
+        } else {
+            entry.name
+        };
+        tabs.push(TabEntry {
+            tab_id: entry.tab_id,
+            focused_pane: entry.focused_pane,
+            name,
+        });
+    }
+    let resp = TabList {
+        workspace_id: snapshot.workspace_id,
+        workspace_name: snapshot.workspace_name,
+        active_tab: snapshot.active_tab,
+        tabs,
+    };
+    tab_list_response(conn_id, frame.serial, &resp)
+}
+
+fn tab_list_response(conn_id: u64, serial: u32, resp: &TabList) -> RequestResult {
+    match resp.to_frame(serial) {
+        Ok(f) => RequestResult::Response(f),
+        Err(e) => {
+            error!(conn_id, error = %e, "failed to encode TabList");
+            make_error_response(
+                conn_id,
+                serial,
+                ErrorCode::InternalError,
+                "TabList encode error",
+            )
+        }
+    }
 }

@@ -104,13 +104,14 @@ The negotiation rules above describe how a mismatch is _handled_; these rules de
 
 **Version history:**
 
-This spec defines protocol version **major 1, minor 2**. Minor bumps are recorded here; the advertised `VERSION_MINOR` constant ships with the first implementation of each bump's messages, so binaries may lag the spec by one minor version.
+This spec defines protocol version **major 1, minor 3**. Minor bumps are recorded here in implementation order; the advertised `VERSION_MINOR` constant ships with the first implementation of each bump's messages, so binaries may lag the spec by one minor version.
 
 | Version | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1.0     | Initial Phase 0 protocol: framing, handshake, version negotiation, and the message catalog.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 1.1     | Added `RequestShutdown` (0x07) and `ShutdownAck` (0x08) for client-initiated save-then-exit ([ADR-0020](../adrs/0020-daemon-upgrade-version-skew.md)). Additive — no existing message or field changed; unknown to older daemons, which fall back to a manual restart.                                                                                                                                                                                                                                           |
-| 1.2     | Inserted `input_flags` and `kitty_kbd_flags` into the `RenderUpdate` (0x72) payload after `alt_screen` ([Spec-0011](0011-input-encoding.md)), growing the fixed prefix 25 → 27 bytes. Layout exception: a positional insertion is breaking under this spec's own rule, recorded as a minor bump only because client and daemon still ship in lockstep with no independently versioned client released; once one exists, positional insertions are major bumps. Ships with the protocol-1.2 implementation batch. |
+| 1.2     | Added `ListTabs` (0xAF) and `TabList` (0xB0) for tab enumeration (tab bar, TREK-107). Additive — unknown to older daemons, which ignore the frame. Also fixed `GetLayoutTree` to resolve `tab_id` literally (TREK-264); pre-1.2 binaries sent a placeholder `tab_id = 0` and relied on the unimplemented resolution serving the active tab — a behavior change, tolerated without a major bump because clients and daemons still ship in lockstep (same exception as 1.3's layout note).                         |
+| 1.3     | Inserted `input_flags` and `kitty_kbd_flags` into the `RenderUpdate` (0x72) payload after `alt_screen` ([Spec-0011](0011-input-encoding.md)), growing the fixed prefix 25 → 27 bytes. Layout exception: a positional insertion is breaking under this spec's own rule, recorded as a minor bump only because client and daemon still ship in lockstep with no independently versioned client released; once one exists, positional insertions are major bumps. Ships with the protocol-1.3 implementation batch. |
 
 ### Message Catalog
 
@@ -139,8 +140,10 @@ This spec defines protocol version **major 1, minor 2**. Minor bumps are recorde
 | 5    | `PANE_EXITED`       | Pane exists but the child process has exited                                                                 |
 | 6    | `PERMISSION_DENIED` | Operation not permitted for this client                                                                      |
 | 7    | `LAYOUT_REJECTED`   | Layout operation violates a Spec-0007 constraint (minimum pane size, or the panes share no resizable border) |
+| 8    | `UNKNOWN_TAB`       | Requested tab_id does not exist                                                                              |
+| 9    | `UNKNOWN_WORKSPACE` | Requested workspace_id does not exist                                                                        |
 
-Error codes 0 and 8-255 are reserved. Codes 256+ are available for future use. New codes are assigned from the reserved range without a version bump — codes are data inside an existing message, not new wire surface — so clients must treat an unknown code as an opaque failure, keyed by the human-readable `message`. (`LAYOUT_REJECTED` was assigned this way with the first split-topology implementation, TREK-98.)
+Error codes 0 and 10-255 are reserved. Codes 256+ are available for future use. New codes are assigned from the reserved range without a version bump — codes are data inside an existing message, not new wire surface — so clients must treat an unknown code as an opaque failure, keyed by the human-readable `message`. (`LAYOUT_REJECTED` was assigned this way with the first split-topology implementation, TREK-98; `UNKNOWN_TAB`/`UNKNOWN_WORKSPACE` with the tab bar, TREK-107.)
 
 **`RequestShutdown` (0x07) and `ShutdownAck` (0x08):** A client asks the daemon
 to persist session state and exit — the single save-then-exit path shared by
@@ -208,11 +211,11 @@ alt_screen         u8          1 if the active grid is the alternate screen
                                (smcup). Clients use this to route wheel
                                events: alt → forward to app, primary →
                                host scrollback.
-input_flags        u8          Since 1.2 (Spec-0011). bit0: DECCKM cursor-key
+input_flags        u8          Since 1.3 (Spec-0011). bit0: DECCKM cursor-key
                                mode; bit1: application keypad mode (mode 66);
                                bits2-3: modifyOtherKeys level (0-2);
                                bits4-7: reserved, must be 0.
-kitty_kbd_flags    u8          Since 1.2 (Spec-0011). Kitty keyboard
+kitty_kbd_flags    u8          Since 1.3 (Spec-0011). Kitty keyboard
                                progressive-enhancement flags at the top of the
                                active grid's flag stack; 0 = protocol disabled
                                (legacy encoding).
@@ -354,7 +357,7 @@ See Spec-0008 for full copy mode behavior.
 
 The daemon tracks which clients have pinned viewports per pane (a set of client IDs, not a boolean). Scroll-on-output is suppressed per-client while its ID is in the set. See ADR-0012.
 
-#### GUI Protocol — Split Topology (0xA0-0xAF)
+#### GUI Protocol — Split Topology, Tabs & Workspaces (0xA0-0xB0)
 
 See Spec-0007 for the layout tree model.
 
@@ -375,10 +378,16 @@ See Spec-0007 for the layout tree model.
 | `0xAC`   | NewWorkspace      | C→D       | Request  | `name_len: u16`, `name: UTF-8`                                                                                                                                                                                               |
 | `0xAD`   | NewWorkspaceResp  | D→C       | Response | `workspace_id: u32`, `tab_id: u32`, `pane_id: u32`                                                                                                                                                                           |
 | `0xAE`   | SwitchWorkspace   | C→D       | Push (0) | `workspace_id: u32`                                                                                                                                                                                                          |
+| `0xAF`   | ListTabs          | C→D       | Request  | Empty. Returns the active workspace's tabs.                                                                                                                                                                                  |
+| `0xB0`   | TabList           | D→C       | Response | `workspace_id: u32`, `name_len: u16`, `workspace_name: UTF-8`, `active_tab: u32`, `tab_count: u16`, then per tab: `tab_id: u32`, `focused_pane: u32`, `name_len: u16`, `name: UTF-8`                                         |
 
 **`SplitPane` (0xA0):** The new pane follows the `CreatePane` lifecycle — created unspawned; the client's first `Resize` for it determines dimensions and spawns the PTY. Focus moves to the new pane (Spec-0007 Split). The daemon rejects the request with `LAYOUT_REJECTED` when the split would leave any resulting pane below the Spec-0007 minimum (2 columns × 1 row) along the split axis — the new pane, the shrunk target, or a sibling scaled by a same-direction insert.
 
 **`ResizePane` (0xA2):** `delta` is in grid cells because the daemon has no pixel geometry — the client converts its pixel drag using its cell size. The daemon converts cells to Spec-0007 weight space and clamps so neither side drops below the minimum pane size. The accepted pane pairs are those sharing a resizable border: adjacent sibling subtrees of one container where each pane touches the shared edge and their extents overlap (Spec-0007 Resize) — the pairs a border drag in the GUI naturally produces. Failures (`UNKNOWN_PANE`, `LAYOUT_REJECTED`) are pushed as `Error` frames with serial 0.
+
+**`GetLayoutTree` (0xA5):** `tab_id` is literal — the seeded default tab is 0, and there is no "active tab" sentinel; a client resolves the active tab via `ListTabs`. An unknown `tab_id` yields `UNKNOWN_TAB`. Tab IDs are unique across workspaces, so `workspace_id` needs no resolution.
+
+**`ListTabs` (0xAF) / `TabList` (0xB0):** Returns the active workspace's tabs in workspace order (the order the tab bar renders). `active_tab` is the active tab's id. Each tab's `name` is its explicit name, falling back to its focused pane's title (Spec-0007 tab naming); empty when neither is set — clients display the tab index. `focused_pane` is the pane focus moves to when the tab activates, letting a client focus correctly after `SwitchTab` without another round-trip. In the transient empty multiplexer state (no workspace yet) all fields are zero/empty with `tab_count = 0`. Tab topology has no change push: a client refreshes with `ListTabs` after its own tab/workspace operations; cross-client notification is deferred with the other per-client notification work.
 
 **GetLayoutTree response:** The `tree` payload is a JSON-encoded layout tree for a single tab. Based on Spec-0010's `SavedLayoutNode` structure but with live `pane_id: u32` at each leaf instead of `SavedPane`. This gives the GUI the pane IDs it needs to correlate with render updates. JSON is used because layout tree queries are infrequent (on tab switch, not per frame) and the tree is small (~1-5 KB).
 

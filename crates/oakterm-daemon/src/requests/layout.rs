@@ -303,26 +303,21 @@ pub(super) async fn get_layout_tree(
             "malformed GetLayoutTree",
         );
     };
-    // The mux model has landed, but this still serves the active tab's tree
-    // regardless of msg.tab_id; per-tab resolution is deferred until the tab
-    // bar (TREK-107) needs to query background tabs.
     debug!(
         conn_id,
         workspace_id = msg.workspace_id,
         tab_id = msg.tab_id,
         "layout tree requested"
     );
+    // tab_id is literal (the seeded default tab is 0); tab ids are unique
+    // across workspaces, so workspace_id needs no resolution.
     let tree = {
         let pm = panes.lock().await;
-        pm.topology_snapshot().map(|s| to_wire_tree(&s.layout))
+        pm.tab_layout(msg.tab_id).map(to_wire_tree)
     };
     let Some(tree) = tree else {
-        return make_error_response(
-            conn_id,
-            frame.serial,
-            ErrorCode::UnknownPane,
-            "no panes exist",
-        );
+        warn!(conn_id, tab_id = msg.tab_id, "layout tree for unknown tab");
+        return make_error_response(conn_id, frame.serial, ErrorCode::UnknownTab, "unknown tab");
     };
     match (LayoutTree { tree }).to_frame(frame.serial) {
         Ok(f) => RequestResult::Response(f),
