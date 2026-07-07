@@ -1,5 +1,6 @@
 mod a11y_bridge;
 mod daemon_conn;
+mod input;
 mod layout;
 mod layout_state;
 mod pane_view;
@@ -14,7 +15,6 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
@@ -986,7 +986,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // "˙" in logical_key, which can never match an alt+h
                 // binding (Spec-0011 Keybind Lookup Layer).
                 let chord_key = event.key_without_modifiers();
-                if let Some(chord) = winit_to_chord(self.modifiers, &chord_key) {
+                if let Some(chord) = input::winit_to_chord(self.modifiers, &chord_key) {
                     if let Some(idx) = self.keybind_registry.lookup_index(&chord) {
                         if self.dispatch_action_at(idx) {
                             self.reset_blink();
@@ -1014,7 +1014,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.return_to_live(self.focused_pane);
                 }
 
-                let bytes = key_to_bytes(&logical_key, text.as_deref());
+                let bytes = input::key_to_bytes(&logical_key, text.as_deref());
                 if let (Some(daemon), Some(bytes)) = (&mut self.daemon, bytes) {
                     let msg = KeyInput {
                         pane_id: self.focused_pane,
@@ -1170,7 +1170,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 event_type,
                                 x,
                                 y,
-                                modifiers: encode_mouse_modifiers(self.modifiers),
+                                modifiers: input::encode_mouse_modifiers(self.modifiers),
                                 button: btn,
                             };
                             match msg.to_frame() {
@@ -1219,7 +1219,7 @@ impl ApplicationHandler<UserEvent> for App {
                 } else if let Some(daemon) = &mut self.daemon {
                     let (x, y) = self.last_mouse_cell;
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
-                    let mods = encode_mouse_modifiers(self.modifiers);
+                    let mods = input::encode_mouse_modifiers(self.modifiers);
                     for _ in 0..count.min(5) {
                         let msg = MouseInput {
                             pane_id: self.focused_pane,
@@ -2452,114 +2452,6 @@ impl App {
     }
 }
 
-/// Convert a winit key event to PTY bytes.
-fn key_to_bytes(key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
-    if let Some(t) = text {
-        if !t.is_empty() {
-            return Some(t.as_bytes().to_vec());
-        }
-    }
-
-    if let Key::Named(named) = key {
-        let seq: &[u8] = match named {
-            NamedKey::ArrowUp => b"\x1b[A",
-            NamedKey::ArrowDown => b"\x1b[B",
-            NamedKey::ArrowRight => b"\x1b[C",
-            NamedKey::ArrowLeft => b"\x1b[D",
-            NamedKey::Home => b"\x1b[H",
-            NamedKey::End => b"\x1b[F",
-            NamedKey::Insert => b"\x1b[2~",
-            NamedKey::Delete => b"\x1b[3~",
-            NamedKey::PageUp => b"\x1b[5~",
-            NamedKey::PageDown => b"\x1b[6~",
-            NamedKey::Escape => b"\x1b",
-            NamedKey::Tab => b"\t",
-            NamedKey::Enter => b"\r",
-            NamedKey::Backspace => b"\x7f",
-            NamedKey::F1 => b"\x1bOP",
-            NamedKey::F2 => b"\x1bOQ",
-            NamedKey::F3 => b"\x1bOR",
-            NamedKey::F4 => b"\x1bOS",
-            NamedKey::F5 => b"\x1b[15~",
-            NamedKey::F6 => b"\x1b[17~",
-            NamedKey::F7 => b"\x1b[18~",
-            NamedKey::F8 => b"\x1b[19~",
-            NamedKey::F9 => b"\x1b[20~",
-            NamedKey::F10 => b"\x1b[21~",
-            NamedKey::F11 => b"\x1b[23~",
-            NamedKey::F12 => b"\x1b[24~",
-            _ => return None,
-        };
-        return Some(seq.to_vec());
-    }
-
-    None
-}
-
-/// Convert winit modifier state + logical key to a `KeyChord` for registry lookup.
-fn winit_to_chord(
-    modifiers: winit::event::Modifiers,
-    logical_key: &Key,
-) -> Option<oakterm_config::KeyChord> {
-    use oakterm_config::{KeyChord, KeyName, NamedKeyId};
-
-    let state = modifiers.state();
-    let key = match logical_key {
-        Key::Named(named) => {
-            let id = match named {
-                NamedKey::ArrowUp => NamedKeyId::ArrowUp,
-                NamedKey::ArrowDown => NamedKeyId::ArrowDown,
-                NamedKey::ArrowLeft => NamedKeyId::ArrowLeft,
-                NamedKey::ArrowRight => NamedKeyId::ArrowRight,
-                NamedKey::Home => NamedKeyId::Home,
-                NamedKey::End => NamedKeyId::End,
-                NamedKey::PageUp => NamedKeyId::PageUp,
-                NamedKey::PageDown => NamedKeyId::PageDown,
-                NamedKey::Tab => NamedKeyId::Tab,
-                NamedKey::Enter => NamedKeyId::Enter,
-                NamedKey::Backspace => NamedKeyId::Backspace,
-                NamedKey::Escape => NamedKeyId::Escape,
-                NamedKey::Delete => NamedKeyId::Delete,
-                NamedKey::Insert => NamedKeyId::Insert,
-                NamedKey::Space => NamedKeyId::Space,
-                NamedKey::F1 => NamedKeyId::F1,
-                NamedKey::F2 => NamedKeyId::F2,
-                NamedKey::F3 => NamedKeyId::F3,
-                NamedKey::F4 => NamedKeyId::F4,
-                NamedKey::F5 => NamedKeyId::F5,
-                NamedKey::F6 => NamedKeyId::F6,
-                NamedKey::F7 => NamedKeyId::F7,
-                NamedKey::F8 => NamedKeyId::F8,
-                NamedKey::F9 => NamedKeyId::F9,
-                NamedKey::F10 => NamedKeyId::F10,
-                NamedKey::F11 => NamedKeyId::F11,
-                NamedKey::F12 => NamedKeyId::F12,
-                _ => return None,
-            };
-            KeyName::Named(id)
-        }
-        Key::Character(text) => {
-            // Only match single-character inputs. Multi-character strings
-            // (e.g., IME composition) should not trigger keybinds.
-            let mut chars = text.chars();
-            let ch = chars.next()?;
-            if chars.next().is_some() {
-                return None;
-            }
-            KeyName::Character(ch.to_lowercase().next().unwrap_or(ch))
-        }
-        _ => return None,
-    };
-
-    Some(KeyChord {
-        ctrl: state.control_key(),
-        alt: state.alt_key(),
-        shift: state.shift_key(),
-        super_key: state.super_key(),
-        key,
-    })
-}
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -2851,23 +2743,6 @@ fn upload_color_glyphs_to_atlas(
             },
         );
     }
-}
-
-/// Encode winit modifier state to xterm mouse modifier bits.
-/// Shift=4, Alt/Meta=8, Ctrl=16.
-fn encode_mouse_modifiers(mods: winit::event::Modifiers) -> u8 {
-    let s = mods.state();
-    let mut bits = 0u8;
-    if s.shift_key() {
-        bits |= 4;
-    }
-    if s.alt_key() {
-        bits |= 8;
-    }
-    if s.control_key() {
-        bits |= 16;
-    }
-    bits
 }
 
 fn create_atlas_texture(
