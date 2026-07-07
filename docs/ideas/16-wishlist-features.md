@@ -114,6 +114,12 @@ Tooltip or preview when hovering over a hyperlink. Windows Terminal demoed this.
 
 Protect against accidental input — useful for production terminals. Contour implements this.
 
+### Tab Groups (Chrome-style)
+
+Named/colored tab clusters inside a workspace, between the tab and workspace levels. No terminal implements this; browsers added groups to retrofit structure onto a flat strip, and the `Workspace → Tab → Panes` hierarchy already provides that structure at terminal-scale tab counts. The one workload that could justify it — many agent/service tabs in one project workspace — is what the sidebar (04) groups by category instead.
+
+**Status:** Not planned. Revisit only if living with workspace UI (TREK-116/117) shows workspaces are too heavyweight for mid-size clustering; per-tab colors (19, TREK-212) and rename/reorder (TREK-209) cover the visual-distinction need first.
+
 ## Won't Have (doesn't fit our philosophy)
 
 ### Jupyter-style Command Cells

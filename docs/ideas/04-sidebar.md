@@ -8,7 +8,7 @@ tags: ['ui', 'process-dashboard', 'notifications', 'agents', 'services']
 
 # Sidebar
 
-A collapsible process dashboard on the left. `Ctrl+B` to toggle.
+A collapsible process dashboard, docked left by default and configurable to either edge (`sidebar_position = "left" | "right"`). `Ctrl+B` to toggle.
 
 Not a file tree. Not a session list. It shows **things that are running** — grouped by what they are. It doubles as the workspace switcher: click an entry and the main view swaps to it.
 
@@ -93,6 +93,24 @@ Every sidebar entry can show memory usage of its child process. This makes it im
 ```
 
 The `⚠ ↑` indicator means the process memory is growing abnormally. A notification fires if it exceeds the configured threshold. See `ideas/15-memory-management.md` for the full memory strategy.
+
+## Workspace Switching and Folders
+
+As the workspace switcher, the sidebar lists workspaces and swaps the main view on click. For people who accumulate many workspaces (one per project, plus scratch contexts), flat listing stops scaling — so workspaces can be organized into **folders**: collapsible, named groups in the sidebar (Arc's spaces-and-folders pattern).
+
+```text
+┌──────────────────┐
+│ WORKSPACES       │
+│ ▼ work           │
+│   ● api          │
+│   ● frontend     │
+│ ▼ oss            │
+│   ● oakterm      │
+│ ▶ archive        │  ← collapsed folder
+└──────────────────┘
+```
+
+Folders are sidebar-side organization only — the daemon's `Workspace → Tab → Panes` model (03) is untouched; a folder is presentation metadata (name, member workspace ids, collapsed state) owned by the sidebar's data model and saved with the session. This keeps grouping out of the wire protocol and the mux invariants. Whether folder metadata lives client-side or daemon-side (so N clients see the same folders) is an open question for the ADR.
 
 ## How Things Get Into the Sidebar
 
