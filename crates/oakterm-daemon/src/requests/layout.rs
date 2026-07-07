@@ -303,8 +303,9 @@ pub(super) async fn get_layout_tree(
             "malformed GetLayoutTree",
         );
     };
-    // Single implicit workspace/tab until EPIC-9 lands the multiplexer
-    // data model; the ids select nothing yet.
+    // The mux model has landed, but this still serves the active tab's tree
+    // regardless of msg.tab_id; per-tab resolution is deferred until the tab
+    // bar (TREK-107) needs to query background tabs.
     debug!(
         conn_id,
         workspace_id = msg.workspace_id,

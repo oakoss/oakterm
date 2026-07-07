@@ -60,6 +60,11 @@ pub const MSG_SWAP_PANE: u16 = 0xA3;
 pub const MSG_SWAP_PANE_RESPONSE: u16 = 0xA4;
 pub const MSG_GET_LAYOUT_TREE: u16 = 0xA5;
 pub const MSG_LAYOUT_TREE: u16 = 0xA6;
+pub const MSG_NEW_TAB: u16 = 0xA7;
+pub const MSG_NEW_TAB_RESPONSE: u16 = 0xA8;
+pub const MSG_CLOSE_TAB: u16 = 0xA9;
+pub const MSG_CLOSE_TAB_RESPONSE: u16 = 0xAA;
+pub const MSG_SWITCH_TAB: u16 = 0xAB;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -1736,5 +1741,160 @@ impl LayoutTree {
     /// Returns an error if encoding or frame construction fails.
     pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
         Frame::new(MSG_LAYOUT_TREE, serial, self.encode()?)
+    }
+}
+
+/// `NewTab` (0xA7): client requests a new tab holding one pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTab {
+    pub workspace_id: u32,
+    /// Shell command for the tab's pane. Empty = default shell.
+    pub command: String,
+    /// Working directory for the tab's pane. Empty = inherit from daemon.
+    pub cwd: String,
+}
+
+impl NewTab {
+    /// # Errors
+    /// Returns an error if command or cwd exceed u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(8 + self.command.len() + self.cwd.len());
+        buf.extend_from_slice(&self.workspace_id.to_le_bytes());
+        encode_str(&mut buf, &self.command)?;
+        encode_str(&mut buf, &self.cwd)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "NewTab too short",
+            ));
+        }
+        let workspace_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let (command, consumed) = decode_str(data, 4, "command")?;
+        let (cwd, _) = decode_str(data, 4 + consumed, "cwd")?;
+        Ok(Self {
+            workspace_id,
+            command,
+            cwd,
+        })
+    }
+}
+
+/// `NewTabResponse` (0xA8): daemon returns the new tab and its pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTabResponse {
+    pub tab_id: u32,
+    pub pane_id: u32,
+}
+
+impl NewTabResponse {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "NewTabResponse too short",
+            ));
+        }
+        Ok(Self {
+            tab_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            pane_id: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        })
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_NEW_TAB_RESPONSE, serial, self.encode())
+    }
+}
+
+/// `CloseTab` (0xA9): client requests closure of a tab and every pane in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseTab {
+    pub tab_id: u32,
+}
+
+impl CloseTab {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.tab_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CloseTab too short",
+            ));
+        }
+        Ok(Self {
+            tab_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+}
+
+/// `CloseTabResponse` (0xAA): empty payload confirming the tab closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseTabResponse;
+
+impl CloseTabResponse {
+    /// # Errors
+    /// Never fails; any payload (including empty) decodes.
+    pub fn decode(_data: &[u8]) -> io::Result<Self> {
+        Ok(Self)
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_CLOSE_TAB_RESPONSE, serial, vec![])
+    }
+}
+
+/// `SwitchTab` (0xAB): client changes the active tab. Push message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchTab {
+    pub tab_id: u32,
+}
+
+impl SwitchTab {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.tab_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SwitchTab too short",
+            ));
+        }
+        Ok(Self {
+            tab_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
     }
 }

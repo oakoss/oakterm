@@ -6,15 +6,16 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::Resize;
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ClosePane, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage,
-    GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE,
-    MSG_CLOSE_PANE_RESPONSE, MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR,
-    MSG_GET_LAYOUT_TREE, MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_PANE_EXITED,
+    ClientHello, ClientType, ClosePane, CloseTab, CreatePane, CreatePaneResponse, ErrorCode,
+    ErrorMessage, GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse,
+    MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE,
+    MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_LAYOUT_TREE,
+    MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_PANE_EXITED,
     MSG_PING, MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
     MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
-    MSG_SWAP_PANE_RESPONSE, PaneExited, RequestShutdown, RequestShutdownReason, ResizePane,
-    ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus, ShutdownReason, SplitDirection,
-    SplitPane, SplitPaneResponse, SwapPane,
+    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, NewTab, NewTabResponse, PaneExited, RequestShutdown,
+    RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
+    ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -807,6 +808,264 @@ async fn split_pane_below_minimum_size_rejected() {
     // A vertical split of the same pane still fits (12 rows each).
     let new_pane = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Vertical, 321).await;
     assert_ne!(new_pane, 0);
+}
+
+/// Send `NewTab` and return `(tab_id, pane_id)`, asserting acceptance.
+async fn new_tab_ok(stream: &mut UnixStream, codec: &mut FrameCodec, serial: u32) -> (u32, u32) {
+    let msg = NewTab {
+        workspace_id: 0,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(MSG_NEW_TAB, serial, msg.encode().expect("encode NewTab"))
+        .expect("new-tab frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(resp.msg_type, MSG_NEW_TAB_RESPONSE, "new tab rejected");
+    let resp = NewTabResponse::decode(&resp.payload).expect("decode NewTabResponse");
+    (resp.tab_id, resp.pane_id)
+}
+
+/// Fetch the active tab's layout tree via `GetLayoutTree`.
+async fn active_layout_tree(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    serial: u32,
+) -> LayoutTreeNode {
+    let req = GetLayoutTree {
+        workspace_id: 0,
+        tab_id: 0,
+    };
+    let frame = Frame::new(MSG_GET_LAYOUT_TREE, serial, req.encode()).expect("get-layout frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(resp.msg_type, MSG_LAYOUT_TREE);
+    LayoutTree::decode(&resp.payload)
+        .expect("decode LayoutTree")
+        .tree
+}
+
+#[tokio::test]
+async fn new_tab_creates_tab_with_one_pane() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let (tab_id, pane_id) = new_tab_ok(&mut stream, &mut codec, 400).await;
+    assert_ne!(tab_id, 0, "seeded default tab is 0");
+    assert_ne!(pane_id, 0, "seeded default pane is 0");
+
+    // The new tab is active and holds exactly the new pane.
+    let tree = active_layout_tree(&mut stream, &mut codec, 401).await;
+    assert_eq!(tree, LayoutTreeNode::Leaf { pane_id });
+
+    // The default pane survives in its background tab.
+    let frame = Frame::new(MSG_LIST_PANES, 402, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 402).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert!(ids.contains(&0) && ids.contains(&pane_id), "panes: {ids:?}");
+}
+
+#[tokio::test]
+async fn switch_tab_changes_active_tab() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let (tab_id, pane_id) = new_tab_ok(&mut stream, &mut codec, 410).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 411).await,
+        LayoutTreeNode::Leaf { pane_id }
+    );
+
+    // Frames on one connection are handled in order, so the query after
+    // the push observes the switch.
+    let switch = SwitchTab { tab_id: 0 };
+    let frame = Frame::new(MSG_SWITCH_TAB, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 412).await,
+        LayoutTreeNode::Leaf { pane_id: 0 }
+    );
+
+    // And back to the new tab.
+    let switch = SwitchTab { tab_id };
+    let frame = Frame::new(MSG_SWITCH_TAB, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 413).await,
+        LayoutTreeNode::Leaf { pane_id }
+    );
+}
+
+#[tokio::test]
+async fn switch_tab_unknown_tab_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let switch = SwitchTab { tab_id: 99 };
+    let frame = Frame::new(MSG_SWITCH_TAB, 0, switch.encode()).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+
+    // SwitchTab is a push, so the failure arrives as an Error push.
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+#[tokio::test]
+async fn close_tab_closes_all_panes_in_the_tab() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let (tab_id, pane_b) = new_tab_ok(&mut stream, &mut codec, 420).await;
+    // A second pane in the new tab: CloseTab must remove both.
+    let pane_c = split_pane_ok(
+        &mut stream,
+        &mut codec,
+        pane_b,
+        SplitDirection::Horizontal,
+        421,
+    )
+    .await;
+
+    let close = CloseTab { tab_id };
+    let frame = Frame::new(MSG_CLOSE_TAB, 422, close.encode()).expect("close-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 422).await;
+    assert_eq!(resp.msg_type, MSG_CLOSE_TAB_RESPONSE);
+
+    // Only the default pane remains, and the default tab is active again.
+    let frame = Frame::new(MSG_LIST_PANES, 423, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 423).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert_eq!(ids, vec![0], "expected only the default pane, got {ids:?}");
+    assert!(!ids.contains(&pane_b) && !ids.contains(&pane_c));
+    assert_eq!(
+        active_layout_tree(&mut stream, &mut codec, 424).await,
+        LayoutTreeNode::Leaf { pane_id: 0 }
+    );
+}
+
+#[tokio::test]
+async fn close_tab_unknown_tab_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let close = CloseTab { tab_id: 99 };
+    let frame = Frame::new(MSG_CLOSE_TAB, 430, close.encode()).expect("close-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 430).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+/// Closing the only tab would empty the daemon, mirroring the
+/// `ClosePane` last-pane rule: refused, nothing removed.
+#[tokio::test]
+async fn close_tab_last_tab_refused() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let close = CloseTab { tab_id: 0 };
+    let frame = Frame::new(MSG_CLOSE_TAB, 440, close.encode()).expect("close-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 440).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::LayoutRejected as u32);
+
+    // The default pane is untouched.
+    let frame = Frame::new(MSG_LIST_PANES, 441, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 441).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    assert_eq!(list.panes.len(), 1);
+}
+
+/// The last-tab guard is a pane-count totality check, not `tab_count == 1`:
+/// a single tab holding multiple panes still refuses, and both survive.
+#[tokio::test]
+async fn close_tab_last_tab_multi_pane_refused() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // Two panes, both in the only (default) tab.
+    let pane_b = split_pane_ok(&mut stream, &mut codec, 0, SplitDirection::Horizontal, 450).await;
+
+    let close = CloseTab { tab_id: 0 };
+    let frame = Frame::new(MSG_CLOSE_TAB, 451, close.encode()).expect("close-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 451).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::LayoutRejected as u32);
+
+    let frame = Frame::new(MSG_LIST_PANES, 452, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 452).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert_eq!(ids.len(), 2, "both panes must survive: {ids:?}");
+    assert!(ids.contains(&0) && ids.contains(&pane_b));
+}
+
+/// `NewTab` ignores `workspace_id` (Spec-0007 workspace routing is TREK-105);
+/// an unknown id is accepted, not rejected. Locks the contract so the change
+/// is visible when routing lands.
+#[tokio::test]
+async fn new_tab_ignores_unknown_workspace_id() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let msg = NewTab {
+        workspace_id: 999,
+        command: String::new(),
+        cwd: String::new(),
+    };
+    let frame =
+        Frame::new(MSG_NEW_TAB, 460, msg.encode().expect("encode NewTab")).expect("new-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 460).await;
+    assert_eq!(
+        resp.msg_type, MSG_NEW_TAB_RESPONSE,
+        "unknown workspace_id must be accepted"
+    );
+}
+
+/// Truncated tab payloads produce `MalformedPayload`: the request-shaped
+/// `NewTab`/`CloseTab` reply on their serial; `SwitchTab` (a push) reports via
+/// a serial-0 Error push.
+#[tokio::test]
+async fn malformed_tab_payloads_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let frame = Frame::new(MSG_NEW_TAB, 470, vec![0x00]).expect("new-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 470).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload)
+            .expect("decode ErrorMessage")
+            .code,
+        ErrorCode::MalformedPayload as u32
+    );
+
+    let frame = Frame::new(MSG_CLOSE_TAB, 471, vec![0x00]).expect("close-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 471).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload)
+            .expect("decode ErrorMessage")
+            .code,
+        ErrorCode::MalformedPayload as u32
+    );
+
+    let frame = Frame::new(MSG_SWITCH_TAB, 0, vec![0x00]).expect("switch frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload)
+            .expect("decode ErrorMessage")
+            .code,
+        ErrorCode::MalformedPayload as u32
+    );
 }
 
 /// A same-direction insert shrinks every sibling by N/(N+1); a sibling

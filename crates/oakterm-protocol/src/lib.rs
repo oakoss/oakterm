@@ -1189,4 +1189,87 @@ mod tests {
         buf.extend_from_slice(b"{}");
         assert!(LayoutTree::decode(&buf).is_err());
     }
+
+    #[test]
+    fn new_tab_roundtrip() {
+        let msg = NewTab {
+            workspace_id: 3,
+            command: "htop --tree".into(),
+            cwd: "/home/user".into(),
+        };
+        let encoded = msg.encode().unwrap();
+        let decoded = NewTab::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn new_tab_empty_strings_roundtrip() {
+        let msg = NewTab {
+            workspace_id: 0,
+            command: String::new(),
+            cwd: String::new(),
+        };
+        let encoded = msg.encode().unwrap();
+        assert_eq!(encoded.len(), 8);
+        let decoded = NewTab::decode(&encoded).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn new_tab_too_short() {
+        assert!(NewTab::decode(&[0; 3]).is_err());
+        // workspace_id present but the command length prefix is truncated.
+        assert!(NewTab::decode(&[0; 5]).is_err());
+    }
+
+    #[test]
+    fn new_tab_response_roundtrip_and_frame() {
+        let resp = NewTabResponse {
+            tab_id: 2,
+            pane_id: 9,
+        };
+        let decoded = NewTabResponse::decode(&resp.encode()).unwrap();
+        assert_eq!(decoded, resp);
+        let frame = resp.to_frame(21).unwrap();
+        assert_eq!(frame.msg_type, MSG_NEW_TAB_RESPONSE);
+        assert_eq!(frame.serial, 21);
+    }
+
+    #[test]
+    fn new_tab_response_too_short() {
+        assert!(NewTabResponse::decode(&[0; 7]).is_err());
+    }
+
+    #[test]
+    fn close_tab_roundtrip() {
+        let msg = CloseTab { tab_id: 5 };
+        let decoded = CloseTab::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn close_tab_too_short() {
+        assert!(CloseTab::decode(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn close_tab_response_frame() {
+        let frame = CloseTabResponse.to_frame(31).unwrap();
+        assert_eq!(frame.msg_type, MSG_CLOSE_TAB_RESPONSE);
+        assert_eq!(frame.serial, 31);
+        assert!(frame.payload.is_empty());
+        assert!(CloseTabResponse::decode(&frame.payload).is_ok());
+    }
+
+    #[test]
+    fn switch_tab_roundtrip() {
+        let msg = SwitchTab { tab_id: 4 };
+        let decoded = SwitchTab::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn switch_tab_too_short() {
+        assert!(SwitchTab::decode(&[0; 3]).is_err());
+    }
 }

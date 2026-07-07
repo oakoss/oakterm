@@ -12,6 +12,38 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
+/// Tombstone a pane removed from the manager and cancel its PTY read loop.
+///
+/// The tombstone is set under the pane lock: any handle cloned before the
+/// removal observes `closed` once it acquires the lock. Taking the state
+/// gives ownership of the cancel sender.
+///
+/// The cancel signal makes the read loop exit promptly. Without it, an
+/// idle shell (no output) would leave the loop blocked on `readable()`
+/// forever; the loop only notices a removed pane on its next successful
+/// read. Once the loop exits, dropping the `Pty` kills and reaps the
+/// child via `Pty::Drop`.
+pub(super) async fn shutdown_removed_pane(conn_id: u64, pane_id: u32, removed: &SharedPane) {
+    let removed_state = {
+        let mut removed = removed.lock().await;
+        removed.closed = true;
+        std::mem::replace(&mut removed.pty_state, PtyState::NotSpawned)
+    };
+    if let PtyState::Running { pid, cancel, .. } = removed_state {
+        info!(
+            conn_id,
+            pane_id, pid, "pane closed, signalling PTY read loop"
+        );
+        // Best-effort: receiver is already gone if the loop exited on its
+        // own (EOF, read error, or early-return during AsyncFd setup).
+        // cancel_tx is uniquely owned here, so there's no other sender to
+        // race against.
+        let _ = cancel.send(());
+    } else {
+        info!(conn_id, pane_id, "pane closed");
+    }
+}
+
 pub(super) async fn create_pane(
     conn_id: u64,
     frame: &Frame,
@@ -65,7 +97,7 @@ pub(super) async fn close_pane(
         return make_error_response(
             conn_id,
             frame.serial,
-            ErrorCode::InternalError,
+            ErrorCode::LayoutRejected,
             "cannot close the last pane",
         );
     }
@@ -78,34 +110,7 @@ pub(super) async fn close_pane(
         );
     };
     drop(pm);
-    // Tombstone under the pane lock: any handle cloned before the
-    // removal observes `closed` once it acquires the lock. Taking
-    // the state gives ownership of the cancel sender.
-    let removed_state = {
-        let mut removed = removed.lock().await;
-        removed.closed = true;
-        std::mem::replace(&mut removed.pty_state, PtyState::NotSpawned)
-    };
-    // Signal the read loop to exit promptly. Without this, an idle
-    // shell (no output) would leave the loop blocked on readable()
-    // forever; the loop only notices a removed pane on its next
-    // successful read. Once the loop exits, dropping the Pty kills
-    // and reaps the child via Pty::Drop.
-    if let PtyState::Running { pid, cancel, .. } = removed_state {
-        info!(
-            conn_id,
-            pane_id = msg.pane_id,
-            pid,
-            "pane closed, signalling PTY read loop"
-        );
-        // Best-effort: receiver is already gone if the loop exited
-        // on its own (EOF, read error, or early-return during
-        // AsyncFd setup). cancel_tx is uniquely owned by this
-        // handler, so there's no other sender to race against.
-        let _ = cancel.send(());
-    } else {
-        info!(conn_id, pane_id = msg.pane_id, "pane closed");
-    }
+    shutdown_removed_pane(conn_id, msg.pane_id, &removed).await;
     // Empty response confirms closure.
     match Frame::new(MSG_CLOSE_PANE_RESPONSE, frame.serial, vec![]) {
         Ok(f) => RequestResult::Response(f),

@@ -2,7 +2,7 @@
 
 use oakterm_mux::{
     BorderExtents, LayoutError, LayoutNode, MultiplexerState, PaneCloseOutcome, PaneId,
-    SplitDirection, SplitPreview, Tab,
+    SplitDirection, SplitPreview, Tab, TabId, Workspace,
 };
 use oakterm_terminal::grid::ScreenSet;
 use std::ffi::OsString;
@@ -219,6 +219,75 @@ impl PaneManager {
         Ok(id.0)
     }
 
+    /// Create a pane in a fresh tab and make that tab active (Spec-0001
+    /// `NewTab`). An empty mux seeds the default workspace instead, which
+    /// yields the same shape: one new tab holding one new pane. Returns
+    /// `(tab_id, pane_id)`, or `None` when the mux refuses the insert — a
+    /// model desync, since the pane ID is freshly allocated.
+    pub(crate) fn new_tab_create(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        command: String,
+        cwd: String,
+    ) -> Option<(u32, u32)> {
+        // An error path burns the allocated pane ID, which is harmless
+        // for a monotonic u32.
+        let id = self.mux.allocate_pane_id();
+        let tab_id = if self.mux.has_panes() {
+            self.mux.new_tab(id)?
+        } else {
+            if !self.mux.seed(id) {
+                error!(pane_id = id.0, "seed refused on a non-empty mux");
+                debug_assert!(false, "seed refused on a non-empty mux");
+                return None;
+            }
+            let Some(tab) = self.mux.active_tab() else {
+                error!(pane_id = id.0, "seeded mux has no active tab");
+                debug_assert!(false, "seeded mux must have an active tab");
+                return None;
+            };
+            tab.id()
+        };
+        self.insert_pane_state(id.0, cols, rows, command, cwd);
+        Some((tab_id.0, id.0))
+    }
+
+    fn tab_by_id(&self, tab: TabId) -> Option<&Tab> {
+        self.mux
+            .workspaces()
+            .iter()
+            .flat_map(Workspace::tabs)
+            .find(|t| t.id() == tab)
+    }
+
+    /// Every pane in a tab: layout leaves plus floating panes. `None`
+    /// when no workspace holds the tab.
+    pub(crate) fn tab_pane_ids(&self, tab: u32) -> Option<Vec<u32>> {
+        let tab = self.tab_by_id(TabId(tab))?;
+        let mut ids: Vec<u32> = tab.layout().pane_ids().iter().map(|p| p.0).collect();
+        ids.extend(tab.floating().iter().map(|f| f.pane_id.0));
+        Some(ids)
+    }
+
+    /// Activate a tab, keeping the tab's own focused pane (Spec-0001
+    /// `SwitchTab`). Returns false when the tab is unknown.
+    pub(crate) fn switch_tab(&mut self, tab: u32) -> bool {
+        let Some(pane) = self.tab_by_id(TabId(tab)).map(Tab::focused_pane) else {
+            return false;
+        };
+        let focused = self.mux.focus_pane(pane);
+        if !focused {
+            error!(
+                tab_id = tab,
+                pane_id = pane.0,
+                "tab's focused pane not focusable; mux out of sync"
+            );
+            debug_assert!(false, "tab's focused pane must be focusable");
+        }
+        focused
+    }
+
     /// Predicted extents for a split of `target`, for the Spec-0007
     /// minimum-size pre-check.
     pub(crate) fn split_preview(
@@ -287,8 +356,8 @@ impl PaneManager {
                 tab,
                 workspace_closed,
             }) => {
-                // Clients learn about tab lifecycle via the wire protocol
-                // once tab messages land (TREK-104).
+                // No tab-lifecycle push to clients exists yet; a client
+                // learns of a cascaded tab close only by re-reading the layout.
                 debug!(
                     pane_id = id,
                     tab = tab.0,
@@ -322,10 +391,10 @@ impl PaneManager {
     /// session saving (Spec-0010) relies on that atomicity. Callers release
     /// the manager lock before locking panes (manager->pane lock order).
     ///
-    /// Single-tab assumption: `layout` is the active tab's tree while
-    /// `panes` spans the whole map. Consumers must aggregate all tabs once
-    /// tab creation is wired up (TREK-104), or background-tab panes would
-    /// silently vanish from saved sessions.
+    /// Single-tab limitation, now live: `layout` is the active tab's tree
+    /// while `panes` spans every tab. Multi-tab session save must aggregate
+    /// all tabs (deferred to the Spec-0010 session work); until then a
+    /// background tab's panes are saved without a layout placement.
     pub(crate) fn topology_snapshot(&self) -> Option<TopologySnapshot> {
         let layout = self.layout()?.clone();
         Some(TopologySnapshot {
