@@ -1107,17 +1107,24 @@ impl ApplicationHandler<UserEvent> for App {
                 // it. Chords resolve against the layout key, not the
                 // platform-composed character — macOS Option+H arrives as
                 // "˙" in logical_key, which can never match an alt+h
-                // binding (Spec-0011 Keybind Lookup Layer).
+                // binding (Spec-0011 Keybind Lookup Layer). On a logical
+                // miss, retry against the physical key so position-based
+                // binds (oak_mod+[1-9]) fire on layouts where the digit's
+                // base character differs (AZERTY; TREK-268).
                 let chord_key = event.key_without_modifiers();
-                if let Some(chord) = input::winit_to_chord(self.modifiers, &chord_key) {
-                    if let Some(idx) = self.keybind_registry.lookup_index(&chord) {
-                        if self.dispatch_action_at(idx) {
-                            self.reset_blink();
-                            return;
-                        }
-                        // Action returned false (e.g., scroll down when not
-                        // scrolled) — let the key fall through to PTY.
+                let idx = input::winit_to_chord(self.modifiers, &chord_key)
+                    .and_then(|chord| self.keybind_registry.lookup_index(&chord))
+                    .or_else(|| {
+                        input::physical_to_chord(self.modifiers, event.physical_key)
+                            .and_then(|chord| self.keybind_registry.lookup_index(&chord))
+                    });
+                if let Some(idx) = idx {
+                    if self.dispatch_action_at(idx) {
+                        self.reset_blink();
+                        return;
                     }
+                    // Action returned false (e.g., scroll down when not
+                    // scrolled) — let the key fall through to PTY.
                 }
                 let (logical_key, text) = (event.logical_key, event.text);
 

@@ -13,7 +13,7 @@ mod stubs;
 
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
 pub use init::{InitResult, ensure_stubs, init_config};
-pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId};
+pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId, PhysicalKeyId};
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{

@@ -74,13 +74,35 @@ impl NamedKeyId {
     }
 }
 
-/// The key component of a chord (character or named key).
+/// A physical key location, layout-independent (winit `KeyCode`). Used
+/// for position-based binds — a chord that should fire on the same key
+/// regardless of the character the layout prints there. Scoped to the
+/// number row (TREK-268); extend as other positional binds need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PhysicalKeyId {
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
+}
+
+/// The key component of a chord: a logical character, a named key, or a
+/// physical key location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KeyName {
     /// Single character: 'a', '1', '/', etc.
     Character(char),
     /// Named key: `ArrowUp`, `F1`, `Enter`, etc.
     Named(NamedKeyId),
+    /// Physical key location, matched regardless of layout (Spec-0011
+    /// keybind lookup; number-row binds like `oak_mod+1`).
+    Physical(PhysicalKeyId),
 }
 
 /// A parsed key chord like "ctrl+shift+a" or "super+t".
@@ -298,10 +320,34 @@ impl KeybindRegistry {
             let chord = KeyChord::parse(&chord_str).expect("default keybind parse");
             reg.register(chord, action);
         }
-        for i in 1..=9u32 {
-            let chord = KeyChord::parse(&format!("{OAK_MOD}+{i}")).expect("default keybind parse");
+        // Tab-switch digits fire from either representation of "the N
+        // key", registered as the union so every layout works without
+        // stealing keypad navigation (TREK-268):
+        //   - logical character 'N' — the US number row, and the numpad
+        //     with NumLock on (NumLock off emits a named navigation key
+        //     that matches neither, so it reaches the PTY);
+        //   - physical number-row position — layouts where that key's
+        //     base character isn't 'N' (AZERTY etc.), reached via the
+        //     lookup's physical fallback.
+        let tab_digits = [
+            (1u32, PhysicalKeyId::Digit1),
+            (2, PhysicalKeyId::Digit2),
+            (3, PhysicalKeyId::Digit3),
+            (4, PhysicalKeyId::Digit4),
+            (5, PhysicalKeyId::Digit5),
+            (6, PhysicalKeyId::Digit6),
+            (7, PhysicalKeyId::Digit7),
+            (8, PhysicalKeyId::Digit8),
+            (9, PhysicalKeyId::Digit9),
+        ];
+        for (i, physical) in tab_digits {
             let index = std::num::NonZeroU32::new(i).expect("1..=9 is nonzero");
-            reg.register(chord, Action::SwitchTab(index));
+            let logical =
+                KeyChord::parse(&format!("{OAK_MOD}+{i}")).expect("default keybind parse");
+            let mut positional = logical.clone();
+            positional.key = KeyName::Physical(physical);
+            reg.register(logical, Action::SwitchTab(index));
+            reg.register(positional, Action::SwitchTab(index));
         }
         reg
     }
@@ -540,9 +586,31 @@ mod tests {
         assert!(matches!(reg.lookup(&next), Some(Action::NextTab)));
         let prev = KeyChord::parse(PREVIOUS_TAB_CHORD).unwrap();
         assert!(matches!(reg.lookup(&prev), Some(Action::PreviousTab)));
-        for i in 1..=9u32 {
-            let chord = KeyChord::parse(&format!("{OAK_MOD}+{i}")).unwrap();
-            assert!(matches!(reg.lookup(&chord), Some(Action::SwitchTab(n)) if n.get() == i));
+    }
+
+    #[test]
+    fn default_tab_switch_binds_match_logical_and_physical_digits() {
+        // The oak_mod+[1-9] defaults are registered both logically (US
+        // number row / numpad) and by physical position (layout-robust,
+        // TREK-268). Both chord shapes must resolve to the same switch.
+        let reg = KeybindRegistry::with_defaults();
+        let digits = [
+            (1u32, PhysicalKeyId::Digit1),
+            (2, PhysicalKeyId::Digit2),
+            (3, PhysicalKeyId::Digit3),
+            (4, PhysicalKeyId::Digit4),
+            (5, PhysicalKeyId::Digit5),
+            (6, PhysicalKeyId::Digit6),
+            (7, PhysicalKeyId::Digit7),
+            (8, PhysicalKeyId::Digit8),
+            (9, PhysicalKeyId::Digit9),
+        ];
+        for (i, physical) in digits {
+            let logical = KeyChord::parse(&format!("{OAK_MOD}+{i}")).unwrap();
+            assert!(matches!(reg.lookup(&logical), Some(Action::SwitchTab(n)) if n.get() == i));
+            let mut positional = logical.clone();
+            positional.key = KeyName::Physical(physical);
+            assert!(matches!(reg.lookup(&positional), Some(Action::SwitchTab(n)) if n.get() == i));
         }
     }
 }

@@ -1,7 +1,7 @@
 //! Translates winit keyboard and mouse input into PTY bytes, keybind
 //! chords, and mouse modifier bits.
 
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 /// Convert a winit key event to PTY bytes.
 #[must_use]
@@ -110,6 +110,50 @@ pub(crate) fn winit_to_chord(
         shift: state.shift_key(),
         super_key: state.super_key(),
         key,
+    })
+}
+
+/// Convert winit modifier state + physical key to a position-based
+/// `KeyChord` for registry lookup. Returns `None` for anything but the
+/// number row (TREK-268; numpad excluded, see below). Tried as a fallback
+/// after the logical [`winit_to_chord`] misses, so digit binds fire on
+/// layouts where the base character differs.
+#[must_use]
+pub(crate) fn physical_to_chord(
+    modifiers: winit::event::Modifiers,
+    physical_key: PhysicalKey,
+) -> Option<oakterm_config::KeyChord> {
+    use oakterm_config::{KeyName, PhysicalKeyId};
+
+    let PhysicalKey::Code(code) = physical_key else {
+        return None;
+    };
+    // Number-row keys only. The numpad is deliberately excluded: its
+    // physical code is the same regardless of NumLock, so mapping it here
+    // would turn NumLock-off keypad navigation (End/PageDown/... under
+    // `Numpad1`/`Numpad3`/...) into tab switches. Numpad digits reach the
+    // tab binds through the logical path instead — with NumLock on they
+    // emit the character 'N', which the logical default catches.
+    let digit = match code {
+        KeyCode::Digit0 => PhysicalKeyId::Digit0,
+        KeyCode::Digit1 => PhysicalKeyId::Digit1,
+        KeyCode::Digit2 => PhysicalKeyId::Digit2,
+        KeyCode::Digit3 => PhysicalKeyId::Digit3,
+        KeyCode::Digit4 => PhysicalKeyId::Digit4,
+        KeyCode::Digit5 => PhysicalKeyId::Digit5,
+        KeyCode::Digit6 => PhysicalKeyId::Digit6,
+        KeyCode::Digit7 => PhysicalKeyId::Digit7,
+        KeyCode::Digit8 => PhysicalKeyId::Digit8,
+        KeyCode::Digit9 => PhysicalKeyId::Digit9,
+        _ => return None,
+    };
+    let state = modifiers.state();
+    Some(oakterm_config::KeyChord {
+        ctrl: state.control_key(),
+        alt: state.alt_key(),
+        shift: state.shift_key(),
+        super_key: state.super_key(),
+        key: KeyName::Physical(digit),
     })
 }
 
@@ -293,6 +337,57 @@ mod tests {
         );
         assert_eq!(
             winit_to_chord(mods(ModifiersState::empty()), &named(NamedKey::CapsLock)),
+            None
+        );
+    }
+
+    #[test]
+    fn physical_chord_maps_digit_row_with_modifiers() {
+        use oakterm_config::PhysicalKeyId;
+        let chord = physical_to_chord(
+            mods(ModifiersState::SUPER),
+            PhysicalKey::Code(KeyCode::Digit3),
+        );
+        assert_eq!(
+            chord,
+            Some(KeyChord {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                super_key: true,
+                key: KeyName::Physical(PhysicalKeyId::Digit3),
+            })
+        );
+    }
+
+    #[test]
+    fn physical_chord_excludes_the_numpad() {
+        // The numpad is intentionally not positional: with NumLock off its
+        // keys are navigation, so it resolves through the logical path.
+        assert_eq!(
+            physical_to_chord(
+                mods(ModifiersState::SUPER),
+                PhysicalKey::Code(KeyCode::Numpad1)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn physical_chord_rejects_non_digit_and_unidentified_keys() {
+        // Letters carry no positional binding — they stay logical.
+        assert_eq!(
+            physical_to_chord(
+                mods(ModifiersState::empty()),
+                PhysicalKey::Code(KeyCode::KeyA)
+            ),
+            None
+        );
+        assert_eq!(
+            physical_to_chord(
+                mods(ModifiersState::empty()),
+                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified),
+            ),
             None
         );
     }

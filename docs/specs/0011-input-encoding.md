@@ -252,6 +252,33 @@ event carries `˙`. Resolving the chord against `key_without_modifiers` yields
 keybind resolution always uses the physical layout key; only the PTY-bytes path
 honors compose-vs-meta.
 
+`key_without_modifiers` still resolves to a **layout-dependent character** — it
+strips composition, not layout. On layouts where the number row is shifted
+(AZERTY prints `&`, `é`, … on the `1`, `2`, … keys, with the digits reachable
+only via <kbd>Shift</kbd>), a chord written as `oak_mod+1` — keyed on the
+character `'1'` — never matches the key the user reads as "1". Position-based
+binds therefore also resolve against the **physical key** (winit `KeyCode`, e.g.
+`Digit1`). Lookup tries the layout-key chord first, and on a miss retries against
+a physical-key chord built from `event.physical_key`; the first binding found
+wins. The shipped `oak_mod+[1-9]` tab-switch defaults are registered **both**
+ways — the logical character `'N'` and the physical number-row position — so
+they fire as the union across layouts: the physical bind covers layouts where
+the number row is shifted, and the logical bind covers the US number row and the
+numpad (with NumLock on, a numpad key emits `'N'`; with NumLock off it emits a
+named navigation key that matches neither bind and so reaches the PTY). The
+physical fallback maps only the number-row `Digit0`–`Digit9`, never the numpad,
+whose physical code is NumLock-independent. Logical (character) matching remains
+for letter and symbol binds, where the printed character is what the user
+intends.
+
+A consequence: on shifted-digit-row layouts a user cannot yet override the
+`oak_mod+[1-9]` defaults from config, because a config `oak_mod+1` parses to the
+character `'1'` (reachable only with Shift) while the default matches the
+physical key. On US-style layouts the override works — the logical `'1'` chord is
+produced by the same key and resolves before the physical fallback. Making
+physical binds config-expressible (a `code:`-style chord syntax) is the follow-up
+that closes this gap.
+
 ### Kitty Keyboard Protocol / CSI u / modifyOtherKeys
 
 The legacy encoding above cannot represent large classes of key presses:
