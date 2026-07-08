@@ -420,6 +420,74 @@ impl PaneManager {
         focused
     }
 
+    /// Rename a tab (Spec-0001 `RenameTab`); an empty name reverts to the
+    /// pane-title fallback. Returns false when the tab is unknown.
+    #[must_use = "false means the tab was not found and nothing was renamed"]
+    pub(crate) fn rename_tab(&mut self, tab: u32, name: String) -> bool {
+        self.mux.rename_tab(TabId(tab), name)
+    }
+
+    /// Rename a workspace (Spec-0001 `RenameWorkspace`). Returns false when
+    /// the workspace is unknown.
+    #[must_use = "false means the workspace was not found and nothing was renamed"]
+    pub(crate) fn rename_workspace(&mut self, workspace: u32, name: String) -> bool {
+        self.mux.rename_workspace(WorkspaceId(workspace), name)
+    }
+
+    /// Reorder a tab within its workspace (Spec-0001 `MoveTab`); the index
+    /// is clamped to the tab count. Returns false when the tab is unknown.
+    #[must_use = "false means the tab was not found and nothing moved"]
+    pub(crate) fn move_tab(&mut self, tab: u32, new_index: usize) -> bool {
+        self.mux.move_tab(TabId(tab), new_index)
+    }
+
+    /// Number of workspaces — feeds the last-workspace guard for
+    /// `CloseWorkspace`, mirroring the last-tab/last-pane refusals.
+    pub(crate) fn workspace_count(&self) -> usize {
+        self.mux.workspaces().len()
+    }
+
+    /// Whether a workspace with this id exists. Checked before the
+    /// last-workspace guard so an unknown id reports `UnknownWorkspace`
+    /// rather than `LayoutRejected`.
+    pub(crate) fn workspace_exists(&self, workspace: u32) -> bool {
+        self.mux
+            .workspaces()
+            .iter()
+            .any(|w| w.id() == WorkspaceId(workspace))
+    }
+
+    /// Close a workspace and remove every pane it held from the pane map,
+    /// returning them so the caller can shut down their PTYs (Spec-0001
+    /// `CloseWorkspace`), plus the count of mux pane IDs that were absent
+    /// from the map — a nonzero count means the mux and pane map desynced
+    /// mid-close, so the caller reports failure rather than a false
+    /// success (mirrors `close_tab`). `None` when the workspace is unknown.
+    #[must_use = "the returned panes must be shut down; None means nothing was closed"]
+    pub(crate) fn close_workspace(
+        &mut self,
+        workspace: u32,
+    ) -> Option<(Vec<(u32, SharedPane)>, usize)> {
+        let pane_ids = self.mux.close_workspace(WorkspaceId(workspace))?;
+        let mut removed = Vec::with_capacity(pane_ids.len());
+        let mut missing = 0usize;
+        for id in pane_ids {
+            let pid = id.0;
+            if let Some(pane) = self.panes.remove(&pid) {
+                removed.push((pid, pane));
+            } else {
+                error!(
+                    workspace_id = workspace,
+                    pane_id = pid,
+                    "workspace pane missing from the pane map; mux out of sync"
+                );
+                debug_assert!(false, "workspace pane {pid} missing from the pane map");
+                missing += 1;
+            }
+        }
+        Some((removed, missing))
+    }
+
     /// Predicted extents for a split of `target`, for the Spec-0007
     /// minimum-size pre-check.
     pub(crate) fn split_preview(

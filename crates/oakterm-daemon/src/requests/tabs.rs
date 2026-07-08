@@ -7,7 +7,8 @@ use super::{RequestResult, make_error_response};
 use crate::pane::{PaneManager, SharedPane};
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    CloseTab, CloseTabResponse, ErrorCode, NewTab, NewTabResponse, SwitchTab, TabEntry, TabList,
+    CloseTab, CloseTabResponse, ErrorCode, MoveTab, NewTab, NewTabResponse, RenameTab, SwitchTab,
+    TabEntry, TabList,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -171,6 +172,53 @@ pub(super) async fn switch_tab(
     }
     debug!(conn_id, tab_id = msg.tab_id, "active tab switched");
     // SwitchTab is a push message (serial 0) per Spec-0001.
+    RequestResult::NoResponse
+}
+
+pub(super) async fn rename_tab(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> RequestResult {
+    let Ok(msg) = RenameTab::decode(&frame.payload) else {
+        warn!(conn_id, "malformed RenameTab payload");
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::MalformedPayload,
+            "malformed RenameTab",
+        );
+    };
+    if !panes.lock().await.rename_tab(msg.tab_id, msg.name.clone()) {
+        warn!(conn_id, tab_id = msg.tab_id, "rename of unknown tab");
+        return make_error_response(conn_id, frame.serial, ErrorCode::UnknownTab, "unknown tab");
+    }
+    debug!(conn_id, tab_id = msg.tab_id, name = %msg.name, "tab renamed");
+    // RenameTab is a push message (serial 0) per Spec-0001.
+    RequestResult::NoResponse
+}
+
+pub(super) async fn move_tab(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> RequestResult {
+    let Ok(msg) = MoveTab::decode(&frame.payload) else {
+        warn!(conn_id, "malformed MoveTab payload");
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::MalformedPayload,
+            "malformed MoveTab",
+        );
+    };
+    let new_index = msg.new_index as usize;
+    if !panes.lock().await.move_tab(msg.tab_id, new_index) {
+        warn!(conn_id, tab_id = msg.tab_id, "move of unknown tab");
+        return make_error_response(conn_id, frame.serial, ErrorCode::UnknownTab, "unknown tab");
+    }
+    debug!(conn_id, tab_id = msg.tab_id, new_index, "tab moved");
+    // MoveTab is a push message (serial 0) per Spec-0001.
     RequestResult::NoResponse
 }
 

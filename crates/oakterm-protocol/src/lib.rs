@@ -1333,6 +1333,95 @@ mod tests {
         assert!(SwitchWorkspace::decode(&[0; 3]).is_err());
     }
 
+    #[test]
+    fn move_tab_roundtrip() {
+        let msg = MoveTab {
+            tab_id: 7,
+            new_index: 2,
+        };
+        let decoded = MoveTab::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn move_tab_too_short() {
+        assert!(MoveTab::decode(&[0; 7]).is_err());
+    }
+
+    #[test]
+    fn rename_tab_roundtrip_and_empty_name() {
+        let msg = RenameTab {
+            tab_id: 4,
+            name: "build".into(),
+        };
+        let decoded = RenameTab::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+        // Empty name (clear-the-pin) round-trips.
+        let cleared = RenameTab {
+            tab_id: 4,
+            name: String::new(),
+        };
+        let decoded = RenameTab::decode(&cleared.encode().unwrap()).unwrap();
+        assert_eq!(decoded, cleared);
+    }
+
+    #[test]
+    fn rename_tab_too_short() {
+        // Missing the name length prefix after the tab id.
+        assert!(RenameTab::decode(&[0; 3]).is_err());
+        // Length prefix claims more bytes than present.
+        assert!(RenameTab::decode(&[1, 0, 0, 0, 5, 0, b'a']).is_err());
+    }
+
+    #[test]
+    fn rename_tab_name_utf8_enforced() {
+        let mut encoded = RenameTab {
+            tab_id: 1,
+            name: "ok".into(),
+        }
+        .encode()
+        .unwrap();
+        // Corrupt the name bytes into invalid UTF-8.
+        *encoded.last_mut().unwrap() = 0xFF;
+        assert!(RenameTab::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn rename_workspace_roundtrip() {
+        let msg = RenameWorkspace {
+            workspace_id: 2,
+            name: "ops".into(),
+        };
+        let decoded = RenameWorkspace::decode(&msg.encode().unwrap()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn rename_workspace_too_short() {
+        assert!(RenameWorkspace::decode(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn close_workspace_roundtrip() {
+        let msg = CloseWorkspace { workspace_id: 6 };
+        let decoded = CloseWorkspace::decode(&msg.encode()).unwrap();
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn close_workspace_too_short() {
+        assert!(CloseWorkspace::decode(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn close_workspace_response_frame() {
+        let frame = CloseWorkspaceResponse.to_frame(52).unwrap();
+        assert_eq!(frame.msg_type, MSG_CLOSE_WORKSPACE_RESPONSE);
+        assert_eq!(frame.serial, 52);
+        assert!(frame.payload.is_empty());
+        assert!(CloseWorkspaceResponse::decode(&frame.payload).is_ok());
+    }
+
     fn sample_tab_list() -> TabList {
         TabList {
             workspace_id: 3,

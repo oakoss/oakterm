@@ -6,16 +6,18 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ClosePane, CloseTab, CreatePane, CreatePaneResponse, ErrorCode,
-    ErrorMessage, GetLayoutTree, HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse,
-    MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE,
+    ClientHello, ClientType, ClosePane, CloseTab, CloseWorkspace, CloseWorkspaceResponse,
+    CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage, GetLayoutTree, HandshakeStatus,
+    LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE,
+    MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE, MSG_CLOSE_WORKSPACE, MSG_CLOSE_WORKSPACE_RESPONSE,
     MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT,
-    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_NEW_TAB,
-    MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING,
-    MSG_PONG, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN,
-    MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
-    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, NewTab,
-    NewTabResponse, NewWorkspace, NewWorkspaceResponse, PaneExited, RequestShutdown,
+    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_MOVE_TAB,
+    MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE,
+    MSG_PANE_EXITED, MSG_PING, MSG_PONG, MSG_RENAME_TAB, MSG_RENAME_WORKSPACE,
+    MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK,
+    MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
+    MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, MoveTab, NewTab, NewTabResponse, NewWorkspace,
+    NewWorkspaceResponse, PaneExited, RenameTab, RenameWorkspace, RequestShutdown,
     RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
     ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
     SwitchWorkspace, TabList,
@@ -1455,6 +1457,339 @@ async fn malformed_workspace_payloads_error() {
         ErrorMessage::decode(&resp.payload)
             .expect("decode ErrorMessage")
             .code,
+        ErrorCode::MalformedPayload as u32
+    );
+}
+
+/// Send a push frame (serial 0) that expects no reply.
+async fn push_frame(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    msg_type: u16,
+    payload: Vec<u8>,
+) {
+    let frame = Frame::new(msg_type, 0, payload).expect("push frame");
+    write_frame(stream, codec, frame).await;
+}
+
+/// Poll `ListTabs` until `tab_id` reports a non-empty name, returning it.
+/// Times out after 5s (the PTY must spawn and emit its OSC 2 title first).
+async fn poll_tab_name(stream: &mut UnixStream, codec: &mut FrameCodec, tab_id: u32) -> String {
+    let mut serial = 2000;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        serial += 1;
+        let tabs = list_tabs_ok(stream, codec, serial).await;
+        if let Some(t) = tabs.tabs.iter().find(|t| t.tab_id == tab_id) {
+            if !t.name.is_empty() {
+                return t.name.clone();
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("tab {tab_id} name stayed empty within the deadline");
+}
+
+/// Covers `RenameTab` precedence: a tab's name falls back to its pane's
+/// live OSC 2 title, an explicit rename pins over it, and an empty rename
+/// reverts to the title.
+#[tokio::test]
+async fn rename_tab_pins_name_over_the_osc_title() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // A tab whose pane emits an OSC 2 title (BEL-terminated), then idles.
+    let msg = NewTab {
+        workspace_id: 0,
+        command: "/bin/sh -c \"printf '\\033]2;osc-title\\007'; sleep 30\"".to_string(),
+        cwd: String::new(),
+    };
+    let frame =
+        Frame::new(MSG_NEW_TAB, 600, msg.encode().expect("encode NewTab")).expect("new-tab frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 600).await;
+    assert_eq!(resp.msg_type, MSG_NEW_TAB_RESPONSE);
+    let (tab_id, pane_id) = {
+        let r = NewTabResponse::decode(&resp.payload).expect("decode NewTabResponse");
+        (r.tab_id, r.pane_id)
+    };
+
+    // The first Resize spawns the PTY, which runs the command.
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        resize.to_frame().expect("encode Resize"),
+    )
+    .await;
+
+    // The fallback surfaces the live OSC 2 title.
+    assert_eq!(
+        poll_tab_name(&mut stream, &mut codec, tab_id).await,
+        "osc-title"
+    );
+
+    // An explicit rename pins over the title (push, then observe).
+    let rename = RenameTab {
+        tab_id,
+        name: "pinned".into(),
+    };
+    push_frame(
+        &mut stream,
+        &mut codec,
+        MSG_RENAME_TAB,
+        rename.encode().expect("encode"),
+    )
+    .await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 601).await;
+    let entry = tabs.tabs.iter().find(|t| t.tab_id == tab_id).expect("tab");
+    assert_eq!(entry.name, "pinned");
+
+    // Renaming to empty clears the pin, reverting to the OSC title.
+    let clear = RenameTab {
+        tab_id,
+        name: String::new(),
+    };
+    push_frame(
+        &mut stream,
+        &mut codec,
+        MSG_RENAME_TAB,
+        clear.encode().expect("encode"),
+    )
+    .await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 602).await;
+    let entry = tabs.tabs.iter().find(|t| t.tab_id == tab_id).expect("tab");
+    assert_eq!(entry.name, "osc-title");
+}
+
+#[tokio::test]
+async fn rename_tab_unknown_tab_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    let rename = RenameTab {
+        tab_id: 99,
+        name: "x".into(),
+    };
+    push_frame(
+        &mut stream,
+        &mut codec,
+        MSG_RENAME_TAB,
+        rename.encode().expect("encode"),
+    )
+    .await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
+        ErrorCode::UnknownTab as u32
+    );
+}
+
+#[tokio::test]
+async fn move_tab_reorders_within_the_workspace() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // Order becomes [0, tab_a, tab_b]; tab_b is active.
+    let (tab_a, _) = new_tab_ok(&mut stream, &mut codec, 610).await;
+    let (tab_b, _) = new_tab_ok(&mut stream, &mut codec, 611).await;
+    let ids: Vec<u32> = list_tabs_ok(&mut stream, &mut codec, 612)
+        .await
+        .tabs
+        .iter()
+        .map(|t| t.tab_id)
+        .collect();
+    assert_eq!(ids, vec![0, tab_a, tab_b]);
+
+    // Move the active tab_b to the front.
+    let mv = MoveTab {
+        tab_id: tab_b,
+        new_index: 0,
+    };
+    push_frame(&mut stream, &mut codec, MSG_MOVE_TAB, mv.encode()).await;
+    let tabs = list_tabs_ok(&mut stream, &mut codec, 613).await;
+    let ids: Vec<u32> = tabs.tabs.iter().map(|t| t.tab_id).collect();
+    assert_eq!(ids, vec![tab_b, 0, tab_a], "tab_b moved to the front");
+    // The active tab still follows tab_b through the shuffle.
+    assert_eq!(tabs.active_tab, tab_b);
+}
+
+#[tokio::test]
+async fn move_tab_unknown_tab_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    let mv = MoveTab {
+        tab_id: 99,
+        new_index: 0,
+    };
+    push_frame(&mut stream, &mut codec, MSG_MOVE_TAB, mv.encode()).await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
+        ErrorCode::UnknownTab as u32
+    );
+}
+
+#[tokio::test]
+async fn rename_workspace_sets_the_workspace_name() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    assert_eq!(
+        list_tabs_ok(&mut stream, &mut codec, 620)
+            .await
+            .workspace_name,
+        "default"
+    );
+    let rename = RenameWorkspace {
+        workspace_id: 0,
+        name: "ops".into(),
+    };
+    push_frame(
+        &mut stream,
+        &mut codec,
+        MSG_RENAME_WORKSPACE,
+        rename.encode().expect("encode"),
+    )
+    .await;
+    assert_eq!(
+        list_tabs_ok(&mut stream, &mut codec, 621)
+            .await
+            .workspace_name,
+        "ops"
+    );
+}
+
+#[tokio::test]
+async fn rename_workspace_unknown_pushes_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    let rename = RenameWorkspace {
+        workspace_id: 99,
+        name: "x".into(),
+    };
+    push_frame(
+        &mut stream,
+        &mut codec,
+        MSG_RENAME_WORKSPACE,
+        rename.encode().expect("encode"),
+    )
+    .await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
+        ErrorCode::UnknownWorkspace as u32
+    );
+}
+
+/// Send `CloseWorkspace` and assert the ack, returning nothing.
+async fn close_workspace_ok(
+    stream: &mut UnixStream,
+    codec: &mut FrameCodec,
+    workspace_id: u32,
+    serial: u32,
+) {
+    let msg = CloseWorkspace { workspace_id };
+    let frame = Frame::new(MSG_CLOSE_WORKSPACE, serial, msg.encode()).expect("close-ws frame");
+    write_frame(stream, codec, frame).await;
+    let resp = read_response_with_serial(stream, codec, serial).await;
+    assert_eq!(
+        resp.msg_type, MSG_CLOSE_WORKSPACE_RESPONSE,
+        "close workspace rejected"
+    );
+    CloseWorkspaceResponse::decode(&resp.payload).expect("decode CloseWorkspaceResponse");
+}
+
+#[tokio::test]
+async fn close_workspace_removes_all_its_panes() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // A second workspace, now active, with an extra pane in its tab.
+    let (workspace_id, _tab_id, pane_id) = new_workspace_ok(&mut stream, &mut codec, 630).await;
+    let extra = split_pane_ok(
+        &mut stream,
+        &mut codec,
+        pane_id,
+        SplitDirection::Horizontal,
+        631,
+    )
+    .await;
+
+    close_workspace_ok(&mut stream, &mut codec, workspace_id, 632).await;
+
+    // Both of the closed workspace's panes are gone; the seeded pane 0 in
+    // workspace 0 survives, and it is active again.
+    let frame = Frame::new(MSG_LIST_PANES, 633, vec![]).expect("list-panes frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 633).await;
+    let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
+    let ids: Vec<u32> = list.panes.iter().map(|p| p.pane_id).collect();
+    assert!(ids.contains(&0), "seeded pane survives: {ids:?}");
+    assert!(
+        !ids.contains(&pane_id) && !ids.contains(&extra),
+        "closed panes gone: {ids:?}"
+    );
+    assert_eq!(
+        list_tabs_ok(&mut stream, &mut codec, 634)
+            .await
+            .workspace_id,
+        0
+    );
+}
+
+#[tokio::test]
+async fn close_workspace_last_workspace_refused() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    // Only the seeded workspace 0 exists.
+    let msg = CloseWorkspace { workspace_id: 0 };
+    let frame = Frame::new(MSG_CLOSE_WORKSPACE, 640, msg.encode()).expect("close-ws frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 640).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
+        ErrorCode::LayoutRejected as u32
+    );
+}
+
+#[tokio::test]
+async fn close_workspace_unknown_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+    // Only the seeded workspace 0 exists. An unknown id must report
+    // UnknownWorkspace even though the last-workspace guard would also
+    // fire — existence is checked first.
+    let msg = CloseWorkspace { workspace_id: 99 };
+    let frame = Frame::new(MSG_CLOSE_WORKSPACE, 651, msg.encode()).expect("close-ws frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 651).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
+        ErrorCode::UnknownWorkspace as u32
+    );
+}
+
+/// Truncated tab-op payloads produce `MalformedPayload`: the request-shaped
+/// `CloseWorkspace` replies on its serial; the push ops report via serial-0
+/// Error pushes.
+#[tokio::test]
+async fn malformed_tab_op_payloads_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    for msg_type in [MSG_MOVE_TAB, MSG_RENAME_TAB, MSG_RENAME_WORKSPACE] {
+        push_frame(&mut stream, &mut codec, msg_type, vec![0x00]).await;
+        let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+        assert_eq!(
+            ErrorMessage::decode(&resp.payload).expect("decode").code,
+            ErrorCode::MalformedPayload as u32,
+            "msg {msg_type:#x}"
+        );
+    }
+
+    let frame = Frame::new(MSG_CLOSE_WORKSPACE, 660, vec![0x00]).expect("close-ws frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 660).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    assert_eq!(
+        ErrorMessage::decode(&resp.payload).expect("decode").code,
         ErrorCode::MalformedPayload as u32
     );
 }

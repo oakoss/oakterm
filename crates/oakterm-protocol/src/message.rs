@@ -70,9 +70,18 @@ pub const MSG_NEW_WORKSPACE_RESPONSE: u16 = 0xAD;
 pub const MSG_SWITCH_WORKSPACE: u16 = 0xAE;
 pub const MSG_LIST_TABS: u16 = 0xAF;
 pub const MSG_TAB_LIST: u16 = 0xB0;
+pub const MSG_MOVE_TAB: u16 = 0xB1;
+pub const MSG_RENAME_TAB: u16 = 0xB2;
+pub const MSG_RENAME_WORKSPACE: u16 = 0xB3;
+pub const MSG_CLOSE_WORKSPACE: u16 = 0xB4;
+pub const MSG_CLOSE_WORKSPACE_RESPONSE: u16 = 0xB5;
 /// Protocol minor that introduced `ListTabs`/`TabList` (Spec-0001 1.2).
 /// Clients gate the request on the peer's advertised minor.
 pub const LIST_TABS_MIN_MINOR: u16 = 2;
+/// Protocol minor that introduced the tab-lifecycle ops `MoveTab`,
+/// `RenameTab`, `RenameWorkspace`, and `CloseWorkspace` (Spec-0001 1.3).
+/// Clients gate these on the peer's advertised minor.
+pub const TAB_OPS_MIN_MINOR: u16 = 3;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -402,9 +411,10 @@ pub struct ClientHello {
 
 impl ClientHello {
     pub const VERSION_MAJOR: u16 = 1;
-    /// Minor 2 ships `ListTabs`/`TabList` (Spec-0001 1.2); the constant
+    /// Minor 3 ships the tab-lifecycle ops (`MoveTab`, `RenameTab`,
+    /// `RenameWorkspace`, `CloseWorkspace`; Spec-0001 1.3); the constant
     /// tracks the spec's version-history table.
-    pub const VERSION_MINOR: u16 = 2;
+    pub const VERSION_MINOR: u16 = 3;
 
     /// # Errors
     /// Returns an error if the client name exceeds u16 max length.
@@ -2005,6 +2015,152 @@ impl SwitchWorkspace {
         Ok(Self {
             workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
         })
+    }
+}
+
+/// `MoveTab` (0xB1): client reorders a tab within its workspace to a
+/// 0-based target index (clamped daemon-side). Push message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveTab {
+    pub tab_id: u32,
+    pub new_index: u32,
+}
+
+impl MoveTab {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        buf.extend_from_slice(&self.new_index.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "MoveTab too short",
+            ));
+        }
+        Ok(Self {
+            tab_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            new_index: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+        })
+    }
+}
+
+/// `RenameTab` (0xB2): client sets a tab's name. An empty name reverts to
+/// the pane-title fallback. Push message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameTab {
+    pub tab_id: u32,
+    pub name: String,
+}
+
+impl RenameTab {
+    /// # Errors
+    /// Returns an error if the name exceeds u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(6 + self.name.len());
+        buf.extend_from_slice(&self.tab_id.to_le_bytes());
+        encode_str(&mut buf, &self.name)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "RenameTab too short",
+            ));
+        }
+        let tab_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let (name, _) = decode_str(data, 4, "tab name")?;
+        Ok(Self { tab_id, name })
+    }
+}
+
+/// `RenameWorkspace` (0xB3): client sets a workspace's name. Push message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameWorkspace {
+    pub workspace_id: u32,
+    pub name: String,
+}
+
+impl RenameWorkspace {
+    /// # Errors
+    /// Returns an error if the name exceeds u16 length.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(6 + self.name.len());
+        buf.extend_from_slice(&self.workspace_id.to_le_bytes());
+        encode_str(&mut buf, &self.name)?;
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is malformed.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "RenameWorkspace too short",
+            ));
+        }
+        let workspace_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let (name, _) = decode_str(data, 4, "workspace name")?;
+        Ok(Self { workspace_id, name })
+    }
+}
+
+/// `CloseWorkspace` (0xB4): client requests closure of a workspace and
+/// every pane in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseWorkspace {
+    pub workspace_id: u32,
+}
+
+impl CloseWorkspace {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.workspace_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CloseWorkspace too short",
+            ));
+        }
+        Ok(Self {
+            workspace_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+}
+
+/// `CloseWorkspaceResponse` (0xB5): empty payload confirming closure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseWorkspaceResponse;
+
+impl CloseWorkspaceResponse {
+    /// # Errors
+    /// Never fails; any payload (including empty) decodes.
+    pub fn decode(_data: &[u8]) -> io::Result<Self> {
+        Ok(Self)
+    }
+
+    /// Wrap as a response frame.
+    ///
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_CLOSE_WORKSPACE_RESPONSE, serial, vec![])
     }
 }
 

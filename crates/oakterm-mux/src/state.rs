@@ -88,6 +88,12 @@ impl Tab {
         &self.name
     }
 
+    /// The name-vs-title fallback (Spec-0007) is applied downstream when
+    /// the display name is resolved.
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
     #[must_use]
     pub fn layout(&self) -> &LayoutNode {
         &self.layout
@@ -107,6 +113,15 @@ impl Tab {
     #[must_use]
     pub fn contains(&self, pane: PaneId) -> bool {
         self.layout.contains(pane) || self.floating.iter().any(|f| f.pane_id == pane)
+    }
+
+    /// Every pane in this tab: tiled leaves first (left-to-right), then
+    /// floating panes in z-order.
+    #[must_use]
+    pub fn pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = self.layout.pane_ids();
+        ids.extend(self.floating.iter().map(|f| f.pane_id));
+        ids
     }
 
     /// Insert `new` beside `target` in the layout tree (Spec-0007 Split).
@@ -226,6 +241,10 @@ impl Workspace {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub(crate) fn set_name(&mut self, name: String) {
+        self.name = name;
     }
 
     #[must_use]
@@ -353,6 +372,14 @@ impl MultiplexerState {
                 .position(|t| t.contains(pane))
                 .map(|ti| (wi, ti))
         })
+    }
+
+    /// Workspace and tab indices of the tab with id `tab`.
+    fn locate_tab(&self, tab: TabId) -> Option<(usize, usize)> {
+        self.workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(wi, ws)| ws.tabs.iter().position(|t| t.id == tab).map(|ti| (wi, ti)))
     }
 
     /// The tab holding `pane`, searched across all workspaces.
@@ -505,6 +532,75 @@ impl MultiplexerState {
         let closed = self.workspaces.remove(ws_index).id;
         clamp_active_after_remove(&mut self.active_workspace, ws_index, self.workspaces.len());
         closed
+    }
+
+    /// Rename a tab (Spec-0001 `RenameTab`). An empty name reverts to the
+    /// pane-title fallback. Returns false if no tab has id `tab`.
+    #[must_use = "false means the tab was not found and nothing was renamed"]
+    pub fn rename_tab(&mut self, tab: TabId, name: String) -> bool {
+        let Some((wi, ti)) = self.locate_tab(tab) else {
+            return false;
+        };
+        self.workspaces[wi].tabs[ti].set_name(name);
+        true
+    }
+
+    /// Rename a workspace (Spec-0001 `RenameWorkspace`). Returns false if
+    /// no workspace has id `ws`.
+    #[must_use = "false means the workspace was not found and nothing was renamed"]
+    pub fn rename_workspace(&mut self, ws: WorkspaceId, name: String) -> bool {
+        let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == ws) else {
+            return false;
+        };
+        workspace.set_name(name);
+        true
+    }
+
+    /// Reorder a tab within its workspace to `new_index` (Spec-0001
+    /// `MoveTab`), clamped to the tab count. The active tab stays on the
+    /// same `TabId` regardless of the shuffle. Returns false if no tab has
+    /// id `tab`.
+    #[must_use = "false means the tab was not found and nothing moved"]
+    pub fn move_tab(&mut self, tab: TabId, new_index: usize) -> bool {
+        let Some((wi, from)) = self.locate_tab(tab) else {
+            return false;
+        };
+        let ws = &mut self.workspaces[wi];
+        let active_id = ws.tabs[ws.active_tab].id;
+        let to = new_index.min(ws.tabs.len() - 1);
+        if to != from {
+            let moved = ws.tabs.remove(from);
+            ws.tabs.insert(to, moved);
+            // The active tab may have shifted position; follow its id. The
+            // reorder only permutes tabs, so active_id is always present —
+            // a miss is an invariant break, loud in debug.
+            ws.active_tab = ws
+                .tabs
+                .iter()
+                .position(|t| t.id == active_id)
+                .unwrap_or_else(|| {
+                    debug_assert!(false, "active tab id vanished during move_tab");
+                    ws.active_tab
+                });
+        }
+        true
+    }
+
+    /// Close an entire workspace and return every pane it held, so the
+    /// caller can shut down their PTYs (Spec-0001 `CloseWorkspace`). The
+    /// active workspace is re-clamped. Returns `None` — removing nothing —
+    /// if no workspace has id `ws`. Closing the last workspace empties the
+    /// state; the daemon-exit rule is the caller's policy.
+    #[must_use = "the returned panes must be shut down; None means nothing was closed"]
+    pub fn close_workspace(&mut self, ws: WorkspaceId) -> Option<Vec<PaneId>> {
+        let ws_index = self.workspaces.iter().position(|w| w.id == ws)?;
+        let panes: Vec<PaneId> = self.workspaces[ws_index]
+            .tabs
+            .iter()
+            .flat_map(Tab::pane_ids)
+            .collect();
+        self.close_workspace_at(ws_index);
+        Some(panes)
     }
 
     /// Close a pane, cascading per Spec-0007: the last pane closes its tab,
@@ -917,5 +1013,127 @@ mod tests {
         let wc = mux.new_workspace("c".to_string(), c).expect("ws c");
         let _ = mux.close_pane(b).expect("close");
         assert_eq!(mux.active_workspace().expect("workspace").id(), wc);
+    }
+
+    #[test]
+    fn rename_tab_pins_a_name_and_empty_clears_it() {
+        let (mut mux, _) = seeded();
+        assert!(mux.rename_tab(TabId(0), "build".to_string()));
+        assert_eq!(mux.active_tab().expect("tab").name(), "build");
+        // Empty name reverts to the pane-title fallback.
+        assert!(mux.rename_tab(TabId(0), String::new()));
+        assert_eq!(mux.active_tab().expect("tab").name(), "");
+        // Unknown tab is a no-op.
+        assert!(!mux.rename_tab(TabId(99), "nope".to_string()));
+    }
+
+    #[test]
+    fn rename_workspace_sets_name_and_rejects_unknown() {
+        let (mut mux, _) = seeded();
+        assert!(mux.rename_workspace(WorkspaceId(0), "work".to_string()));
+        assert_eq!(mux.active_workspace().expect("ws").name(), "work");
+        assert!(!mux.rename_workspace(WorkspaceId(99), "nope".to_string()));
+    }
+
+    #[test]
+    fn move_tab_reorders_and_keeps_active_on_its_id() {
+        let (mut mux, _a) = seeded();
+        let b = mux.allocate_pane_id();
+        let tb = mux.new_tab(b).expect("tab b");
+        let c = mux.allocate_pane_id();
+        let tc = mux.new_tab(c).expect("tab c");
+        // Order is [0, tb, tc], active is tc (index 2).
+        assert!(mux.move_tab(tc, 0));
+        let ws = mux.active_workspace().expect("ws");
+        let ids: Vec<TabId> = ws.tabs().iter().map(Tab::id).collect();
+        assert_eq!(ids, vec![tc, TabId(0), tb]);
+        // Active tab still follows tc, now at index 0.
+        assert_eq!(ws.active_tab().id(), tc);
+        assert_eq!(ws.active_tab_index(), 0);
+    }
+
+    #[test]
+    fn move_tab_of_a_background_tab_keeps_the_active_tab() {
+        let (mut mux, _a) = seeded();
+        let b = mux.allocate_pane_id();
+        let tb = mux.new_tab(b).expect("tab b");
+        let c = mux.allocate_pane_id();
+        let tc = mux.new_tab(c).expect("tab c");
+        // Order [0, tb, tc]; make the middle tab (tb) active.
+        assert!(mux.focus_pane(b));
+        assert_eq!(mux.active_workspace().expect("ws").active_tab().id(), tb);
+        // Move a non-active tab (tc) across the active slot to the front.
+        assert!(mux.move_tab(tc, 0));
+        let ws = mux.active_workspace().expect("ws");
+        let ids: Vec<TabId> = ws.tabs().iter().map(Tab::id).collect();
+        assert_eq!(ids, vec![tc, TabId(0), tb]);
+        // The active tab is still tb, now shifted to index 2.
+        assert_eq!(ws.active_tab().id(), tb);
+        assert_eq!(ws.active_tab_index(), 2);
+    }
+
+    #[test]
+    fn move_tab_clamps_index_and_is_noop_for_same_slot() {
+        let (mut mux, _a) = seeded();
+        let b = mux.allocate_pane_id();
+        let tb = mux.new_tab(b).expect("tab b");
+        // Past-the-end index clamps to the last slot.
+        assert!(mux.move_tab(TabId(0), 99));
+        let ids: Vec<TabId> = mux
+            .active_workspace()
+            .expect("ws")
+            .tabs()
+            .iter()
+            .map(Tab::id)
+            .collect();
+        assert_eq!(ids, vec![tb, TabId(0)]);
+        // Moving to the slot it already occupies changes nothing.
+        assert!(mux.move_tab(tb, 0));
+        let ids: Vec<TabId> = mux
+            .active_workspace()
+            .expect("ws")
+            .tabs()
+            .iter()
+            .map(Tab::id)
+            .collect();
+        assert_eq!(ids, vec![tb, TabId(0)]);
+        // Unknown tab is a no-op.
+        assert!(!mux.move_tab(TabId(99), 0));
+    }
+
+    #[test]
+    fn close_workspace_returns_every_pane_and_reclamps() {
+        let (mut mux, first) = seeded();
+        // Give workspace 0 a second tab with two panes.
+        let b = mux.allocate_pane_id();
+        let _ = mux.new_tab(b).expect("tab b");
+        let c = mux.allocate_pane_id();
+        mux.tab_containing_mut(b)
+            .expect("tab")
+            .split(b, c, SplitDirection::Horizontal)
+            .expect("split");
+        // A second workspace, now active.
+        let d = mux.allocate_pane_id();
+        let wd = mux.new_workspace("d".to_string(), d).expect("ws d");
+        assert_eq!(mux.active_workspace().expect("ws").id(), wd);
+
+        let mut panes = mux.close_workspace(WorkspaceId(0)).expect("closed");
+        panes.sort();
+        assert_eq!(panes, vec![first, b, c]);
+        // Active workspace (wd) is preserved; only wd remains.
+        assert_eq!(mux.workspaces().len(), 1);
+        assert_eq!(mux.active_workspace().expect("ws").id(), wd);
+        assert!(mux.tab_containing(first).is_none());
+    }
+
+    #[test]
+    fn close_workspace_rejects_unknown_and_can_empty_the_state() {
+        let (mut mux, pane) = seeded();
+        assert!(mux.close_workspace(WorkspaceId(99)).is_none());
+        // Closing the only workspace empties the state (daemon-exit policy
+        // is the caller's).
+        let panes = mux.close_workspace(WorkspaceId(0)).expect("closed");
+        assert_eq!(panes, vec![pane]);
+        assert!(!mux.has_panes());
     }
 }
