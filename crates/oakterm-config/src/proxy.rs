@@ -227,6 +227,8 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
         "close_pane",
         "new_tab",
         "close_tab",
+        "next_tab",
+        "previous_tab",
         "show_command_palette",
     ] {
         let n = name.to_string();
@@ -284,6 +286,23 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
             t.set("__action_type", "split_pane")?;
             t.set("direction", opts.get::<mlua::String>("direction")?)?;
             t.set("size", opts.get::<f64>("size").unwrap_or(0.5))?;
+            Ok(t)
+        })?,
+    )?;
+
+    // switch_tab(index) — 1-based strip index
+    action.set(
+        "switch_tab",
+        lua.create_function(|lua, index: i64| {
+            if !(1..=i64::from(u32::MAX)).contains(&index) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "switch_tab index must be between 1 and {}, got {index}",
+                    u32::MAX
+                )));
+            }
+            let t = lua.create_table()?;
+            t.set("__action_type", "switch_tab")?;
+            t.set("index", index)?;
             Ok(t)
         })?,
     )?;
@@ -350,7 +369,10 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
 /// Converts keybind entries stored by `oakterm.keybind()` into
 /// `(KeyChord, Action)` pairs. Callback functions become `RegistryKey`s.
 pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
-    let mut registry = KeybindRegistry::new();
+    // Seed with the built-in defaults; user binds append after and win
+    // on conflict (lookup is last-registration). This is the single
+    // source of the default table — the no-config path also uses it.
+    let mut registry = KeybindRegistry::with_defaults();
     let Ok(entries) = lua.named_registry_value::<Table>(KEYBIND_REGISTRY_KEY) else {
         tracing::warn!("failed to read keybind registry from Lua VM");
         return registry;
@@ -431,6 +453,23 @@ fn extract_action_from_table(t: &Table) -> Result<Action, String> {
         "close_pane" => Ok(Action::ClosePane),
         "new_tab" => Ok(Action::NewTab),
         "close_tab" => Ok(Action::CloseTab),
+        "next_tab" => Ok(Action::NextTab),
+        "previous_tab" => Ok(Action::PreviousTab),
+        "switch_tab" => {
+            let index: i64 = t
+                .get("index")
+                .map_err(|e| format!("switch_tab missing index: {e}"))?;
+            let index = u32::try_from(index)
+                .ok()
+                .and_then(std::num::NonZeroU32::new)
+                .ok_or_else(|| {
+                    format!(
+                        "switch_tab index must be between 1 and {}, got {index}",
+                        u32::MAX
+                    )
+                })?;
+            Ok(Action::SwitchTab(index))
+        }
         "show_command_palette" => Ok(Action::ShowCommandPalette),
         "scroll_up" => {
             let lines: i64 = t.get("lines").unwrap_or(0);

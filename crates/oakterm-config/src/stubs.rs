@@ -104,6 +104,19 @@ function ActionModule.new_tab() end
 ---@return oakterm.Action
 function ActionModule.close_tab() end
 
+--- Switch to the tab at a 1-based strip index.
+---@param index integer Tab index, >= 1
+---@return oakterm.Action
+function ActionModule.switch_tab(index) end
+
+--- Switch to the next tab, wrapping.
+---@return oakterm.Action
+function ActionModule.next_tab() end
+
+--- Switch to the previous tab, wrapping.
+---@return oakterm.Action
+function ActionModule.previous_tab() end
+
 --- Show the command palette.
 ---@return oakterm.Action
 function ActionModule.show_command_palette() end

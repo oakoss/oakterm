@@ -24,8 +24,8 @@ use wgpu::CurrentSurfaceTexture;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    CloseTab, FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR,
-    LayoutTreeNode, MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE,
+    ClosePane, CloseTab, FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR,
+    LayoutTreeNode, MSG_CLOSE_PANE, MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE,
     MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB,
     MSG_RESIZE_PANE, MSG_SPLIT_PANE, MSG_SWITCH_TAB, NewTab, PromptPosition, ResizePane,
     ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab,
@@ -104,6 +104,17 @@ enum UserEvent {
     },
     /// A `CloseTab` completed; another tab is now active daemon-side.
     TabClosed,
+    /// A `ClosePane` completed; focus moved daemon-side (Spec-0007
+    /// nearest sibling), and the close may have cascaded to the tab.
+    /// The serial identifies which pending close succeeded.
+    PaneClosed {
+        serial: u32,
+    },
+    /// The daemon answered the request at `serial` with an error frame;
+    /// pending state keyed to it (or anything older) is dead.
+    RequestFailed {
+        serial: u32,
+    },
 }
 
 /// GPU state created after the window and surface are available.
@@ -165,6 +176,10 @@ enum ActionDesc {
     FocusPane(layout::FocusDirection),
     NewTab,
     CloseTab,
+    ClosePane,
+    SwitchTab(std::num::NonZeroU32),
+    NextTab,
+    PreviousTab,
     Stub,
 }
 
@@ -206,6 +221,50 @@ fn window_resize(pane_id: u32, (cols, rows): (u16, u16), size: PhysicalSize<u32>
         rows,
         pixel_width: size.width.min(u32::from(u16::MAX)) as u16,
         pixel_height: size.height.min(u32::from(u16::MAX)) as u16,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingPaneClose {
+    serial: u32,
+    pane_id: u32,
+}
+
+/// Resolve a `ClosePaneResponse` against the in-flight queue: the
+/// exact-serial match identifies the closed pane, and entries at or
+/// below the serial are dropped — responses arrive in request order, so
+/// older unmatched entries were rejected (their `Error` frames carry no
+/// `PaneClosed`). Assumes serials don't wrap while a close is in
+/// flight; `take_serial` wraps only after `u32::MAX` requests.
+fn resolve_pane_close(
+    queue: &mut std::collections::VecDeque<PendingPaneClose>,
+    serial: u32,
+) -> Option<u32> {
+    let closed = queue.iter().find(|p| p.serial == serial).map(|p| p.pane_id);
+    queue.retain(|p| p.serial > serial);
+    closed
+}
+
+/// Focus liveness against a layout geometry: `Live` when `focused` is
+/// present, `Refocus` with the first pane when it is not, `Stranded`
+/// when there is no pane to fall back to.
+#[derive(Debug, PartialEq, Eq)]
+enum FocusHealth {
+    Live,
+    Refocus(u32),
+    Stranded,
+}
+
+fn check_focus(geometry: Option<&layout::LayoutGeometry>, focused: u32) -> FocusHealth {
+    let Some(geo) = geometry else {
+        return FocusHealth::Stranded;
+    };
+    if geo.panes.iter().any(|p| p.pane_id == focused) {
+        return FocusHealth::Live;
+    }
+    match geo.panes.first() {
+        Some(p) => FocusHealth::Refocus(p.pane_id),
+        None => FocusHealth::Stranded,
     }
 }
 
@@ -518,6 +577,15 @@ struct App {
     /// Buttons whose press the tab bar consumed; their release is
     /// swallowed too.
     tab_bar_pressed_buttons: u8,
+    /// A `ClosePane` completed and the next `TabList` should adopt the
+    /// daemon's post-close focus (Spec-0007 nearest sibling). Consumed
+    /// by whichever `TabList` arrives next — on this serialized
+    /// connection that is the post-close refresh.
+    refocus_after_close: bool,
+    /// In-flight `ClosePane` requests: the empty response only
+    /// correlates by serial. Entries are pruned by the response serial
+    /// (success or error), so rejected closes don't accumulate.
+    pending_pane_closes: std::collections::VecDeque<PendingPaneClose>,
     /// The daemon's advertised protocol minor version; gates request
     /// types newer than the daemon (Spec-0001 client obligation).
     server_minor: u16,
@@ -565,6 +633,8 @@ impl App {
             layout: PaneLayout::default(),
             tabs: tab_bar::TabsState::default(),
             tab_bar_pressed_buttons: 0,
+            refocus_after_close: false,
+            pending_pane_closes: std::collections::VecDeque::new(),
             server_minor: 0,
             hovered_border: None,
             border_drag: None,
@@ -883,6 +953,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.daemon = Some(conn.writer);
                 self.daemon_process = conn.child;
                 self.server_minor = conn.server_minor;
+                if self.server_minor < LIST_TABS_MIN_MINOR {
+                    info!(
+                        server_minor = self.server_minor,
+                        "daemon predates ListTabs; the tab bar and tab keybinds are inactive"
+                    );
+                }
             }
             Err(e) => {
                 error!(error = %e, "fatal: failed to connect to daemon");
@@ -1768,6 +1844,33 @@ impl ApplicationHandler<UserEvent> for App {
                 // call, so refresh and let apply_tab_list follow it.
                 self.request_list_tabs();
             }
+            UserEvent::PaneClosed { serial } => {
+                if let Some(pane_id) = resolve_pane_close(&mut self.pending_pane_closes, serial) {
+                    info!(pane_id, "pane close accepted; refreshing tab state");
+                    // The a11y node prunes with the follow-up layout
+                    // sync (sync_layout retains only in-layout panes).
+                    self.panes.remove(&pane_id);
+                } else {
+                    warn!(serial, "ClosePaneResponse with no pending close");
+                }
+                if self.server_minor >= LIST_TABS_MIN_MINOR {
+                    // The daemon's post-close focus arrives with the
+                    // TabList; apply_tab_list adopts it and fetches the
+                    // tree.
+                    self.refocus_after_close = true;
+                    self.request_list_tabs();
+                } else {
+                    // Pre-1.2: no TabList will come; fetch the tree and
+                    // rely on apply_layout_tree's stale-focus fallback.
+                    self.request_layout_tree();
+                }
+            }
+            UserEvent::RequestFailed { serial } => {
+                // Responses arrive in request order: a failed serial
+                // means every pending close at or below it was answered
+                // (this error or an earlier response).
+                self.pending_pane_closes.retain(|p| p.serial > serial);
+            }
             UserEvent::ConfigReloaded(cr) => {
                 self.handle_config_reload(*cr);
             }
@@ -1860,7 +1963,11 @@ impl App {
             }
             Some(Action::NewTab) => ActionDesc::NewTab,
             Some(Action::CloseTab) => ActionDesc::CloseTab,
-            Some(Action::ClosePane | Action::ShowCommandPalette) => ActionDesc::Stub,
+            Some(Action::ClosePane) => ActionDesc::ClosePane,
+            Some(Action::SwitchTab(n)) => ActionDesc::SwitchTab(*n),
+            Some(Action::NextTab) => ActionDesc::NextTab,
+            Some(Action::PreviousTab) => ActionDesc::PreviousTab,
+            Some(Action::ShowCommandPalette) => ActionDesc::Stub,
             None => return false,
         };
 
@@ -2104,6 +2211,44 @@ impl App {
                 self.send_request(MSG_CLOSE_TAB, CloseTab { tab_id }.encode(), "CloseTab");
                 true
             }
+            ActionDesc::ClosePane => {
+                // The daemon refuses to close the last pane; its
+                // LayoutRejected reply rings the bell.
+                let pane_id = self.focused_pane;
+                if let Some(serial) = self.send_request_serial(
+                    MSG_CLOSE_PANE,
+                    ClosePane { pane_id }.encode(),
+                    "ClosePane",
+                ) {
+                    self.pending_pane_closes
+                        .push_back(PendingPaneClose { serial, pane_id });
+                }
+                true
+            }
+            ActionDesc::SwitchTab(n) => {
+                if let Some(tab_id) = self.tabs.tab_at_index(n) {
+                    self.switch_tab(tab_id);
+                } else {
+                    // Match the tab-bar click convention: a chord for an
+                    // absent index rings rather than appearing dead. Tab
+                    // state is empty against pre-1.2 daemons, so these
+                    // binds ring there too.
+                    let _ = self.proxy.send_event(UserEvent::Bell);
+                }
+                true
+            }
+            ActionDesc::NextTab => {
+                if let Some(tab_id) = self.tabs.next_tab_id() {
+                    self.switch_tab(tab_id);
+                }
+                true
+            }
+            ActionDesc::PreviousTab => {
+                if let Some(tab_id) = self.tabs.previous_tab_id() {
+                    self.switch_tab(tab_id);
+                }
+                true
+            }
             ActionDesc::Stub => false,
         }
     }
@@ -2283,12 +2428,18 @@ impl App {
     /// Frame `payload` as a fresh-serial request and send it. Returns
     /// whether the frame was sent.
     fn send_request(&mut self, msg_type: u16, payload: Vec<u8>, what: &str) -> bool {
+        self.send_request_serial(msg_type, payload, what).is_some()
+    }
+
+    /// Like [`Self::send_request`], returning the request serial on a
+    /// successful send for callers that correlate the response.
+    fn send_request_serial(&mut self, msg_type: u16, payload: Vec<u8>, what: &str) -> Option<u32> {
         let serial = self.take_serial();
         match Frame::new(msg_type, serial, payload) {
-            Ok(frame) => self.send_or_disconnect(&frame, what),
+            Ok(frame) => self.send_or_disconnect(&frame, what).then_some(serial),
             Err(e) => {
                 error!(error = %e, what, "failed to encode request");
-                false
+                None
             }
         }
     }
@@ -2397,6 +2548,7 @@ impl App {
             // rect and PTY size shifts.
             self.relayout_panes();
         }
+        let refocus = std::mem::take(&mut self.refocus_after_close);
         let active = self.tabs.active_tab();
         if active != previous_active {
             if let Some(active) = active {
@@ -2409,6 +2561,13 @@ impl App {
                 }
                 self.request_layout_tree();
             }
+        } else if refocus {
+            // Same tab, fewer panes: adopt the daemon's post-close focus
+            // choice and fetch the shrunken tree.
+            if let Some(focus) = active.and_then(|a| self.tabs.focused_pane_of(a)) {
+                self.layout.set_pending_focus(focus);
+            }
+            self.request_layout_tree();
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -2558,6 +2717,26 @@ impl App {
                 self.focus_pane(id);
             } else {
                 warn!(pane_id = id, "pending focus target missing from layout");
+            }
+        }
+        // A pane close (or any topology change this client missed) can
+        // leave the focused pane dangling; refocus so input has a live
+        // target. FocusPane re-aligns the daemon with the choice.
+        match check_focus(self.layout.geometry(), self.focused_pane) {
+            FocusHealth::Live => {}
+            FocusHealth::Refocus(id) => {
+                warn!(
+                    stale = self.focused_pane,
+                    fallback = id,
+                    "focused pane left the layout; refocusing"
+                );
+                self.focus_pane(id);
+            }
+            FocusHealth::Stranded => {
+                warn!(
+                    stale = self.focused_pane,
+                    "focused pane left the layout and no pane remains to refocus"
+                );
             }
         }
         if let Some(w) = &self.window {
@@ -3330,8 +3509,8 @@ fn version_string() -> String {
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{
-        assemble_frame, drain_wheel_notches, plan_pane_syncs, tab_bar_height, try_init_font,
-        window_to_grid_dims,
+        FocusHealth, PendingPaneClose, assemble_frame, check_focus, drain_wheel_notches,
+        plan_pane_syncs, resolve_pane_close, tab_bar_height, try_init_font, window_to_grid_dims,
     };
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
@@ -3419,6 +3598,47 @@ mod tests {
     }
 
     const CELL: (f32, f32) = (10.0, 20.0);
+
+    fn close_queue(entries: &[(u32, u32)]) -> std::collections::VecDeque<PendingPaneClose> {
+        entries
+            .iter()
+            .map(|&(serial, pane_id)| PendingPaneClose { serial, pane_id })
+            .collect()
+    }
+
+    #[test]
+    fn resolve_pane_close_matches_by_serial_and_consumes() {
+        let mut q = close_queue(&[(10, 5)]);
+        assert_eq!(resolve_pane_close(&mut q, 10), Some(5));
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn resolve_pane_close_prunes_rejected_older_entries() {
+        // Serial 10 was rejected (its Error frame carries no PaneClosed);
+        // the serial-12 success must return its own pane and sweep the
+        // stale entry without ever returning pane 5.
+        let mut q = close_queue(&[(10, 5), (12, 7)]);
+        assert_eq!(resolve_pane_close(&mut q, 12), Some(7));
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn resolve_pane_close_unknown_serial_prunes_but_returns_none() {
+        let mut q = close_queue(&[(10, 5), (14, 7)]);
+        assert_eq!(resolve_pane_close(&mut q, 12), None);
+        assert_eq!(q, close_queue(&[(14, 7)]), "newer in-flight entry survives");
+    }
+
+    #[test]
+    fn check_focus_reports_live_dead_and_stranded() {
+        let geo = geometry_of(&[(3, 100, 100), (7, 100, 100)]);
+        assert_eq!(check_focus(Some(&geo), 7), FocusHealth::Live);
+        assert_eq!(check_focus(Some(&geo), 99), FocusHealth::Refocus(3));
+        let empty = geometry_of(&[]);
+        assert_eq!(check_focus(Some(&empty), 7), FocusHealth::Stranded);
+        assert_eq!(check_focus(None, 7), FocusHealth::Stranded);
+    }
 
     #[test]
     fn plan_pane_syncs_fresh_pane_always_gets_spawn_resize() {

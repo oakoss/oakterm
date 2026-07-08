@@ -215,12 +215,45 @@ pub enum Action {
     NewTab,
     /// Close the focused tab.
     CloseTab,
+    /// Switch to the tab at a 1-based strip index.
+    SwitchTab(std::num::NonZeroU32),
+    /// Switch to the next tab, wrapping.
+    NextTab,
+    /// Switch to the previous tab, wrapping.
+    PreviousTab,
     /// Show the command palette.
     ShowCommandPalette,
 
     /// Lua callback function.
     Callback(RegistryKey),
 }
+
+/// ADR-0011's `oak_mod` expanded per platform. Configurable `oak_mod` with
+/// registration-time expansion is TREK-118; until then defaults ship
+/// pre-expanded.
+#[cfg(target_os = "macos")]
+pub(crate) const OAK_MOD: &str = "super";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const OAK_MOD: &str = "ctrl+shift";
+
+/// `oak_mod` + Shift. On platforms where `oak_mod` already contains
+/// Shift, the two collapse (a chord can't repeat a modifier).
+#[cfg(target_os = "macos")]
+pub(crate) const OAK_MOD_SHIFT: &str = "super+shift";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const OAK_MOD_SHIFT: &str = "ctrl+shift";
+
+/// Tab-cycling chords are platform conventions, not `oak_mod`
+/// derivations: on Linux `oak_mod+Shift+[` folds into `oak_mod+[`,
+/// which ADR-0011 reserves for copy mode.
+#[cfg(target_os = "macos")]
+pub(crate) const NEXT_TAB_CHORD: &str = "super+shift+]";
+#[cfg(target_os = "macos")]
+pub(crate) const PREVIOUS_TAB_CHORD: &str = "super+shift+[";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const NEXT_TAB_CHORD: &str = "ctrl+pagedown";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const PREVIOUS_TAB_CHORD: &str = "ctrl+pageup";
 
 /// Registry of key chord → action bindings.
 pub struct KeybindRegistry {
@@ -249,17 +282,26 @@ impl KeybindRegistry {
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         let defaults = [
-            ("shift+pageup", Action::ScrollUp(0)),
-            ("shift+pagedown", Action::ScrollDown(0)),
-            ("shift+home", Action::ScrollUp(999_999)),
-            ("shift+end", Action::ScrollDown(999_999)),
-            ("super+shift+up", Action::ScrollToPrompt(-1)),
-            ("super+shift+down", Action::ScrollToPrompt(1)),
+            ("shift+pageup".to_string(), Action::ScrollUp(0)),
+            ("shift+pagedown".to_string(), Action::ScrollDown(0)),
+            ("shift+home".to_string(), Action::ScrollUp(999_999)),
+            ("shift+end".to_string(), Action::ScrollDown(999_999)),
+            (format!("{OAK_MOD_SHIFT}+up"), Action::ScrollToPrompt(-1)),
+            (format!("{OAK_MOD_SHIFT}+down"), Action::ScrollToPrompt(1)),
+            (format!("{OAK_MOD}+t"), Action::NewTab),
+            (format!("{OAK_MOD}+w"), Action::ClosePane),
+            (NEXT_TAB_CHORD.to_string(), Action::NextTab),
+            (PREVIOUS_TAB_CHORD.to_string(), Action::PreviousTab),
         ];
         for (chord_str, action) in defaults {
             // These are hardcoded strings; parse cannot fail.
-            let chord = KeyChord::parse(chord_str).expect("default keybind parse");
+            let chord = KeyChord::parse(&chord_str).expect("default keybind parse");
             reg.register(chord, action);
+        }
+        for i in 1..=9u32 {
+            let chord = KeyChord::parse(&format!("{OAK_MOD}+{i}")).expect("default keybind parse");
+            let index = std::num::NonZeroU32::new(i).expect("1..=9 is nonzero");
+            reg.register(chord, Action::SwitchTab(index));
         }
         reg
     }
@@ -476,5 +518,31 @@ mod tests {
         reg.register(KeyChord::parse("ctrl+a").unwrap(), Action::Copy);
         reg.register(KeyChord::parse("ctrl+b").unwrap(), Action::Paste);
         assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn defaults_use_oak_mod_for_prompt_navigation() {
+        let reg = KeybindRegistry::with_defaults();
+        let up = KeyChord::parse(&format!("{OAK_MOD_SHIFT}+up")).unwrap();
+        assert!(matches!(reg.lookup(&up), Some(Action::ScrollToPrompt(-1))));
+        let down = KeyChord::parse(&format!("{OAK_MOD_SHIFT}+down")).unwrap();
+        assert!(matches!(reg.lookup(&down), Some(Action::ScrollToPrompt(1))));
+    }
+
+    #[test]
+    fn defaults_include_tab_keybinds() {
+        let reg = KeybindRegistry::with_defaults();
+        let new_tab = KeyChord::parse(&format!("{OAK_MOD}+t")).unwrap();
+        assert!(matches!(reg.lookup(&new_tab), Some(Action::NewTab)));
+        let close = KeyChord::parse(&format!("{OAK_MOD}+w")).unwrap();
+        assert!(matches!(reg.lookup(&close), Some(Action::ClosePane)));
+        let next = KeyChord::parse(NEXT_TAB_CHORD).unwrap();
+        assert!(matches!(reg.lookup(&next), Some(Action::NextTab)));
+        let prev = KeyChord::parse(PREVIOUS_TAB_CHORD).unwrap();
+        assert!(matches!(reg.lookup(&prev), Some(Action::PreviousTab)));
+        for i in 1..=9u32 {
+            let chord = KeyChord::parse(&format!("{OAK_MOD}+{i}")).unwrap();
+            assert!(matches!(reg.lookup(&chord), Some(Action::SwitchTab(n)) if n.get() == i));
+        }
     }
 }

@@ -87,19 +87,23 @@ Input flows through these layers in order:
 
 `oak_mod` defaults to `Ctrl+Shift` on Linux, `Cmd` on macOS (matching platform conventions).
 
-| Key                 | Action                                   |
-| ------------------- | ---------------------------------------- |
-| `oak_mod + \`       | Split right                              |
-| `oak_mod + -`       | Split down                               |
-| `oak_mod + W`       | Close pane                               |
-| `oak_mod + H/J/K/L` | Focus pane left/down/up/right            |
-| `oak_mod + T`       | New tab                                  |
-| `oak_mod + [1-9]`   | Switch to tab N                          |
-| `oak_mod + F`       | Toggle floating pane                     |
-| `oak_mod + Enter`   | Toggle pane zoom (fullscreen within tab) |
-| `oak_mod + [`       | Enter copy mode                          |
-| `oak_mod + P`       | Command palette                          |
-| `oak_mod + R`       | Enter resize mode                        |
+| Key                     | Action                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `oak_mod + \`           | Split right                                                                      |
+| `oak_mod + -`           | Split down                                                                       |
+| `oak_mod + W`           | Close pane                                                                       |
+| `oak_mod + H/J/K/L`     | Focus pane left/down/up/right                                                    |
+| `oak_mod + T`           | New tab                                                                          |
+| `oak_mod + [1-9]`       | Switch to tab N                                                                  |
+| Next/previous tab       | `Cmd+Shift+]` / `Cmd+Shift+[` on macOS; `Ctrl+PageDown` / `Ctrl+PageUp` on Linux |
+| `oak_mod + Shift + ↑/↓` | Previous/next prompt (scroll-to-prompt)                                          |
+| `oak_mod + F`           | Toggle floating pane                                                             |
+| `oak_mod + Enter`       | Toggle pane zoom (fullscreen within tab)                                         |
+| `oak_mod + [`           | Enter copy mode                                                                  |
+| `oak_mod + P`           | Command palette                                                                  |
+| `oak_mod + R`           | Enter resize mode                                                                |
+
+Tab cycling deliberately breaks the `oak_mod` pattern: on Linux `oak_mod + Shift` folds into `oak_mod` (a chord cannot repeat a modifier), which would collide with `oak_mod + [` copy mode, so each platform gets its native tab-cycling convention instead. Until the configurable `oak_mod` machinery lands, default keybinds ship pre-expanded to the platform's `oak_mod` value.
 
 ### Key tables
 

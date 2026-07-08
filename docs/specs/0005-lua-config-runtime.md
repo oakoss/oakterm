@@ -205,6 +205,9 @@ oakterm.action.send_string("\x1b[A") -- raw escape sequence
 oakterm.action.show_command_palette()
 oakterm.action.toggle_fullscreen()
 oakterm.action.reload_config()
+oakterm.action.next_tab()
+oakterm.action.previous_tab()
+oakterm.action.switch_tab(1)             -- switch to tab by 1-based index
 
 -- Phase 1: Multiplexer actions (Spec-0007, Spec-0008, Spec-0009)
 -- NOT YET IMPLEMENTED. These constructors are not registered in the current
@@ -213,9 +216,6 @@ oakterm.action.enter_copy_mode()
 oakterm.action.enter_resize_mode()
 oakterm.action.toggle_floating_pane()
 oakterm.action.zoom_pane()               -- toggle pane fullscreen within tab
-oakterm.action.next_tab()
-oakterm.action.previous_tab()
-oakterm.action.switch_tab(1)             -- switch to tab by index
 oakterm.action.rename_tab("name")
 oakterm.action.new_workspace("name")
 oakterm.action.switch_workspace("name")

@@ -5,11 +5,11 @@ use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
     ClientHello, ClientType, ErrorCode, ErrorMessage, HandshakeStatus, LayoutTree, MSG_BELL,
-    MSG_CLOSE_TAB_RESPONSE, MSG_DIRTY_NOTIFY, MSG_ERROR, MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE,
-    MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION, MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA,
-    MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED,
-    NewTabResponse, PromptPosition, ScrollbackData, Shutdown, SplitPaneResponse, TabList,
-    TitleChanged,
+    MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB_RESPONSE, MSG_DIRTY_NOTIFY, MSG_ERROR,
+    MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION,
+    MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_SHUTDOWN,
+    MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED, NewTabResponse, PromptPosition,
+    ScrollbackData, Shutdown, SplitPaneResponse, TabList, TitleChanged,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
@@ -519,15 +519,24 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         MSG_CLOSE_TAB_RESPONSE => {
             let _ = proxy.send_event(UserEvent::TabClosed);
         }
+        MSG_CLOSE_PANE_RESPONSE => {
+            let _ = proxy.send_event(UserEvent::PaneClosed {
+                serial: frame.serial,
+            });
+        }
         MSG_ERROR => {
             log_daemon_error(frame);
-            // Rejected layout/tab operations are routine user-triggered
-            // outcomes; ring the bell so the keybind or click doesn't
-            // appear silently dead.
+            let _ = proxy.send_event(UserEvent::RequestFailed {
+                serial: frame.serial,
+            });
+            // Rejected layout/tab/pane operations are routine
+            // user-triggered outcomes; ring the bell so the keybind or
+            // click doesn't appear silently dead.
             if let Ok(err) = ErrorMessage::decode(&frame.payload) {
                 if matches!(
                     ErrorCode::try_from(err.code),
                     Ok(ErrorCode::LayoutRejected
+                        | ErrorCode::UnknownPane
                         | ErrorCode::UnknownTab
                         | ErrorCode::UnknownWorkspace)
                 ) {

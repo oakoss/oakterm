@@ -77,6 +77,39 @@ impl TabsState {
             .find(|t| t.tab_id == tab_id)
             .map(|t| t.focused_pane)
     }
+
+    /// Tab id at 1-based strip index `n` (the `oak_mod+[1-9]` order).
+    #[must_use]
+    pub fn tab_at_index(&self, n: std::num::NonZeroU32) -> Option<u32> {
+        let idx = usize::try_from(n.get() - 1).ok()?;
+        self.tabs.get(idx).map(|t| t.tab_id)
+    }
+
+    /// The tab after the active one in strip order, wrapping. `None`
+    /// with fewer than two tabs or no resolvable active tab.
+    #[must_use]
+    pub fn next_tab_id(&self) -> Option<u32> {
+        self.neighbor_tab_id(1)
+    }
+
+    /// The tab before the active one in strip order, wrapping. `None`
+    /// with fewer than two tabs or no resolvable active tab.
+    #[must_use]
+    pub fn previous_tab_id(&self) -> Option<u32> {
+        self.neighbor_tab_id(-1)
+    }
+
+    fn neighbor_tab_id(&self, step: isize) -> Option<u32> {
+        if self.tabs.len() < 2 {
+            return None;
+        }
+        let active = self.active_tab?;
+        let pos = self.tabs.iter().position(|t| t.tab_id == active)?;
+        let len = isize::try_from(self.tabs.len()).ok()?;
+        let pos = isize::try_from(pos).ok()?;
+        let next = usize::try_from((pos + step).rem_euclid(len)).ok()?;
+        self.tabs.get(next).map(|t| t.tab_id)
+    }
 }
 
 /// One cell of the rendered tab strip.
@@ -222,6 +255,49 @@ mod tests {
         state.apply(list(99, &[(0, ""), (1, "")]));
         assert_eq!(state.active_tab(), None);
         assert!(state.bar_visible());
+    }
+
+    fn nz(n: u32) -> std::num::NonZeroU32 {
+        std::num::NonZeroU32::new(n).unwrap()
+    }
+
+    #[test]
+    fn tab_at_index_is_one_based() {
+        let mut state = TabsState::default();
+        state.apply(list(7, &[(3, ""), (7, ""), (12, "")]));
+        assert_eq!(state.tab_at_index(nz(1)), Some(3));
+        assert_eq!(state.tab_at_index(nz(3)), Some(12));
+        assert_eq!(state.tab_at_index(nz(4)), None);
+    }
+
+    #[test]
+    fn next_and_previous_wrap_in_strip_order() {
+        let mut state = TabsState::default();
+        state.apply(list(7, &[(3, ""), (7, ""), (12, "")]));
+        assert_eq!(state.next_tab_id(), Some(12));
+        assert_eq!(state.previous_tab_id(), Some(3));
+        state.apply(list(12, &[(3, ""), (7, ""), (12, "")]));
+        assert_eq!(state.next_tab_id(), Some(3), "wraps forward");
+        state.apply(list(3, &[(3, ""), (7, ""), (12, "")]));
+        assert_eq!(state.previous_tab_id(), Some(12), "wraps backward");
+    }
+
+    #[test]
+    fn cycling_needs_two_tabs_and_an_active() {
+        let mut state = TabsState::default();
+        assert_eq!(state.next_tab_id(), None, "empty");
+        state.apply(list(3, &[(3, "")]));
+        assert_eq!(state.next_tab_id(), None, "single tab");
+        assert_eq!(state.previous_tab_id(), None, "single tab");
+        // Unknown active tab resolves to None (apply warns); cycling
+        // has no anchor.
+        state.apply(list(99, &[(3, ""), (7, "")]));
+        assert_eq!(state.next_tab_id(), None);
+        assert_eq!(
+            state.tab_at_index(nz(2)),
+            Some(7),
+            "index lookup still works"
+        );
     }
 
     #[test]

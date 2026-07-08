@@ -246,11 +246,8 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
         };
     }
 
-    // Register default keybinds via Lua before user config so user can override.
-    if let Err(e) = register_default_keybinds(&lua) {
-        tracing::warn!(error = %e, "failed to register default keybinds via Lua");
-        // Defaults are also populated in with_defaults() as a safety net.
-    }
+    // Default keybinds are seeded by extract_keybind_registry from
+    // KeybindRegistry::with_defaults(); user binds override them there.
 
     // Install sandboxed require() for multi-file configs.
     if let Some(parent) = path.parent() {
@@ -427,25 +424,6 @@ fn validate_module_name(name: &str) -> mlua::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Register default keybinds via Lua before user config runs.
-///
-/// These are the built-in keybinds that were previously hardcoded in main.rs.
-/// User config can override any of these by calling `oakterm.keybind` with
-/// the same key chord (last registration wins).
-fn register_default_keybinds(lua: &Lua) -> mlua::Result<()> {
-    lua.load(
-        r#"
-        oakterm.keybind("shift+pageup", oakterm.action.scroll_up(0))
-        oakterm.keybind("shift+pagedown", oakterm.action.scroll_down(0))
-        oakterm.keybind("shift+home", oakterm.action.scroll_up(999999))
-        oakterm.keybind("shift+end", oakterm.action.scroll_down(999999))
-        oakterm.keybind("super+shift+up", oakterm.action.scroll_to_prompt(-1))
-        oakterm.keybind("super+shift+down", oakterm.action.scroll_to_prompt(1))
-        "#,
-    )
-    .exec()
 }
 
 /// Create a default `ConfigResult` without a VM but with default keybinds.
@@ -824,7 +802,6 @@ mod tests {
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
         assert!((r.config.font_size - 18.0).abs() < f64::EPSILON);
         assert_eq!(r.registry.handler_count("config.loaded"), 1);
-        // Fire the handler and verify it actually executes.
         let lua = r.lua.as_ref().expect("should have VM");
         let results = r.registry.fire(lua, "config.loaded", &[]);
         assert_eq!(results.len(), 1);
@@ -844,13 +821,61 @@ mod tests {
         );
         let r = load_config_from(&path);
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
-        // 6 defaults + 3 user = 9 total.
-        assert_eq!(r.keybinds.len(), 9);
+        // Defaults (seeded from with_defaults) + 3 user binds.
+        assert_eq!(r.keybinds.len(), KeybindRegistry::with_defaults().len() + 3);
         // Verify user keybind lookup works.
         let chord = KeyChord::parse("ctrl+k").unwrap();
         let action = r.keybinds.lookup(&chord);
         assert!(action.is_some());
         assert!(matches!(action.unwrap(), Action::ReloadConfig));
+    }
+
+    #[test]
+    fn load_config_with_tab_actions() {
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.keybind("alt+3", oakterm.action.switch_tab(3))
+            oakterm.keybind("alt+n", oakterm.action.next_tab())
+            oakterm.keybind("alt+p", oakterm.action.previous_tab())
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let chord = KeyChord::parse("alt+3").unwrap();
+        assert!(matches!(
+            r.keybinds.lookup(&chord),
+            Some(Action::SwitchTab(n)) if n.get() == 3
+        ));
+        let chord = KeyChord::parse("alt+n").unwrap();
+        assert!(matches!(r.keybinds.lookup(&chord), Some(Action::NextTab)));
+        let chord = KeyChord::parse("alt+p").unwrap();
+        assert!(matches!(
+            r.keybinds.lookup(&chord),
+            Some(Action::PreviousTab)
+        ));
+    }
+
+    #[test]
+    fn load_config_switch_tab_rejects_zero_index() {
+        let (path, _dir) = temp_config(r#"oakterm.keybind("alt+0", oakterm.action.switch_tab(0))"#);
+        let r = load_config_from(&path);
+        assert!(r.error.is_some());
+        let msg = r.error.unwrap();
+        assert!(msg.contains("switch_tab index"), "got: {msg}");
+    }
+
+    #[test]
+    fn empty_config_yields_the_default_keybinds() {
+        // The loaded registry seeds from with_defaults(), so an empty
+        // config produces exactly the default set — one source of truth
+        // for both the config and no-config paths.
+        let (path, _dir) = temp_config("");
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let defaults = KeybindRegistry::with_defaults();
+        assert_eq!(r.keybinds.len(), defaults.len());
+        let new_tab = KeyChord::parse(&format!("{}+t", keybind::OAK_MOD)).unwrap();
+        assert!(matches!(r.keybinds.lookup(&new_tab), Some(Action::NewTab)));
     }
 
     #[test]
@@ -862,8 +887,8 @@ mod tests {
         );
         let r = load_config_from(&path);
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
-        // 6 defaults + 1 user = 7 total.
-        assert_eq!(r.keybinds.len(), 7);
+        // Defaults (seeded from with_defaults) + 1 user bind.
+        assert_eq!(r.keybinds.len(), KeybindRegistry::with_defaults().len() + 1);
         let chord = KeyChord::parse("ctrl+b").unwrap();
         let action = r.keybinds.lookup(&chord);
         assert!(matches!(action, Some(Action::Callback(_))));
