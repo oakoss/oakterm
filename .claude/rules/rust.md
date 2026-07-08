@@ -19,6 +19,31 @@ These fire on every Rust file. Handle inline during GREEN step, not in a later p
 - `items_after_statements`: put `use` imports at top of scope, not after statements
 - `field_reassign_with_default`: use struct update syntax `Foo { field: val, ..Default::default() }`
 
+## Module Organization
+
+Split by cohesion and public surface, not by line count. Rust has no file-size
+norm — the Book's guidance is to move a module to its own file "when modules get
+large" to aid navigation, and it is idiomatic for one module to hold many
+structs, enums, `impl` blocks, and functions with related functionality. Don't
+port the one-item-per-file habit from TypeScript.
+
+The signal to split is **a file that has stopped being one cohesive concept, or
+whose interface to sibling modules has gone muddy** — not a threshold. A large
+module that does one thing with a narrow `pub(crate)` surface and its tests
+inline is fine; a small module doing three unrelated jobs should be split.
+
+Watch the privacy cost: items in the same module reach each other's private
+fields and helpers for free. Splitting to shrink a file, when the pieces are
+still coupled, forces `pub(crate)` promotions that leak internals and make
+encapsulation worse. Only carve off a unit whose public surface is genuinely
+small.
+
+- Tests stay in the same file as the code they test (`#[cfg(test)] mod tests`);
+  their lines don't count toward "too big."
+- Keep crate roots (`lib.rs` / the binary root) mostly `mod` + `pub use`.
+- `clippy::too_many_lines` is per-function (the complexity signal Rust actually
+  lints), never per-file.
+
 ## Encoding Pattern
 
 Any `as u16` or `as u32` on a `.len()` is a truncation bug in release mode. Always:
