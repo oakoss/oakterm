@@ -15,10 +15,35 @@ pub const WINDOW_ID: NodeId = NodeId(0);
 /// Shared live-region node; its sole parent is the Window (AccessKit
 /// requires exactly one parent per node).
 pub const ANNOUNCEMENT_ID: NodeId = NodeId(1);
+/// The tab-bar container; its sole parent is the Window. Present only
+/// when the bar is shown (more than one tab).
+pub const TABLIST_ID: NodeId = NodeId(2);
+
+/// Tab nodes occupy `[TAB_NODE_BASE, PANE_STRIDE)`, keyed by strip index
+/// so they stay below the per-pane blocks and never collide (the index
+/// is bounded by the tab count).
+const TAB_NODE_BASE: u64 = 3;
 
 /// ID block size per pane: terminal node at the block base, rows at
 /// base + 1 + row. Rows are u16 (max 65535), so blocks never overlap.
 const PANE_STRIDE: u64 = 1 << 20;
+
+#[must_use]
+pub fn tab_node_id(index: u32) -> NodeId {
+    NodeId(TAB_NODE_BASE + u64::from(index))
+}
+
+/// Inverse of [`tab_node_id`]: the 0-based strip index a node addresses,
+/// or `None` for any node that is not a tab.
+#[must_use]
+pub fn decode_tab_node_id(id: NodeId) -> Option<u32> {
+    let raw = id.0;
+    if (TAB_NODE_BASE..PANE_STRIDE).contains(&raw) {
+        u32::try_from(raw - TAB_NODE_BASE).ok()
+    } else {
+        None
+    }
+}
 
 #[must_use]
 pub fn terminal_node_id(pane_id: u32) -> NodeId {
@@ -80,8 +105,19 @@ pub struct PaneInput<'a> {
     pub origin: (f64, f64),
 }
 
+/// One tab for the accessibility tab bar, in strip order.
+pub struct TabInput<'a> {
+    /// Display name; empty falls back to "Tab N" (1-based).
+    pub name: &'a str,
+    /// Whether this is the active tab (AccessKit `Selected`).
+    pub active: bool,
+}
+
 pub struct TreeInput<'a> {
     pub panes: &'a [PaneInput<'a>],
+    /// Tabs in strip order. A `TabList` node is emitted only when more
+    /// than one is present, matching the rendered bar (Spec-0009).
+    pub tabs: &'a [TabInput<'a>],
     /// Pane whose terminal node receives focus.
     pub focused: u32,
     pub cell_width: f64,
@@ -92,17 +128,26 @@ pub struct TreeInput<'a> {
 #[must_use]
 pub fn build_initial_tree(input: &TreeInput<'_>) -> TreeUpdate {
     let total_rows: usize = input.panes.iter().map(|p| p.rows as usize).sum();
-    let mut nodes = Vec::with_capacity(2 + input.panes.len() + total_rows);
+
+    // The tab bar reads before the panes, so the TabList is the Window's
+    // first child.
+    let has_tablist = input.tabs.len() > 1;
+    let tab_nodes = if has_tablist { input.tabs.len() + 1 } else { 0 };
+    let mut nodes = Vec::with_capacity(2 + tab_nodes + input.panes.len() + total_rows);
 
     let mut window = Node::new(Role::Window);
-    let mut window_children: Vec<NodeId> = input
-        .panes
-        .iter()
-        .map(|p| terminal_node_id(p.pane_id))
-        .collect();
+    let mut window_children: Vec<NodeId> = Vec::new();
+    if has_tablist {
+        window_children.push(TABLIST_ID);
+    }
+    window_children.extend(input.panes.iter().map(|p| terminal_node_id(p.pane_id)));
     window_children.push(ANNOUNCEMENT_ID);
     window.set_children(window_children);
     nodes.push((WINDOW_ID, window));
+
+    if has_tablist {
+        push_tab_nodes(&mut nodes, input.tabs);
+    }
 
     for pane in input.panes {
         let cursor_row = if pane.rows == 0 {
@@ -262,6 +307,32 @@ pub fn build_incremental_update(input: &IncrementalInput<'_>) -> TreeUpdate {
         tree_id: TreeId::ROOT,
         focus: input.focused.map_or(WINDOW_ID, terminal_node_id),
     }
+}
+
+/// Push the `TabList` container and its `Tab` children (Spec-0006). The
+/// active tab carries `Selected`; each tab exposes `Click` as its default
+/// action, routed to a tab switch. Tab labels fall back to "Tab N".
+/// Caller guarantees more than one tab (the bar-visible condition).
+fn push_tab_nodes(nodes: &mut Vec<(NodeId, Node)>, tabs: &[TabInput<'_>]) {
+    let mut tab_ids = Vec::with_capacity(tabs.len());
+    for (i, tab) in tabs.iter().enumerate() {
+        let index = u32::try_from(i).expect("tab strip index fits u32");
+        let id = tab_node_id(index);
+        let mut node = Node::new(Role::Tab);
+        let label = if tab.name.is_empty() {
+            format!("Tab {}", i + 1)
+        } else {
+            tab.name.to_string()
+        };
+        node.set_label(label);
+        node.set_selected(tab.active);
+        node.add_action(Action::Click);
+        nodes.push((id, node));
+        tab_ids.push(id);
+    }
+    let mut tablist = Node::new(Role::TabList);
+    tablist.set_children(tab_ids);
+    nodes.push((TABLIST_ID, tablist));
 }
 
 /// Children are the pane's rows only; the shared announcement node's sole
@@ -434,6 +505,92 @@ mod tests {
     }
 
     #[test]
+    fn tab_node_id_round_trips_and_rejects_non_tabs() {
+        for index in [0u32, 1, 5, 4096] {
+            assert_eq!(decode_tab_node_id(tab_node_id(index)), Some(index));
+        }
+        assert_eq!(decode_tab_node_id(WINDOW_ID), None);
+        assert_eq!(decode_tab_node_id(ANNOUNCEMENT_ID), None);
+        assert_eq!(decode_tab_node_id(TABLIST_ID), None);
+        assert_eq!(decode_tab_node_id(terminal_node_id(0)), None);
+        // The tab-node range is disjoint from the pane blocks.
+        assert!(tab_node_id(1000).0 < terminal_node_id(0).0);
+    }
+
+    #[test]
+    fn initial_tree_emits_tab_list_when_more_than_one_tab() {
+        let texts: Vec<String> = (0..1).map(|_| String::new()).collect();
+        let panes = [pane_input(0, 1, &texts)];
+        let tabs = [
+            TabInput {
+                name: "vim",
+                active: false,
+            },
+            TabInput {
+                name: "",
+                active: true,
+            },
+        ];
+        let input = TreeInput {
+            panes: &panes,
+            tabs: &tabs,
+            focused: 0,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_initial_tree(&input);
+        let node = |id: NodeId| update.nodes.iter().find(|(n, _)| *n == id).map(|(_, n)| n);
+
+        // The TabList is the Window's first child (reads before panes).
+        let window = node(WINDOW_ID).expect("window");
+        assert_eq!(window.children().first().copied(), Some(TABLIST_ID));
+
+        let tablist = node(TABLIST_ID).expect("tablist");
+        assert_eq!(tablist.role(), Role::TabList);
+        assert_eq!(
+            tablist.children(),
+            &[tab_node_id(0), tab_node_id(1)],
+            "tab children in strip order"
+        );
+
+        let inactive = node(tab_node_id(0)).expect("tab 0");
+        assert_eq!(inactive.role(), Role::Tab);
+        assert_eq!(inactive.label(), Some("vim"));
+        assert_eq!(inactive.is_selected(), Some(false));
+        assert!(inactive.supports_action(Action::Click));
+
+        let active = node(tab_node_id(1)).expect("tab 1");
+        assert_eq!(active.label(), Some("Tab 2"), "empty name falls back");
+        assert_eq!(active.is_selected(), Some(true), "active tab is Selected");
+    }
+
+    #[test]
+    fn initial_tree_omits_tab_list_for_a_single_tab() {
+        let texts: Vec<String> = (0..1).map(|_| String::new()).collect();
+        let panes = [pane_input(0, 1, &texts)];
+        let tabs = [TabInput {
+            name: "only",
+            active: true,
+        }];
+        let input = TreeInput {
+            panes: &panes,
+            tabs: &tabs,
+            focused: 0,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let update = build_initial_tree(&input);
+        assert!(update.nodes.iter().all(|(id, _)| *id != TABLIST_ID));
+        let window = update
+            .nodes
+            .iter()
+            .find(|(n, _)| *n == WINDOW_ID)
+            .map(|(_, n)| n)
+            .expect("window");
+        assert!(!window.children().contains(&TABLIST_ID));
+    }
+
+    #[test]
     fn character_lengths_ascii() {
         assert_eq!(character_lengths("hello"), vec![1, 1, 1, 1, 1]);
     }
@@ -527,6 +684,7 @@ mod tests {
         let panes = [pane_input(0, 24, &texts)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 0,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -542,6 +700,7 @@ mod tests {
         let panes = [pane_input(3, 1, &texts)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 3,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -558,6 +717,7 @@ mod tests {
         let panes = [pane_input(1, 2, &texts_a), pane_input(4, 3, &texts_b)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 4,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -599,6 +759,7 @@ mod tests {
         let panes = [pane_input(0, 2, &texts_a), pane_input(2, 3, &texts_b)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 0,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -624,6 +785,7 @@ mod tests {
         let panes = [pane_input(0, 1, &texts)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 9,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -637,6 +799,7 @@ mod tests {
         let panes = [pane_input(0, 1, &texts)];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 0,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -665,6 +828,7 @@ mod tests {
         let panes = [pane];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 0,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -883,6 +1047,7 @@ mod tests {
         let panes = [pane];
         let input = TreeInput {
             panes: &panes,
+            tabs: &[],
             focused: 0,
             cell_width: 8.0,
             cell_height: 16.0,
@@ -919,12 +1084,26 @@ mod tests {
     fn consumer_accepts_initial_and_incremental_updates() {
         let texts_a: Vec<String> = (0..2).map(|_| "ab".to_string()).collect();
         let texts_b: Vec<String> = (0..3).map(|_| "cd".to_string()).collect();
-        for panes in [
-            vec![pane_input(0, 2, &texts_a)],
-            vec![pane_input(0, 2, &texts_a), pane_input(3, 3, &texts_b)],
+        let tabs: &[TabInput<'_>] = &[
+            TabInput {
+                name: "one",
+                active: true,
+            },
+            TabInput {
+                name: "",
+                active: false,
+            },
+        ];
+        for (panes, tabs) in [
+            (vec![pane_input(0, 2, &texts_a)], &[][..]),
+            (
+                vec![pane_input(0, 2, &texts_a), pane_input(3, 3, &texts_b)],
+                tabs,
+            ),
         ] {
             let input = TreeInput {
                 panes: &panes,
+                tabs,
                 focused: 0,
                 cell_width: 8.0,
                 cell_height: 16.0,

@@ -110,13 +110,32 @@ impl A11yEvent<'_> {
     }
 }
 
+/// One tab as the a11y tree knows it, in strip order. `tab_id` is carried
+/// so a click on a tab node resolves against the published strip, not the
+/// live one (they differ mid-switch while the tree update is deferred).
+struct TabA11ySnapshot {
+    tab_id: u32,
+    name: String,
+    active: bool,
+}
+
+/// One tab the client publishes to the a11y tree, in strip order.
+pub(crate) struct TabStripEntry<'a> {
+    pub tab_id: u32,
+    pub name: &'a str,
+    pub active: bool,
+}
+
 /// Snapshot of all panes for the accessibility tree. Shared between `App`
 /// and the AccessKit activation handler via `Arc<Mutex<Option<_>>>`; all
 /// mutation goes through the module's entry points ([`apply`],
-/// [`sync_layout`], [`set_focus`]) so the snapshot and the updates sent
-/// to AT stay consistent.
+/// [`sync_layout`], [`set_focus`], [`sync_tabs`]) so the snapshot and the
+/// updates sent to AT stay consistent.
 pub(crate) struct A11yModel {
     panes: HashMap<u32, PaneA11ySnapshot>,
+    /// Tab strip in render order; a `TabList` node is emitted only with
+    /// more than one tab (the a11y crate enforces this).
+    tabs: Vec<TabA11ySnapshot>,
     focused: u32,
     cell_width: f64,
     cell_height: f64,
@@ -128,6 +147,7 @@ impl A11yModel {
     pub(crate) fn new(focused: u32, (cell_width, cell_height): (f64, f64)) -> Self {
         Self {
             panes: HashMap::new(),
+            tabs: Vec::new(),
             focused,
             cell_width,
             cell_height,
@@ -174,8 +194,17 @@ impl A11yModel {
                 }
             })
             .collect();
+        let tabs: Vec<oakterm_a11y::TabInput<'_>> = self
+            .tabs
+            .iter()
+            .map(|t| oakterm_a11y::TabInput {
+                name: &t.name,
+                active: t.active,
+            })
+            .collect();
         oakterm_a11y::build_initial_tree(&oakterm_a11y::TreeInput {
             panes: &panes,
+            tabs: &tabs,
             focused: self.focused,
             cell_width: self.cell_width,
             cell_height: self.cell_height,
@@ -382,73 +411,170 @@ pub(crate) fn apply(
     ))
 }
 
-/// Reconcile the model with the visible split layout: register panes new
-/// to `origins`, drop panes that left it, and adopt per-pane pixel
-/// origins. Returns the full tree to push when anything changed — row
-/// bounds derive from origins, so any origin or dimension shift rebuilds
-/// the tree. Callers keep `origins` equal to the set of panes on screen.
+impl A11yModel {
+    /// Reconcile pane snapshots with `origins`: register new panes, drop
+    /// departed ones, adopt pixel origins. Returns whether anything changed
+    /// (row bounds derive from origins, so any origin or dimension shift
+    /// counts). Callers keep `origins` equal to the on-screen pane set.
+    fn reconcile_panes(
+        &mut self,
+        panes: &HashMap<u32, PaneView>,
+        origins: &[(u32, (f64, f64))],
+    ) -> bool {
+        let mut changed = false;
+        for &(pane_id, origin) in origins {
+            let Some(view) = panes.get(&pane_id) else {
+                // A visible pane absent from the a11y tree is a caller-
+                // contract breach, not routine degradation.
+                warn!(pane_id, "a11y: layout pane without a view; not tracked");
+                continue;
+            };
+            if let Some(snap) = self.panes.get_mut(&pane_id) {
+                let dims_changed = snap.rows != view.grid().rows || snap.cols != view.grid().cols;
+                if dims_changed {
+                    snap.refresh_from(view, view.viewport_offset());
+                    snap.origin = origin;
+                    changed = true;
+                } else if snap.origin != origin {
+                    // Origin-only shift (live divider drag): row bounds
+                    // derive from the origin at build time, so skip the
+                    // full row-text refresh; carry the scroll offset the
+                    // resize path may have reset.
+                    snap.origin = origin;
+                    snap.scroll_offset = u64::from(view.viewport_offset());
+                    changed = true;
+                }
+            } else {
+                let mut snap = PaneA11ySnapshot::from_view(view);
+                snap.origin = origin;
+                self.panes.insert(pane_id, snap);
+                changed = true;
+            }
+        }
+        let before = self.panes.len();
+        self.panes
+            .retain(|id, _| origins.iter().any(|&(o, _)| o == *id));
+        if self.panes.len() != before {
+            changed = true;
+            if !self.panes.contains_key(&self.focused) {
+                debug!(
+                    focused = self.focused,
+                    "a11y: focused pane left the layout; focus falls back to the window"
+                );
+            }
+        }
+        changed
+    }
+
+    /// Adopt the tab strip; returns whether it changed. `tab_id` joins the
+    /// change check so a reorder that preserves labels still refreshes the
+    /// snapshot [`resolve_tab_click`] reads.
+    fn set_tabs(&mut self, tabs: &[TabStripEntry<'_>]) -> bool {
+        let unchanged = self.tabs.len() == tabs.len()
+            && self.tabs.iter().zip(tabs).all(|(cur, next)| {
+                cur.tab_id == next.tab_id && cur.name == next.name && cur.active == next.active
+            });
+        if unchanged {
+            return false;
+        }
+        self.tabs = tabs
+            .iter()
+            .map(|t| TabA11ySnapshot {
+                tab_id: t.tab_id,
+                name: t.name.to_string(),
+                active: t.active,
+            })
+            .collect();
+        true
+    }
+}
+
+/// Reconcile panes with the visible split layout and return the full tree
+/// to push when anything changed. See [`A11yModel::reconcile_panes`] for
+/// what counts as a change.
 pub(crate) fn sync_layout(
     state: &Mutex<Option<A11yModel>>,
     panes: &HashMap<u32, PaneView>,
     origins: &[(u32, (f64, f64))],
 ) -> Option<accesskit::TreeUpdate> {
+    with_model(state, "layout sync", |model| {
+        model.reconcile_panes(panes, origins)
+    })
+}
+
+/// Adopt the tab strip and rebuild the full tree when it changed. The a11y
+/// tab bar mirrors the rendered one: a `TabList` node appears only with
+/// more than one tab. Callers pass tabs in strip order.
+pub(crate) fn sync_tabs(
+    state: &Mutex<Option<A11yModel>>,
+    tabs: &[TabStripEntry<'_>],
+) -> Option<accesskit::TreeUpdate> {
+    with_model(state, "tab sync", |model| model.set_tabs(tabs))
+}
+
+/// Reconcile panes and tabs together, publishing one tree update when
+/// either changed. A tab switch's new panes and new selection arrive on
+/// the same `LayoutTree`; committing them in a single update keeps AT from
+/// ever seeing the new panes under the old selection.
+pub(crate) fn sync_layout_and_tabs(
+    state: &Mutex<Option<A11yModel>>,
+    panes: &HashMap<u32, PaneView>,
+    origins: &[(u32, (f64, f64))],
+    tabs: &[TabStripEntry<'_>],
+) -> Option<accesskit::TreeUpdate> {
+    with_model(state, "layout+tab sync", |model| {
+        // Assign both before OR-ing: `||` short-circuits and would skip
+        // set_tabs whenever reconcile_panes already returned true.
+        let panes_changed = model.reconcile_panes(panes, origins);
+        let tabs_changed = model.set_tabs(tabs);
+        panes_changed || tabs_changed
+    })
+}
+
+/// Lock the model and, when `mutate` reports a change, return the rebuilt
+/// full tree. `None` on a poisoned lock (logged) or an uninitialized model.
+fn with_model(
+    state: &Mutex<Option<A11yModel>>,
+    what: &str,
+    mutate: impl FnOnce(&mut A11yModel) -> bool,
+) -> Option<accesskit::TreeUpdate> {
     let mut guard = match state.lock() {
         Ok(g) => g,
         Err(e) => {
-            warn!(error = %e, "a11y: mutex poisoned in layout sync");
+            warn!(error = %e, what, "a11y: mutex poisoned in sync");
             return None;
         }
     };
     let Some(model) = guard.as_mut() else {
-        debug!("a11y: layout sync before model init");
+        debug!(what, "a11y: sync before model init");
         return None;
     };
+    mutate(model).then(|| model.build_full_tree())
+}
 
-    let mut changed = false;
-    for &(pane_id, origin) in origins {
-        let Some(view) = panes.get(&pane_id) else {
-            // A visible pane absent from the a11y tree is a caller-
-            // contract breach, not routine degradation.
-            warn!(pane_id, "a11y: layout pane without a view; not tracked");
-            continue;
-        };
-        if let Some(snap) = model.panes.get_mut(&pane_id) {
-            let dims_changed = snap.rows != view.grid().rows || snap.cols != view.grid().cols;
-            if dims_changed {
-                snap.refresh_from(view, view.viewport_offset());
-                snap.origin = origin;
-                changed = true;
-            } else if snap.origin != origin {
-                // Origin-only shift (live divider drag): row bounds
-                // derive from the origin at build time, so skip the
-                // full row-text refresh; carry the scroll offset the
-                // resize path may have reset.
-                snap.origin = origin;
-                snap.scroll_offset = u64::from(view.viewport_offset());
-                changed = true;
-            }
-        } else {
-            let mut snap = PaneA11ySnapshot::from_view(view);
-            snap.origin = origin;
-            model.panes.insert(pane_id, snap);
-            changed = true;
+/// Resolve a clicked tab node to the tab id AccessKit last published at
+/// that strip index. Reads the published snapshot, not the live tab strip:
+/// while a tab switch defers its tree update the two differ, and the click
+/// must land on the tab AT actually presented. `None` for a non-tab node,
+/// a stale index past the published strip, an uninitialized model, or a
+/// poisoned lock.
+pub(crate) fn resolve_tab_click(
+    state: &Mutex<Option<A11yModel>>,
+    node: accesskit::NodeId,
+) -> Option<u32> {
+    let index = oakterm_a11y::decode_tab_node_id(node)?;
+    let guard = match state.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(error = %e, "a11y: mutex poisoned resolving tab click");
+            return None;
         }
-    }
-    let before = model.panes.len();
+    };
+    let model = guard.as_ref()?;
     model
-        .panes
-        .retain(|id, _| origins.iter().any(|&(o, _)| o == *id));
-    if model.panes.len() != before {
-        changed = true;
-        if !model.panes.contains_key(&model.focused) {
-            debug!(
-                focused = model.focused,
-                "a11y: focused pane left the layout; focus falls back to the window"
-            );
-        }
-    }
-
-    changed.then(|| model.build_full_tree())
+        .tabs
+        .get(usize::try_from(index).ok()?)
+        .map(|t| t.tab_id)
 }
 
 /// Move accessibility focus to `pane_id`'s terminal node. Returns the
@@ -656,7 +782,17 @@ pub(crate) fn selection_from_a11y(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oakterm_a11y::{ANNOUNCEMENT_ID, row_node_id, terminal_node_id};
+    use oakterm_a11y::{
+        ANNOUNCEMENT_ID, TABLIST_ID, WINDOW_ID, row_node_id, tab_node_id, terminal_node_id,
+    };
+
+    fn tab(tab_id: u32, name: &str, active: bool) -> TabStripEntry<'_> {
+        TabStripEntry {
+            tab_id,
+            name,
+            active,
+        }
+    }
 
     fn tracked_model(pane_id: u32, view: &PaneView) -> Mutex<Option<A11yModel>> {
         let mut model = A11yModel::new(pane_id, (8.0, 16.0));
@@ -739,6 +875,154 @@ mod tests {
         assert!(
             apply(&state, 1, view, A11yEvent::SelectionChanged).is_none(),
             "departed pane is untracked again"
+        );
+    }
+
+    #[test]
+    fn sync_tabs_dedups_unchanged_and_rebuilds_on_change() {
+        let view = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view);
+        let selected = |update: &accesskit::TreeUpdate, id| {
+            update
+                .nodes
+                .iter()
+                .find(|(n, _)| *n == id)
+                .and_then(|(_, n)| n.is_selected())
+        };
+
+        assert!(
+            sync_tabs(&state, &[tab(1, "a", true), tab(2, "b", false)]).is_some(),
+            "first strip rebuilds"
+        );
+        assert!(
+            sync_tabs(&state, &[tab(1, "a", true), tab(2, "b", false)]).is_none(),
+            "unchanged strip pushes nothing"
+        );
+
+        // Active moves with no count/order change: only the Selected flags flip.
+        let update = sync_tabs(&state, &[tab(1, "a", false), tab(2, "b", true)])
+            .expect("active change rebuilds");
+        assert_eq!(selected(&update, tab_node_id(0)), Some(false));
+        assert_eq!(selected(&update, tab_node_id(1)), Some(true));
+
+        // A rename is a change even at the same count and active tab.
+        let update = sync_tabs(&state, &[tab(1, "renamed", false), tab(2, "b", true)])
+            .expect("rename rebuilds");
+        let tab0 = update
+            .nodes
+            .iter()
+            .find(|(n, _)| *n == tab_node_id(0))
+            .map(|(_, n)| n)
+            .expect("tab 0");
+        assert_eq!(tab0.label(), Some("renamed"));
+
+        // A reorder that preserves labels and active state still rebuilds so
+        // the snapshot resolve_tab_click reads tracks the new id order.
+        let update = sync_tabs(&state, &[tab(2, "b", true), tab(1, "renamed", false)])
+            .expect("reorder rebuilds");
+        assert_eq!(resolve_tab_click(&state, tab_node_id(0)), Some(2));
+        assert_eq!(selected(&update, tab_node_id(0)), Some(true));
+
+        // Dropping to a single tab removes the TabList entirely.
+        let update = sync_tabs(&state, &[tab(1, "only", true)]).expect("count change rebuilds");
+        assert!(
+            update.nodes.iter().all(|(id, _)| *id != TABLIST_ID),
+            "single tab omits the TabList node"
+        );
+    }
+
+    #[test]
+    fn sync_tabs_before_model_init_is_noop() {
+        let state: Mutex<Option<A11yModel>> = Mutex::new(None);
+        assert!(sync_tabs(&state, &[tab(1, "a", true), tab(2, "b", false)]).is_none());
+    }
+
+    #[test]
+    fn resolve_tab_click_maps_published_index_to_tab_id() {
+        // The published snapshot names the tab at each strip index. Ids are
+        // deliberately not their indices to catch index-as-id confusion.
+        let view = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view);
+        sync_tabs(
+            &state,
+            &[tab(7, "a", true), tab(3, "b", false), tab(9, "c", false)],
+        )
+        .expect("first publish rebuilds");
+
+        assert_eq!(resolve_tab_click(&state, tab_node_id(0)), Some(7));
+        assert_eq!(resolve_tab_click(&state, tab_node_id(1)), Some(3));
+        assert_eq!(resolve_tab_click(&state, tab_node_id(2)), Some(9));
+
+        // Stale index past the published strip, and non-tab nodes.
+        assert_eq!(resolve_tab_click(&state, tab_node_id(3)), None);
+        assert_eq!(resolve_tab_click(&state, WINDOW_ID), None);
+        assert_eq!(resolve_tab_click(&state, terminal_node_id(0)), None);
+    }
+
+    #[test]
+    fn resolve_tab_click_reads_published_not_a_later_strip() {
+        // A click decoded against an index the published strip no longer
+        // covers resolves to nothing rather than a wrong tab: the snapshot,
+        // not a newer strip, is the source of truth.
+        let view = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view);
+        sync_tabs(
+            &state,
+            &[tab(7, "a", true), tab(3, "b", false), tab(9, "c", false)],
+        )
+        .expect("publish 3 tabs");
+        assert_eq!(resolve_tab_click(&state, tab_node_id(2)), Some(9));
+        // The strip shrinks to two; index 2 is now out of range.
+        sync_tabs(&state, &[tab(7, "a", true), tab(3, "b", false)]).expect("shrink rebuilds");
+        assert_eq!(resolve_tab_click(&state, tab_node_id(2)), None);
+        assert_eq!(resolve_tab_click(&state, tab_node_id(1)), Some(3));
+    }
+
+    #[test]
+    fn resolve_tab_click_before_model_init_is_none() {
+        let state: Mutex<Option<A11yModel>> = Mutex::new(None);
+        assert_eq!(resolve_tab_click(&state, tab_node_id(0)), None);
+    }
+
+    #[test]
+    fn sync_layout_and_tabs_publishes_panes_and_tabs_in_one_update() {
+        let view0 = PaneView::new(ClientGrid::new(10, 4));
+        let view1 = PaneView::new(ClientGrid::new(10, 4));
+        let state = tracked_model(0, &view0);
+        let mut panes = HashMap::new();
+        panes.insert(0, view0);
+        panes.insert(1, view1);
+        let origins = [(0, (0.0, 0.0)), (1, (200.0, 0.0))];
+        let tabs = [tab(5, "a", false), tab(6, "b", true)];
+
+        // A new pane and a fresh tab strip land in a single tree update.
+        let update = sync_layout_and_tabs(&state, &panes, &origins, &tabs)
+            .expect("pane + tab change rebuilds once");
+        let node = |id| update.nodes.iter().find(|(n, _)| *n == id).map(|(_, n)| n);
+        assert!(node(terminal_node_id(1)).is_some(), "new pane parented");
+        assert_eq!(
+            node(tab_node_id(1)).and_then(accesskit::Node::is_selected),
+            Some(true),
+            "active tab published in the same update"
+        );
+
+        // Idempotent: neither panes nor tabs changed, so nothing to push.
+        assert!(
+            sync_layout_and_tabs(&state, &panes, &origins, &tabs).is_none(),
+            "unchanged layout and tabs push nothing"
+        );
+
+        // A tabs-only change still rebuilds even when the layout held.
+        let switched = [tab(5, "a", true), tab(6, "b", false)];
+        let update = sync_layout_and_tabs(&state, &panes, &origins, &switched)
+            .expect("tab change alone rebuilds");
+        assert_eq!(
+            update
+                .nodes
+                .iter()
+                .find(|(n, _)| *n == tab_node_id(0))
+                .and_then(|(_, n)| n.is_selected()),
+            Some(true)
         );
     }
 

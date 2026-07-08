@@ -841,6 +841,64 @@ impl App {
         }
     }
 
+    /// The tab strip as published to the a11y tree. `bar_visible` is the
+    /// single owner of "is the tab bar shown" — the a11y tree mirrors the
+    /// rendered bar, so this is empty when the bar is down.
+    fn a11y_tab_strip(&self) -> Vec<a11y_bridge::TabStripEntry<'_>> {
+        if !self.tabs.bar_visible() {
+            return Vec::new();
+        }
+        let active = self.tabs.active_tab();
+        self.tabs
+            .tabs()
+            .iter()
+            .map(|t| a11y_bridge::TabStripEntry {
+                tab_id: t.tab_id,
+                name: t.name.as_str(),
+                active: Some(t.tab_id) == active,
+            })
+            .collect()
+    }
+
+    /// Notify AT of the current tab strip when it changed. Call after every
+    /// `TabList` adoption; a rename, reorder, or active-tab change all
+    /// surface through here.
+    fn sync_tabs_a11y(&mut self) {
+        let tabs = self.a11y_tab_strip();
+        let update = a11y_bridge::sync_tabs(&self.a11y_state, &tabs);
+        if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
+            adapter.update_if_active(|| update);
+        }
+    }
+
+    /// Reconcile panes and tabs into one a11y tree update. Used at layout
+    /// adoption so a tab switch's new panes and new selection publish
+    /// together — AT never sees the new panes under the old selection.
+    /// Falls back to a tab-only sync when geometry is absent.
+    fn sync_layout_and_tabs_a11y(&mut self) {
+        let Some(origins) = self.a11y_origins() else {
+            self.sync_tabs_a11y();
+            return;
+        };
+        let tabs = self.a11y_tab_strip();
+        let update =
+            a11y_bridge::sync_layout_and_tabs(&self.a11y_state, &self.panes, &origins, &tabs);
+        if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
+            adapter.update_if_active(|| update);
+        }
+    }
+
+    /// Pane pixel origins for the current geometry, or `None` when no
+    /// geometry is available (row bounds derive from origins).
+    fn a11y_origins(&self) -> Option<Vec<(u32, (f64, f64))>> {
+        self.layout.geometry().map(|geo| {
+            geo.panes
+                .iter()
+                .map(|p| (p.pane_id, (f64::from(p.rect.x), f64::from(p.rect.y))))
+                .collect()
+        })
+    }
+
     /// Reset blink to visible and restart the timer.
     fn reset_blink(&mut self) {
         self.blink_visible = true;
@@ -1744,6 +1802,23 @@ impl ApplicationHandler<UserEvent> for App {
                             debug!(target_pane, "a11y: focus action for untracked pane");
                         }
                     }
+                    accesskit::Action::Click => {
+                        // Only tab nodes advertise Click. Resolve against the
+                        // published a11y snapshot (what AT sees), not the live
+                        // strip, so a mid-switch click lands on the presented
+                        // tab. A miss (non-tab or stale node) logs and is
+                        // ignored, like the sibling stale-node arms.
+                        if let Some(tab_id) =
+                            a11y_bridge::resolve_tab_click(&self.a11y_state, request.target_node)
+                        {
+                            self.switch_tab(tab_id);
+                        } else {
+                            debug!(
+                                node = ?request.target_node,
+                                "a11y: click target did not resolve to a tab"
+                            );
+                        }
+                    }
                     accesskit::Action::ScrollUp | accesskit::Action::ScrollDown => {
                         let Some(view) = self.panes.get(&target_pane) else {
                             // Stale node after a pane closed; diagnosable
@@ -2284,13 +2359,8 @@ impl App {
     /// Keyed on the unfiltered geometry so a collapse to a single-leaf
     /// tree still prunes departed panes from the AT tree.
     fn sync_a11y_layout(&mut self) {
-        let origins: Vec<(u32, (f64, f64))> = match self.layout.geometry() {
-            Some(geo) => geo
-                .panes
-                .iter()
-                .map(|p| (p.pane_id, (f64::from(p.rect.x), f64::from(p.rect.y))))
-                .collect(),
-            None => return,
+        let Some(origins) = self.a11y_origins() else {
+            return;
         };
         let update = a11y_bridge::sync_layout(&self.a11y_state, &self.panes, &origins);
         if let (Some(update), Some(adapter)) = (update, &mut self.accesskit) {
@@ -2557,6 +2627,7 @@ impl App {
         }
         let refocus = std::mem::take(&mut self.refocus_after_close);
         let active = self.tabs.active_tab();
+        let mut layout_inbound = false;
         if active != previous_active {
             if let Some(active) = active {
                 // Overwrite any pending focus: an older target (a tab
@@ -2567,6 +2638,7 @@ impl App {
                     self.layout.set_pending_focus(focus);
                 }
                 self.request_layout_tree();
+                layout_inbound = true;
             }
         } else if refocus {
             // Same tab, fewer panes: adopt the daemon's post-close focus
@@ -2575,6 +2647,15 @@ impl App {
                 self.layout.set_pending_focus(focus);
             }
             self.request_layout_tree();
+            layout_inbound = true;
+        }
+        // When a new tab's LayoutTree is inbound, its panes arrive later;
+        // syncing tab nodes now would publish the new selection over the
+        // old tab's panes. Defer to apply_layout_tree so selection and
+        // panes land together. Renames and bar-visibility changes carry
+        // no new panes, so push immediately.
+        if !layout_inbound {
+            self.sync_tabs_a11y();
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -2718,7 +2799,12 @@ impl App {
             self.border_drag = None;
         }
         self.sync_panes_to_geometry();
-        self.sync_a11y_layout();
+        // Panes and tabs commit in one a11y update: a tab switch defers its
+        // tab sync to here (apply_tab_list skipped it), so the new selection
+        // and the new tab's panes publish together, never as two trees with
+        // a stale-selection frame between. A no-op for the tabs half when
+        // they're unchanged (splits, resizes).
+        self.sync_layout_and_tabs_a11y();
         if let Some(id) = pending_focus {
             if self.panes.contains_key(&id) {
                 self.focus_pane(id);

@@ -17,12 +17,17 @@ Defines how the GUI process constructs and maintains an AccessKit accessibility 
 
 ### Tree Structure
 
-The AccessKit tree for a terminal window holds one Terminal subtree per pane
-plus a single shared announcement node (amended 2026-07-05 for the Phase 1
-multiplexer; the Phase 0 tree is the one-pane case):
+The AccessKit tree for a terminal window holds an optional tab-list node, one
+Terminal subtree per pane, plus a single shared announcement node (amended
+2026-07-05 for the Phase 1 multiplexer; the tab-list node added 2026-07-07 for
+the tab bar; the Phase 0 tree is the one-pane, no-tab case):
 
 ```text
 Window (Role::Window, WINDOW_NODE_ID)
+  ├── TabList (Role::TabList, TABLIST_NODE_ID)          -- only when tabs > 1
+  │     ├── Tab (Role::Tab, tab_node_id(0))             -- strip index 0
+  │     ├── ...
+  │     └── Tab (Role::Tab, tab_node_id(K-1))           -- strip index K-1
   ├── Terminal (Role::Terminal, terminal_node_id(pane_a))
   │     ├── TextRun (Role::TextRun, row_node_id(pane_a, 0))   -- visible row 0
   │     ├── ...
@@ -32,12 +37,24 @@ Window (Role::Window, WINDOW_NODE_ID)
   └── Announcement (Role::Label, ANNOUNCEMENT_NODE_ID)
 ```
 
-**Window node:** Top-level container. `Role::Window`. Children are the pane
-terminals in ascending pane-id order, then the announcement node — the
-announcement's only parent is the Window (AccessKit requires exactly one
-parent per node). The tree update's `focus` is the focused pane's terminal
+**Window node:** Top-level container. `Role::Window`. Children are the tab
+list (when present), then the pane terminals in ascending pane-id order, then
+the announcement node — the announcement's only parent is the Window
+(AccessKit requires exactly one parent per node). The tab list reads before
+the panes so assistive technology encounters the tab strip first, matching its
+visual position. The tree update's `focus` is the focused pane's terminal
 node, falling back to the window node when that pane is not yet in the tree
 (see **Focus fallback** under Multi-Pane).
+
+**TabList node:** `Role::TabList`. Present only when more than one tab exists,
+mirroring the rendered bar (Spec-0009: the bar is hidden with a single tab).
+Its children are the Tab nodes in strip (render) order.
+
+**Tab nodes:** One per tab. `Role::Tab`. Properties:
+
+- `label`: the tab name, falling back to `Tab N` (1-based strip position) when the name is empty
+- `selected`: `true` for the active tab, `false` otherwise, so AT announces "N of K"
+- Actions: `Click` — dispatches a tab switch to that tab
 
 **Terminal node:** `Role::Terminal`. Contains all visible rows as TextRun children. Properties:
 
@@ -67,10 +84,24 @@ sits at the block base, visible rows at base + 1 + row. IDs are keyed by the
 daemon's PaneId (not a positional index) so they stay stable when an
 unrelated pane closes.
 
+The tab nodes occupy the fixed low range `[TAB_NODE_BASE, PANE_STRIDE)`, below
+every pane block. They are keyed by 0-based strip index, not tab id: the index
+is bounded by the tab count, so it cannot collide with a pane block, and the
+action handler resolves it back to a tab id through the published tab snapshot
+(the strip order the tree was last built from). The tab list is small and
+fully rebuilt on every change, so positional keys need no stability across
+renames or reorders.
+
 ```rust
 const WINDOW_NODE_ID: NodeId = NodeId(0);
 const ANNOUNCEMENT_NODE_ID: NodeId = NodeId(1);
+const TABLIST_NODE_ID: NodeId = NodeId(2);
+const TAB_NODE_BASE: u64 = 3;
 const PANE_STRIDE: u64 = 1 << 20; // rows are u16, so blocks never overlap
+
+fn tab_node_id(index: u32) -> NodeId {
+    NodeId(TAB_NODE_BASE + index as u64)
+}
 
 fn terminal_node_id(pane_id: u32) -> NodeId {
     NodeId((pane_id as u64 + 1) * PANE_STRIDE)
@@ -82,8 +113,14 @@ fn row_node_id(pane_id: u32, visible_row: usize) -> NodeId {
 }
 ```
 
-A reverse mapping (`decode_node_id`) recovers the pane and row from an
-AT-supplied node ID, used when handling `SetTextSelection` requests.
+Reverse mappings recover the origin of an AT-supplied node ID: `decode_node_id`
+returns the pane and row (for `SetTextSelection`), and `decode_tab_node_id`
+returns the strip index (for a tab `Click`). The tab and pane ranges are
+disjoint, so each decoder rejects the other's IDs. A decoded tab index is
+resolved to a tab id against the **published** tab snapshot the tree was last
+built from — not the client's live tab strip. The two differ while a tab
+switch defers its tree update, and the click must land on the tab AT actually
+presented.
 
 IDs are stable across updates as long as the grid dimensions don't change. When the grid resizes, all row node IDs are recalculated and a full tree update is sent.
 
@@ -395,6 +432,17 @@ fn handle_action(request: ActionRequest, viewport: &mut ViewportState) {
             }
         }
 
+        Action::Click => {
+            // Only tab nodes advertise Click. decode_tab_node_id recovers
+            // the strip index; the published tab snapshot resolves it to a
+            // tab id and dispatches a switch (Spec-0001 SwitchTab). Resolving
+            // against the published snapshot (not the live strip) keeps the
+            // click on the tab AT saw, even mid-switch.
+            if let Some(tab_id) = resolve_published_tab_click(request.target_node) {
+                switch_tab(tab_id);
+            }
+        }
+
         _ => {} // Ignore unsupported actions
     }
 }
@@ -424,7 +472,19 @@ When the terminal grid resizes:
 1. All row node IDs are recalculated (row count may have changed).
 2. The terminal node's `children`, `row_count`, and `column_count` are updated.
 3. A full tree update is sent (all rows + terminal node).
-4. This is the only case where a non-incremental update is needed after the initial tree.
+4. Full-tree rebuilds are also emitted for layout changes (pane add/remove, origin shifts) and tab-strip changes; incremental updates carry only per-pane content.
+
+### Tab Bar Updates
+
+The client mirrors tab topology from the daemon's `ListTabs` refresh after
+every tab operation (Spec-0001: the daemon pushes no tab changes). When the
+mirrored strip differs from the a11y model — a rename, reorder, close, or
+active-tab change — the tab nodes are rebuilt and a full tree update is sent
+(the tab list has no incremental path). The change check keys on tab id, name,
+and active state, so a refresh that only touches pane focus leaves the strip
+identical and pushes nothing. On an active-tab change the tab update commits
+in the same tree update as the incoming tab's panes (its `LayoutTree`), so AT
+never sees the new panes under the old selection.
 
 ### Winit Event Integration
 
