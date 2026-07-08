@@ -268,6 +268,50 @@ fn check_focus(geometry: Option<&layout::LayoutGeometry>, focused: u32) -> Focus
     }
 }
 
+/// When to publish the tab strip to assistive technology after adopting a
+/// `TabList`. `AfterLayout` defers the sync to `apply_layout_tree` because a
+/// new `LayoutTree` is inbound and its panes arrive later — syncing now would
+/// publish the new selection over the old tab's panes. `Now` pushes
+/// immediately for mutations that carry no new panes (rename, reorder,
+/// bar-visibility change).
+#[derive(Debug, PartialEq, Eq)]
+enum TabSyncTiming {
+    Now,
+    AfterLayout,
+}
+
+/// The signals that decide tab-a11y sync timing, grouped so the three flags
+/// can't be transposed at the call site (they are all `bool`).
+#[derive(Clone, Copy)]
+struct TabAdoption {
+    /// The active tab id differs from before this `TabList`.
+    active_changed: bool,
+    /// An active tab exists after adoption (false only when the last tab closed).
+    has_active: bool,
+    /// A pane just closed on the same tab, so its shrunken tree is inbound.
+    refocus: bool,
+}
+
+/// A layout tree is inbound — so defer — exactly when the active tab changed
+/// to a real tab, or a post-close refocus is pending; both fetch the
+/// now-active tab's tree. This is the load-bearing coupling between
+/// `apply_tab_list` (which requests the tree) and `apply_layout_tree` (which
+/// completes the deferred sync); keep the two in step by routing both through
+/// this predicate.
+fn tab_sync_timing(adoption: TabAdoption) -> TabSyncTiming {
+    let TabAdoption {
+        active_changed,
+        has_active,
+        refocus,
+    } = adoption;
+    let layout_inbound = if active_changed { has_active } else { refocus };
+    if layout_inbound {
+        TabSyncTiming::AfterLayout
+    } else {
+        TabSyncTiming::Now
+    }
+}
+
 /// Reconcile the pane map with a computed geometry and plan the `Resize`
 /// messages to send: creates a view for each new pane, resizes stale
 /// local grids (the daemon's `RenderUpdate` doesn't change dimensions),
@@ -2627,35 +2671,22 @@ impl App {
         }
         let refocus = std::mem::take(&mut self.refocus_after_close);
         let active = self.tabs.active_tab();
-        let mut layout_inbound = false;
-        if active != previous_active {
-            if let Some(active) = active {
-                // Overwrite any pending focus: an older target (a tab
-                // created moments ago) belongs to a tab that is no longer
-                // active, and the incoming tree would drain it into a
-                // failed focus.
-                if let Some(focus) = self.tabs.focused_pane_of(active) {
+        let active_changed = active != previous_active;
+        match tab_sync_timing(TabAdoption {
+            active_changed,
+            has_active: active.is_some(),
+            refocus,
+        }) {
+            TabSyncTiming::AfterLayout => {
+                // Overwrite any pending focus with the now-active tab's
+                // focused pane so the inbound tree does not drain a stale
+                // target (a tab created moments ago) into a failed focus.
+                if let Some(focus) = active.and_then(|a| self.tabs.focused_pane_of(a)) {
                     self.layout.set_pending_focus(focus);
                 }
                 self.request_layout_tree();
-                layout_inbound = true;
             }
-        } else if refocus {
-            // Same tab, fewer panes: adopt the daemon's post-close focus
-            // choice and fetch the shrunken tree.
-            if let Some(focus) = active.and_then(|a| self.tabs.focused_pane_of(a)) {
-                self.layout.set_pending_focus(focus);
-            }
-            self.request_layout_tree();
-            layout_inbound = true;
-        }
-        // When a new tab's LayoutTree is inbound, its panes arrive later;
-        // syncing tab nodes now would publish the new selection over the
-        // old tab's panes. Defer to apply_layout_tree so selection and
-        // panes land together. Renames and bar-visibility changes carry
-        // no new panes, so push immediately.
-        if !layout_inbound {
-            self.sync_tabs_a11y();
+            TabSyncTiming::Now => self.sync_tabs_a11y(),
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -2800,10 +2831,11 @@ impl App {
         }
         self.sync_panes_to_geometry();
         // Panes and tabs commit in one a11y update: a tab switch defers its
-        // tab sync to here (apply_tab_list skipped it), so the new selection
-        // and the new tab's panes publish together, never as two trees with
-        // a stale-selection frame between. A no-op for the tabs half when
-        // they're unchanged (splits, resizes).
+        // tab sync to here (apply_tab_list took the tab_sync_timing
+        // AfterLayout branch), so the new selection and the new tab's panes
+        // publish together, never as two trees with a stale-selection frame
+        // between. A no-op for the tabs half when they're unchanged (splits,
+        // resizes).
         self.sync_layout_and_tabs_a11y();
         if let Some(id) = pending_focus {
             if self.panes.contains_key(&id) {
@@ -3602,8 +3634,9 @@ fn version_string() -> String {
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{
-        FocusHealth, PendingPaneClose, assemble_frame, check_focus, drain_wheel_notches,
-        plan_pane_syncs, resolve_pane_close, tab_bar_height, try_init_font, window_to_grid_dims,
+        FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, assemble_frame, check_focus,
+        drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_bar_height, tab_sync_timing,
+        try_init_font, window_to_grid_dims,
     };
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
@@ -3621,6 +3654,84 @@ mod tests {
         m.cell_width = cell_width;
         m.cell_height = cell_height;
         Some(m)
+    }
+
+    #[test]
+    fn tab_sync_timing_defers_on_active_tab_change() {
+        // Switch or create with a real active tab: a LayoutTree is inbound.
+        // The pending refocus flag can't override an active-tab change, so
+        // both refocus values defer.
+        for refocus in [false, true] {
+            assert_eq!(
+                tab_sync_timing(TabAdoption {
+                    active_changed: true,
+                    has_active: true,
+                    refocus,
+                }),
+                TabSyncTiming::AfterLayout,
+            );
+        }
+    }
+
+    #[test]
+    fn tab_sync_timing_defers_on_post_close_refocus() {
+        // Same tab, a pane closed: fetch the shrunken tree, defer.
+        assert_eq!(
+            tab_sync_timing(TabAdoption {
+                active_changed: false,
+                has_active: true,
+                refocus: true,
+            }),
+            TabSyncTiming::AfterLayout,
+        );
+    }
+
+    #[test]
+    fn tab_sync_timing_refocus_defers_even_with_no_active_tab() {
+        // The has_active guard applies only to the active-changed arm; a
+        // refocus on the same (absent) tab still defers. Pins the asymmetry
+        // against a future edit that mistakenly guards the refocus arm too.
+        assert_eq!(
+            tab_sync_timing(TabAdoption {
+                active_changed: false,
+                has_active: false,
+                refocus: true,
+            }),
+            TabSyncTiming::AfterLayout,
+        );
+    }
+
+    #[test]
+    fn tab_sync_timing_now_for_in_place_mutations() {
+        // Rename / reorder / bar-visibility, and the all-quiet baseline: no
+        // new panes, so push the strip immediately.
+        for has_active in [false, true] {
+            assert_eq!(
+                tab_sync_timing(TabAdoption {
+                    active_changed: false,
+                    has_active,
+                    refocus: false,
+                }),
+                TabSyncTiming::Now,
+            );
+        }
+    }
+
+    #[test]
+    fn tab_sync_timing_now_when_active_change_leaves_no_tab() {
+        // Active changed to no tab (last tab closed): no tree to fetch, so
+        // the refocus flag is ignored and the strip syncs now. Pins the
+        // edge the merged AfterLayout arm must not over-trigger on.
+        for refocus in [false, true] {
+            assert_eq!(
+                tab_sync_timing(TabAdoption {
+                    active_changed: true,
+                    has_active: false,
+                    refocus,
+                }),
+                TabSyncTiming::Now,
+            );
+        }
     }
 
     #[test]
