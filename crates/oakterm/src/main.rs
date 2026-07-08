@@ -1,5 +1,6 @@
 mod a11y_bridge;
 mod daemon_conn;
+mod frame;
 mod gpu;
 mod input;
 mod layout;
@@ -34,15 +35,12 @@ use oakterm_protocol::message::{
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
-use oakterm_renderer::atlas::AtlasPlane;
-use oakterm_renderer::font;
-use oakterm_renderer::pipeline::{BgSection, BgUniforms, TextUniforms};
-use oakterm_renderer::shaper::FontKey;
-use oakterm_renderer::swash_shaper::SwashShaper;
+use oakterm_renderer::pipeline::{BgSection, TextUniforms};
 use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 use a11y_bridge::{A11yEvent, A11yModel};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
+use frame::{FontState, assemble_frame, assemble_tab_bar, solid_section, try_init_font};
 use gpu::GpuState;
 use layout_state::PaneLayout;
 use pane_view::{PaneView, ScrollbackClampOutcome};
@@ -119,32 +117,6 @@ enum UserEvent {
     },
 }
 
-/// Font and glyph state for text rendering.
-struct FontState {
-    shaper: SwashShaper,
-    font_key: FontKey,
-    bold_key: Option<FontKey>,
-    italic_key: Option<FontKey>,
-    bold_italic_key: Option<FontKey>,
-    atlas: AtlasPlane,
-    color_atlas: AtlasPlane,
-    /// Cache keys of glyphs stored in the color atlas.
-    color_keys: std::collections::HashSet<oakterm_renderer::atlas::GlyphCacheKey>,
-    font_size: f32,
-    metrics: oakterm_renderer::shaper::FontMetrics,
-}
-
-impl FontState {
-    fn font_keys(&self) -> render_grid::FontKeys {
-        render_grid::FontKeys {
-            regular: self.font_key,
-            bold: self.bold_key,
-            italic: self.italic_key,
-            bold_italic: self.bold_italic_key,
-        }
-    }
-}
-
 /// Copyable action descriptor to break the borrow on `keybind_registry`
 /// during `dispatch_action_at`. `Callback` stores the index back into the
 /// registry since `RegistryKey` is not `Clone`.
@@ -172,13 +144,6 @@ enum ActionDesc {
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
 const FOCUSED_BORDER_RGB: [u8; 3] = [92, 148, 255];
-
-/// Tab bar colors, fixed until the theme system (TREK-212) lands.
-const TAB_BAR_BG_RGB: [u8; 3] = [16, 16, 16];
-const TAB_ACTIVE_BG_RGB: [u8; 3] = [72, 72, 72];
-const TAB_ACTIVE_FG_RGB: [u8; 3] = [255, 255, 255];
-const TAB_INACTIVE_BG_RGB: [u8; 3] = [36, 36, 36];
-const TAB_INACTIVE_FG_RGB: [u8; 3] = [160, 160, 160];
 
 /// Pixel slop around a 1px split border that still grabs it.
 const BORDER_GRAB_PAD: f64 = 3.0;
@@ -332,173 +297,6 @@ fn plan_pane_syncs(
         });
     }
     resizes
-}
-
-/// Split from the GPU upload/draw so frame assembly is testable without
-/// a device. `uploads`/`color_uploads` must reach the GPU atlas textures
-/// before `glyphs` is drawn.
-#[derive(Default)]
-struct FrameAssembly {
-    bg_sections: Vec<BgSection>,
-    glyphs: Vec<oakterm_renderer::pipeline::GlyphVertex>,
-    uploads: Vec<render_grid::GlyphUpload>,
-    color_uploads: Vec<render_grid::GlyphUpload>,
-}
-
-/// Cursor and selection render only in the focused pane; the cursor
-/// honors the blink phase.
-#[allow(clippy::cast_precision_loss)] // pixel origins fit in f32
-fn assemble_frame(
-    font: &mut FontState,
-    panes: &HashMap<u32, PaneView>,
-    render_list: &[(u32, layout::PixelRect)],
-    focused_pane: u32,
-    blink_visible: bool,
-    viewport: (f32, f32),
-) -> FrameAssembly {
-    let mut assembly = FrameAssembly::default();
-    let keys = font.font_keys();
-    for &(pane_id, rect) in render_list {
-        let Some(pane) = panes.get(&pane_id) else {
-            continue;
-        };
-        let grid = pane.grid();
-        let is_focused = pane_id == focused_pane;
-        let cursor_vis = is_focused
-            && grid.cursor_visible
-            && (blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
-        let selection = if is_focused {
-            pane.selection.as_ref()
-        } else {
-            None
-        };
-
-        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset());
-        let (glyphs, uploads, color_uploads) = grid.glyph_instances(
-            &font.metrics,
-            &keys,
-            font.font_size,
-            &font.shaper,
-            &mut font.atlas,
-            &mut font.color_atlas,
-            &mut font.color_keys,
-            cursor_vis,
-            selection,
-            pane.viewport_offset(),
-            rect.x as f32,
-            rect.y as f32,
-        );
-
-        assembly.bg_sections.push(BgSection::new(
-            BgUniforms {
-                cols: u32::from(grid.cols),
-                rows: u32::from(grid.rows),
-                cell_width: font.metrics.cell_width,
-                cell_height: font.metrics.cell_height,
-                viewport_width: viewport.0,
-                viewport_height: viewport.1,
-                pad_left: rect.x as f32,
-                pad_top: rect.y as f32,
-            },
-            bg,
-        ));
-        assembly.glyphs.extend(glyphs);
-        assembly.uploads.extend(uploads);
-        assembly.color_uploads.extend(color_uploads);
-    }
-    assembly
-}
-
-/// Append the tab bar to `assembly`: a full-width underlay at the
-/// window's top edge plus a one-row synthetic grid of tab labels
-/// rendered through the normal glyph path.
-fn assemble_tab_bar(
-    font: &mut FontState,
-    tabs: &tab_bar::TabsState,
-    viewport: (f32, f32),
-    assembly: &mut FrameAssembly,
-) {
-    let metrics = font.metrics;
-    let bar_h = tab_bar_height(true, Some(&metrics));
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let width_px = viewport.0.max(0.0) as u32;
-    assembly.bg_sections.push(solid_section(
-        layout::PixelRect {
-            x: 0,
-            y: 0,
-            width: width_px,
-            height: bar_h,
-        },
-        TAB_BAR_BG_RGB,
-        viewport,
-    ));
-
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let cols = ((viewport.0 / metrics.cell_width).max(0.0) as u16).clamp(1, MAX_GRID_DIMENSION);
-    let spans = tab_bar::layout_strip(tabs.tabs(), cols);
-    let cells = tab_bar::strip_cells(tabs.tabs(), tabs.active_tab(), &spans);
-    let mut grid = ClientGrid::new(cols, 1);
-    grid.fill_bg(TAB_BAR_BG_RGB);
-    for (col, cell) in cells {
-        let (fg, bg) = if cell.active {
-            (TAB_ACTIVE_FG_RGB, TAB_ACTIVE_BG_RGB)
-        } else {
-            (TAB_INACTIVE_FG_RGB, TAB_INACTIVE_BG_RGB)
-        };
-        grid.set_cell(col, 0, cell.ch, fg, bg);
-    }
-
-    let keys = font.font_keys();
-    let bg = grid.bg_colors(false, None, 0);
-    let (glyphs, uploads, color_uploads) = grid.glyph_instances(
-        &metrics,
-        &keys,
-        font.font_size,
-        &font.shaper,
-        &mut font.atlas,
-        &mut font.color_atlas,
-        &mut font.color_keys,
-        false,
-        None,
-        0,
-        0.0,
-        0.0,
-    );
-    assembly.bg_sections.push(BgSection::new(
-        BgUniforms {
-            cols: u32::from(grid.cols),
-            rows: 1,
-            cell_width: metrics.cell_width,
-            cell_height: metrics.cell_height,
-            viewport_width: viewport.0,
-            viewport_height: viewport.1,
-            pad_left: 0.0,
-            pad_top: 0.0,
-        },
-        bg,
-    ));
-    assembly.glyphs.extend(glyphs);
-    assembly.uploads.extend(uploads);
-    assembly.color_uploads.extend(color_uploads);
-}
-
-/// A solid rectangle drawn through the bg pipeline as a 1x1 cell grid
-/// whose cell size is the rectangle.
-fn solid_section(rect: layout::PixelRect, rgb: [u8; 3], viewport: (f32, f32)) -> BgSection {
-    #[allow(clippy::cast_precision_loss)] // pixel coordinates fit in f32
-    BgSection::new(
-        BgUniforms {
-            cols: 1,
-            rows: 1,
-            cell_width: rect.width as f32,
-            cell_height: rect.height as f32,
-            viewport_width: viewport.0,
-            viewport_height: viewport.1,
-            pad_left: rect.x as f32,
-            pad_top: rect.y as f32,
-        },
-        vec![render_grid::pack_bg_color(rgb)],
-    )
 }
 
 /// Convert a winit `MouseScrollDelta` into integer "wheel notches" (1 notch =
@@ -790,7 +588,7 @@ impl App {
         let cw = self
             .font
             .as_ref()
-            .map_or(8.0, |f| f64::from(f.metrics.cell_width));
+            .map_or(8.0, |f| f64::from(f.metrics().cell_width));
         let side = if (self.last_mouse_pixel.0 % cw) > (cw / 2.0) {
             AnchorSide::Right
         } else {
@@ -1033,7 +831,7 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         let size = window.inner_size();
-        let (cols, rows) = window_to_grid_dims(size, &font_state.metrics, &config.padding, 0);
+        let (cols, rows) = window_to_grid_dims(size, font_state.metrics(), &config.padding, 0);
         let grid = ClientGrid::new(cols.max(1), rows.max(1));
 
         match connect_to_daemon(&self.proxy) {
@@ -1062,7 +860,7 @@ impl ApplicationHandler<UserEvent> for App {
             Ok(mut model) => {
                 let mut m = A11yModel::new(
                     self.focused_pane,
-                    a11y_bridge::cell_dims(Some(&font_state.metrics)),
+                    a11y_bridge::cell_dims(Some(font_state.metrics())),
                 );
                 m.register_pane(self.focused_pane, &view);
                 *model = Some(m);
@@ -1270,8 +1068,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let px = (position.x as f32 - self.config.padding.left as f32).max(0.0);
                     let py = (position.y as f32 - self.config.padding.top as f32 - tab_px as f32)
                         .max(0.0);
-                    let col = (px / font.metrics.cell_width) as u16;
-                    let row = (py / font.metrics.cell_height) as u16;
+                    let col = (px / font.metrics().cell_width) as u16;
+                    let row = (py / font.metrics().cell_height) as u16;
                     self.last_mouse_cell = (col, row);
 
                     // Update selection end during drag.
@@ -1279,7 +1077,7 @@ impl ApplicationHandler<UserEvent> for App {
                         use oakterm_terminal::grid::selection::{
                             AnchorSide, SelectionType, word_boundaries,
                         };
-                        let cw = f64::from(font.metrics.cell_width);
+                        let cw = f64::from(font.metrics().cell_width);
                         let adj_x = (position.x - f64::from(self.config.padding.left)).max(0.0);
                         let side = if (adj_x % cw) > (cw / 2.0) {
                             AnchorSide::Right
@@ -1442,7 +1240,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let cell_h = self
                     .font
                     .as_ref()
-                    .map_or(16.0_f64, |f| f64::from(f.metrics.cell_height));
+                    .map_or(16.0_f64, |f| f64::from(f.metrics().cell_height));
                 let notches = drain_wheel_notches(delta, cell_h, &mut self.wheel_accum_y);
                 if notches == 0 {
                     return;
@@ -1547,8 +1345,8 @@ impl ApplicationHandler<UserEvent> for App {
                     if self.tabs.bar_visible() {
                         assemble_tab_bar(font, &self.tabs, viewport, &mut assembly);
                     }
-                    gpu.upload_glyphs(&font.atlas, &assembly.uploads);
-                    gpu.upload_color_glyphs(&font.color_atlas, &assembly.color_uploads);
+                    gpu.upload_glyphs(font.atlas(), &assembly.uploads);
+                    gpu.upload_color_glyphs(font.color_atlas(), &assembly.color_uploads);
                     bg_sections = assembly.bg_sections;
                     glyph_instances = assembly.glyphs;
                 }
@@ -1570,10 +1368,10 @@ impl ApplicationHandler<UserEvent> for App {
                 let (atlas_w, atlas_h) = self
                     .font
                     .as_ref()
-                    .map_or((256u32, 256u32), |f| f.atlas.size());
+                    .map_or((256u32, 256u32), |f| f.atlas().size());
                 let text_uniforms = TextUniforms {
-                    cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics.cell_width),
-                    cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics.cell_height),
+                    cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics().cell_width),
+                    cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics().cell_height),
                     viewport_width: gpu.config.width as f32,
                     viewport_height: gpu.config.height as f32,
                     atlas_width: atlas_w as f32,
@@ -1583,11 +1381,11 @@ impl ApplicationHandler<UserEvent> for App {
                     color_atlas_width: self
                         .font
                         .as_ref()
-                        .map_or(256.0, |f| f.color_atlas.size().0 as f32),
+                        .map_or(256.0, |f| f.color_atlas().size().0 as f32),
                     color_atlas_height: self
                         .font
                         .as_ref()
-                        .map_or(256.0, |f| f.color_atlas.size().1 as f32),
+                        .map_or(256.0, |f| f.color_atlas().size().1 as f32),
                     pad: 0.0,
                 };
 
@@ -2412,7 +2210,7 @@ impl App {
     /// the wire's grow-`pane_id` sign), then refetch the layout tree so
     /// the geometry tracks the drag live.
     fn drag_border(&mut self, x: f64, y: f64) {
-        let Some(metrics) = self.font.as_ref().map(|f| f.metrics) else {
+        let Some(metrics) = self.font.as_ref().map(|f| *f.metrics()) else {
             return;
         };
         let msg = {
@@ -2574,7 +2372,7 @@ impl App {
             (Some(gpu), Some(font), Some(_), Some(_)) => {
                 let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
                 let (cols, rows) =
-                    window_to_grid_dims(size, &font.metrics, &self.config.padding, tab_px);
+                    window_to_grid_dims(size, font.metrics(), &self.config.padding, tab_px);
                 Some(window_resize(self.focused_pane, (cols, rows), size))
             }
             _ => None,
@@ -2670,14 +2468,14 @@ impl App {
     fn tab_bar_px(&self) -> u32 {
         tab_bar_height(
             self.tabs.bar_visible(),
-            self.font.as_ref().map(|f| &f.metrics),
+            self.font.as_ref().map(FontState::metrics),
         )
     }
 
     /// The tab under pixel column `x` of the tab bar, resolved through
     /// the same strip layout the renderer draws.
     fn tab_at_pixel(&self, x: f64) -> Option<u32> {
-        let metrics = &self.font.as_ref()?.metrics;
+        let metrics = self.font.as_ref()?.metrics();
         let gpu = self.gpu.as_ref()?;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let col = (x.max(0.0) / f64::from(metrics.cell_width)) as u16;
@@ -2747,7 +2545,7 @@ impl App {
         let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
             (Some(font), Some(view)) => {
                 let (cols, rows) =
-                    window_to_grid_dims(size, &font.metrics, &self.config.padding, tab_px);
+                    window_to_grid_dims(size, font.metrics(), &self.config.padding, tab_px);
                 let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
                 if dims_changed {
                     view.resize(cols, rows);
@@ -2845,7 +2643,7 @@ impl App {
     /// every pane whose computed grid dimensions changed. The first
     /// `Resize` for a fresh pane spawns its PTY (Spec-0001 `SplitPane`).
     fn sync_panes_to_geometry(&mut self) {
-        let Some(metrics) = self.font.as_ref().map(|f| f.metrics) else {
+        let Some(metrics) = self.font.as_ref().map(|f| *f.metrics()) else {
             warn!("layout geometry present but font unavailable; panes not synced");
             return;
         };
@@ -2917,14 +2715,14 @@ impl App {
                 };
 
                 // self.font still holds the old metrics; use font_state's.
-                let tab_px = tab_bar_height(self.tabs.bar_visible(), Some(&font_state.metrics));
+                let tab_px = tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
                     let phys = PhysicalSize::new(gpu.config.width, gpu.config.height);
                     let (cols, rows) = window_to_grid_dims(
                         phys,
-                        &font_state.metrics,
+                        font_state.metrics(),
                         &self.config.padding,
                         tab_px,
                     );
@@ -2937,7 +2735,7 @@ impl App {
                     match self.a11y_state.lock() {
                         Ok(mut model) => {
                             if let Some(m) = model.as_mut() {
-                                m.set_cell_dims(a11y_bridge::cell_dims(Some(&font_state.metrics)));
+                                m.set_cell_dims(a11y_bridge::cell_dims(Some(font_state.metrics())));
                             }
                         }
                         Err(e) => warn!(error = %e, "a11y: mutex poisoned on font change"),
@@ -3020,7 +2818,10 @@ fn tab_bar_button_bit(button: winit::event::MouseButton) -> u8 {
 }
 
 /// One cell row of tab bar when visible, else 0 (Spec-0009).
-fn tab_bar_height(visible: bool, metrics: Option<&oakterm_renderer::shaper::FontMetrics>) -> u32 {
+pub(crate) fn tab_bar_height(
+    visible: bool,
+    metrics: Option<&oakterm_renderer::shaper::FontMetrics>,
+) -> u32 {
     if visible {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         metrics.map_or(0, |m| m.cell_height.ceil().max(0.0) as u32)
@@ -3050,68 +2851,6 @@ fn window_to_grid_dims(
     let cols = ((usable_w as f32 / metrics.cell_width) as u16).clamp(1, MAX_GRID_DIMENSION);
     let rows = ((usable_h as f32 / metrics.cell_height) as u16).clamp(1, MAX_GRID_DIMENSION);
     (cols, rows)
-}
-
-/// Non-panicking font init. Returns Err instead of crashing.
-fn try_init_font(
-    config: &oakterm_config::ConfigValues,
-    font_size: f32,
-) -> Result<FontState, String> {
-    let db = font::system_font_db();
-    let variants = if config.font_family.is_empty() {
-        font::load_default_variants(&db, font_size)
-            .map_err(|e| format!("no system monospace font: {e}"))?
-    } else {
-        match font::load_font_variants(&db, &config.font_family, font_size) {
-            Ok(result) => result,
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    font_family = %config.font_family,
-                    "font not found, using system default"
-                );
-                font::load_default_variants(&db, font_size)
-                    .map_err(|e| format!("no system monospace font: {e}"))?
-            }
-        }
-    };
-
-    let (regular_data, metrics) = variants.regular;
-    let mut shaper = SwashShaper::new();
-    let font_key = shaper
-        .load_font(regular_data, font_size)
-        .ok_or_else(|| "failed to load font into shaper".to_string())?;
-
-    let bold_key = variants
-        .bold
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
-    let italic_key = variants
-        .italic
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
-    let bold_italic_key = variants
-        .bold_italic
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
-
-    debug!(
-        ?font_key,
-        ?bold_key,
-        ?italic_key,
-        ?bold_italic_key,
-        "font variants loaded"
-    );
-
-    Ok(FontState {
-        shaper,
-        font_key,
-        bold_key,
-        italic_key,
-        bold_italic_key,
-        atlas: AtlasPlane::new(),
-        color_atlas: AtlasPlane::new(),
-        color_keys: std::collections::HashSet::new(),
-        font_size,
-        metrics,
-    })
 }
 
 fn start_config_watcher(
@@ -3248,7 +2987,7 @@ fn version_string() -> String {
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{
-        FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, assemble_frame, check_focus,
+        FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
         drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_bar_height, tab_sync_timing,
         try_init_font, window_to_grid_dims,
     };
@@ -3264,7 +3003,7 @@ mod tests {
     /// font is available (test then skips, matching sibling tests).
     fn metrics(cell_width: f32, cell_height: f32) -> Option<oakterm_renderer::shaper::FontMetrics> {
         let font = try_init_font(&oakterm_config::ConfigValues::default(), 14.0).ok()?;
-        let mut m = font.metrics;
+        let mut m = *font.metrics();
         m.cell_width = cell_width;
         m.cell_height = cell_height;
         Some(m)
@@ -3370,31 +3109,6 @@ mod tests {
         let (cols_bar, rows_bar) = window_to_grid_dims(size, &m, &pad, 20);
         assert_eq!(cols_bar, cols_bare);
         assert_eq!(rows_bar, rows_bare - 1);
-    }
-
-    #[test]
-    fn assemble_frame_emits_one_bg_section_per_pane_at_its_origin() {
-        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
-            eprintln!("skipping: no system monospace font available");
-            return;
-        };
-        let mut panes = HashMap::new();
-        panes.insert(1, PaneView::new(ClientGrid::new(10, 5)));
-        panes.insert(2, PaneView::new(ClientGrid::new(10, 5)));
-        let rect = |x| PixelRect {
-            x,
-            y: 0,
-            width: 100,
-            height: 100,
-        };
-        // Pane 9 has no view and must be skipped, not rendered empty.
-        let render_list = [(1, rect(0)), (2, rect(120)), (9, rect(240))];
-
-        let assembly = assemble_frame(&mut font, &panes, &render_list, 1, true, (400.0, 300.0));
-
-        assert_eq!(assembly.bg_sections.len(), 2);
-        assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
-        assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
     }
 
     fn geometry_of(panes: &[(u32, u32, u32)]) -> LayoutGeometry {
