@@ -203,6 +203,75 @@ impl KeyChord {
             key,
         })
     }
+
+    /// Format the chord as a display hint (e.g. `"Cmd+P"`, `"Ctrl+Shift+\"`).
+    ///
+    /// Returns `None` for physical-position keys, which have no stable label
+    /// outside a keyboard layout.
+    #[must_use]
+    pub fn display_hint(&self) -> Option<String> {
+        let key = match &self.key {
+            KeyName::Character(c) => c.to_ascii_uppercase().to_string(),
+            KeyName::Named(named) => named_label(*named).to_string(),
+            KeyName::Physical(_) => return None,
+        };
+        let mut parts: Vec<&str> = Vec::new();
+        if self.super_key {
+            parts.push(SUPER_LABEL);
+        }
+        if self.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        let mut out = parts.join("+");
+        if !out.is_empty() {
+            out.push('+');
+        }
+        out.push_str(&key);
+        Some(out)
+    }
+}
+
+#[cfg(target_os = "macos")]
+const SUPER_LABEL: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+const SUPER_LABEL: &str = "Super";
+
+fn named_label(named: NamedKeyId) -> &'static str {
+    match named {
+        NamedKeyId::ArrowUp => "Up",
+        NamedKeyId::ArrowDown => "Down",
+        NamedKeyId::ArrowLeft => "Left",
+        NamedKeyId::ArrowRight => "Right",
+        NamedKeyId::Home => "Home",
+        NamedKeyId::End => "End",
+        NamedKeyId::PageUp => "PageUp",
+        NamedKeyId::PageDown => "PageDown",
+        NamedKeyId::Tab => "Tab",
+        NamedKeyId::Enter => "Enter",
+        NamedKeyId::Backspace => "Backspace",
+        NamedKeyId::Escape => "Esc",
+        NamedKeyId::Delete => "Delete",
+        NamedKeyId::Insert => "Insert",
+        NamedKeyId::Space => "Space",
+        NamedKeyId::F1 => "F1",
+        NamedKeyId::F2 => "F2",
+        NamedKeyId::F3 => "F3",
+        NamedKeyId::F4 => "F4",
+        NamedKeyId::F5 => "F5",
+        NamedKeyId::F6 => "F6",
+        NamedKeyId::F7 => "F7",
+        NamedKeyId::F8 => "F8",
+        NamedKeyId::F9 => "F9",
+        NamedKeyId::F10 => "F10",
+        NamedKeyId::F11 => "F11",
+        NamedKeyId::F12 => "F12",
+    }
 }
 
 /// Terminal action triggered by a keybind.
@@ -386,6 +455,19 @@ impl KeybindRegistry {
         self.bindings.get(index).map(|(_, a)| a)
     }
 
+    /// Iterate over the *effective* `(chord, action)` bindings in registration
+    /// order: entries shadowed by a later registration of the same chord are
+    /// skipped, so each yielded pair is exactly what [`Self::lookup`] resolves
+    /// for its chord. Reverse for last-registered-first.
+    #[must_use]
+    pub fn effective_bindings(&self) -> impl DoubleEndedIterator<Item = (&KeyChord, &Action)> {
+        self.bindings
+            .iter()
+            .enumerate()
+            .filter(|(i, (chord, _))| self.lookup_index(chord) == Some(*i))
+            .map(|(_, (c, a))| (c, a))
+    }
+
     /// Number of registered bindings.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -564,6 +646,129 @@ mod tests {
         reg.register(KeyChord::parse("ctrl+a").unwrap(), Action::Copy);
         reg.register(KeyChord::parse("ctrl+b").unwrap(), Action::Paste);
         assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn display_hint_renders_modifiers_and_keys() {
+        let hint = |s: &str| KeyChord::parse(s).unwrap().display_hint();
+        assert_eq!(hint("ctrl+shift+\\").as_deref(), Some("Ctrl+Shift+\\"));
+        assert_eq!(hint("ctrl+p").as_deref(), Some("Ctrl+P"));
+        assert_eq!(hint("shift+pageup").as_deref(), Some("Shift+PageUp"));
+        assert_eq!(hint("alt+enter").as_deref(), Some("Alt+Enter"));
+        // A bare key must not pick up a stray leading '+'.
+        assert_eq!(hint("a").as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn display_hint_labels_every_named_key() {
+        // Pins each named key's display string; a transposed pair (Home/End,
+        // Insert/Delete) passes the compiler's exhaustiveness check.
+        for (input, expected) in [
+            ("up", "Up"),
+            ("down", "Down"),
+            ("left", "Left"),
+            ("right", "Right"),
+            ("home", "Home"),
+            ("end", "End"),
+            ("pageup", "PageUp"),
+            ("pagedown", "PageDown"),
+            ("tab", "Tab"),
+            ("enter", "Enter"),
+            ("backspace", "Backspace"),
+            ("esc", "Esc"),
+            ("delete", "Delete"),
+            ("insert", "Insert"),
+            ("space", "Space"),
+            ("f1", "F1"),
+            ("f5", "F5"),
+            ("f12", "F12"),
+        ] {
+            assert_eq!(
+                KeyChord::parse(input).unwrap().display_hint().as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn display_hint_super_uses_the_platform_label() {
+        let expected = if cfg!(target_os = "macos") {
+            "Cmd+T"
+        } else {
+            "Super+T"
+        };
+        assert_eq!(
+            KeyChord::parse("super+t")
+                .unwrap()
+                .display_hint()
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn display_hint_orders_all_modifiers_canonically() {
+        // Pins the Super -> Ctrl -> Alt -> Shift order against a reordering of
+        // the emit blocks; the multi-modifier assertions elsewhere only pin
+        // adjacent pairs.
+        let expected = if cfg!(target_os = "macos") {
+            "Cmd+Ctrl+Alt+Shift+A"
+        } else {
+            "Super+Ctrl+Alt+Shift+A"
+        };
+        assert_eq!(
+            KeyChord::parse("super+ctrl+alt+shift+a")
+                .unwrap()
+                .display_hint()
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn display_hint_translates_non_identity_named_keys() {
+        // Arrows and Escape are deliberately not their enum names.
+        let hint = |s: &str| KeyChord::parse(s).unwrap().display_hint();
+        assert_eq!(hint("ctrl+up").as_deref(), Some("Ctrl+Up"));
+        assert_eq!(hint("ctrl+left").as_deref(), Some("Ctrl+Left"));
+        assert_eq!(hint("esc").as_deref(), Some("Esc"));
+    }
+
+    #[test]
+    fn display_hint_declines_physical_keys() {
+        let physical = KeyChord {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            super_key: true,
+            key: KeyName::Physical(PhysicalKeyId::Digit1),
+        };
+        assert_eq!(physical.display_hint(), None);
+    }
+
+    #[test]
+    fn effective_bindings_skip_shadowed_and_reverse() {
+        // Both directions matter: forward is registration order, rev() gives
+        // last-registered-first for override resolution.
+        let mut reg = KeybindRegistry::new();
+        let a = KeyChord::parse("ctrl+a").unwrap();
+        let b = KeyChord::parse("ctrl+b").unwrap();
+        let c = KeyChord::parse("ctrl+c").unwrap();
+        reg.register(a.clone(), Action::Copy);
+        reg.register(b.clone(), Action::Paste);
+        // Shadows the first ctrl+a: only the NewTab entry is effective.
+        reg.register(a.clone(), Action::NewTab);
+        reg.register(c.clone(), Action::CloseTab);
+        let forward: Vec<(&KeyChord, &Action)> = reg.effective_bindings().collect();
+        let forward_chords: Vec<&KeyChord> = forward.iter().map(|(chord, _)| *chord).collect();
+        assert_eq!(forward_chords, vec![&b, &a, &c]);
+        assert!(matches!(forward[1].1, Action::NewTab));
+        let backward: Vec<&KeyChord> = reg
+            .effective_bindings()
+            .rev()
+            .map(|(chord, _)| chord)
+            .collect();
+        assert_eq!(backward, vec![&c, &a, &b]);
     }
 
     #[test]

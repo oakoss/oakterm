@@ -4,6 +4,7 @@
 //! standard library functions are removed, memory and execution time
 //! are bounded, and `print` is redirected to stderr.
 
+mod actions;
 mod event;
 mod init;
 mod keybind;
@@ -11,6 +12,7 @@ mod proxy;
 mod schema;
 mod stubs;
 
+pub use actions::{ActionCategory, ActionContext, ActionId, ActionRegistry, RegisteredAction};
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
 pub use init::{InitResult, ensure_stubs, init_config};
 pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId, PhysicalKeyId};
