@@ -2,6 +2,7 @@ pub mod frame;
 pub mod input;
 pub mod message;
 pub mod render;
+pub mod socket;
 
 #[cfg(test)]
 mod tests {

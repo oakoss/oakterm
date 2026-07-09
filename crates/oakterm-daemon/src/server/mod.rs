@@ -6,7 +6,6 @@ use crate::framing::{read_frame, write_frame};
 use crate::pane::{PaneManager, PtyState, SharedPane, lock_live_pane};
 use crate::requests::{RequestResult, handle_request};
 use crate::session::default_state_dir;
-use crate::socket::socket_path;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec, HEADER_SIZE};
 use oakterm_protocol::message::{
@@ -14,6 +13,7 @@ use oakterm_protocol::message::{
     PaneExited, ServerHello, Shutdown, ShutdownReason, TitleChanged,
 };
 use oakterm_protocol::render::DirtyNotify;
+use oakterm_protocol::socket::socket_path;
 use shutdown::{ShutdownCtx, ShutdownGate, ShutdownOutcome, request_shutdown};
 use std::collections::{HashMap, HashSet};
 use std::io;

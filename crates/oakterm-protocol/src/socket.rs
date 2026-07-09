@@ -1,4 +1,8 @@
-//! Unix socket path resolution and listener setup per Spec-0001.
+//! Unix socket path resolution and startup lock per Spec-0001.
+//!
+//! Lives in the protocol crate (not the daemon) so clients — the GUI,
+//! `oakterm-ctl`, and any third-party tool — can locate the daemon socket
+//! by depending only on the wire layer.
 
 use std::io;
 use std::path::PathBuf;

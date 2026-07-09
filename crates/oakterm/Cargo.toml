@@ -19,7 +19,6 @@ oakterm-a11y = { path = "../oakterm-a11y" }
 oakterm-renderer = { path = "../oakterm-renderer" }
 oakterm-protocol = { path = "../oakterm-protocol" }
 oakterm-config = { path = "../oakterm-config" }
-oakterm-daemon = { path = "../oakterm-daemon" }
 oakterm-terminal = { path = "../oakterm-terminal" }
 notify = { workspace = true }
 notify-debouncer-full = { workspace = true }

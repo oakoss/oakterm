@@ -2001,7 +2001,6 @@ dependencies = [
  "notify-debouncer-full",
  "oakterm-a11y",
  "oakterm-config",
- "oakterm-daemon",
  "oakterm-protocol",
  "oakterm-renderer",
  "oakterm-terminal",
@@ -2080,10 +2079,12 @@ name = "oakterm-protocol"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

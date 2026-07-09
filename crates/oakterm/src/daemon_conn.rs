@@ -59,7 +59,7 @@ pub(crate) struct DaemonConnection {
 pub(crate) fn connect_to_daemon(
     proxy: &EventLoopProxy<UserEvent>,
 ) -> std::io::Result<DaemonConnection> {
-    let socket_path = oakterm_daemon::socket::socket_path()?;
+    let socket_path = oakterm_protocol::socket::socket_path()?;
 
     // Try connecting to an existing daemon first.
     match UnixStream::connect(&socket_path) {
@@ -74,7 +74,7 @@ pub(crate) fn connect_to_daemon(
     }
 
     // Acquire exclusive lock to serialize daemon startup.
-    let _lock = oakterm_daemon::socket::acquire_startup_lock()?;
+    let _lock = oakterm_protocol::socket::acquire_startup_lock()?;
 
     // After acquiring the lock, retry connect: another client may have
     // started the daemon while we waited.
