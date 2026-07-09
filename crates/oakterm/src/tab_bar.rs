@@ -3,6 +3,7 @@
 //! hit-testing share.
 
 use oakterm_protocol::message::TabList;
+use oakterm_renderer::shaper::FontMetrics;
 
 /// Longest tab name rendered before truncation, in characters.
 const MAX_NAME_CHARS: usize = 20;
@@ -206,10 +207,45 @@ fn label(index: usize, name: &str) -> String {
     format!(" {n}:{shown} ")
 }
 
+/// Tab bar height in pixels: one cell row when visible (Spec-0009: tabs > 1),
+/// else 0. `None` metrics (no font yet) also yields 0.
+pub(crate) fn tab_bar_height(visible: bool, metrics: Option<&FontMetrics>) -> u32 {
+    if visible {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        metrics.map_or(0, |m| m.cell_height.ceil().max(0.0) as u32)
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{FontMetrics, tab_bar_height};
     use super::{StripCell, TabInfo, TabsState, hit_test, label, layout_strip, strip_cells};
     use oakterm_protocol::message::{TabEntry, TabList};
+
+    /// A `FontMetrics` with the given cell height (its `#[non_exhaustive]` shape
+    /// means it must come from a real font); `None` when none is available.
+    fn metrics(cell_height: f32) -> Option<FontMetrics> {
+        let font =
+            crate::frame::try_init_font(&oakterm_config::ConfigValues::default(), 14.0).ok()?;
+        let mut m = *font.metrics();
+        m.cell_height = cell_height;
+        Some(m)
+    }
+
+    #[test]
+    fn tab_bar_height_zero_when_hidden_or_fontless() {
+        assert_eq!(tab_bar_height(true, None), 0);
+        let Some(m) = metrics(16.5) else { return };
+        assert_eq!(tab_bar_height(false, Some(&m)), 0);
+    }
+
+    #[test]
+    fn tab_bar_height_ceils_cell_height_when_visible() {
+        let Some(m) = metrics(16.5) else { return };
+        assert_eq!(tab_bar_height(true, Some(&m)), 17);
+    }
 
     fn tab(id: u32, name: &str) -> TabInfo {
         TabInfo {

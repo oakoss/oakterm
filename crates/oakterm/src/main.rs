@@ -2333,7 +2333,7 @@ impl App {
     /// Tab bar height in pixels: one cell row when the bar is visible
     /// (Spec-0009: tabs > 1), else 0.
     fn tab_bar_px(&self) -> u32 {
-        tab_bar_height(
+        tab_bar::tab_bar_height(
             self.tabs.bar_visible(),
             self.font.as_ref().map(FontState::metrics),
         )
@@ -2582,7 +2582,8 @@ impl App {
                 };
 
                 // self.font still holds the old metrics; use font_state's.
-                let tab_px = tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
+                let tab_px =
+                    tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
@@ -2681,19 +2682,6 @@ fn tab_bar_button_bit(button: winit::event::MouseButton) -> u8 {
         winit::event::MouseButton::Middle => 1 << 1,
         winit::event::MouseButton::Right => 1 << 2,
         _ => 1 << 0,
-    }
-}
-
-/// One cell row of tab bar when visible, else 0 (Spec-0009).
-pub(crate) fn tab_bar_height(
-    visible: bool,
-    metrics: Option<&oakterm_renderer::shaper::FontMetrics>,
-) -> u32 {
-    if visible {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        metrics.map_or(0, |m| m.cell_height.ceil().max(0.0) as u32)
-    } else {
-        0
     }
 }
 
@@ -2855,8 +2843,8 @@ fn version_string() -> String {
 mod tests {
     use super::{
         FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
-        drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_bar_height, tab_sync_timing,
-        try_init_font, window_to_grid_dims,
+        drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_sync_timing, try_init_font,
+        window_to_grid_dims,
     };
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
@@ -2952,19 +2940,6 @@ mod tests {
                 TabSyncTiming::Now,
             );
         }
-    }
-
-    #[test]
-    fn tab_bar_height_zero_when_hidden_or_fontless() {
-        assert_eq!(tab_bar_height(true, None), 0);
-        let Some(m) = metrics(8.0, 16.5) else { return };
-        assert_eq!(tab_bar_height(false, Some(&m)), 0);
-    }
-
-    #[test]
-    fn tab_bar_height_ceils_cell_height_when_visible() {
-        let Some(m) = metrics(8.0, 16.5) else { return };
-        assert_eq!(tab_bar_height(true, Some(&m)), 17);
     }
 
     #[test]

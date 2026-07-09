@@ -6,7 +6,7 @@ use oakterm_renderer::pipeline::{BgSection, TextUniforms};
 use tracing::error;
 use wgpu::CurrentSurfaceTexture;
 
-use crate::frame::{assemble_frame, assemble_tab_bar, solid_section};
+use crate::frame::{FontState, assemble_frame, assemble_tab_bar, solid_section};
 use crate::{App, layout};
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
@@ -17,9 +17,7 @@ impl App {
     /// Draw and present one frame. Retries initial sizing while startup is
     /// still settling, then assembles backgrounds and glyphs for the visible
     /// panes (plus the tab bar and split borders) and submits the draw.
-    // Cohesive frame sequence (acquire → assemble → upload → draw → present);
-    // kept as one function, matching the sibling winit event handlers.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    #[allow(clippy::cast_precision_loss)] // viewport dimensions fit in f32
     pub(crate) fn redraw(&mut self) {
         if !self.initial_resize_sent {
             // Retries on the next RedrawRequested while font, view,
@@ -93,59 +91,105 @@ impl App {
             }
         }
 
-        let (atlas_w, atlas_h) = self
-            .font
-            .as_ref()
-            .map_or((256u32, 256u32), |f| f.atlas().size());
-        let text_uniforms = TextUniforms {
-            cell_width: self.font.as_ref().map_or(8.0, |f| f.metrics().cell_width),
-            cell_height: self.font.as_ref().map_or(16.0, |f| f.metrics().cell_height),
-            viewport_width: gpu.config.width as f32,
-            viewport_height: gpu.config.height as f32,
-            atlas_width: atlas_w as f32,
-            atlas_height: atlas_h as f32,
-            #[allow(clippy::cast_possible_truncation)] // gamma is small (0-5)
-            text_gamma: self.config.text_gamma as f32,
-            color_atlas_width: self
-                .font
-                .as_ref()
-                .map_or(256.0, |f| f.color_atlas().size().0 as f32),
-            color_atlas_height: self
-                .font
-                .as_ref()
-                .map_or(256.0, |f| f.color_atlas().size().1 as f32),
-            pad: 0.0,
-        };
-
-        let clear_color = self
+        let uniforms = text_uniforms(self.font.as_ref(), self.config.text_gamma, viewport);
+        let clear = self
             .panes
             .get(&self.focused_pane)
-            .map_or(wgpu::Color::BLACK, |v| {
-                let [r, g, b] = v.grid().bg_color;
-                wgpu::Color {
-                    r: f64::from(r) / 255.0,
-                    g: f64::from(g) / 255.0,
-                    b: f64::from(b) / 255.0,
-                    a: 1.0,
-                }
-            });
+            .map_or(wgpu::Color::BLACK, |v| clear_color(v.grid().bg_color));
 
         gpu.pipeline.render(
             &gpu.device,
             &gpu.queue,
             &view,
             &bg_sections,
-            &text_uniforms,
+            &uniforms,
             &glyph_instances,
             &gpu.atlas_view,
             &gpu.atlas_sampler,
             &gpu.color_atlas_view,
-            clear_color,
+            clear,
         );
 
         if let Some(w) = &self.window {
             w.pre_present_notify();
         }
         frame.present();
+    }
+}
+
+/// GPU text-shading uniforms from the active font, or safe placeholder
+/// defaults before a font (and thus any atlas) exists.
+#[allow(clippy::cast_precision_loss)] // atlas/cell dims fit in f32
+fn text_uniforms(font: Option<&FontState>, text_gamma: f64, viewport: (f32, f32)) -> TextUniforms {
+    let metrics = font.map(FontState::metrics);
+    let (atlas_w, atlas_h) = font.map_or((256u32, 256u32), |f| f.atlas().size());
+    let (color_w, color_h) = font.map_or((256u32, 256u32), |f| f.color_atlas().size());
+    TextUniforms {
+        cell_width: metrics.map_or(8.0, |m| m.cell_width),
+        cell_height: metrics.map_or(16.0, |m| m.cell_height),
+        viewport_width: viewport.0,
+        viewport_height: viewport.1,
+        atlas_width: atlas_w as f32,
+        atlas_height: atlas_h as f32,
+        #[allow(clippy::cast_possible_truncation)] // gamma is small (0-5)
+        text_gamma: text_gamma as f32,
+        color_atlas_width: color_w as f32,
+        color_atlas_height: color_h as f32,
+        pad: 0.0,
+    }
+}
+
+fn clear_color(grid_bg: [u8; 3]) -> wgpu::Color {
+    let [r, g, b] = grid_bg;
+    wgpu::Color {
+        r: f64::from(r) / 255.0,
+        g: f64::from(g) / 255.0,
+        b: f64::from(b) / 255.0,
+        a: 1.0,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact defaults, /255, and u32→f32 dims
+mod tests {
+    use super::{clear_color, text_uniforms};
+
+    #[test]
+    fn text_uniforms_uses_safe_defaults_without_a_font() {
+        let u = text_uniforms(None, 1.5, (800.0, 600.0));
+        assert_eq!(u.cell_width, 8.0);
+        assert_eq!(u.cell_height, 16.0);
+        assert_eq!(u.viewport_width, 800.0);
+        assert_eq!(u.viewport_height, 600.0);
+        assert_eq!(u.atlas_width, 256.0);
+        assert_eq!(u.color_atlas_height, 256.0);
+        assert_eq!(u.text_gamma, 1.5);
+    }
+
+    #[test]
+    fn text_uniforms_reads_dimensions_from_the_active_font() {
+        // Guards the six adjacent `_ as f32` mappings against a width/height
+        // or atlas/color-atlas transposition the None-branch test can't catch.
+        let Ok(font) = crate::frame::try_init_font(&oakterm_config::ConfigValues::default(), 14.0)
+        else {
+            return;
+        };
+        let u = text_uniforms(Some(&font), 2.0, (800.0, 600.0));
+        assert_eq!(u.cell_width, font.metrics().cell_width);
+        assert_eq!(u.cell_height, font.metrics().cell_height);
+        assert_eq!(u.atlas_width, font.atlas().size().0 as f32);
+        assert_eq!(u.atlas_height, font.atlas().size().1 as f32);
+        assert_eq!(u.color_atlas_width, font.color_atlas().size().0 as f32);
+        assert_eq!(u.color_atlas_height, font.color_atlas().size().1 as f32);
+        assert_eq!(u.text_gamma, 2.0);
+    }
+
+    #[test]
+    fn clear_color_normalizes_channels() {
+        let c = clear_color([255, 128, 0]);
+        assert_eq!(c.r, 1.0);
+        assert_eq!(c.g, f64::from(128u8) / 255.0);
+        assert_eq!(c.b, 0.0);
+        assert_eq!(c.a, 1.0);
     }
 }

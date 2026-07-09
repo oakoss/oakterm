@@ -12,12 +12,12 @@ use oakterm_renderer::pipeline::{BgSection, BgUniforms};
 use oakterm_renderer::shaper::{FontKey, FontMetrics};
 use oakterm_renderer::swash_shaper::SwashShaper;
 use oakterm_terminal::grid::MAX_GRID_DIMENSION;
+use oakterm_terminal::grid::selection::Selection;
 
 use tracing::{debug, warn};
 
 use crate::pane_view::PaneView;
 use crate::render_grid::{self, ClientGrid};
-use crate::tab_bar_height;
 use crate::{layout, tab_bar};
 
 /// Tab bar colors, fixed until the theme system (TREK-212) lands.
@@ -153,7 +153,6 @@ pub(crate) fn assemble_frame(
     viewport: (f32, f32),
 ) -> FrameAssembly {
     let mut assembly = FrameAssembly::default();
-    let keys = font.font_keys();
     for &(pane_id, rect) in render_list {
         let Some(pane) = panes.get(&pane_id) else {
             continue;
@@ -168,41 +167,66 @@ pub(crate) fn assemble_frame(
         } else {
             None
         };
-
-        let bg = grid.bg_colors(cursor_vis, selection, pane.viewport_offset());
-        let (glyphs, uploads, color_uploads) = grid.glyph_instances(
-            &font.metrics,
-            &keys,
-            font.font_size,
-            &font.shaper,
-            &mut font.atlas,
-            &mut font.color_atlas,
-            &mut font.color_keys,
+        push_grid(
+            &mut assembly,
+            font,
+            grid,
+            (rect.x as f32, rect.y as f32),
             cursor_vis,
             selection,
             pane.viewport_offset(),
-            rect.x as f32,
-            rect.y as f32,
+            viewport,
         );
-
-        assembly.bg_sections.push(BgSection::new(
-            BgUniforms {
-                cols: u32::from(grid.cols),
-                rows: u32::from(grid.rows),
-                cell_width: font.metrics.cell_width,
-                cell_height: font.metrics.cell_height,
-                viewport_width: viewport.0,
-                viewport_height: viewport.1,
-                pad_left: rect.x as f32,
-                pad_top: rect.y as f32,
-            },
-            bg,
-        ));
-        assembly.glyphs.extend(glyphs);
-        assembly.uploads.extend(uploads);
-        assembly.color_uploads.extend(color_uploads);
     }
     assembly
+}
+
+/// Append one grid's backgrounds and glyphs to `assembly` at pixel `origin`,
+/// caching new glyphs in `font`'s atlases. Shared by the pane and tab-bar
+/// paths so the glyph contract both callers share lives in one place.
+#[allow(clippy::too_many_arguments)]
+fn push_grid(
+    assembly: &mut FrameAssembly,
+    font: &mut FontState,
+    grid: &ClientGrid,
+    origin: (f32, f32),
+    cursor_vis: bool,
+    selection: Option<&Selection>,
+    viewport_offset: u32,
+    viewport: (f32, f32),
+) {
+    let keys = font.font_keys();
+    let bg = grid.bg_colors(cursor_vis, selection, viewport_offset);
+    let (glyphs, uploads, color_uploads) = grid.glyph_instances(
+        &font.metrics,
+        &keys,
+        font.font_size,
+        &font.shaper,
+        &mut font.atlas,
+        &mut font.color_atlas,
+        &mut font.color_keys,
+        cursor_vis,
+        selection,
+        viewport_offset,
+        origin.0,
+        origin.1,
+    );
+    assembly.bg_sections.push(BgSection::new(
+        BgUniforms {
+            cols: u32::from(grid.cols),
+            rows: u32::from(grid.rows),
+            cell_width: font.metrics.cell_width,
+            cell_height: font.metrics.cell_height,
+            viewport_width: viewport.0,
+            viewport_height: viewport.1,
+            pad_left: origin.0,
+            pad_top: origin.1,
+        },
+        bg,
+    ));
+    assembly.glyphs.extend(glyphs);
+    assembly.uploads.extend(uploads);
+    assembly.color_uploads.extend(color_uploads);
 }
 
 /// Append the tab bar to `assembly`: a full-width underlay at the
@@ -215,7 +239,7 @@ pub(crate) fn assemble_tab_bar(
     assembly: &mut FrameAssembly,
 ) {
     let metrics = font.metrics;
-    let bar_h = tab_bar_height(true, Some(&metrics));
+    let bar_h = tab_bar::tab_bar_height(true, Some(&metrics));
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let width_px = viewport.0.max(0.0) as u32;
     assembly.bg_sections.push(solid_section(
@@ -244,38 +268,7 @@ pub(crate) fn assemble_tab_bar(
         grid.set_cell(col, 0, cell.ch, fg, bg);
     }
 
-    let keys = font.font_keys();
-    let bg = grid.bg_colors(false, None, 0);
-    let (glyphs, uploads, color_uploads) = grid.glyph_instances(
-        &metrics,
-        &keys,
-        font.font_size,
-        &font.shaper,
-        &mut font.atlas,
-        &mut font.color_atlas,
-        &mut font.color_keys,
-        false,
-        None,
-        0,
-        0.0,
-        0.0,
-    );
-    assembly.bg_sections.push(BgSection::new(
-        BgUniforms {
-            cols: u32::from(grid.cols),
-            rows: 1,
-            cell_width: metrics.cell_width,
-            cell_height: metrics.cell_height,
-            viewport_width: viewport.0,
-            viewport_height: viewport.1,
-            pad_left: 0.0,
-            pad_top: 0.0,
-        },
-        bg,
-    ));
-    assembly.glyphs.extend(glyphs);
-    assembly.uploads.extend(uploads);
-    assembly.color_uploads.extend(color_uploads);
+    push_grid(assembly, font, &grid, (0.0, 0.0), false, None, 0, viewport);
 }
 
 /// A solid rectangle drawn through the bg pipeline as a 1x1 cell grid
@@ -304,10 +297,12 @@ pub(crate) fn solid_section(
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{assemble_frame, try_init_font};
+    use super::{FrameAssembly, assemble_frame, assemble_tab_bar, try_init_font};
     use crate::layout::PixelRect;
     use crate::pane_view::PaneView;
     use crate::render_grid::ClientGrid;
+    use crate::tab_bar::TabsState;
+    use oakterm_protocol::message::{TabEntry, TabList};
     use std::collections::HashMap;
 
     #[test]
@@ -333,5 +328,41 @@ mod tests {
         assert_eq!(assembly.bg_sections.len(), 2);
         assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
+
+    #[test]
+    fn assemble_tab_bar_emits_underlay_and_label_grid() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let mut tabs = TabsState::default();
+        tabs.apply(TabList {
+            workspace_id: 0,
+            workspace_name: "default".to_string(),
+            active_tab: 0,
+            tabs: vec![
+                TabEntry {
+                    tab_id: 0,
+                    focused_pane: 0,
+                    name: "a".to_string(),
+                },
+                TabEntry {
+                    tab_id: 1,
+                    focused_pane: 10,
+                    name: "b".to_string(),
+                },
+            ],
+        });
+        assert!(tabs.bar_visible());
+
+        let mut assembly = FrameAssembly::default();
+        assemble_tab_bar(&mut font, &tabs, (400.0, 300.0), &mut assembly);
+
+        // Full-width underlay plus the one-row label grid at the origin.
+        assert_eq!(assembly.bg_sections.len(), 2);
+        assert_eq!(assembly.bg_sections[1].uniforms.rows, 1);
+        assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 0.0);
+        assert_eq!(assembly.bg_sections[1].uniforms.pad_top, 0.0);
+        assert!(!assembly.glyphs.is_empty());
     }
 }
