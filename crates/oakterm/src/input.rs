@@ -157,6 +157,51 @@ pub(crate) fn physical_to_chord(
     })
 }
 
+/// What a key press does to an open command palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaletteKeyEffect {
+    Close,
+    Confirm,
+    MoveUp,
+    MoveDown,
+    Backspace,
+    /// Printable characters to append to the query.
+    Input(String),
+    Ignore,
+}
+
+/// Interpret a key press for the palette (Spec-0009 Palette Lifecycle).
+/// Chorded keys (Ctrl/Super/Alt) other than the Ctrl+p/Ctrl+n aliases are
+/// ignored so a modifier chord never leaks its base character into the
+/// query; control characters are stripped from text input.
+#[must_use]
+pub(crate) fn palette_key_effect(
+    key: &Key,
+    mods: winit::keyboard::ModifiersState,
+    text: Option<&str>,
+) -> PaletteKeyEffect {
+    match key {
+        Key::Named(NamedKey::Escape) => PaletteKeyEffect::Close,
+        Key::Named(NamedKey::Enter) => PaletteKeyEffect::Confirm,
+        Key::Named(NamedKey::ArrowUp) => PaletteKeyEffect::MoveUp,
+        Key::Named(NamedKey::ArrowDown) => PaletteKeyEffect::MoveDown,
+        Key::Named(NamedKey::Backspace) => PaletteKeyEffect::Backspace,
+        Key::Character(s) if mods.control_key() && s.as_str() == "p" => PaletteKeyEffect::MoveUp,
+        Key::Character(s) if mods.control_key() && s.as_str() == "n" => PaletteKeyEffect::MoveDown,
+        _ => {
+            if !mods.control_key() && !mods.super_key() && !mods.alt_key() {
+                if let Some(text) = text {
+                    let printable: String = text.chars().filter(|c| !c.is_control()).collect();
+                    if !printable.is_empty() {
+                        return PaletteKeyEffect::Input(printable);
+                    }
+                }
+            }
+            PaletteKeyEffect::Ignore
+        }
+    }
+}
+
 /// Encode winit modifier state to xterm mouse modifier bits.
 /// Shift=4, Alt/Meta=8, Ctrl=16.
 #[must_use]
@@ -403,6 +448,71 @@ mod tests {
                 ModifiersState::SHIFT | ModifiersState::ALT | ModifiersState::CONTROL
             )),
             28
+        );
+    }
+
+    #[test]
+    fn palette_named_keys_map_to_their_effects() {
+        use PaletteKeyEffect as E;
+        let none = ModifiersState::empty();
+        for (key, expected) in [
+            (NamedKey::Escape, E::Close),
+            (NamedKey::Enter, E::Confirm),
+            (NamedKey::ArrowUp, E::MoveUp),
+            (NamedKey::ArrowDown, E::MoveDown),
+            (NamedKey::Backspace, E::Backspace),
+        ] {
+            assert_eq!(palette_key_effect(&named(key), none, None), expected);
+        }
+        // Emacs-style aliases require Ctrl.
+        let ctrl = ModifiersState::CONTROL;
+        assert_eq!(
+            palette_key_effect(&Key::Character("p".into()), ctrl, None),
+            E::MoveUp
+        );
+        assert_eq!(
+            palette_key_effect(&Key::Character("n".into()), ctrl, None),
+            E::MoveDown
+        );
+    }
+
+    #[test]
+    fn palette_text_input_is_gated_on_unmodified_keys() {
+        use PaletteKeyEffect as E;
+        let none = ModifiersState::empty();
+        assert_eq!(
+            palette_key_effect(&Key::Character("t".into()), none, Some("t")),
+            E::Input("t".to_string())
+        );
+        // A chord's base character must not leak into the query: Cmd+P
+        // (the palette's own bind), Ctrl+X, Alt+F all ignore.
+        for state in [
+            ModifiersState::SUPER,
+            ModifiersState::CONTROL,
+            ModifiersState::ALT,
+        ] {
+            assert_eq!(
+                palette_key_effect(&Key::Character("p".into()), state, Some("p")),
+                if state == ModifiersState::CONTROL {
+                    E::MoveUp // the alias, not text input
+                } else {
+                    E::Ignore
+                }
+            );
+        }
+        // Control characters are stripped; nothing left means ignore.
+        assert_eq!(
+            palette_key_effect(&named(NamedKey::Tab), none, Some("\t")),
+            E::Ignore
+        );
+        // Shift alone still types (capitals, punctuation).
+        assert_eq!(
+            palette_key_effect(
+                &Key::Character("T".into()),
+                ModifiersState::SHIFT,
+                Some("T")
+            ),
+            E::Input("T".to_string())
         );
     }
 }

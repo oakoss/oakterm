@@ -147,6 +147,19 @@ pub(crate) struct FrameAssembly {
     pub(crate) color_uploads: Vec<render_grid::GlyphUpload>,
 }
 
+impl FrameAssembly {
+    /// Drop glyphs under the pixel rect at `origin` with `size`, grown by
+    /// one cell of bearing slop on every side. Backgrounds and text are
+    /// separate passes with no z-order, so an overlay panel must remove
+    /// the glyphs beneath it before pushing its own.
+    pub(crate) fn occlude(&mut self, origin: (f32, f32), size: (f32, f32), cell: (f32, f32)) {
+        let (x0, y0) = (origin.0 - cell.0, origin.1 - cell.1);
+        let (x1, y1) = (origin.0 + size.0 + cell.0, origin.1 + size.1 + cell.1);
+        self.glyphs
+            .retain(|g| !(g.pos[0] >= x0 && g.pos[0] < x1 && g.pos[1] >= y0 && g.pos[1] < y1));
+    }
+}
+
 /// Cursor and selection render only in the focused pane; the cursor
 /// honors the blink phase.
 #[allow(clippy::cast_precision_loss)] // pixel origins fit in f32
@@ -277,6 +290,150 @@ pub(crate) fn assemble_tab_bar(
     push_grid(assembly, font, &grid, (0.0, 0.0), false, None, 0, viewport);
 }
 
+/// Palette colors, fixed until the theme system (TREK-212) lands.
+const PALETTE_BG_RGB: [u8; 3] = [24, 24, 24];
+const PALETTE_BORDER_RGB: [u8; 3] = [64, 64, 64];
+const PALETTE_FG_RGB: [u8; 3] = [220, 220, 220];
+const PALETTE_DIM_FG_RGB: [u8; 3] = [140, 140, 140];
+const PALETTE_MATCH_FG_RGB: [u8; 3] = [120, 200, 255];
+const PALETTE_SELECTED_BG_RGB: [u8; 3] = [72, 72, 72];
+
+const PALETTE_MAX_COLS: u16 = 60;
+
+/// Append the command palette overlay: a bordered panel centered near the
+/// top with the query row, then the visible result window (or the
+/// no-matches message).
+///
+/// Backgrounds and text are separate passes with no z-order, so pane
+/// glyphs already in `assembly` would paint through the panel; glyphs
+/// under the panel (grown by one cell of bearing slop) are dropped here.
+/// Call after every other assembly step so the panel composites on top.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn assemble_palette(
+    font: &mut FontState,
+    palette: &crate::palette::PaletteState,
+    viewport: (f32, f32),
+    top_px: u32,
+    assembly: &mut FrameAssembly,
+) {
+    let metrics = font.metrics;
+    let cell_w = metrics.cell_width;
+    let cell_h = metrics.cell_height;
+    let view_cols = ((viewport.0 / cell_w).max(0.0) as u16).clamp(1, MAX_GRID_DIMENSION);
+    let cols = view_cols.min(PALETTE_MAX_COLS);
+    let results = palette.results();
+    let visible = results.len().clamp(1, crate::palette::MAX_VISIBLE_RESULTS);
+    let rows = (1 + visible) as u16;
+
+    // Cell-aligned horizontal center; one-row gap below the bar keeps the
+    // occlusion margin off the tab-bar glyphs.
+    let x_px = f32::from((view_cols - cols) / 2) * cell_w;
+    #[allow(clippy::cast_precision_loss)]
+    let y_px = top_px as f32 + cell_h;
+    let w_px = f32::from(cols) * cell_w;
+    let h_px = f32::from(rows) * cell_h;
+
+    assembly.occlude((x_px, y_px), (w_px, h_px), (cell_w, cell_h));
+
+    assembly.bg_sections.push(solid_section(
+        layout::PixelRect {
+            x: (x_px as u32).saturating_sub(1),
+            y: (y_px as u32).saturating_sub(1),
+            width: w_px as u32 + 2,
+            height: h_px as u32 + 2,
+        },
+        PALETTE_BORDER_RGB,
+        viewport,
+    ));
+
+    let mut grid = ClientGrid::new(cols, rows);
+    grid.fill_bg(PALETTE_BG_RGB);
+
+    // Query row, tail-anchored so the newest characters stay visible.
+    let query: Vec<char> = palette.query().chars().collect();
+    let avail = usize::from(cols.saturating_sub(3));
+    let start = query.len().saturating_sub(avail);
+    let mut col = 1u16;
+    for &c in &query[start..] {
+        grid.set_cell(col, 0, c, PALETTE_FG_RGB, PALETTE_BG_RGB);
+        col += 1;
+    }
+    if col < cols {
+        grid.set_cell(col, 0, '▏', PALETTE_DIM_FG_RGB, PALETTE_BG_RGB);
+    }
+
+    if results.is_empty() {
+        for (i, c) in "No matching actions".chars().enumerate() {
+            let col = 1 + i as u16;
+            if col >= cols {
+                break;
+            }
+            grid.set_cell(col, 1, c, PALETTE_DIM_FG_RGB, PALETTE_BG_RGB);
+        }
+    } else {
+        let selected = palette.selected_index();
+        let first = palette.window_start();
+        for (i, result) in results.iter().enumerate().skip(first).take(visible) {
+            let row = (i - first + 1) as u16;
+            render_palette_row(&mut grid, row, result, i == selected, cols);
+        }
+    }
+
+    push_grid(
+        assembly,
+        font,
+        &grid,
+        (x_px, y_px),
+        false,
+        None,
+        0,
+        viewport,
+    );
+}
+
+/// Render one result row: selection background, label with match-position
+/// highlighting, right-aligned keybind hint.
+#[allow(clippy::cast_possible_truncation)]
+fn render_palette_row(
+    grid: &mut ClientGrid,
+    row: u16,
+    result: &crate::palette::PaletteResult,
+    selected: bool,
+    cols: u16,
+) {
+    let bg = if selected {
+        for c in 0..cols {
+            grid.set_cell(c, row, ' ', PALETTE_FG_RGB, PALETTE_SELECTED_BG_RGB);
+        }
+        PALETTE_SELECTED_BG_RGB
+    } else {
+        PALETTE_BG_RGB
+    };
+
+    let hint_cols = result
+        .keybind
+        .as_deref()
+        .map_or(0, |h| h.chars().count() + 2);
+    let label_avail = usize::from(cols).saturating_sub(2 + hint_cols);
+    for (ci, ch) in result.label.chars().take(label_avail).enumerate() {
+        let fg = if result.match_positions.contains(&ci) {
+            PALETTE_MATCH_FG_RGB
+        } else {
+            PALETTE_FG_RGB
+        };
+        grid.set_cell(1 + ci as u16, row, ch, fg, bg);
+    }
+    if let Some(hint) = result.keybind.as_deref() {
+        let len = hint.chars().count() as u16;
+        if len + 1 < cols {
+            let start_col = cols - 1 - len;
+            for (ci, ch) in hint.chars().enumerate() {
+                grid.set_cell(start_col + ci as u16, row, ch, PALETTE_DIM_FG_RGB, bg);
+            }
+        }
+    }
+}
+
 /// A solid rectangle drawn through the bg pipeline as a 1x1 cell grid
 /// whose cell size is the rectangle.
 pub(crate) fn solid_section(
@@ -303,13 +460,42 @@ pub(crate) fn solid_section(
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
-    use super::{FrameAssembly, assemble_frame, assemble_tab_bar, try_init_font};
+    use super::{FrameAssembly, assemble_frame, assemble_palette, assemble_tab_bar, try_init_font};
     use crate::layout::PixelRect;
     use crate::pane_view::PaneView;
     use crate::render_grid::ClientGrid;
     use crate::tab_bar::TabsState;
     use oakterm_protocol::message::{TabEntry, TabList};
     use std::collections::HashMap;
+
+    fn glyph_at(pos: [f32; 2]) -> oakterm_renderer::pipeline::GlyphVertex {
+        oakterm_renderer::pipeline::GlyphVertex {
+            pos,
+            size: [8.0, 16.0],
+            uv_origin: [0.0, 0.0],
+            fg_color: [1.0, 1.0, 1.0, 1.0],
+            bg_luminance: 0.0,
+            is_color: 0.0,
+            pad: [0.0, 0.0],
+        }
+    }
+
+    #[test]
+    fn occlude_drops_only_glyphs_within_the_grown_rect() {
+        let mut assembly = FrameAssembly {
+            glyphs: vec![
+                glyph_at([100.0, 100.0]), // inside the rect
+                glyph_at([92.5, 92.5]),   // inside the one-cell slop margin
+                glyph_at([50.0, 100.0]),  // left of the margin
+                glyph_at([100.0, 300.0]), // below the margin
+            ],
+            ..Default::default()
+        };
+        // Grown bounds: x in [92, 188), y in [84, 156).
+        assembly.occlude((100.0, 100.0), (80.0, 40.0), (8.0, 16.0));
+        let remaining: Vec<[f32; 2]> = assembly.glyphs.iter().map(|g| g.pos).collect();
+        assert_eq!(remaining, vec![[50.0, 100.0], [100.0, 300.0]]);
+    }
 
     #[test]
     fn assemble_frame_emits_one_bg_section_per_pane_at_its_origin() {
@@ -396,6 +582,139 @@ mod tests {
             !assembly.color_uploads.is_empty(),
             "emoji must produce a color-atlas upload through the fallback face"
         );
+    }
+
+    #[test]
+    fn assemble_palette_occludes_glyphs_beneath_it_and_keeps_the_rest() {
+        use oakterm_config::{ActionContext, ActionRegistry, KeybindRegistry};
+
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let mut palette = crate::palette::PaletteState::new();
+        palette.open(
+            &ActionRegistry::core(&KeybindRegistry::new()),
+            ActionContext {
+                pane_count: 1,
+                tab_count: 1,
+                ..Default::default()
+            },
+        );
+
+        // Fractional coordinates can't collide with real palette glyphs.
+        let mut assembly = FrameAssembly {
+            glyphs: vec![glyph_at([400.3, 55.7]), glyph_at([10.3, 550.7])],
+            ..Default::default()
+        };
+
+        assemble_palette(&mut font, &palette, (800.0, 600.0), 0, &mut assembly);
+
+        // Border underlay + panel grid.
+        assert_eq!(assembly.bg_sections.len(), 2);
+        let survives = |pos: [f32; 2]| assembly.glyphs.iter().any(|g| g.pos == pos);
+        assert!(
+            !survives([400.3, 55.7]),
+            "glyph beneath the panel must be dropped"
+        );
+        assert!(
+            survives([10.3, 550.7]),
+            "glyph outside the panel must survive"
+        );
+        // The panel contributed its own text (query cursor, result labels).
+        assert!(assembly.glyphs.len() > 1);
+    }
+
+    #[test]
+    fn assemble_palette_scroll_window_tracks_the_stateful_offset() {
+        use oakterm_config::{ActionContext, ActionRegistry, KeybindRegistry};
+
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let reg = ActionRegistry::core(&KeybindRegistry::new());
+        let ctx = ActionContext {
+            pane_count: 2,
+            tab_count: 2,
+            can_focus_left: true,
+            can_focus_right: true,
+            can_focus_up: true,
+            can_focus_down: true,
+        };
+        let mut palette = crate::palette::PaletteState::new();
+        palette.open(&reg, ctx); // 14 results, 10 visible
+
+        let mut selected_row = |palette: &crate::palette::PaletteState| {
+            let mut assembly = FrameAssembly::default();
+            assemble_palette(&mut font, palette, (800.0, 600.0), 0, &mut assembly);
+            let panel = &assembly.bg_sections[1];
+            assert_eq!(panel.uniforms.rows, 11, "query row + 10 result rows");
+            let cols = panel.uniforms.cols as usize;
+            let selected_bg = crate::render_grid::pack_bg_color(super::PALETTE_SELECTED_BG_RGB);
+            (0..panel.uniforms.rows as usize).find(|row| panel.colors[row * cols] == selected_bg)
+        };
+
+        assert_eq!(selected_row(&palette), Some(1), "selection starts at top");
+        for _ in 0..9 {
+            palette.move_down();
+        }
+        assert_eq!(selected_row(&palette), Some(10), "bottom of the window");
+        // Crossing the edge scrolls the list under a bottom-pinned cursor.
+        for _ in 0..3 {
+            palette.move_down();
+        }
+        assert_eq!(selected_row(&palette), Some(10));
+        // Moving up walks the cursor within the window, not the list.
+        for _ in 0..5 {
+            palette.move_up();
+        }
+        assert_eq!(selected_row(&palette), Some(5));
+    }
+
+    #[test]
+    fn assemble_palette_handles_edge_inputs_without_panicking() {
+        use oakterm_config::{ActionContext, ActionRegistry, KeybindRegistry};
+
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let reg = ActionRegistry::core(&KeybindRegistry::new());
+        let ctx = ActionContext {
+            pane_count: 1,
+            tab_count: 1,
+            ..Default::default()
+        };
+        let mut palette = crate::palette::PaletteState::new();
+        palette.open(&reg, ctx);
+
+        // Zero results: the panel keeps a message row (query + 1).
+        for c in "close".chars() {
+            palette.input_char(c, &reg, ctx);
+        }
+        assert!(palette.results().is_empty());
+        let mut assembly = FrameAssembly::default();
+        assemble_palette(&mut font, &palette, (800.0, 600.0), 0, &mut assembly);
+        assert_eq!(assembly.bg_sections[1].uniforms.rows, 2);
+
+        // A nonzero tab-bar offset shifts the panel one row below it.
+        let mut assembly = FrameAssembly::default();
+        assemble_palette(&mut font, &palette, (800.0, 600.0), 17, &mut assembly);
+        let cell_h = font.metrics().cell_height;
+        assert_eq!(assembly.bg_sections[1].uniforms.pad_top, 17.0 + cell_h);
+
+        // A query longer than the panel width tail-anchors instead of
+        // overflowing.
+        for c in
+            "a very long query that cannot possibly fit in sixty columns of panel width".chars()
+        {
+            palette.input_char(c, &reg, ctx);
+        }
+        let mut assembly = FrameAssembly::default();
+        assemble_palette(&mut font, &palette, (800.0, 600.0), 0, &mut assembly);
+
+        // A viewport narrower than one cell still assembles.
+        let mut assembly = FrameAssembly::default();
+        assemble_palette(&mut font, &palette, (20.0, 600.0), 0, &mut assembly);
+        assert_eq!(assembly.bg_sections.len(), 2);
     }
 
     #[test]

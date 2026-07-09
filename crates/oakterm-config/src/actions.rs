@@ -28,17 +28,18 @@ pub enum ActionId {
     NextTab,
     PreviousTab,
     ToggleFullscreen,
+    ShowCommandPalette,
     ReloadConfig,
 }
 
 impl ActionId {
     /// Every core action with a working handler today, in catalog order.
     ///
-    /// Copy-mode, resize-mode, floating-pane, workspace, and command-palette
-    /// actions register here as their features land (Spec-0009 lists the full
-    /// target set); registering only wired actions keeps the catalog free of
-    /// entries that would execute as no-ops.
-    pub const ALL: [ActionId; 13] = [
+    /// Copy-mode, resize-mode, floating-pane, and workspace actions register
+    /// here as their features land (Spec-0009 lists the full target set);
+    /// registering only wired actions keeps the catalog free of entries that
+    /// would execute as no-ops.
+    pub const ALL: [ActionId; 14] = [
         ActionId::SplitPaneRight,
         ActionId::SplitPaneDown,
         ActionId::ClosePane,
@@ -51,6 +52,7 @@ impl ActionId {
         ActionId::NextTab,
         ActionId::PreviousTab,
         ActionId::ToggleFullscreen,
+        ActionId::ShowCommandPalette,
         ActionId::ReloadConfig,
     ];
 
@@ -70,6 +72,7 @@ impl ActionId {
             ActionId::NextTab => "next_tab",
             ActionId::PreviousTab => "previous_tab",
             ActionId::ToggleFullscreen => "toggle_fullscreen",
+            ActionId::ShowCommandPalette => "show_command_palette",
             ActionId::ReloadConfig => "reload_config",
         }
     }
@@ -90,6 +93,7 @@ impl ActionId {
             ActionId::NextTab => "Next Tab",
             ActionId::PreviousTab => "Previous Tab",
             ActionId::ToggleFullscreen => "Toggle Fullscreen",
+            ActionId::ShowCommandPalette => "Show Command Palette",
             ActionId::ReloadConfig => "Reload Config",
         }
     }
@@ -108,7 +112,7 @@ impl ActionId {
             ActionId::NewTab | ActionId::CloseTab | ActionId::NextTab | ActionId::PreviousTab => {
                 ActionCategory::Tab
             }
-            ActionId::ToggleFullscreen => ActionCategory::View,
+            ActionId::ToggleFullscreen | ActionId::ShowCommandPalette => ActionCategory::View,
             ActionId::ReloadConfig => ActionCategory::Config,
         }
     }
@@ -122,6 +126,7 @@ impl ActionId {
             | ActionId::SplitPaneDown
             | ActionId::NewTab
             | ActionId::ToggleFullscreen
+            | ActionId::ShowCommandPalette
             | ActionId::ReloadConfig => true,
             // Closing the last pane closes its tab (Spec-0007); the daemon only
             // refuses the truly-last pane — the last pane of the last tab.
@@ -137,8 +142,9 @@ impl ActionId {
 }
 
 /// Palette grouping category (Spec-0009). The full set is fixed even though
-/// `Workspace` and `Clipboard` have no wired core actions yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `Workspace` and `Clipboard` have no wired core actions yet. `Ord`
+/// follows declaration order, which is the palette's group display order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActionCategory {
     Pane,
     Tab,
@@ -286,6 +292,7 @@ fn action_id_of(action: &Action) -> Option<ActionId> {
         Action::NextTab => Some(ActionId::NextTab),
         Action::PreviousTab => Some(ActionId::PreviousTab),
         Action::ToggleFullscreen => Some(ActionId::ToggleFullscreen),
+        Action::ShowCommandPalette => Some(ActionId::ShowCommandPalette),
         Action::ReloadConfig => Some(ActionId::ReloadConfig),
         _ => None,
     }
@@ -332,6 +339,7 @@ mod tests {
             (ActionId::NextTab, Tab),
             (ActionId::PreviousTab, Tab),
             (ActionId::ToggleFullscreen, View),
+            (ActionId::ShowCommandPalette, View),
             (ActionId::ReloadConfig, Config),
         ];
         // Covering every ALL member keeps a mis-assigned category from hiding
@@ -488,7 +496,6 @@ mod tests {
         // might be tempted to map.
         assert_eq!(action_id_of(&Action::Copy), None);
         assert_eq!(action_id_of(&Action::ScrollUp(0)), None);
-        assert_eq!(action_id_of(&Action::ShowCommandPalette), None);
         assert_eq!(
             action_id_of(&Action::SwitchTab(std::num::NonZeroU32::new(1).unwrap())),
             None
@@ -528,6 +535,17 @@ mod tests {
         assert_eq!(
             reg.find(ActionId::NewTab).unwrap().keybind_hint(),
             Some(expected_new_tab)
+        );
+        let expected_palette = if cfg!(target_os = "macos") {
+            "Cmd+P"
+        } else {
+            "Ctrl+Shift+P"
+        };
+        assert_eq!(
+            reg.find(ActionId::ShowCommandPalette)
+                .unwrap()
+                .keybind_hint(),
+            Some(expected_palette)
         );
         for id in [
             ActionId::ClosePane,
@@ -674,10 +692,11 @@ mod tests {
                 | ActionId::NextTab
                 | ActionId::PreviousTab
                 | ActionId::ToggleFullscreen
+                | ActionId::ShowCommandPalette
                 | ActionId::ReloadConfig => {}
             }
         }
-        assert_eq!(ActionId::ALL.len(), 13);
+        assert_eq!(ActionId::ALL.len(), 14);
     }
 
     #[test]
@@ -697,6 +716,7 @@ mod tests {
                 ActionId::SplitPaneDown,
                 ActionId::NewTab,
                 ActionId::ToggleFullscreen,
+                ActionId::ShowCommandPalette,
                 ActionId::ReloadConfig,
             ],
         );
@@ -736,6 +756,7 @@ mod tests {
             Action::NextTab,
             Action::PreviousTab,
             Action::ToggleFullscreen,
+            Action::ShowCommandPalette,
             Action::ReloadConfig,
         ];
         let mapped: Vec<ActionId> = actions.iter().filter_map(action_id_of).collect();

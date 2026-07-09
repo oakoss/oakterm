@@ -6,8 +6,10 @@ use oakterm_renderer::pipeline::{BgSection, TextUniforms};
 use tracing::error;
 use wgpu::CurrentSurfaceTexture;
 
-use crate::frame::{FontState, assemble_frame, assemble_tab_bar, solid_section};
-use crate::{App, layout};
+use crate::frame::{
+    FontState, FrameAssembly, assemble_frame, assemble_palette, assemble_tab_bar, solid_section,
+};
+use crate::{App, layout, tab_bar};
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
@@ -88,6 +90,24 @@ impl App {
                     PANE_BORDER_RGB
                 };
                 bg_sections.push(solid_section(*border, rgb, viewport));
+            }
+        }
+
+        // The palette assembles after everything else so its panel covers
+        // pane content and split borders; it also drops the pane glyphs
+        // beneath it (text has no z-order).
+        if self.palette.is_visible() {
+            if let Some(font) = &mut self.font {
+                let mut overlay = FrameAssembly {
+                    glyphs: std::mem::take(&mut glyph_instances),
+                    ..Default::default()
+                };
+                let top = tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font.metrics()));
+                assemble_palette(font, &self.palette, viewport, top, &mut overlay);
+                gpu.upload_glyphs(font.atlas(), &overlay.uploads);
+                gpu.upload_color_glyphs(font.color_atlas(), &overlay.color_uploads);
+                bg_sections.extend(overlay.bg_sections);
+                glyph_instances = overlay.glyphs;
             }
         }
 

@@ -381,6 +381,7 @@ impl KeybindRegistry {
             (format!("{OAK_MOD_SHIFT}+down"), Action::ScrollToPrompt(1)),
             (format!("{OAK_MOD}+t"), Action::NewTab),
             (format!("{OAK_MOD}+w"), Action::ClosePane),
+            (format!("{OAK_MOD}+p"), Action::ShowCommandPalette),
             (NEXT_TAB_CHORD.to_string(), Action::NextTab),
             (PREVIOUS_TAB_CHORD.to_string(), Action::PreviousTab),
         ];
@@ -791,6 +792,16 @@ mod tests {
         assert!(matches!(reg.lookup(&next), Some(Action::NextTab)));
         let prev = KeyChord::parse(PREVIOUS_TAB_CHORD).unwrap();
         assert!(matches!(reg.lookup(&prev), Some(Action::PreviousTab)));
+    }
+
+    #[test]
+    fn defaults_include_the_command_palette() {
+        let reg = KeybindRegistry::with_defaults();
+        let chord = KeyChord::parse(&format!("{OAK_MOD}+p")).unwrap();
+        assert!(matches!(
+            reg.lookup(&chord),
+            Some(Action::ShowCommandPalette)
+        ));
     }
 
     #[test]

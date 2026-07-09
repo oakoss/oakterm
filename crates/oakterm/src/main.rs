@@ -5,6 +5,7 @@ mod gpu;
 mod input;
 mod layout;
 mod layout_state;
+mod palette;
 mod pane_view;
 mod render;
 mod render_grid;
@@ -136,7 +137,7 @@ enum ActionDesc {
     SwitchTab(std::num::NonZeroU32),
     NextTab,
     PreviousTab,
-    Stub,
+    ShowCommandPalette,
 }
 
 /// Pixel slop around a 1px split border that still grabs it.
@@ -350,6 +351,12 @@ struct App {
     event_registry: oakterm_config::EventRegistry,
     /// Registered keybinds from config evaluation.
     keybind_registry: oakterm_config::KeybindRegistry,
+    /// Action catalog with keybind hints; rebuilt whenever
+    /// `keybind_registry` is replaced.
+    action_registry: oakterm_config::ActionRegistry,
+    /// Command palette overlay (Spec-0009). Captures all keys while
+    /// visible.
+    palette: palette::PaletteState,
     /// Stored for future in-window error banner rendering.
     #[allow(dead_code)]
     config_error: Option<String>,
@@ -436,6 +443,10 @@ impl App {
             lua_vm: None,
             event_registry: oakterm_config::EventRegistry::new(),
             keybind_registry: oakterm_config::KeybindRegistry::new(),
+            action_registry: oakterm_config::ActionRegistry::core(
+                &oakterm_config::KeybindRegistry::new(),
+            ),
+            palette: palette::PaletteState::new(),
             config_error: None,
             config_watcher: None,
             initial_resize_sent: false,
@@ -870,6 +881,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.config_error = cr.error;
         self.event_registry = cr.registry;
         self.keybind_registry = cr.keybinds;
+        self.action_registry = oakterm_config::ActionRegistry::core(&self.keybind_registry);
         self.lua_vm = cr.lua;
         // Fire config.loaded event for initial load.
         if self.config_error.is_none() {
@@ -983,6 +995,15 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
+                // An open palette captures every key ahead of keybind
+                // dispatch and PTY forwarding (Spec-0009 Palette
+                // Lifecycle).
+                if self.palette.is_visible() {
+                    self.handle_palette_key(&event);
+                    self.reset_blink();
+                    return;
+                }
+
                 // Look up keybind BEFORE clearing selection so Copy can read
                 // it. Chords resolve against the layout key, not the
                 // platform-composed character — macOS Option+H arrives as
@@ -1730,10 +1751,17 @@ impl App {
             Some(Action::SwitchTab(n)) => ActionDesc::SwitchTab(*n),
             Some(Action::NextTab) => ActionDesc::NextTab,
             Some(Action::PreviousTab) => ActionDesc::PreviousTab,
-            Some(Action::ShowCommandPalette) => ActionDesc::Stub,
+            Some(Action::ShowCommandPalette) => ActionDesc::ShowCommandPalette,
             None => return false,
         };
 
+        self.execute_action_desc(action_desc)
+    }
+
+    /// Execute a resolved action descriptor. Returns `true` if handled (key
+    /// consumed), `false` to fall through to PTY forwarding.
+    #[allow(clippy::too_many_lines)]
+    fn execute_action_desc(&mut self, action_desc: ActionDesc) -> bool {
         match action_desc {
             ActionDesc::ScrollUp(lines) => {
                 if let Some(view) = self.focused_view_mut() {
@@ -2012,7 +2040,98 @@ impl App {
                 }
                 true
             }
-            ActionDesc::Stub => false,
+            ActionDesc::ShowCommandPalette => {
+                self.palette
+                    .open(&self.action_registry, self.action_context());
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                true
+            }
+        }
+    }
+
+    /// Snapshot the GUI state that action performability depends on.
+    fn action_context(&self) -> oakterm_config::ActionContext {
+        use layout::FocusDirection;
+        let geo = self.layout.active_geometry();
+        let can = |dir| {
+            geo.and_then(|g| layout::focus_target(g, self.focused_pane, dir))
+                .is_some()
+        };
+        oakterm_config::ActionContext {
+            pane_count: geo.map_or(1, |g| g.panes.len()),
+            // Before the first TabList only the seeded tab exists.
+            tab_count: self.tabs.tabs().len().max(1),
+            can_focus_left: can(FocusDirection::Left),
+            can_focus_right: can(FocusDirection::Right),
+            can_focus_up: can(FocusDirection::Up),
+            can_focus_down: can(FocusDirection::Down),
+        }
+    }
+
+    fn action_desc_of_id(id: oakterm_config::ActionId) -> ActionDesc {
+        use layout::FocusDirection;
+        use oakterm_config::ActionId;
+        match id {
+            ActionId::SplitPaneRight => ActionDesc::SplitPane(WireSplitDirection::Horizontal),
+            ActionId::SplitPaneDown => ActionDesc::SplitPane(WireSplitDirection::Vertical),
+            ActionId::ClosePane => ActionDesc::ClosePane,
+            ActionId::FocusPaneLeft => ActionDesc::FocusPane(FocusDirection::Left),
+            ActionId::FocusPaneRight => ActionDesc::FocusPane(FocusDirection::Right),
+            ActionId::FocusPaneUp => ActionDesc::FocusPane(FocusDirection::Up),
+            ActionId::FocusPaneDown => ActionDesc::FocusPane(FocusDirection::Down),
+            ActionId::NewTab => ActionDesc::NewTab,
+            ActionId::CloseTab => ActionDesc::CloseTab,
+            ActionId::NextTab => ActionDesc::NextTab,
+            ActionId::PreviousTab => ActionDesc::PreviousTab,
+            ActionId::ToggleFullscreen => ActionDesc::ToggleFullscreen,
+            ActionId::ShowCommandPalette => ActionDesc::ShowCommandPalette,
+            ActionId::ReloadConfig => ActionDesc::ReloadConfig,
+        }
+    }
+
+    /// All keys are consumed while the palette is visible; nothing reaches
+    /// keybinds or the PTY.
+    fn handle_palette_key(&mut self, event: &winit::event::KeyEvent) {
+        use input::PaletteKeyEffect;
+
+        let ctx = self.action_context();
+        let effect = input::palette_key_effect(
+            &event.logical_key,
+            self.modifiers.state(),
+            event.text.as_deref(),
+        );
+        match effect {
+            PaletteKeyEffect::Close => self.palette.close(),
+            PaletteKeyEffect::Confirm => {
+                if let Some(kind) = self.palette.confirm() {
+                    match kind {
+                        palette::PaletteResultKind::Action(id) => {
+                            self.execute_action_desc(Self::action_desc_of_id(id));
+                        }
+                        // No providers for these yet (Spec-0009 scopes for
+                        // workspaces, layouts, settings).
+                        palette::PaletteResultKind::Workspace(_)
+                        | palette::PaletteResultKind::Layout(_)
+                        | palette::PaletteResultKind::Setting(_) => {}
+                    }
+                }
+            }
+            PaletteKeyEffect::MoveUp => self.palette.move_up(),
+            PaletteKeyEffect::MoveDown => self.palette.move_down(),
+            PaletteKeyEffect::Backspace => {
+                self.palette.backspace(&self.action_registry, ctx);
+            }
+            PaletteKeyEffect::Input(text) => {
+                for c in text.chars() {
+                    self.palette.input_char(c, &self.action_registry, ctx);
+                }
+            }
+            PaletteKeyEffect::Ignore => {}
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -2558,6 +2677,10 @@ impl App {
         self.config_error = None;
         self.event_registry = cr.registry;
         self.keybind_registry = cr.keybinds;
+        self.action_registry = oakterm_config::ActionRegistry::core(&self.keybind_registry);
+        // New bindings may change hints or performability; a stale open
+        // palette would show them wrong.
+        self.palette.close();
         self.lua_vm = cr.lua;
 
         if had_error {
@@ -2842,7 +2965,7 @@ fn version_string() -> String {
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{
-        FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
+        ActionDesc, App, FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
         drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_sync_timing, try_init_font,
         window_to_grid_dims,
     };
@@ -3184,5 +3307,60 @@ mod tests {
         let n = drain_wheel_notches(MouseScrollDelta::LineDelta(0.0, 1.0), 16.0, &mut accum);
         assert_eq!(n, 1);
         assert_eq!(accum, 0.0, "LineDelta must purge pending pixel residue");
+    }
+
+    #[test]
+    fn action_desc_of_id_maps_every_catalog_action_to_its_effect() {
+        // The palette's only execution bridge; a transposed arm would make
+        // a selected action silently run the wrong effect.
+        use crate::layout::FocusDirection;
+        use oakterm_config::ActionId;
+        use oakterm_protocol::message::SplitDirection as WireSplitDirection;
+
+        let desc = App::action_desc_of_id;
+        assert!(matches!(
+            desc(ActionId::SplitPaneRight),
+            ActionDesc::SplitPane(WireSplitDirection::Horizontal)
+        ));
+        assert!(matches!(
+            desc(ActionId::SplitPaneDown),
+            ActionDesc::SplitPane(WireSplitDirection::Vertical)
+        ));
+        assert!(matches!(desc(ActionId::ClosePane), ActionDesc::ClosePane));
+        assert!(matches!(
+            desc(ActionId::FocusPaneLeft),
+            ActionDesc::FocusPane(FocusDirection::Left)
+        ));
+        assert!(matches!(
+            desc(ActionId::FocusPaneRight),
+            ActionDesc::FocusPane(FocusDirection::Right)
+        ));
+        assert!(matches!(
+            desc(ActionId::FocusPaneUp),
+            ActionDesc::FocusPane(FocusDirection::Up)
+        ));
+        assert!(matches!(
+            desc(ActionId::FocusPaneDown),
+            ActionDesc::FocusPane(FocusDirection::Down)
+        ));
+        assert!(matches!(desc(ActionId::NewTab), ActionDesc::NewTab));
+        assert!(matches!(desc(ActionId::CloseTab), ActionDesc::CloseTab));
+        assert!(matches!(desc(ActionId::NextTab), ActionDesc::NextTab));
+        assert!(matches!(
+            desc(ActionId::PreviousTab),
+            ActionDesc::PreviousTab
+        ));
+        assert!(matches!(
+            desc(ActionId::ToggleFullscreen),
+            ActionDesc::ToggleFullscreen
+        ));
+        assert!(matches!(
+            desc(ActionId::ShowCommandPalette),
+            ActionDesc::ShowCommandPalette
+        ));
+        assert!(matches!(
+            desc(ActionId::ReloadConfig),
+            ActionDesc::ReloadConfig
+        ));
     }
 }
