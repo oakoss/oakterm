@@ -7,5 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+oakterm-protocol = { path = "../oakterm-protocol" }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
