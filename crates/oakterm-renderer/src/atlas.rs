@@ -32,6 +32,21 @@ pub struct GlyphCacheKey {
     pub size_tenths: u32, // font size * 10, to avoid floating point in keys
 }
 
+impl GlyphCacheKey {
+    /// Build a key from a resolved glyph, keeping its face and id inseparable
+    /// so the id can't be paired with a different font at the call site.
+    #[must_use]
+    pub fn from_glyph(glyph: crate::shaper::GlyphRef, size: f32) -> Self {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let size_tenths = (size * 10.0) as u32;
+        Self {
+            font_id: glyph.font.id(),
+            glyph_id: glyph.glyph_id,
+            size_tenths,
+        }
+    }
+}
+
 /// A single atlas plane (one texture).
 pub struct AtlasPlane {
     allocator: BucketedAtlasAllocator,

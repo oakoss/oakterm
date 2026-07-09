@@ -1,7 +1,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
+use oakterm_renderer::font;
 use oakterm_renderer::pipeline::{BgUniforms, GlyphVertex, TextUniforms};
-use oakterm_renderer::shaper::GlyphPlacement;
+use oakterm_renderer::shaper::{GlyphPlacement, TextRun, TextShaper};
+use oakterm_renderer::swash_shaper::SwashShaper;
 
 fn prepopulated_atlas(count: u32) -> AtlasPlane {
     // Use a large atlas so allocation doesn't limit the glyph count.
@@ -149,11 +151,51 @@ fn build_glyph_vertices(c: &mut Criterion) {
     });
 }
 
+// Per-cell shaping: `glyph_instances` calls `shape` on a one-char run for every
+// visible non-blank cell each frame. Guards the fallback resolution against a
+// per-char font re-parse regression. Does nothing on a system with no fonts.
+fn shape_run(c: &mut Criterion) {
+    let db = font::system_font_db();
+    let Ok((_m, data)) = font::load_default_metrics(&db, 14.0) else {
+        return;
+    };
+    let mut shaper = SwashShaper::new();
+    let Some(primary) = shaper.load_font(data, 0, 14.0) else {
+        return;
+    };
+    shaper.install_fallbacks(&db, 14.0);
+
+    let shape_each = |text: &str| {
+        for ch in text.chars() {
+            let s = ch.to_string();
+            let run = TextRun {
+                text: &s,
+                font: primary,
+                size: 14.0,
+            };
+            std::hint::black_box(shaper.shape(&run));
+        }
+    };
+
+    let mut group = c.benchmark_group("shape");
+    // Primary-hit: the common all-ASCII line.
+    group.bench_function("ascii_64", |b| {
+        let line = "the quick brown fox jumps over the lazy dog. 0123456789 abcde";
+        b.iter(|| shape_each(line));
+    });
+    // Fallback-miss: emoji absent from the primary walk the chain each frame.
+    group.bench_function("emoji_fallback", |b| {
+        b.iter(|| shape_each("🦀✨🚀"));
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     atlas_lookup,
     build_bg_colors,
     build_uniforms,
-    build_glyph_vertices
+    build_glyph_vertices,
+    shape_run
 );
 criterion_main!(benches);

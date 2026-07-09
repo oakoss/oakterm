@@ -14,7 +14,7 @@ use oakterm_renderer::swash_shaper::SwashShaper;
 use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 use oakterm_terminal::grid::selection::Selection;
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::pane_view::PaneView;
 use crate::render_grid::{self, ClientGrid};
@@ -95,24 +95,30 @@ pub(crate) fn try_init_font(
     let (regular_data, metrics) = variants.regular;
     let mut shaper = SwashShaper::new();
     let font_key = shaper
-        .load_font(regular_data, font_size)
+        .load_font(regular_data, 0, font_size)
         .ok_or_else(|| "failed to load font into shaper".to_string())?;
 
     let bold_key = variants
         .bold
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
+        .and_then(|(data, _)| shaper.load_font(data, 0, font_size));
     let italic_key = variants
         .italic
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
+        .and_then(|(data, _)| shaper.load_font(data, 0, font_size));
     let bold_italic_key = variants
         .bold_italic
-        .and_then(|(data, _)| shaper.load_font(data, font_size));
+        .and_then(|(data, _)| shaper.load_font(data, 0, font_size));
+
+    let fallback = shaper.install_fallbacks(&db, font_size);
+    if fallback.loaded == 0 {
+        info!("no emoji/symbol fallback font found; emoji will render as tofu");
+    }
 
     debug!(
         ?font_key,
         ?bold_key,
         ?italic_key,
         ?bold_italic_key,
+        fallback = fallback.loaded,
         "font variants loaded"
     );
 
@@ -328,6 +334,68 @@ mod tests {
         assert_eq!(assembly.bg_sections.len(), 2);
         assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
+
+    #[test]
+    fn emoji_cell_routes_to_the_color_atlas_via_fallback() {
+        use oakterm_renderer::shaper::{PixelFormat, TextRun, TextShaper};
+        use oakterm_renderer::{font, swash_shaper::SwashShaper};
+
+        // Probe whether this host has a COLOR glyph for the crab. A
+        // monochrome-only fallback (e.g. Noto Emoji, not Noto Color Emoji)
+        // legitimately routes to the alpha atlas, so gate the color assertion
+        // on real color coverage, not merely on a fallback existing.
+        let db = font::system_font_db();
+        let mut probe = SwashShaper::new();
+        let Ok((_m, data)) = font::load_default_metrics(&db, 14.0) else {
+            return;
+        };
+        let Some(primary) = probe.load_font(data, 0, 14.0) else {
+            return;
+        };
+        probe.install_fallbacks(&db, 14.0);
+        let crab = probe.shape(&TextRun {
+            text: "🦀",
+            font: primary,
+            size: 14.0,
+        })[0]
+            .glyph;
+        if crab.font == primary || probe.rasterize(crab, 14.0).format != PixelFormat::Rgba32 {
+            eprintln!("skipping: no color emoji glyph for the crab on this host");
+            return;
+        }
+
+        let Ok(mut font_state) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0)
+        else {
+            return;
+        };
+        let mut grid = ClientGrid::new(10, 5);
+        grid.set_cell(0, 0, '🦀', [255, 255, 255], [0, 0, 0]);
+        let mut panes = HashMap::new();
+        panes.insert(1, PaneView::new(grid));
+        let render_list = [(
+            1,
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 100,
+            },
+        )];
+
+        let assembly = assemble_frame(
+            &mut font_state,
+            &panes,
+            &render_list,
+            1,
+            true,
+            (400.0, 300.0),
+        );
+
+        assert!(
+            !assembly.color_uploads.is_empty(),
+            "emoji must produce a color-atlas upload through the fallback face"
+        );
     }
 
     #[test]

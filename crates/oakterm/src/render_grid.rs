@@ -459,16 +459,14 @@ impl ClientGrid {
                     size: font_size,
                 };
                 let result = shaper.shape(&run);
-                let Some(glyph) = result.first() else {
+                let Some(first) = result.first() else {
                     continue;
                 };
-
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let cache_key = GlyphCacheKey {
-                    font_id: cell_font_key.id(),
-                    glyph_id: glyph.glyph_id,
-                    size_tenths: (font_size * 10.0) as u32,
-                };
+                // shape() may resolve to a fallback face (emoji/symbols) when
+                // the cell's style variant lacks the glyph; GlyphRef carries the
+                // resolved face so keying and rasterizing use it, not the run's.
+                let glyph = first.glyph;
+                let cache_key = GlyphCacheKey::from_glyph(glyph, font_size);
 
                 // Check if this glyph is already known to be color.
                 let is_color_cached = color_keys.contains(&cache_key);
@@ -478,7 +476,7 @@ impl ClientGrid {
                         (r, true)
                     } else {
                         // Evicted from color atlas; re-rasterize.
-                        let bitmap = shaper.rasterize(cell_font_key, glyph.glyph_id, font_size);
+                        let bitmap = shaper.rasterize(glyph, font_size);
                         if bitmap.width == 0 || bitmap.height == 0 {
                             continue;
                         }
@@ -504,7 +502,7 @@ impl ClientGrid {
                     (r, false)
                 } else {
                     // Not in either atlas — rasterize and route by format.
-                    let bitmap = shaper.rasterize(cell_font_key, glyph.glyph_id, font_size);
+                    let bitmap = shaper.rasterize(glyph, font_size);
                     if bitmap.width == 0 || bitmap.height == 0 {
                         continue;
                     }

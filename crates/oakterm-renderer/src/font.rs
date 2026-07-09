@@ -19,6 +19,21 @@ const PREFERRED_FAMILIES: &[&str] = &[
     "Liberation Mono",
 ];
 
+/// Fallback font families for codepoints the primary monospace font lacks
+/// (emoji, symbols), tried in order. Platform color-emoji fonts come first so
+/// `SwashShaper` routes them through the RGBA atlas.
+const FALLBACK_FAMILIES: &[&str] = &[
+    // macOS
+    "Apple Color Emoji",
+    "Apple Symbols",
+    // Linux
+    "Noto Color Emoji",
+    "Noto Emoji",
+    // Windows
+    "Segoe UI Emoji",
+    "Segoe UI Symbol",
+];
+
 /// Create a `fontdb::Database` with system fonts loaded.
 /// Reuse the returned database to avoid repeated filesystem scans (~50-200ms).
 #[must_use]
@@ -26,6 +41,38 @@ pub fn system_font_db() -> fontdb::Database {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
     db
+}
+
+/// Load `(raw data, face index)` for every available fallback family (see
+/// `FALLBACK_FAMILIES`), in priority order. Missing families are skipped; the
+/// result may be empty.
+///
+/// The face index matters: color-emoji fonts (Apple Color Emoji) ship as
+/// `.ttc` collections where the usable face is not necessarily index 0. Pass
+/// the index to `SwashShaper::load_font` so it parses the right face.
+#[must_use]
+pub fn load_fallback_fonts(db: &fontdb::Database) -> Vec<(Vec<u8>, u32)> {
+    let mut fonts = Vec::new();
+    for family in FALLBACK_FAMILIES {
+        let query = fontdb::Query {
+            families: &[fontdb::Family::Name(family)],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        };
+        let Some(id) = db.query(&query) else {
+            tracing::trace!(family, "fallback family not installed");
+            continue;
+        };
+        let mut face = None;
+        db.with_face_data(id, |bytes, index| face = Some((bytes.to_vec(), index)));
+        if let Some(pair) = face {
+            fonts.push(pair);
+        } else {
+            tracing::warn!(family, "fallback family indexed but face data unreadable");
+        }
+    }
+    fonts
 }
 
 /// Load the system's default monospace font and compute cell metrics

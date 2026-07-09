@@ -21,10 +21,22 @@ pub struct TextRun<'a> {
     pub size: f32,
 }
 
+/// A glyph id together with the face it indexes into. A glyph id is an index
+/// into one specific face's tables and is meaningless without it, so the two
+/// travel as one value from shaping through rasterization and cache-keying —
+/// there is no second font in scope to accidentally pair it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlyphRef {
+    /// The face the glyph was resolved against — the run's own font when the
+    /// primary covers the codepoint, or a fallback face's key otherwise.
+    pub font: FontKey,
+    pub glyph_id: u32,
+}
+
 /// A positioned glyph produced by shaping.
 #[non_exhaustive]
 pub struct ShapedGlyph {
-    pub glyph_id: u32,
+    pub glyph: GlyphRef,
     pub x_offset: f32,
     pub y_offset: f32,
     pub x_advance: f32,
@@ -76,5 +88,5 @@ pub struct GlyphBitmap {
 pub trait TextShaper {
     fn shape(&self, run: &TextRun<'_>) -> Vec<ShapedGlyph>;
     fn metrics(&self, font: FontKey, size: f32) -> FontMetrics;
-    fn rasterize(&self, font: FontKey, glyph_id: u32, size: f32) -> GlyphBitmap;
+    fn rasterize(&self, glyph: GlyphRef, size: f32) -> GlyphBitmap;
 }
