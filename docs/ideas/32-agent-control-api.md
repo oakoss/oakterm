@@ -1,6 +1,6 @@
 ---
 title: 'Agent Control API'
-status: draft
+status: decided
 category: core
 description: 'CLI for agents to interact with and control the terminal'
 tags: ['agents', 'cli', 'api', 'control', 'permissions', 'socket']
@@ -260,6 +260,7 @@ oakterm ctl notify "Dev environment ready"
 
 ## Related Docs
 
+- [ADR-0021: Agent Control API](../adrs/0021-agent-control-api.md) — the decision: CLI over MCP, and the permission/security model
 - [Agent Management](07-agent-management.md) — the plugin that manages agent lifecycle
 - [Sidebar](04-sidebar.md) — where agent status appears
 - [Security](21-security.md) — permission model principles

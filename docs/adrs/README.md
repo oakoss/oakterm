@@ -49,3 +49,4 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0018](0018-gpu-rendering-wgpu.md)           | GPU Rendering via wgpu          | accepted | renderer, core, abstraction           |
 | [0019](0019-wasm-plugin-runtime-wasmtime.md) | WASM Plugin Runtime (Wasmtime)  | accepted | plugins, core, security, abstraction  |
 | [0020](0020-daemon-upgrade-version-skew.md)  | Daemon Upgrade and Version Skew | accepted | core                                  |
+| [0021](0021-agent-control-api.md)            | Agent Control API               | accepted | core, security, agents                |
