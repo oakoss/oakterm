@@ -24,12 +24,14 @@ pub struct TabInfo {
 pub struct TabsState {
     tabs: Vec<TabInfo>,
     active_tab: Option<u32>,
+    workspace_name: String,
 }
 
 impl TabsState {
     /// Adopt a `TabList`. Returns the previous active tab id.
     pub fn apply(&mut self, list: TabList) -> Option<u32> {
         let previous = self.active_tab;
+        self.workspace_name = list.workspace_name;
         self.tabs = list
             .tabs
             .into_iter()
@@ -59,6 +61,13 @@ impl TabsState {
     #[must_use]
     pub fn bar_visible(&self) -> bool {
         self.tabs.len() > 1
+    }
+
+    /// Active workspace name from the last `TabList`; empty before one
+    /// arrives.
+    #[must_use]
+    pub fn workspace_name(&self) -> &str {
+        &self.workspace_name
     }
 
     #[must_use]
@@ -283,6 +292,18 @@ mod tests {
         assert_eq!(state.apply(list(0, &[(0, "vim")])), Some(7));
         assert!(!state.bar_visible());
         assert_eq!(state.active_tab(), Some(0));
+    }
+
+    #[test]
+    fn apply_adopts_the_workspace_name() {
+        let mut state = TabsState::default();
+        assert_eq!(state.workspace_name(), "", "empty before any TabList");
+        state.apply(list(0, &[(0, "vim")]));
+        assert_eq!(state.workspace_name(), "default");
+        let mut renamed = list(0, &[(0, "vim")]);
+        renamed.workspace_name = "work".to_string();
+        state.apply(renamed);
+        assert_eq!(state.workspace_name(), "work");
     }
 
     #[test]

@@ -131,6 +131,37 @@ impl TextBlending {
     pub(crate) const ALL: &[&str] = &["linear", "linear_corrected"];
 }
 
+/// Window edge the status bar occupies (Spec-0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusBarPosition {
+    #[default]
+    Bottom,
+    Top,
+}
+
+impl StatusBarPosition {
+    /// Parse from a Lua config string.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "bottom" => Some(Self::Bottom),
+            "top" => Some(Self::Top),
+            _ => None,
+        }
+    }
+
+    /// Config string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bottom => "bottom",
+            Self::Top => "top",
+        }
+    }
+
+    pub(crate) const ALL: &[&str] = &["bottom", "top"];
+}
+
 /// Parsed configuration values extracted from Lua state.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // Config keys are individually spec'd bools.
@@ -151,6 +182,8 @@ pub struct ConfigValues {
     pub scrollback_archive: bool,
     pub scrollback_archive_limit: u64,
     pub daemon_persist: bool,
+    pub status_bar: bool,
+    pub status_bar_position: StatusBarPosition,
     pub check_for_updates: UpdateCheck,
     pub text_blending: TextBlending,
     /// Text gamma compensation exponent. Higher = thicker text.
@@ -175,6 +208,8 @@ impl Default for ConfigValues {
             scrollback_archive: true,
             scrollback_archive_limit: 1024 * 1024 * 1024,
             daemon_persist: false,
+            status_bar: true,
+            status_bar_position: StatusBarPosition::default(),
             check_for_updates: UpdateCheck::default(),
             text_blending: TextBlending::default(),
             text_gamma: if cfg!(target_os = "macos") { 1.7 } else { 1.0 },
@@ -265,6 +300,14 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "daemon_persist",
         validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "status_bar",
+        validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "status_bar_position",
+        validate: validate_status_bar_position,
     },
     ConfigKeyDef {
         name: "check_for_updates",
@@ -402,6 +445,19 @@ fn validate_window_decorations(_lua: &Lua, value: &Value) -> mlua::Result<()> {
             "invalid value '{}' (expected: {})",
             s,
             WindowDecorations::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_status_bar_position(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    if StatusBarPosition::from_config_str(&s).is_some() {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "invalid value '{}' (expected: {})",
+            s,
+            StatusBarPosition::ALL.join(", ")
         )))
     }
 }
@@ -650,7 +706,7 @@ mod tests {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            17,
+            19,
             "SCHEMA must match ConfigValues field count"
         );
     }

@@ -35,6 +35,9 @@ objc2-core-graphics = { version = "0.3.2", features = ["CGColorSpace"] }
 # Windowing
 winit = "0.30.13"
 
+# Status bar clock (local wall time)
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
 # Accessibility
 accesskit = "0.24.1"
 accesskit_winit = "0.33.1"

@@ -21,6 +21,9 @@ pub(crate) struct PaneView {
     pub(crate) bracketed_paste: bool,
     /// Last `(cols, rows)` sent to the daemon; suppresses redundant resizes.
     pub(crate) last_sent_dims: (u16, u16),
+    /// Last OSC title pushed by the daemon; the status bar displays the
+    /// focused pane's.
+    pub(crate) title: String,
 }
 
 impl PaneView {
@@ -31,6 +34,7 @@ impl PaneView {
             selection: None,
             bracketed_paste: false,
             last_sent_dims: (0, 0),
+            title: String::new(),
         }
     }
 

@@ -23,6 +23,7 @@ oakterm-terminal = { path = "../oakterm-terminal" }
 notify = { workspace = true }
 notify-debouncer-full = { workspace = true }
 pollster = { workspace = true }
+chrono = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

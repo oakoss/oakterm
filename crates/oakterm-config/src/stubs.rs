@@ -12,6 +12,7 @@ pub(crate) const OAKTERM_LUA_STUB: &str = r#"---@meta _
 ---@alias oakterm.CursorStyle "block"|"underline"|"bar"
 ---@alias oakterm.WindowDecorations "full"|"none"
 ---@alias oakterm.UpdateCheck "off"|"check"
+---@alias oakterm.StatusBarPosition "bottom"|"top"
 ---@alias oakterm.TextBlending "linear"|"linear_corrected"
 ---@alias oakterm.LogLevel "debug"|"info"|"warn"|"error"
 ---@alias oakterm.Platform "macos"|"linux"|"windows"
@@ -137,6 +138,8 @@ function ActionModule.show_command_palette() end
 ---@field scrollback_archive boolean Enable scrollback disk archive (default: true)
 ---@field scrollback_archive_limit integer|string Archive size limit in bytes or "1GB" (default: "1GB")
 ---@field daemon_persist boolean Keep daemon alive after last window closes (default: false)
+---@field status_bar boolean Show the status bar (default: true)
+---@field status_bar_position oakterm.StatusBarPosition Status bar edge (default: "bottom")
 ---@field check_for_updates oakterm.UpdateCheck Update check policy (default: "off")
 ---@field text_blending oakterm.TextBlending Text blending mode for color accuracy (default: "linear_corrected")
 ---@field text_gamma number Text gamma compensation, higher = thicker text (default: 1.7 macOS, 1.0 Linux)
@@ -211,6 +214,8 @@ pub(crate) const CONFIG_TEMPLATE: &str = r#"-- OakTerm configuration
 -- oakterm.config.window_decorations = "full" -- "full", "none"
 -- oakterm.config.padding = { top = 8, bottom = 8, left = 12, right = 12 }
 -- oakterm.config.scroll_indicator = true
+-- oakterm.config.status_bar = true
+-- oakterm.config.status_bar_position = "bottom" -- "bottom", "top"
 
 -- Scrollback
 -- oakterm.config.scrollback_limit = "50MB"

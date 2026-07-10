@@ -9,6 +9,7 @@ mod palette;
 mod pane_view;
 mod render;
 mod render_grid;
+mod status_bar;
 mod tab_bar;
 
 use std::collections::HashMap;
@@ -35,6 +36,7 @@ use oakterm_protocol::message::{
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
+use oakterm_config::StatusBarPosition;
 use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 use a11y_bridge::{A11yEvent, A11yModel};
@@ -380,6 +382,9 @@ struct App {
     blink_visible: bool,
     /// Next blink toggle deadline. `None` when blink is paused.
     blink_deadline: Option<std::time::Instant>,
+    /// Next status bar clock repaint (minute boundary). `None` until a
+    /// frame with a clock re-arms it.
+    clock_deadline: Option<std::time::Instant>,
     /// Whether the window currently has focus.
     focused: bool,
     /// Shared state for the AccessKit activation handler.
@@ -403,9 +408,9 @@ struct App {
     layout: PaneLayout,
     /// The active workspace's tabs, mirrored from `TabList`.
     tabs: tab_bar::TabsState,
-    /// Buttons whose press the tab bar consumed; their release is
-    /// swallowed too.
-    tab_bar_pressed_buttons: u8,
+    /// Buttons whose press window chrome (tab bar, status bar) consumed;
+    /// their release is swallowed too.
+    chrome_pressed_buttons: u8,
     /// A `ClosePane` completed and the next `TabList` should adopt the
     /// daemon's post-close focus (Spec-0007 nearest sibling). Consumed
     /// by whichever `TabList` arrives next — on this serialized
@@ -455,6 +460,7 @@ impl App {
             shift_bypassed_buttons: 0,
             blink_visible: true,
             blink_deadline: None,
+            clock_deadline: None,
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
             mouse_pressed: false,
@@ -465,7 +471,7 @@ impl App {
             wheel_accum_y: 0.0,
             layout: PaneLayout::default(),
             tabs: tab_bar::TabsState::default(),
-            tab_bar_pressed_buttons: 0,
+            chrome_pressed_buttons: 0,
             refocus_after_close: false,
             pending_pane_closes: std::collections::VecDeque::new(),
             server_minor: 0,
@@ -836,7 +842,18 @@ impl ApplicationHandler<UserEvent> for App {
         };
 
         let size = window.inner_size();
-        let (cols, rows) = window_to_grid_dims(size, font_state.metrics(), &config.padding, 0);
+        // No tab bar at startup (single tab); the status bar reserves its
+        // row from the first frame.
+        let status_px =
+            status_bar::status_bar_height(config.status_bar, Some(font_state.metrics()));
+        let (top_px, bottom_px) = chrome_split(0, status_px, config.status_bar_position);
+        let (cols, rows) = window_to_grid_dims(
+            size,
+            font_state.metrics(),
+            &config.padding,
+            top_px,
+            bottom_px,
+        );
         let grid = ClientGrid::new(cols.max(1), rows.max(1));
 
         match connect_to_daemon(&self.proxy) {
@@ -1071,17 +1088,17 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 self.update_border_hover(position.x, position.y);
-                let tab_px = self.tab_bar_px();
+                let (top_px, _) = self.chrome_px();
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
                     clippy::cast_precision_loss // padding values are small
                 )]
                 if let Some(font) = &self.font {
-                    // Subtract padding and tab bar so clicks in the gutter
-                    // map to cell 0.
+                    // Subtract padding and top chrome so clicks in the
+                    // gutter map to cell 0.
                     let px = (position.x as f32 - self.config.padding.left as f32).max(0.0);
-                    let py = (position.y as f32 - self.config.padding.top as f32 - tab_px as f32)
+                    let py = (position.y as f32 - self.config.padding.top as f32 - top_px as f32)
                         .max(0.0);
                     let col = (px / font.metrics().cell_width) as u16;
                     let row = (py / font.metrics().cell_height) as u16;
@@ -1143,26 +1160,30 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                // The tab bar owns presses in its strip: a left press
-                // switches tabs, and the press's own release is swallowed
-                // too. Releases of pane-started presses fall through so
-                // selection and shift-bypass state still clear. An active
-                // border drag keeps the button (its release ends the drag).
-                let bar_bit = tab_bar_button_bit(button);
+                // Chrome (tab bar, status bar) owns presses inside it: a
+                // left press in the tab strip switches tabs, everything
+                // else is swallowed rather than reaching the PTY, and the
+                // press's own release is swallowed too. Releases of
+                // pane-started presses fall through so selection and
+                // shift-bypass state still clear. An active border drag
+                // keeps the button (its release ends the drag).
+                let bar_bit = chrome_button_bit(button);
                 if self.border_drag.is_none()
                     && state == ElementState::Pressed
-                    && self.last_mouse_pixel.1 < f64::from(self.tab_bar_px())
+                    && self.in_chrome_row(self.last_mouse_pixel.1)
                 {
-                    if button == winit::event::MouseButton::Left {
+                    if button == winit::event::MouseButton::Left
+                        && self.last_mouse_pixel.1 < f64::from(self.tab_bar_px())
+                    {
                         if let Some(tab_id) = self.tab_at_pixel(self.last_mouse_pixel.0) {
                             self.switch_tab(tab_id);
                         }
                     }
-                    self.tab_bar_pressed_buttons |= bar_bit;
+                    self.chrome_pressed_buttons |= bar_bit;
                     return;
                 }
-                if state == ElementState::Released && self.tab_bar_pressed_buttons & bar_bit != 0 {
-                    self.tab_bar_pressed_buttons &= !bar_bit;
+                if state == ElementState::Released && self.chrome_pressed_buttons & bar_bit != 0 {
+                    self.chrome_pressed_buttons &= !bar_bit;
                     return;
                 }
                 // A split border under the cursor owns the left button:
@@ -1427,10 +1448,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::TitleChanged(pane_id, title) => {
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.title.clone_from(&title);
+                }
                 if pane_id == self.focused_pane {
                     if let Some(w) = &self.window {
                         let display = if title.is_empty() { "oakterm" } else { &title };
                         w.set_title(display);
+                        // The status bar shows the focused pane's title.
+                        w.request_redraw();
                     }
                 }
                 // Unnamed tab labels mirror pane titles; re-ask the daemon
@@ -1662,25 +1688,35 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
-        // Blink timeout reached: toggle cursor visibility.
+        // A timer fired: act only on reached deadlines, so the clock
+        // waking early never toggles the blink phase (and vice versa).
         if matches!(cause, winit::event::StartCause::ResumeTimeReached { .. }) {
-            if self.should_blink() {
-                self.blink_visible = !self.blink_visible;
-                self.blink_deadline =
-                    Some(std::time::Instant::now() + std::time::Duration::from_millis(530));
+            let now = std::time::Instant::now();
+            if self.blink_deadline.is_some_and(|d| now >= d) {
+                if self.should_blink() {
+                    self.blink_visible = !self.blink_visible;
+                    self.blink_deadline = Some(now + std::time::Duration::from_millis(530));
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                } else {
+                    // Conditions changed; stop blinking.
+                    self.blink_visible = true;
+                    self.blink_deadline = None;
+                }
+            }
+            if self.clock_deadline.is_some_and(|d| now >= d) {
+                // The redraw re-arms the deadline at the next boundary.
+                self.clock_deadline = None;
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
-            } else {
-                // Conditions changed; stop blinking.
-                self.blink_visible = true;
-                self.blink_deadline = None;
             }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(deadline) = self.blink_deadline {
+        if let Some(deadline) = next_wakeup(self.blink_deadline, self.clock_deadline) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -2348,7 +2384,7 @@ impl App {
     /// (Spec-0001). No-op (caller retries next frame) while font, view,
     /// or daemon are still unavailable.
     fn try_send_initial_resize(&mut self) {
-        let tab_px = self.tab_bar_px();
+        let (top_px, bottom_px) = self.chrome_px();
         let pending = match (
             &self.gpu,
             &self.font,
@@ -2357,8 +2393,13 @@ impl App {
         ) {
             (Some(gpu), Some(font), Some(_), Some(_)) => {
                 let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
-                let (cols, rows) =
-                    window_to_grid_dims(size, font.metrics(), &self.config.padding, tab_px);
+                let (cols, rows) = window_to_grid_dims(
+                    size,
+                    font.metrics(),
+                    &self.config.padding,
+                    top_px,
+                    bottom_px,
+                );
                 Some(window_resize(self.focused_pane, (cols, rows), size))
             }
             _ => None,
@@ -2458,6 +2499,35 @@ impl App {
         )
     }
 
+    /// Status bar height in pixels: one cell row when enabled, else 0.
+    fn status_bar_px(&self) -> u32 {
+        status_bar::status_bar_height(
+            self.config.status_bar,
+            self.font.as_ref().map(FontState::metrics),
+        )
+    }
+
+    /// `(top, bottom)` chrome heights in pixels: the tab bar always sits
+    /// at the top; the status bar joins whichever edge is configured.
+    fn chrome_px(&self) -> (u32, u32) {
+        chrome_split(
+            self.tab_bar_px(),
+            self.status_bar_px(),
+            self.config.status_bar_position,
+        )
+    }
+
+    /// Whether pixel row `y` lies in window chrome (tab bar or status
+    /// bar) rather than pane content; chrome owns mouse presses there.
+    fn in_chrome_row(&self, y: f64) -> bool {
+        let (top_px, bottom_px) = self.chrome_px();
+        if y < f64::from(top_px) {
+            return true;
+        }
+        let Some(gpu) = &self.gpu else { return false };
+        y >= f64::from(gpu.config.height.saturating_sub(bottom_px))
+    }
+
     /// The tab under pixel column `x` of the tab bar, resolved through
     /// the same strip layout the renderer draws.
     fn tab_at_pixel(&self, x: f64) -> Option<u32> {
@@ -2476,21 +2546,22 @@ impl App {
         tab_bar::hit_test(&spans, col)
     }
 
-    /// The window's content area in pixels (window minus padding and the
-    /// tab bar), where the layout tree's panes tile.
+    /// The window's content area in pixels (window minus padding and
+    /// chrome), where the layout tree's panes tile.
     fn content_rect(&self) -> Option<layout::PixelRect> {
         let gpu = self.gpu.as_ref()?;
         let pad = &self.config.padding;
-        let tab_px = self.tab_bar_px();
+        let (top_px, bottom_px) = self.chrome_px();
         Some(layout::PixelRect {
             x: pad.left,
-            y: pad.top.saturating_add(tab_px),
+            y: pad.top.saturating_add(top_px),
             width: gpu.config.width.saturating_sub(pad.left + pad.right),
             height: gpu
                 .config
                 .height
                 .saturating_sub(pad.top + pad.bottom)
-                .saturating_sub(tab_px),
+                .saturating_sub(top_px)
+                .saturating_sub(bottom_px),
         })
     }
 
@@ -2508,6 +2579,17 @@ impl App {
         // single-pane path below sizes to the whole window.
         if self.layout.has_tree() {
             let content = self.content_rect();
+            if let Some(c) = &content {
+                if c.width == 0 || c.height == 0 {
+                    // Grid sizing floors at 1x1, so panes silently stop
+                    // painting without this trace of why.
+                    warn!(
+                        width = c.width,
+                        height = c.height,
+                        "content area collapsed; window smaller than padding + chrome"
+                    );
+                }
+            }
             self.layout.recompute(content);
             if self.layout.active_geometry().is_some() {
                 if self.initial_resize_sent {
@@ -2527,11 +2609,16 @@ impl App {
             Some(gpu) => PhysicalSize::new(gpu.config.width, gpu.config.height),
             None => return,
         };
-        let tab_px = self.tab_bar_px();
+        let (top_px, bottom_px) = self.chrome_px();
         let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
             (Some(font), Some(view)) => {
-                let (cols, rows) =
-                    window_to_grid_dims(size, font.metrics(), &self.config.padding, tab_px);
+                let (cols, rows) = window_to_grid_dims(
+                    size,
+                    font.metrics(),
+                    &self.config.padding,
+                    top_px,
+                    bottom_px,
+                );
                 let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
                 if dims_changed {
                     view.resize(cols, rows);
@@ -2671,6 +2758,8 @@ impl App {
         let font_changed = (cr.config.font_size - self.config.font_size).abs() > f64::EPSILON
             || cr.config.font_family != self.config.font_family;
         let blending_changed = cr.config.text_blending != self.config.text_blending;
+        let chrome_changed = cr.config.status_bar != self.config.status_bar
+            || cr.config.status_bar_position != self.config.status_bar_position;
 
         let had_error = self.config_error.is_some();
         self.config = cr.config;
@@ -2707,6 +2796,12 @@ impl App {
                 // self.font still holds the old metrics; use font_state's.
                 let tab_px =
                     tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
+                let status_px = status_bar::status_bar_height(
+                    self.config.status_bar,
+                    Some(font_state.metrics()),
+                );
+                let (top_px, bottom_px) =
+                    chrome_split(tab_px, status_px, self.config.status_bar_position);
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
@@ -2715,7 +2810,8 @@ impl App {
                         phys,
                         font_state.metrics(),
                         &self.config.padding,
-                        tab_px,
+                        top_px,
+                        bottom_px,
                     );
                     let cols = cols.max(1);
                     let rows = rows.max(1);
@@ -2777,6 +2873,17 @@ impl App {
             }
         }
 
+        // Status bar changes move the content area. Runs after the font
+        // block so a combined reload lays out splits against the new
+        // metrics; last_sent_dims suppresses redundant per-pane resizes.
+        if chrome_changed {
+            self.relayout_panes();
+        }
+        if !self.config.status_bar && self.clock_deadline.is_some() {
+            self.clock_deadline = None;
+            tracing::trace!("status bar disabled; clock repaint disarmed");
+        }
+
         // Fire config.reloaded event on the new handlers.
         if let Some(lua) = &self.lua_vm {
             for result in self.event_registry.fire(lua, "config.reloaded", &[]) {
@@ -2798,13 +2905,34 @@ impl App {
     }
 }
 
-/// Bit for tracking a button press the tab bar consumed. Matches the
+/// Bit for tracking a button press window chrome consumed. Matches the
 /// PTY encoding's button order (left=0, middle=1, right=2).
-fn tab_bar_button_bit(button: winit::event::MouseButton) -> u8 {
+fn chrome_button_bit(button: winit::event::MouseButton) -> u8 {
     match button {
         winit::event::MouseButton::Middle => 1 << 1,
         winit::event::MouseButton::Right => 1 << 2,
         _ => 1 << 0,
+    }
+}
+
+/// Earliest of the armed timer deadlines, or `None` when both are off
+/// (the event loop then waits indefinitely).
+fn next_wakeup(
+    blink: Option<std::time::Instant>,
+    clock: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    match (blink, clock) {
+        (Some(b), Some(c)) => Some(b.min(c)),
+        (d, None) | (None, d) => d,
+    }
+}
+
+/// Split tab-bar and status-bar heights into `(top, bottom)` chrome:
+/// the tab bar is always top; the status bar joins its configured edge.
+fn chrome_split(tab_px: u32, status_px: u32, position: StatusBarPosition) -> (u32, u32) {
+    match position {
+        StatusBarPosition::Top => (tab_px.saturating_add(status_px), 0),
+        StatusBarPosition::Bottom => (tab_px, status_px),
     }
 }
 
@@ -2818,12 +2946,14 @@ fn window_to_grid_dims(
     metrics: &oakterm_renderer::shaper::FontMetrics,
     padding: &oakterm_config::Padding,
     top_chrome_px: u32,
+    bottom_chrome_px: u32,
 ) -> (u16, u16) {
     let usable_w = size.width.saturating_sub(padding.left + padding.right);
     let usable_h = size
         .height
         .saturating_sub(padding.top + padding.bottom)
-        .saturating_sub(top_chrome_px);
+        .saturating_sub(top_chrome_px)
+        .saturating_sub(bottom_chrome_px);
     // Clamp to the daemon's cap (as grid_dims does) so a very wide display or
     // tiny font can't produce a Resize the daemon rejects.
     let cols = ((usable_w as f32 / metrics.cell_width) as u16).clamp(1, MAX_GRID_DIMENSION);
@@ -2966,8 +3096,8 @@ fn version_string() -> String {
 mod tests {
     use super::{
         ActionDesc, App, FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
-        drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_sync_timing, try_init_font,
-        window_to_grid_dims,
+        chrome_split, drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_sync_timing,
+        try_init_font, window_to_grid_dims,
     };
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
@@ -3066,14 +3196,37 @@ mod tests {
     }
 
     #[test]
-    fn window_to_grid_dims_subtracts_top_chrome() {
+    fn window_to_grid_dims_subtracts_top_and_bottom_chrome() {
         let Some(m) = metrics(10.0, 20.0) else { return };
         let size = PhysicalSize::new(800, 600);
         let pad = oakterm_config::Padding::default();
-        let (cols_bare, rows_bare) = window_to_grid_dims(size, &m, &pad, 0);
-        let (cols_bar, rows_bar) = window_to_grid_dims(size, &m, &pad, 20);
-        assert_eq!(cols_bar, cols_bare);
-        assert_eq!(rows_bar, rows_bare - 1);
+        let (cols_bare, rows_bare) = window_to_grid_dims(size, &m, &pad, 0, 0);
+        let (cols_top, rows_top) = window_to_grid_dims(size, &m, &pad, 20, 0);
+        assert_eq!(cols_top, cols_bare);
+        assert_eq!(rows_top, rows_bare - 1);
+        let (cols_both, rows_both) = window_to_grid_dims(size, &m, &pad, 20, 20);
+        assert_eq!(cols_both, cols_bare);
+        assert_eq!(rows_both, rows_bare - 2);
+    }
+
+    #[test]
+    fn chrome_split_places_the_status_bar_on_its_configured_edge() {
+        use oakterm_config::StatusBarPosition;
+        assert_eq!(chrome_split(17, 17, StatusBarPosition::Bottom), (17, 17));
+        assert_eq!(chrome_split(17, 17, StatusBarPosition::Top), (34, 0));
+        assert_eq!(chrome_split(0, 17, StatusBarPosition::Top), (17, 0));
+    }
+
+    #[test]
+    fn next_wakeup_picks_the_earliest_armed_deadline() {
+        let now = std::time::Instant::now();
+        let soon = now + std::time::Duration::from_millis(100);
+        let later = now + std::time::Duration::from_secs(30);
+        assert_eq!(super::next_wakeup(Some(soon), Some(later)), Some(soon));
+        assert_eq!(super::next_wakeup(Some(later), Some(soon)), Some(soon));
+        assert_eq!(super::next_wakeup(None, Some(later)), Some(later));
+        assert_eq!(super::next_wakeup(Some(soon), None), Some(soon));
+        assert_eq!(super::next_wakeup(None, None), None);
     }
 
     fn geometry_of(panes: &[(u32, u32, u32)]) -> LayoutGeometry {

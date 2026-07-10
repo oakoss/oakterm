@@ -5,7 +5,8 @@
 use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
 use crate::keybind::{Action, KeyChord, KeybindRegistry};
 use crate::schema::{
-    self, ConfigValues, CursorStyle, Padding, TextBlending, UpdateCheck, WindowDecorations,
+    self, ConfigValues, CursorStyle, Padding, StatusBarPosition, TextBlending, UpdateCheck,
+    WindowDecorations,
 };
 use mlua::{Function, Lua, Table, Value};
 
@@ -602,6 +603,23 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("daemon_persist")?
         .unwrap_or(defaults.daemon_persist);
 
+    let status_bar: bool = backing
+        .get::<Option<bool>>("status_bar")?
+        .unwrap_or(defaults.status_bar);
+
+    let status_bar_position = match backing.get::<Option<mlua::String>>("status_bar_position")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            StatusBarPosition::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid status_bar_position '{s}' (expected: {})",
+                    StatusBarPosition::ALL.join(", ")
+                ))
+            })?
+        }
+        None => defaults.status_bar_position,
+    };
+
     let check_for_updates = match backing.get::<Option<mlua::String>>("check_for_updates")? {
         Some(s) => {
             let s = s.to_str()?;
@@ -647,6 +665,8 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         scrollback_archive,
         scrollback_archive_limit,
         daemon_persist,
+        status_bar,
+        status_bar_position,
         check_for_updates,
         text_blending,
         text_gamma,
@@ -957,6 +977,39 @@ mod tests {
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("full, none"), "got: {msg}");
+    }
+
+    #[test]
+    fn status_bar_defaults_on_at_bottom() {
+        let lua = setup();
+        let cfg = extract_config(&lua).unwrap();
+        assert!(cfg.status_bar);
+        assert_eq!(cfg.status_bar_position, StatusBarPosition::Bottom);
+    }
+
+    #[test]
+    fn set_status_bar_keys() {
+        let lua = setup();
+        lua.load("oakterm.config.status_bar = false")
+            .exec()
+            .unwrap();
+        lua.load(r#"oakterm.config.status_bar_position = "top""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert!(!cfg.status_bar);
+        assert_eq!(cfg.status_bar_position, StatusBarPosition::Top);
+    }
+
+    #[test]
+    fn set_invalid_status_bar_position() {
+        let lua = setup();
+        let err = lua
+            .load(r#"oakterm.config.status_bar_position = "left""#)
+            .exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("bottom, top"), "got: {msg}");
     }
 
     #[test]

@@ -2,20 +2,46 @@
 //! texture, assembles the frame via [`crate::frame`], uploads glyphs to the
 //! GPU atlases, and draws.
 
+use std::time::{Duration, Instant};
+
 use oakterm_renderer::pipeline::{BgSection, TextUniforms};
 use tracing::error;
 use wgpu::CurrentSurfaceTexture;
 
 use crate::frame::{
-    FontState, FrameAssembly, assemble_frame, assemble_palette, assemble_tab_bar, solid_section,
+    FontState, FrameAssembly, assemble_frame, assemble_palette, assemble_status_bar,
+    assemble_tab_bar, solid_section,
 };
-use crate::{App, layout, tab_bar};
+use crate::{App, layout, status_bar, tab_bar};
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
 const PANE_BORDER_RGB: [u8; 3] = [64, 64, 64];
 const FOCUSED_BORDER_RGB: [u8; 3] = [92, 148, 255];
 
 impl App {
+    /// Acquire the next surface texture, reconfiguring and retrying on a
+    /// lost/outdated swapchain. `None` skips this frame.
+    fn acquire_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
+        let gpu = self.gpu.as_mut()?;
+        match gpu.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
+                Some(frame)
+            }
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
+                gpu.surface.configure(&gpu.device, &gpu.config);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                None
+            }
+            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => None,
+            CurrentSurfaceTexture::Validation => {
+                error!("wgpu surface validation error; skipping frame");
+                None
+            }
+        }
+    }
+
     /// Draw and present one frame. Retries initial sizing while startup is
     /// still settling, then assembles backgrounds and glyphs for the visible
     /// panes (plus the tab bar and split borders) and submits the draw.
@@ -28,30 +54,18 @@ impl App {
         }
 
         // In single-pane mode the focused pane fills the content
-        // area. Computed before the GPU borrow below.
+        // area. Computed before the GPU borrow below, as is the top
+        // chrome height the palette overlay offsets from.
         let Some(fallback) = self.content_rect() else {
             return;
         };
         let render_list = self.layout.visible_panes(self.focused_pane, fallback);
+        let (top_chrome, _) = self.chrome_px();
 
-        let Some(gpu) = &mut self.gpu else { return };
-        let frame = match gpu.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
-                frame
-            }
-            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                gpu.surface.configure(&gpu.device, &gpu.config);
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-                return;
-            }
-            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
-            CurrentSurfaceTexture::Validation => {
-                error!("wgpu surface validation error; skipping frame");
-                return;
-            }
+        let Some(frame) = self.acquire_frame() else {
+            return;
         };
+        let Some(gpu) = &mut self.gpu else { return };
 
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(gpu.config.format),
@@ -73,25 +87,32 @@ impl App {
             if self.tabs.bar_visible() {
                 assemble_tab_bar(font, &self.tabs, viewport, &mut assembly);
             }
+            if self.config.status_bar {
+                let window_height = gpu.config.height;
+                assemble_status_bar_chrome(
+                    font,
+                    &self.config,
+                    &self.tabs,
+                    self.panes
+                        .get(&self.focused_pane)
+                        .map_or("", |v| v.title.as_str()),
+                    window_height,
+                    viewport,
+                    &mut assembly,
+                );
+            }
             gpu.upload_glyphs(font.atlas(), &assembly.uploads);
             gpu.upload_color_glyphs(font.color_atlas(), &assembly.color_uploads);
             bg_sections = assembly.bg_sections;
             glyph_instances = assembly.glyphs;
         }
 
-        // Pane borders; segments adjacent to the focused pane get
-        // the highlight color.
-        if let Some(geo) = self.layout.active_geometry() {
-            let focused = layout::focused_border_indices(geo, self.focused_pane);
-            for (i, border) in geo.borders.iter().enumerate() {
-                let rgb = if focused.contains(&i) {
-                    FOCUSED_BORDER_RGB
-                } else {
-                    PANE_BORDER_RGB
-                };
-                bg_sections.push(solid_section(*border, rgb, viewport));
-            }
-        }
+        push_pane_borders(
+            self.layout.active_geometry(),
+            self.focused_pane,
+            viewport,
+            &mut bg_sections,
+        );
 
         // The palette assembles after everything else so its panel covers
         // pane content and split borders; it also drops the pane glyphs
@@ -102,8 +123,8 @@ impl App {
                     glyphs: std::mem::take(&mut glyph_instances),
                     ..Default::default()
                 };
-                let top = tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font.metrics()));
-                assemble_palette(font, &self.palette, viewport, top, &mut overlay);
+                // Full top chrome, so the palette clears a top status bar.
+                assemble_palette(font, &self.palette, viewport, top_chrome, &mut overlay);
                 gpu.upload_glyphs(font.atlas(), &overlay.uploads);
                 gpu.upload_color_glyphs(font.color_atlas(), &overlay.color_uploads);
                 bg_sections.extend(overlay.bg_sections);
@@ -134,7 +155,67 @@ impl App {
             w.pre_present_notify();
         }
         frame.present();
+
+        // Re-arm the minute repaint after each frame that shows a clock;
+        // firing clears the deadline so drift never accumulates.
+        if self.config.status_bar && self.clock_deadline.is_none() {
+            let deadline =
+                Instant::now() + Duration::from_secs(status_bar::seconds_to_next_minute());
+            tracing::trace!(?deadline, "status bar clock repaint armed");
+            self.clock_deadline = Some(deadline);
+        }
     }
+}
+
+/// Pane borders; segments adjacent to the focused pane get the
+/// highlight color.
+fn push_pane_borders(
+    geo: Option<&layout::LayoutGeometry>,
+    focused_pane: u32,
+    viewport: (f32, f32),
+    bg_sections: &mut Vec<BgSection>,
+) {
+    let Some(geo) = geo else { return };
+    let focused = layout::focused_border_indices(geo, focused_pane);
+    for (i, border) in geo.borders.iter().enumerate() {
+        let rgb = if focused.contains(&i) {
+            FOCUSED_BORDER_RGB
+        } else {
+            PANE_BORDER_RGB
+        };
+        bg_sections.push(solid_section(*border, rgb, viewport));
+    }
+}
+
+/// Assemble the status bar at its configured edge: bottom of the window,
+/// or directly below the tab bar for `status_bar_position = "top"`.
+fn assemble_status_bar_chrome(
+    font: &mut FontState,
+    config: &oakterm_config::ConfigValues,
+    tabs: &tab_bar::TabsState,
+    pane_title: &str,
+    window_height: u32,
+    viewport: (f32, f32),
+    assembly: &mut FrameAssembly,
+) {
+    let metrics = *font.metrics();
+    let bar_h = status_bar::status_bar_height(true, Some(&metrics));
+    let y = match config.status_bar_position {
+        oakterm_config::StatusBarPosition::Bottom => window_height.saturating_sub(bar_h),
+        oakterm_config::StatusBarPosition::Top => {
+            tab_bar::tab_bar_height(tabs.bar_visible(), Some(&metrics))
+        }
+    };
+    let clock = status_bar::clock_text();
+    let content = status_bar::StatusContent {
+        mode: None,
+        workspace: tabs.workspace_name(),
+        tabs: tabs.tabs(),
+        active_tab: tabs.active_tab(),
+        pane_title,
+        clock: &clock,
+    };
+    assemble_status_bar(font, &content, viewport, y, assembly);
 }
 
 /// GPU text-shading uniforms from the active font, or safe placeholder

@@ -248,6 +248,18 @@ fn push_grid(
     assembly.color_uploads.extend(color_uploads);
 }
 
+/// Append a synthetic chrome grid (tab bar, status bar, palette) at pixel
+/// `origin`: no cursor, no selection, no scrollback offset.
+fn push_chrome_grid(
+    assembly: &mut FrameAssembly,
+    font: &mut FontState,
+    grid: &ClientGrid,
+    origin: (f32, f32),
+    viewport: (f32, f32),
+) {
+    push_grid(assembly, font, grid, origin, false, None, 0, viewport);
+}
+
 /// Append the tab bar to `assembly`: a full-width underlay at the
 /// window's top edge plus a one-row synthetic grid of tab labels
 /// rendered through the normal glyph path.
@@ -287,7 +299,72 @@ pub(crate) fn assemble_tab_bar(
         grid.set_cell(col, 0, cell.ch, fg, bg);
     }
 
-    push_grid(assembly, font, &grid, (0.0, 0.0), false, None, 0, viewport);
+    push_chrome_grid(assembly, font, &grid, (0.0, 0.0), viewport);
+}
+
+/// Status bar colors, fixed until the theme system (TREK-212) lands.
+/// The bar shares the tab bar's palette; the mode indicator inverts to
+/// the accent color for visibility.
+const STATUS_FG_RGB: [u8; 3] = [160, 160, 160];
+const STATUS_BRIGHT_FG_RGB: [u8; 3] = [220, 220, 220];
+const MODE_BG_RGB: [u8; 3] = [120, 200, 255];
+
+/// Append the status bar to `assembly`: a full-width underlay at pixel
+/// row `y_px` plus a one-row synthetic grid of segment cells, inset one
+/// cell from each window edge so end glyphs clear the border and macOS
+/// corner radius.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn assemble_status_bar(
+    font: &mut FontState,
+    content: &crate::status_bar::StatusContent,
+    viewport: (f32, f32),
+    y_px: u32,
+    assembly: &mut FrameAssembly,
+) {
+    let metrics = font.metrics;
+    let bar_h = crate::status_bar::status_bar_height(true, Some(&metrics));
+    let width_px = viewport.0.max(0.0) as u32;
+    assembly.bg_sections.push(solid_section(
+        layout::PixelRect {
+            x: 0,
+            y: y_px,
+            width: width_px,
+            height: bar_h,
+        },
+        TAB_BAR_BG_RGB,
+        viewport,
+    ));
+
+    let view_cols =
+        ((viewport.0 / metrics.cell_width).max(0.0) as u16).clamp(1, MAX_GRID_DIMENSION);
+    let cols = view_cols.saturating_sub(2).max(1);
+    let mut grid = ClientGrid::new(cols, 1);
+    grid.fill_bg(TAB_BAR_BG_RGB);
+    for (col, cell) in crate::status_bar::layout_row(content, cols) {
+        let (fg, bg) = match cell.kind {
+            crate::status_bar::SegmentKind::Mode => (TAB_BAR_BG_RGB, MODE_BG_RGB),
+            crate::status_bar::SegmentKind::Workspace => (STATUS_BRIGHT_FG_RGB, TAB_BAR_BG_RGB),
+            crate::status_bar::SegmentKind::Tab { active: true } => {
+                (TAB_ACTIVE_FG_RGB, TAB_ACTIVE_BG_RGB)
+            }
+            crate::status_bar::SegmentKind::Tab { active: false } => {
+                (TAB_INACTIVE_FG_RGB, TAB_INACTIVE_BG_RGB)
+            }
+            crate::status_bar::SegmentKind::Title | crate::status_bar::SegmentKind::Clock => {
+                (STATUS_FG_RGB, TAB_BAR_BG_RGB)
+            }
+        };
+        grid.set_cell(col, 0, cell.ch, fg, bg);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    push_chrome_grid(
+        assembly,
+        font,
+        &grid,
+        (metrics.cell_width, y_px as f32),
+        viewport,
+    );
 }
 
 /// Palette colors, fixed until the theme system (TREK-212) lands.
@@ -379,16 +456,7 @@ pub(crate) fn assemble_palette(
         }
     }
 
-    push_grid(
-        assembly,
-        font,
-        &grid,
-        (x_px, y_px),
-        false,
-        None,
-        0,
-        viewport,
-    );
+    push_chrome_grid(assembly, font, &grid, (x_px, y_px), viewport);
 }
 
 /// Render one result row: selection background, label with match-position
@@ -751,5 +819,66 @@ mod tests {
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_top, 0.0);
         assert!(!assembly.glyphs.is_empty());
+    }
+
+    #[test]
+    fn assemble_status_bar_emits_underlay_and_row_at_its_pixel_row() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let tabs = [crate::tab_bar::TabInfo {
+            tab_id: 0,
+            focused_pane: 0,
+            name: "vim".to_string(),
+        }];
+        let content = crate::status_bar::StatusContent {
+            mode: None,
+            workspace: "default",
+            tabs: &tabs,
+            active_tab: Some(0),
+            pane_title: "~/project",
+            clock: "14:30",
+        };
+
+        let mut assembly = FrameAssembly::default();
+        super::assemble_status_bar(&mut font, &content, (400.0, 300.0), 283, &mut assembly);
+
+        // 283 stands in for the window's bottom edge. The grid insets one
+        // cell per side, so pad_left is a full cell width and cols is
+        // view_cols - 2.
+        assert_eq!(assembly.bg_sections.len(), 2);
+        assert_eq!(assembly.bg_sections[1].uniforms.rows, 1);
+        assert_eq!(
+            assembly.bg_sections[1].uniforms.pad_left,
+            font.metrics().cell_width
+        );
+        assert_eq!(assembly.bg_sections[1].uniforms.pad_top, 283.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let view_cols = (400.0 / font.metrics().cell_width) as u32;
+        assert_eq!(assembly.bg_sections[1].uniforms.cols, view_cols - 2);
+        assert!(!assembly.glyphs.is_empty());
+    }
+
+    #[test]
+    fn assemble_status_bar_renders_no_glyphs_when_narrower_than_its_inset() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            return;
+        };
+        let content = crate::status_bar::StatusContent {
+            workspace: "default",
+            pane_title: "~/project",
+            clock: "14:30",
+            ..Default::default()
+        };
+
+        let mut assembly = FrameAssembly::default();
+        let viewport = (font.metrics().cell_width * 1.5, 300.0);
+        super::assemble_status_bar(&mut font, &content, viewport, 283, &mut assembly);
+
+        // The floor at one column leaves no room for any segment; the
+        // underlay still paints, no glyph lands off-surface.
+        assert_eq!(assembly.bg_sections.len(), 2);
+        assert_eq!(assembly.bg_sections[1].uniforms.cols, 1);
+        assert!(assembly.glyphs.is_empty());
     }
 }

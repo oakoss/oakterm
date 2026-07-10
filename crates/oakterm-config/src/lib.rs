@@ -19,7 +19,8 @@ pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId, Physic
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{
-    ConfigValues, CursorStyle, Padding, TextBlending, UpdateCheck, WindowDecorations,
+    ConfigValues, CursorStyle, Padding, StatusBarPosition, TextBlending, UpdateCheck,
+    WindowDecorations,
 };
 
 use mlua::{HookTriggers, LuaOptions, StdLib, Value, VmState};
