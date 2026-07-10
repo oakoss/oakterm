@@ -119,8 +119,8 @@ enum UserEvent {
 }
 
 /// Copyable action descriptor to break the borrow on `keybind_registry`
-/// during `dispatch_action_at`. `Callback` stores the index back into the
-/// registry since `RegistryKey` is not `Clone`.
+/// during `dispatch_action_at`. `Callback`/`LeaderCallback` store the
+/// index back into their source table since `RegistryKey` is not `Clone`.
 enum ActionDesc {
     ScrollUp(u32),
     ScrollDown(u32),
@@ -131,6 +131,7 @@ enum ActionDesc {
     ToggleFullscreen,
     ReloadConfig,
     Callback(usize),
+    LeaderCallback(usize),
     SplitPane(WireSplitDirection),
     FocusPane(layout::FocusDirection),
     NewTab,
@@ -140,6 +141,116 @@ enum ActionDesc {
     NextTab,
     PreviousTab,
     ShowCommandPalette,
+}
+
+/// Copy-out result for one action: its descriptor, "consume the key"
+/// (config typo), or "callback — the caller maps it to an indexed
+/// descriptor for its source table".
+enum DescOutcome {
+    Desc(ActionDesc),
+    Consume,
+    Callback,
+}
+
+/// Copy an action into its dispatch descriptor (see [`ActionDesc`]).
+fn desc_of_action(action: &oakterm_config::Action) -> DescOutcome {
+    use oakterm_config::Action;
+    let desc = match action {
+        Action::ScrollUp(n) => ActionDesc::ScrollUp(*n),
+        Action::ScrollDown(n) => ActionDesc::ScrollDown(*n),
+        Action::ScrollToPrompt(d) => ActionDesc::ScrollToPrompt(*d),
+        Action::SendString(b) => ActionDesc::SendString(b.clone()),
+        Action::Copy => ActionDesc::Copy,
+        Action::Paste => ActionDesc::Paste,
+        Action::ToggleFullscreen => ActionDesc::ToggleFullscreen,
+        Action::ReloadConfig => ActionDesc::ReloadConfig,
+        Action::Callback(_) => return DescOutcome::Callback,
+        // Config directions are placement-relative (oakterm.PaneDirection);
+        // the wire protocol carries only the split axis, so left/right
+        // and up/down collapse — the daemon always places the new pane
+        // after the target (Spec-0007 Split).
+        Action::SplitPane { direction, size } => {
+            if (size - 0.5).abs() > f64::EPSILON {
+                // SplitPane (0xA0) has no size field yet.
+                warn!(size, "split_pane size not yet supported; using 0.5");
+            }
+            match direction.as_str() {
+                "left" | "right" => ActionDesc::SplitPane(WireSplitDirection::Horizontal),
+                "up" | "down" => ActionDesc::SplitPane(WireSplitDirection::Vertical),
+                other => {
+                    // Consume the chord: a config typo must not leak
+                    // the bound key's bytes into the shell.
+                    warn!(direction = other, "unknown split direction in keybind");
+                    return DescOutcome::Consume;
+                }
+            }
+        }
+        Action::FocusPaneDirection(direction) => {
+            use layout::FocusDirection;
+            match direction.as_str() {
+                "left" => ActionDesc::FocusPane(FocusDirection::Left),
+                "right" => ActionDesc::FocusPane(FocusDirection::Right),
+                "up" => ActionDesc::FocusPane(FocusDirection::Up),
+                "down" => ActionDesc::FocusPane(FocusDirection::Down),
+                other => {
+                    // Consume the chord: a config typo must not leak
+                    // the bound key's bytes into the shell.
+                    warn!(direction = other, "unknown focus direction in keybind");
+                    return DescOutcome::Consume;
+                }
+            }
+        }
+        Action::NewTab => ActionDesc::NewTab,
+        Action::CloseTab => ActionDesc::CloseTab,
+        Action::ClosePane => ActionDesc::ClosePane,
+        Action::SwitchTab(n) => ActionDesc::SwitchTab(*n),
+        Action::NextTab => ActionDesc::NextTab,
+        Action::PreviousTab => ActionDesc::PreviousTab,
+        Action::ShowCommandPalette => ActionDesc::ShowCommandPalette,
+    };
+    DescOutcome::Desc(desc)
+}
+
+/// Run a Lua keybind callback under the standard 100ms timeout hook.
+fn run_keybind_callback(lua: &oakterm_config::Lua, key: &oakterm_config::mlua::RegistryKey) {
+    let func = match lua.registry_value::<oakterm_config::mlua::Function>(key) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(error = %e, "keybind callback error");
+            return;
+        }
+    };
+    if let Err(e) = lua.set_hook(
+        oakterm_config::mlua::HookTriggers::new().every_nth_instruction(10_000),
+        {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(100);
+            move |_lua, _debug| {
+                if start.elapsed() > timeout {
+                    Err(oakterm_config::mlua::Error::RuntimeError(
+                        "keybind callback timed out (100ms)".to_string(),
+                    ))
+                } else {
+                    Ok(oakterm_config::mlua::VmState::Continue)
+                }
+            }
+        },
+    ) {
+        warn!(error = %e, "keybind callback: failed to install timeout hook");
+        return;
+    }
+    if let Err(e) = func.call::<()>(()) {
+        warn!(error = %e, "keybind callback error");
+    }
+    lua.remove_hook();
+}
+
+/// A leader press awaiting its follow-up key (ADR-0011 layer 1).
+struct LeaderPending {
+    /// When the wait expires and the buffered bytes flush to the PTY.
+    deadline: std::time::Instant,
+    /// The leader chord's own PTY encoding, sent if no follow-up match.
+    buffered: Option<Vec<u8>>,
 }
 
 /// Pixel slop around a 1px split border that still grabs it.
@@ -385,6 +496,13 @@ struct App {
     /// Next status bar clock repaint (minute boundary). `None` until a
     /// frame with a clock re-arms it.
     clock_deadline: Option<std::time::Instant>,
+    /// Active modal key table (copy mode, resize mode): while set,
+    /// unmatched keys are dropped rather than forwarded to the PTY.
+    /// Constructed programmatically by the mode that owns it (no Lua
+    /// registration API in Phase 1); `None` in normal operation.
+    active_key_table: Option<oakterm_config::KeyTable>,
+    /// A leader press awaiting its follow-up key.
+    leader_pending: Option<LeaderPending>,
     /// Whether the window currently has focus.
     focused: bool,
     /// Shared state for the AccessKit activation handler.
@@ -461,6 +579,8 @@ impl App {
             blink_visible: true,
             blink_deadline: None,
             clock_deadline: None,
+            active_key_table: None,
+            leader_pending: None,
             focused: true,
             a11y_state: Arc::new(Mutex::new(None)),
             mouse_pressed: false,
@@ -1021,28 +1141,74 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
 
-                // Look up keybind BEFORE clearing selection so Copy can read
-                // it. Chords resolve against the layout key, not the
-                // platform-composed character — macOS Option+H arrives as
-                // "˙" in logical_key, which can never match an alt+h
-                // binding (Spec-0011 Keybind Lookup Layer). On a logical
-                // miss, retry against the physical key so position-based
-                // binds (oak_mod+[1-9]) fire on layouts where the digit's
-                // base character differs (AZERTY; TREK-268).
+                // Resolve through the dispatch layers BEFORE clearing
+                // selection so Copy can read it. Chords resolve against
+                // the layout key, not the platform-composed character —
+                // macOS Option+H arrives as "˙" in logical_key, which can
+                // never match an alt+h binding (Spec-0011 Keybind Lookup
+                // Layer). On a logical miss, each layer retries against
+                // the physical key so position-based binds (oak_mod+[1-9])
+                // fire on layouts where the digit's base character
+                // differs (AZERTY; TREK-268).
                 let chord_key = event.key_without_modifiers();
-                let idx = input::winit_to_chord(self.modifiers, &chord_key)
-                    .and_then(|chord| self.keybind_registry.lookup_index(&chord))
-                    .or_else(|| {
-                        input::physical_to_chord(self.modifiers, event.physical_key)
-                            .and_then(|chord| self.keybind_registry.lookup_index(&chord))
-                    });
-                if let Some(idx) = idx {
-                    if self.dispatch_action_at(idx) {
+                let logical = input::winit_to_chord(self.modifiers, &chord_key);
+                let physical = input::physical_to_chord(self.modifiers, event.physical_key);
+                let ctx = input::DispatchContext {
+                    registry: &self.keybind_registry,
+                    table: self.active_key_table.as_ref(),
+                    leader: self.config.leader.as_ref(),
+                    leader_pending: self.leader_pending.is_some(),
+                };
+                match input::resolve_key(&ctx, logical.as_ref(), physical.as_ref()) {
+                    input::KeyDispatch::LeaderArm(timeout_ms) => {
+                        if self.active_key_table.is_some() {
+                            tracing::debug!("leader chord armed while a modal key table is active");
+                        }
+                        let buffered =
+                            input::key_to_bytes(&event.logical_key, event.text.as_deref());
+                        self.leader_pending = Some(LeaderPending {
+                            deadline: std::time::Instant::now()
+                                + std::time::Duration::from_millis(timeout_ms),
+                            buffered,
+                        });
                         self.reset_blink();
                         return;
                     }
-                    // Action returned false (e.g., scroll down when not
-                    // scrolled) — let the key fall through to PTY.
+                    input::KeyDispatch::LeaderAction(idx) => {
+                        self.leader_pending = None;
+                        self.dispatch_leader_action_at(idx);
+                        self.reset_blink();
+                        return;
+                    }
+                    input::KeyDispatch::LeaderMiss => {
+                        // Both the leader key and this key go to the
+                        // application (ADR-0011); flush the buffer and
+                        // fall through to normal forwarding below.
+                        if let Some(pending) = self.leader_pending.take() {
+                            if let Some(bytes) = pending.buffered {
+                                self.send_key_bytes(bytes, event_loop);
+                            }
+                        }
+                    }
+                    input::KeyDispatch::TableAction(idx) => {
+                        self.dispatch_table_action_at(idx);
+                        self.reset_blink();
+                        return;
+                    }
+                    input::KeyDispatch::TableDrop => {
+                        self.reset_blink();
+                        return;
+                    }
+                    input::KeyDispatch::Binding(idx) => {
+                        if self.dispatch_action_at(idx) {
+                            self.reset_blink();
+                            return;
+                        }
+                        // Action returned false (e.g., scroll down when
+                        // not scrolled, or not performable) — let the
+                        // key fall through to PTY.
+                    }
+                    input::KeyDispatch::Forward => {}
                 }
                 let (logical_key, text) = (event.logical_key, event.text);
 
@@ -1062,22 +1228,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.return_to_live(self.focused_pane);
                 }
 
-                let bytes = input::key_to_bytes(&logical_key, text.as_deref());
-                if let (Some(daemon), Some(bytes)) = (&mut self.daemon, bytes) {
-                    let msg = KeyInput {
-                        pane_id: self.focused_pane,
-                        key_data: bytes,
-                    };
-                    match msg.to_frame() {
-                        Ok(frame) => {
-                            if let Err(e) = daemon.send_frame(&frame) {
-                                error!(error = %e, "daemon write failed");
-                                self.daemon = None;
-                                event_loop.exit();
-                            }
-                        }
-                        Err(e) => error!(error = %e, "failed to encode key input"),
-                    }
+                if let Some(bytes) = input::key_to_bytes(&logical_key, text.as_deref()) {
+                    self.send_key_bytes(bytes, event_loop);
                 }
                 self.reset_blink();
             }
@@ -1687,11 +1839,24 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
         // A timer fired: act only on reached deadlines, so the clock
         // waking early never toggles the blink phase (and vice versa).
         if matches!(cause, winit::event::StartCause::ResumeTimeReached { .. }) {
             let now = std::time::Instant::now();
+            if self
+                .leader_pending
+                .as_ref()
+                .is_some_and(|p| now >= p.deadline)
+            {
+                // The follow-up window closed: the leader key was a
+                // plain keypress after all (ADR-0011).
+                if let Some(pending) = self.leader_pending.take() {
+                    if let Some(bytes) = pending.buffered {
+                        self.send_key_bytes(bytes, event_loop);
+                    }
+                }
+            }
             if self.blink_deadline.is_some_and(|d| now >= d) {
                 if self.should_blink() {
                     self.blink_visible = !self.blink_visible;
@@ -1716,7 +1881,12 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(deadline) = next_wakeup(self.blink_deadline, self.clock_deadline) {
+        let deadlines = [
+            self.blink_deadline,
+            self.clock_deadline,
+            self.leader_pending.as_ref().map(|p| p.deadline),
+        ];
+        if let Some(deadline) = next_wakeup(deadlines) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -1729,69 +1899,108 @@ impl App {
     ///
     /// Copies the action data out of the registry to avoid holding a borrow
     /// on `self.keybind_registry` while calling `&mut self` methods.
-    #[allow(clippy::too_many_lines)]
+    ///
     /// Returns `true` if the action was handled (key consumed), `false` if the
     /// key should fall through to PTY forwarding.
     fn dispatch_action_at(&mut self, index: usize) -> bool {
-        use oakterm_config::Action;
-
-        // Copy action data out to release the registry borrow.
-        let action_desc = match self.keybind_registry.get(index) {
-            Some(Action::ScrollUp(n)) => ActionDesc::ScrollUp(*n),
-            Some(Action::ScrollDown(n)) => ActionDesc::ScrollDown(*n),
-            Some(Action::ScrollToPrompt(d)) => ActionDesc::ScrollToPrompt(*d),
-            Some(Action::SendString(b)) => ActionDesc::SendString(b.clone()),
-            Some(Action::Copy) => ActionDesc::Copy,
-            Some(Action::Paste) => ActionDesc::Paste,
-            Some(Action::ToggleFullscreen) => ActionDesc::ToggleFullscreen,
-            Some(Action::ReloadConfig) => ActionDesc::ReloadConfig,
-            Some(Action::Callback(_)) => ActionDesc::Callback(index),
-            // Config directions are placement-relative (oakterm.PaneDirection);
-            // the wire protocol carries only the split axis, so left/right
-            // and up/down collapse — the daemon always places the new pane
-            // after the target (Spec-0007 Split).
-            Some(Action::SplitPane { direction, size }) => {
-                if (size - 0.5).abs() > f64::EPSILON {
-                    // SplitPane (0xA0) has no size field yet.
-                    warn!(size, "split_pane size not yet supported; using 0.5");
-                }
-                match direction.as_str() {
-                    "left" | "right" => ActionDesc::SplitPane(WireSplitDirection::Horizontal),
-                    "up" | "down" => ActionDesc::SplitPane(WireSplitDirection::Vertical),
-                    other => {
-                        // Consume the chord: a config typo must not leak
-                        // the bound key's bytes into the shell.
-                        warn!(direction = other, "unknown split direction in keybind");
-                        return true;
-                    }
-                }
-            }
-            Some(Action::FocusPaneDirection(direction)) => {
-                use layout::FocusDirection;
-                match direction.as_str() {
-                    "left" => ActionDesc::FocusPane(FocusDirection::Left),
-                    "right" => ActionDesc::FocusPane(FocusDirection::Right),
-                    "up" => ActionDesc::FocusPane(FocusDirection::Up),
-                    "down" => ActionDesc::FocusPane(FocusDirection::Down),
-                    other => {
-                        // Consume the chord: a config typo must not leak
-                        // the bound key's bytes into the shell.
-                        warn!(direction = other, "unknown focus direction in keybind");
-                        return true;
-                    }
-                }
-            }
-            Some(Action::NewTab) => ActionDesc::NewTab,
-            Some(Action::CloseTab) => ActionDesc::CloseTab,
-            Some(Action::ClosePane) => ActionDesc::ClosePane,
-            Some(Action::SwitchTab(n)) => ActionDesc::SwitchTab(*n),
-            Some(Action::NextTab) => ActionDesc::NextTab,
-            Some(Action::PreviousTab) => ActionDesc::PreviousTab,
-            Some(Action::ShowCommandPalette) => ActionDesc::ShowCommandPalette,
-            None => return false,
+        let Some(action) = self.keybind_registry.get(index) else {
+            return false;
         };
-
+        // Performable gate (ADR-0011): an action that cannot run in the
+        // current context releases the key to the PTY instead of
+        // consuming it (Ghostty's `performable:` semantics, per-action).
+        if let Some(id) = oakterm_config::action_id_of(action) {
+            if !id.is_performable(self.action_context()) {
+                tracing::debug!(action = ?id, "keybind not performable here; key released to PTY");
+                return false;
+            }
+        }
+        let action_desc = match desc_of_action(action) {
+            DescOutcome::Desc(d) => d,
+            DescOutcome::Consume => return true,
+            DescOutcome::Callback => ActionDesc::Callback(index),
+        };
         self.execute_action_desc(action_desc)
+    }
+
+    /// Send raw key bytes to the focused pane's PTY, exiting the event
+    /// loop when the daemon connection drops.
+    fn send_key_bytes(&mut self, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
+        if !self.try_send_key_bytes(bytes) {
+            event_loop.exit();
+        }
+    }
+
+    /// Send raw key bytes to the focused pane's PTY. Returns `false`
+    /// when the daemon write failed (connection dropped).
+    fn try_send_key_bytes(&mut self, bytes: Vec<u8>) -> bool {
+        let Some(daemon) = &mut self.daemon else {
+            return true;
+        };
+        let msg = KeyInput {
+            pane_id: self.focused_pane,
+            key_data: bytes,
+        };
+        match msg.to_frame() {
+            Ok(frame) => {
+                if let Err(e) = daemon.send_frame(&frame) {
+                    error!(error = %e, "daemon write failed");
+                    self.daemon = None;
+                    return false;
+                }
+            }
+            Err(e) => error!(error = %e, "failed to encode key input"),
+        }
+        true
+    }
+
+    /// Dispatch a matched `leader+X` binding. The leader chord was
+    /// already swallowed, so the key is consumed regardless of outcome;
+    /// an unperformable action is a silent no-op.
+    fn dispatch_leader_action_at(&mut self, index: usize) {
+        let Some(action) = self.keybind_registry.get_leader(index) else {
+            warn!(
+                index,
+                "leader dispatch index unresolved; registry changed between lookup and dispatch"
+            );
+            return;
+        };
+        if let Some(id) = oakterm_config::action_id_of(action) {
+            if !id.is_performable(self.action_context()) {
+                tracing::debug!(action = ?id, "leader action not performable here; consumed");
+                return;
+            }
+        }
+        let action_desc = match desc_of_action(action) {
+            DescOutcome::Desc(d) => d,
+            DescOutcome::Consume => return,
+            DescOutcome::Callback => ActionDesc::LeaderCallback(index),
+        };
+        let _ = self.execute_action_desc(action_desc);
+    }
+
+    /// Dispatch a matched key-table binding. Tables are modal: the key
+    /// is consumed regardless of outcome.
+    fn dispatch_table_action_at(&mut self, index: usize) {
+        let Some(action) = self.active_key_table.as_ref().and_then(|t| t.get(index)) else {
+            warn!(
+                index,
+                "key table dispatch index unresolved; table changed between lookup and dispatch"
+            );
+            return;
+        };
+        let action_desc = match desc_of_action(action) {
+            DescOutcome::Desc(d) => d,
+            DescOutcome::Consume => return,
+            DescOutcome::Callback => {
+                // Phase 1 tables are built-in presets with no Lua
+                // registration API; a callback here is unreachable
+                // until that API exists.
+                warn!("key table callbacks are not supported");
+                return;
+            }
+        };
+        let _ = self.execute_action_desc(action_desc);
     }
 
     /// Execute a resolved action descriptor. Returns `true` if handled (key
@@ -1878,6 +2087,9 @@ impl App {
                 self.handle_config_reload(cr);
                 true
             }
+            // Callback indexes the main bindings table and LeaderCallback
+            // the leader table; the get()/get_leader() pairing below must
+            // stay matched to the descriptor's source.
             ActionDesc::Callback(idx) => {
                 let (Some(lua), Some(oakterm_config::Action::Callback(key))) =
                     (&self.lua_vm, self.keybind_registry.get(idx))
@@ -1885,36 +2097,17 @@ impl App {
                     warn!("keybind callback skipped: no Lua VM or action mismatch");
                     return true;
                 };
-                let func = match lua.registry_value::<oakterm_config::mlua::Function>(key) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        warn!(error = %e, "keybind callback error");
-                        return true;
-                    }
-                };
-                if let Err(e) = lua.set_hook(
-                    oakterm_config::mlua::HookTriggers::new().every_nth_instruction(10_000),
-                    {
-                        let start = std::time::Instant::now();
-                        let timeout = std::time::Duration::from_millis(100);
-                        move |_lua, _debug| {
-                            if start.elapsed() > timeout {
-                                Err(oakterm_config::mlua::Error::RuntimeError(
-                                    "keybind callback timed out (100ms)".to_string(),
-                                ))
-                            } else {
-                                Ok(oakterm_config::mlua::VmState::Continue)
-                            }
-                        }
-                    },
-                ) {
-                    warn!(error = %e, "keybind callback: failed to install timeout hook");
+                run_keybind_callback(lua, key);
+                true
+            }
+            ActionDesc::LeaderCallback(idx) => {
+                let (Some(lua), Some(oakterm_config::Action::Callback(key))) =
+                    (&self.lua_vm, self.keybind_registry.get_leader(idx))
+                else {
+                    warn!("keybind callback skipped: no Lua VM or action mismatch");
                     return true;
-                }
-                if let Err(e) = func.call::<()>(()) {
-                    warn!(error = %e, "keybind callback error");
-                }
-                lua.remove_hook();
+                };
+                run_keybind_callback(lua, key);
                 true
             }
             ActionDesc::Copy => {
@@ -2770,6 +2963,15 @@ impl App {
         // New bindings may change hints or performability; a stale open
         // palette would show them wrong.
         self.palette.close();
+        // A pending leader references the old leader config; the file
+        // watcher can fire mid-wait, so flush the buffered key to the
+        // PTY rather than losing the user's keystroke.
+        if let Some(pending) = self.leader_pending.take() {
+            tracing::debug!("config reload with a leader press pending; flushing its key");
+            if let Some(bytes) = pending.buffered {
+                self.try_send_key_bytes(bytes);
+            }
+        }
         self.lua_vm = cr.lua;
 
         if had_error {
@@ -2915,16 +3117,12 @@ fn chrome_button_bit(button: winit::event::MouseButton) -> u8 {
     }
 }
 
-/// Earliest of the armed timer deadlines, or `None` when both are off
+/// Earliest of the armed timer deadlines, or `None` when all are off
 /// (the event loop then waits indefinitely).
-fn next_wakeup(
-    blink: Option<std::time::Instant>,
-    clock: Option<std::time::Instant>,
+fn next_wakeup<const N: usize>(
+    deadlines: [Option<std::time::Instant>; N],
 ) -> Option<std::time::Instant> {
-    match (blink, clock) {
-        (Some(b), Some(c)) => Some(b.min(c)),
-        (d, None) | (None, d) => d,
-    }
+    deadlines.into_iter().flatten().min()
 }
 
 /// Split tab-bar and status-bar heights into `(top, bottom)` chrome:
@@ -3218,15 +3416,70 @@ mod tests {
     }
 
     #[test]
+    fn desc_of_action_consumes_config_typos_and_defers_callbacks() {
+        use super::{DescOutcome, desc_of_action};
+        use oakterm_config::Action;
+        // A typo'd direction consumes the chord (never leaks key bytes
+        // into the shell); callbacks defer to the caller for indexing.
+        assert!(matches!(
+            desc_of_action(&Action::SplitPane {
+                direction: "diagonal".to_string(),
+                size: 0.5
+            }),
+            DescOutcome::Consume
+        ));
+        assert!(matches!(
+            desc_of_action(&Action::FocusPaneDirection("bogus".to_string())),
+            DescOutcome::Consume
+        ));
+        assert!(matches!(
+            desc_of_action(&Action::NewTab),
+            DescOutcome::Desc(ActionDesc::NewTab)
+        ));
+        assert!(matches!(
+            desc_of_action(&Action::SplitPane {
+                direction: "right".to_string(),
+                size: 0.5
+            }),
+            DescOutcome::Desc(ActionDesc::SplitPane(super::WireSplitDirection::Horizontal))
+        ));
+        let lua = oakterm_config::Lua::new();
+        let f = lua.create_function(|_, ()| Ok(())).unwrap();
+        let key = lua.create_registry_value(f).unwrap();
+        assert!(matches!(
+            desc_of_action(&Action::Callback(key)),
+            DescOutcome::Callback
+        ));
+    }
+
+    #[test]
+    fn run_keybind_callback_times_out_a_runaway_callback() {
+        let lua = oakterm_config::Lua::new();
+        let f = lua
+            .load("while true do end")
+            .into_function()
+            .expect("loop compiles");
+        let key = lua.create_registry_value(f).unwrap();
+        let start = std::time::Instant::now();
+        super::run_keybind_callback(&lua, &key);
+        // The 100ms watchdog must abort the loop; generous bound for CI.
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
     fn next_wakeup_picks_the_earliest_armed_deadline() {
         let now = std::time::Instant::now();
         let soon = now + std::time::Duration::from_millis(100);
         let later = now + std::time::Duration::from_secs(30);
-        assert_eq!(super::next_wakeup(Some(soon), Some(later)), Some(soon));
-        assert_eq!(super::next_wakeup(Some(later), Some(soon)), Some(soon));
-        assert_eq!(super::next_wakeup(None, Some(later)), Some(later));
-        assert_eq!(super::next_wakeup(Some(soon), None), Some(soon));
-        assert_eq!(super::next_wakeup(None, None), None);
+        assert_eq!(super::next_wakeup([Some(soon), Some(later)]), Some(soon));
+        assert_eq!(super::next_wakeup([Some(later), Some(soon)]), Some(soon));
+        assert_eq!(super::next_wakeup([None, Some(later)]), Some(later));
+        assert_eq!(super::next_wakeup([Some(soon), None]), Some(soon));
+        assert_eq!(super::next_wakeup([None, None]), None);
+        assert_eq!(
+            super::next_wakeup([Some(later), None, Some(soon)]),
+            Some(soon)
+        );
     }
 
     fn geometry_of(panes: &[(u32, u32, u32)]) -> LayoutGeometry {

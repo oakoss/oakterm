@@ -162,6 +162,34 @@ impl StatusBarPosition {
     pub(crate) const ALL: &[&str] = &["bottom", "top"];
 }
 
+/// tmux-style leader key (ADR-0011): `oakterm.config.leader =
+/// { key = "ctrl+b", timeout = 1000 }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderKey {
+    pub chord: crate::keybind::KeyChord,
+    /// How long a pending leader waits for its follow-up key before
+    /// flushing to the PTY, in milliseconds. Always positive.
+    pub timeout_ms: u64,
+}
+
+impl LeaderKey {
+    /// Build a leader key, rejecting a zero timeout (a 0ms follow-up
+    /// window silently disables the leader layer).
+    ///
+    /// # Errors
+    ///
+    /// Errors when `timeout_ms` is zero.
+    pub fn new(chord: crate::keybind::KeyChord, timeout_ms: u64) -> Result<Self, String> {
+        if timeout_ms == 0 {
+            return Err("leader timeout must be greater than 0ms".to_string());
+        }
+        Ok(Self { chord, timeout_ms })
+    }
+}
+
+/// Default leader follow-up window when `timeout` is omitted.
+pub(crate) const DEFAULT_LEADER_TIMEOUT_MS: u64 = 1000;
+
 /// Parsed configuration values extracted from Lua state.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // Config keys are individually spec'd bools.
@@ -182,6 +210,12 @@ pub struct ConfigValues {
     pub scrollback_archive: bool,
     pub scrollback_archive_limit: u64,
     pub daemon_persist: bool,
+    /// Modifier combo the `oak_mod` keybind token expands to
+    /// (ADR-0011). Validated as parseable; stored as the raw string.
+    pub oak_mod: String,
+    /// Optional tmux-style leader key; `None` disables the leader
+    /// dispatch layer.
+    pub leader: Option<LeaderKey>,
     pub status_bar: bool,
     pub status_bar_position: StatusBarPosition,
     pub check_for_updates: UpdateCheck,
@@ -208,6 +242,8 @@ impl Default for ConfigValues {
             scrollback_archive: true,
             scrollback_archive_limit: 1024 * 1024 * 1024,
             daemon_persist: false,
+            oak_mod: crate::keybind::default_oak_mod().to_string(),
+            leader: None,
             status_bar: true,
             status_bar_position: StatusBarPosition::default(),
             check_for_updates: UpdateCheck::default(),
@@ -300,6 +336,14 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "daemon_persist",
         validate: validate_bool,
+    },
+    ConfigKeyDef {
+        name: "oak_mod",
+        validate: validate_oak_mod,
+    },
+    ConfigKeyDef {
+        name: "leader",
+        validate: validate_leader,
     },
     ConfigKeyDef {
         name: "status_bar",
@@ -447,6 +491,46 @@ fn validate_window_decorations(_lua: &Lua, value: &Value) -> mlua::Result<()> {
             WindowDecorations::ALL.join(", ")
         )))
     }
+}
+
+fn validate_oak_mod(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    crate::keybind::ModifierSet::parse(&s)
+        .map(|_| ())
+        .map_err(|e| mlua::Error::RuntimeError(format!("invalid oak_mod '{s}': {e}")))
+}
+
+fn validate_leader(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    if matches!(value, Value::Nil) {
+        return Ok(());
+    }
+    let Value::Table(t) = value else {
+        return Err(mlua::Error::RuntimeError(
+            "expected a table like { key = \"ctrl+b\", timeout = 1000 } or nil".to_string(),
+        ));
+    };
+    let Some(key) = t.get::<Option<mlua::String>>("key")? else {
+        return Err(mlua::Error::RuntimeError(
+            "leader table requires a 'key' string".to_string(),
+        ));
+    };
+    let key = key.to_str()?;
+    if let Err(e) = crate::keybind::KeyChord::parse(&key) {
+        return Err(mlua::Error::RuntimeError(format!(
+            "invalid leader key '{key}': {e}"
+        )));
+    }
+    match t.get::<Value>("timeout")? {
+        Value::Nil => {}
+        Value::Integer(n) if n > 0 => {}
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "leader timeout must be a positive integer (milliseconds), got {}",
+                other.type_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_status_bar_position(_lua: &Lua, value: &Value) -> mlua::Result<()> {
@@ -706,7 +790,7 @@ mod tests {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            19,
+            21,
             "SCHEMA must match ConfigValues field count"
         );
     }

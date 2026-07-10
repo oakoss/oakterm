@@ -116,6 +116,54 @@ pub struct KeyChord {
     pub key: KeyName,
 }
 
+/// A set of modifier keys, as parsed from a config string like
+/// `"ctrl+shift"`. The `oak_mod` value is one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::struct_excessive_bools)] // Modifiers are naturally booleans.
+pub struct ModifierSet {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub super_key: bool,
+}
+
+impl ModifierSet {
+    /// Parse a modifiers-only combo like `"ctrl+shift"` or `"super"`.
+    ///
+    /// # Errors
+    ///
+    /// Errors when empty, on duplicate modifiers, or when any part is
+    /// not a modifier name.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("modifier combo cannot be empty".to_string());
+        }
+        let mut mods = Self::default();
+        for part in s.split('+') {
+            apply_modifier(&mut mods, &part.trim().to_lowercase())?;
+        }
+        Ok(mods)
+    }
+}
+
+/// Set the named modifier in `mods`, erroring on duplicates and
+/// unknown names. Shared by chord and modifier-combo parsing.
+fn apply_modifier(mods: &mut ModifierSet, name: &str) -> Result<(), String> {
+    let flag = match name {
+        "ctrl" | "control" => &mut mods.ctrl,
+        "alt" | "option" | "opt" => &mut mods.alt,
+        "shift" => &mut mods.shift,
+        "super" | "cmd" | "command" | "win" => &mut mods.super_key,
+        other => return Err(format!("unknown modifier '{other}'")),
+    };
+    if *flag {
+        return Err(format!("duplicate modifier '{name}'"));
+    }
+    *flag = true;
+    Ok(())
+}
+
 impl KeyChord {
     /// Parse a key chord string.
     ///
@@ -129,58 +177,49 @@ impl KeyChord {
     /// Returns an error string if the chord is empty, has unknown
     /// modifiers/keys, or has duplicate modifiers.
     pub fn parse(s: &str) -> Result<Self, String> {
+        Self::parse_impl(s, None)
+    }
+
+    /// Parse a chord that may use the `oak_mod` pseudo-modifier, which
+    /// expands to `oak_mod`'s modifier set. Overlap between `oak_mod`'s
+    /// modifiers and explicit ones folds silently (ADR-0011: on a
+    /// platform whose `oak_mod` contains Shift, `oak_mod+shift+x`
+    /// collapses); explicit duplicates still error.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`KeyChord::parse`].
+    pub fn parse_with_oak_mod(s: &str, oak_mod: ModifierSet) -> Result<Self, String> {
+        Self::parse_impl(s, Some(oak_mod))
+    }
+
+    fn parse_impl(s: &str, oak_mod: Option<ModifierSet>) -> Result<Self, String> {
         let s = s.trim();
         if s.is_empty() {
             return Err("key chord cannot be empty".to_string());
         }
 
         let parts: Vec<&str> = s.split('+').collect();
-        if parts.is_empty() {
-            return Err("key chord cannot be empty".to_string());
-        }
-
         let (modifier_parts, key_part) = parts.split_at(parts.len() - 1);
         let key_str = key_part[0].trim();
         if key_str.is_empty() {
             return Err("key chord has no key after modifiers".to_string());
         }
 
-        let mut ctrl = false;
-        let mut alt = false;
-        let mut shift = false;
-        let mut super_key = false;
-
+        // Explicit modifiers dup-check among themselves; oak_mod's set
+        // ORs in afterward so overlap folds instead of erroring.
+        let mut explicit = ModifierSet::default();
+        let mut from_oak_mod = ModifierSet::default();
         for &m in modifier_parts {
             let m = m.trim().to_lowercase();
-            match m.as_str() {
-                "ctrl" | "control" => {
-                    if ctrl {
-                        return Err("duplicate modifier 'ctrl'".to_string());
-                    }
-                    ctrl = true;
-                }
-                "alt" | "option" | "opt" => {
-                    if alt {
-                        return Err("duplicate modifier 'alt'".to_string());
-                    }
-                    alt = true;
-                }
-                "shift" => {
-                    if shift {
-                        return Err("duplicate modifier 'shift'".to_string());
-                    }
-                    shift = true;
-                }
-                "super" | "cmd" | "command" | "win" => {
-                    if super_key {
-                        return Err("duplicate modifier 'super'".to_string());
-                    }
-                    super_key = true;
-                }
-                other => {
-                    return Err(format!("unknown modifier '{other}'"));
-                }
+            if m == "oak_mod" {
+                let Some(mods) = oak_mod else {
+                    return Err("'oak_mod' is not available in this context".to_string());
+                };
+                from_oak_mod = mods;
+                continue;
             }
+            apply_modifier(&mut explicit, &m)?;
         }
 
         let lower = key_str.to_lowercase();
@@ -196,10 +235,10 @@ impl KeyChord {
         };
 
         Ok(Self {
-            ctrl,
-            alt,
-            shift,
-            super_key,
+            ctrl: explicit.ctrl || from_oak_mod.ctrl,
+            alt: explicit.alt || from_oak_mod.alt,
+            shift: explicit.shift || from_oak_mod.shift,
+            super_key: explicit.super_key || from_oak_mod.super_key,
             key,
         })
     }
@@ -319,20 +358,16 @@ pub enum Action {
     Callback(RegistryKey),
 }
 
-/// ADR-0011's `oak_mod` expanded per platform. Configurable `oak_mod` with
-/// registration-time expansion is TREK-118; until then defaults ship
-/// pre-expanded.
-#[cfg(target_os = "macos")]
-pub(crate) const OAK_MOD: &str = "super";
-#[cfg(not(target_os = "macos"))]
-pub(crate) const OAK_MOD: &str = "ctrl+shift";
-
-/// `oak_mod` + Shift. On platforms where `oak_mod` already contains
-/// Shift, the two collapse (a chord can't repeat a modifier).
-#[cfg(target_os = "macos")]
-pub(crate) const OAK_MOD_SHIFT: &str = "super+shift";
-#[cfg(not(target_os = "macos"))]
-pub(crate) const OAK_MOD_SHIFT: &str = "ctrl+shift";
+/// ADR-0011's platform default for `oak_mod`, used when
+/// `oakterm.config.oak_mod` is unset.
+#[must_use]
+pub fn default_oak_mod() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "super"
+    } else {
+        "ctrl+shift"
+    }
+}
 
 /// Tab-cycling chords are platform conventions, not `oak_mod`
 /// derivations: on Linux `oak_mod+Shift+[` folds into `oak_mod+[`,
@@ -346,9 +381,61 @@ pub(crate) const NEXT_TAB_CHORD: &str = "ctrl+pagedown";
 #[cfg(not(target_os = "macos"))]
 pub(crate) const PREVIOUS_TAB_CHORD: &str = "ctrl+pageup";
 
-/// Registry of key chord → action bindings.
-pub struct KeybindRegistry {
+/// A chord-to-action table with last-registration-wins lookup. Backs
+/// each ADR-0011 dispatch layer: the leader table, an active modal
+/// table (copy mode, resize mode), and the default bindings. What
+/// happens on a miss is the dispatcher's policy, not the table's.
+#[derive(Debug, Default)]
+pub struct KeyTable {
     bindings: Vec<(KeyChord, Action)>,
+}
+
+impl KeyTable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a binding. Last registration for a chord wins.
+    pub fn bind(&mut self, chord: KeyChord, action: Action) {
+        self.bindings.push((chord, action));
+    }
+
+    /// Look up the action for a chord, last match wins.
+    #[must_use]
+    pub fn lookup(&self, chord: &KeyChord) -> Option<&Action> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(c, _)| c == chord)
+            .map(|(_, a)| a)
+    }
+
+    /// Index of the action for a chord, last match wins. Resolve with
+    /// [`KeyTable::get`].
+    #[must_use]
+    pub fn lookup_index(&self, chord: &KeyChord) -> Option<usize> {
+        self.bindings
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (c, _))| c == chord)
+            .map(|(i, _)| i)
+    }
+
+    /// The action at `index`.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&Action> {
+        self.bindings.get(index).map(|(_, a)| a)
+    }
+}
+
+/// Registry of key chord → action bindings, plus the separate leader
+/// table (`leader+X` bindings, matched only while a leader press is
+/// pending; ADR-0011 dispatch layer 1).
+pub struct KeybindRegistry {
+    bindings: KeyTable,
+    leader_bindings: KeyTable,
 }
 
 impl KeybindRegistry {
@@ -356,7 +443,8 @@ impl KeybindRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            bindings: Vec::new(),
+            bindings: KeyTable::new(),
+            leader_bindings: KeyTable::new(),
         }
     }
 
@@ -371,23 +459,50 @@ impl KeybindRegistry {
     /// a bug in the default definitions, not a runtime condition).
     #[must_use]
     pub fn with_defaults() -> Self {
+        let mods = ModifierSet::parse(default_oak_mod()).expect("platform oak_mod parses");
+        Self::with_defaults_for(mods)
+    }
+
+    /// Create a registry pre-populated with default keybinds expanded
+    /// against the given `oak_mod` modifier set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a hardcoded default chord string fails to parse
+    /// (indicates a bug in the default definitions, not a runtime
+    /// condition).
+    #[must_use]
+    pub fn with_defaults_for(oak_mod: ModifierSet) -> Self {
         let mut reg = Self::new();
+        let split = |direction: &str| Action::SplitPane {
+            direction: direction.to_string(),
+            size: 0.5,
+        };
         let defaults = [
-            ("shift+pageup".to_string(), Action::ScrollUp(0)),
-            ("shift+pagedown".to_string(), Action::ScrollDown(0)),
-            ("shift+home".to_string(), Action::ScrollUp(999_999)),
-            ("shift+end".to_string(), Action::ScrollDown(999_999)),
-            (format!("{OAK_MOD_SHIFT}+up"), Action::ScrollToPrompt(-1)),
-            (format!("{OAK_MOD_SHIFT}+down"), Action::ScrollToPrompt(1)),
-            (format!("{OAK_MOD}+t"), Action::NewTab),
-            (format!("{OAK_MOD}+w"), Action::ClosePane),
-            (format!("{OAK_MOD}+p"), Action::ShowCommandPalette),
-            (NEXT_TAB_CHORD.to_string(), Action::NextTab),
-            (PREVIOUS_TAB_CHORD.to_string(), Action::PreviousTab),
+            ("shift+pageup", Action::ScrollUp(0)),
+            ("shift+pagedown", Action::ScrollDown(0)),
+            ("shift+home", Action::ScrollUp(999_999)),
+            ("shift+end", Action::ScrollDown(999_999)),
+            // On a platform whose oak_mod contains Shift these collapse
+            // (oak_mod+shift folds; ADR-0011).
+            ("oak_mod+shift+up", Action::ScrollToPrompt(-1)),
+            ("oak_mod+shift+down", Action::ScrollToPrompt(1)),
+            ("oak_mod+\\", split("right")),
+            ("oak_mod+-", split("down")),
+            ("oak_mod+h", Action::FocusPaneDirection("left".to_string())),
+            ("oak_mod+j", Action::FocusPaneDirection("down".to_string())),
+            ("oak_mod+k", Action::FocusPaneDirection("up".to_string())),
+            ("oak_mod+l", Action::FocusPaneDirection("right".to_string())),
+            ("oak_mod+t", Action::NewTab),
+            ("oak_mod+w", Action::ClosePane),
+            ("oak_mod+p", Action::ShowCommandPalette),
+            (NEXT_TAB_CHORD, Action::NextTab),
+            (PREVIOUS_TAB_CHORD, Action::PreviousTab),
         ];
         for (chord_str, action) in defaults {
             // These are hardcoded strings; parse cannot fail.
-            let chord = KeyChord::parse(&chord_str).expect("default keybind parse");
+            let chord =
+                KeyChord::parse_with_oak_mod(chord_str, oak_mod).expect("default keybind parse");
             reg.register(chord, action);
         }
         // Tab-switch digits fire from either representation of "the N
@@ -412,8 +527,8 @@ impl KeybindRegistry {
         ];
         for (i, physical) in tab_digits {
             let index = std::num::NonZeroU32::new(i).expect("1..=9 is nonzero");
-            let logical =
-                KeyChord::parse(&format!("{OAK_MOD}+{i}")).expect("default keybind parse");
+            let logical = KeyChord::parse_with_oak_mod(&format!("oak_mod+{i}"), oak_mod)
+                .expect("default keybind parse");
             let mut positional = logical.clone();
             positional.key = KeyName::Physical(physical);
             reg.register(logical, Action::SwitchTab(index));
@@ -424,36 +539,52 @@ impl KeybindRegistry {
 
     /// Register a keybind. Last registration for a chord wins.
     pub fn register(&mut self, chord: KeyChord, action: Action) {
-        self.bindings.push((chord, action));
+        self.bindings.bind(chord, action);
+    }
+
+    /// Register a leader-table binding (`leader+X`). Last registration
+    /// for a chord wins.
+    pub fn register_leader(&mut self, chord: KeyChord, action: Action) {
+        self.leader_bindings.bind(chord, action);
+    }
+
+    /// Index of the leader-table action for a chord, last match wins.
+    /// Resolve with [`KeybindRegistry::get_leader`].
+    #[must_use]
+    pub fn lookup_leader_index(&self, chord: &KeyChord) -> Option<usize> {
+        self.leader_bindings.lookup_index(chord)
+    }
+
+    /// The leader-table action at `index`.
+    #[must_use]
+    pub fn get_leader(&self, index: usize) -> Option<&Action> {
+        self.leader_bindings.get(index)
+    }
+
+    /// Whether any `leader+X` bindings are registered.
+    #[must_use]
+    pub fn has_leader_bindings(&self) -> bool {
+        !self.leader_bindings.bindings.is_empty()
     }
 
     /// Look up the action for a chord. Returns the last match (user
     /// config overrides defaults).
     #[must_use]
     pub fn lookup(&self, chord: &KeyChord) -> Option<&Action> {
-        self.bindings
-            .iter()
-            .rev()
-            .find(|(c, _)| c == chord)
-            .map(|(_, a)| a)
+        self.bindings.lookup(chord)
     }
 
     /// Look up the index of the matching binding for a chord.
     /// Use with `get()` when you need to release the borrow before acting.
     #[must_use]
     pub fn lookup_index(&self, chord: &KeyChord) -> Option<usize> {
-        self.bindings
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, (c, _))| c == chord)
-            .map(|(i, _)| i)
+        self.bindings.lookup_index(chord)
     }
 
     /// Get the action at a specific index.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&Action> {
-        self.bindings.get(index).map(|(_, a)| a)
+        self.bindings.get(index)
     }
 
     /// Iterate over the *effective* `(chord, action)` bindings in registration
@@ -463,6 +594,7 @@ impl KeybindRegistry {
     #[must_use]
     pub fn effective_bindings(&self) -> impl DoubleEndedIterator<Item = (&KeyChord, &Action)> {
         self.bindings
+            .bindings
             .iter()
             .enumerate()
             .filter(|(i, (chord, _))| self.lookup_index(chord) == Some(*i))
@@ -472,18 +604,23 @@ impl KeybindRegistry {
     /// Number of registered bindings.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.bindings.len()
+        self.bindings.bindings.len()
     }
 
     /// Whether the registry is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
+        self.bindings.bindings.is_empty()
     }
 
     /// Remove all `Callback` registry keys and clear bindings.
     pub fn cleanup(&mut self, lua: &Lua) {
-        for (_, action) in self.bindings.drain(..) {
+        let drained = self
+            .bindings
+            .bindings
+            .drain(..)
+            .chain(self.leader_bindings.bindings.drain(..));
+        for (_, action) in drained {
             if let Action::Callback(key) = action {
                 if let Err(e) = lua.remove_registry_value(key) {
                     tracing::warn!(error = %e, "failed to clean up keybind callback");
@@ -502,6 +639,105 @@ impl Default for KeybindRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn platform_mods() -> ModifierSet {
+        ModifierSet::parse(default_oak_mod()).unwrap()
+    }
+
+    #[test]
+    fn modifier_set_parses_combos_and_rejects_keys() {
+        let m = ModifierSet::parse("ctrl+shift").unwrap();
+        assert!(m.ctrl && m.shift && !m.alt && !m.super_key);
+        let m = ModifierSet::parse("super").unwrap();
+        assert!(m.super_key && !m.ctrl);
+        assert!(
+            ModifierSet::parse("ctrl+x").is_err(),
+            "keys are not modifiers"
+        );
+        assert!(ModifierSet::parse("").is_err());
+        assert!(ModifierSet::parse("ctrl+ctrl").is_err());
+    }
+
+    #[test]
+    fn oak_mod_token_expands_to_the_configured_set() {
+        let mods = ModifierSet::parse("ctrl+shift").unwrap();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+t", mods).unwrap();
+        assert!(chord.ctrl && chord.shift && !chord.super_key);
+        assert_eq!(chord.key, KeyName::Character('t'));
+    }
+
+    #[test]
+    fn oak_mod_overlapping_explicit_modifier_folds_instead_of_erroring() {
+        // ADR-0011's OAK_MOD_SHIFT collapse: oak_mod+shift on a platform
+        // whose oak_mod already contains shift.
+        let mods = ModifierSet::parse("ctrl+shift").unwrap();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+shift+up", mods).unwrap();
+        assert!(chord.ctrl && chord.shift);
+        assert_eq!(chord.key, KeyName::Named(NamedKeyId::ArrowUp));
+        // Explicit duplicates still error.
+        assert!(KeyChord::parse_with_oak_mod("oak_mod+shift+shift+up", mods).is_err());
+    }
+
+    #[test]
+    fn oak_mod_token_errors_in_plain_parse() {
+        assert!(KeyChord::parse("oak_mod+t").is_err());
+    }
+
+    #[test]
+    fn with_defaults_follows_the_oak_mod_set() {
+        let mods = ModifierSet::parse("ctrl+alt").unwrap();
+        let reg = KeybindRegistry::with_defaults_for(mods);
+        let chord = KeyChord::parse("ctrl+alt+t").unwrap();
+        assert!(matches!(reg.lookup(&chord), Some(Action::NewTab)));
+        let prompt = KeyChord::parse("ctrl+alt+shift+up").unwrap();
+        assert!(matches!(
+            reg.lookup(&prompt),
+            Some(Action::ScrollToPrompt(-1))
+        ));
+    }
+
+    #[test]
+    fn key_table_lookup_is_last_registration_wins() {
+        let mut table = KeyTable::new();
+        let h = KeyChord::parse("h").unwrap();
+        table.bind(h.clone(), Action::ScrollUp(1));
+        table.bind(h.clone(), Action::ScrollDown(1));
+        assert!(matches!(table.lookup(&h), Some(Action::ScrollDown(1))));
+        assert!(table.lookup(&KeyChord::parse("j").unwrap()).is_none());
+    }
+
+    #[test]
+    fn cleanup_drains_callbacks_from_both_tables() {
+        let lua = Lua::new();
+        let f1 = lua.create_function(|_, ()| Ok(())).unwrap();
+        let f2 = lua.create_function(|_, ()| Ok(())).unwrap();
+        let mut reg = KeybindRegistry::new();
+        reg.register(
+            KeyChord::parse("a").unwrap(),
+            Action::Callback(lua.create_registry_value(f1).unwrap()),
+        );
+        reg.register_leader(
+            KeyChord::parse("b").unwrap(),
+            Action::Callback(lua.create_registry_value(f2).unwrap()),
+        );
+        reg.cleanup(&lua);
+        assert!(reg.is_empty());
+        assert!(
+            !reg.has_leader_bindings(),
+            "leader callbacks must drain too or their registry keys leak on reload"
+        );
+    }
+
+    #[test]
+    fn leader_bindings_are_a_separate_namespace() {
+        let mut reg = KeybindRegistry::new();
+        let chord = KeyChord::parse("5").unwrap();
+        reg.register_leader(chord.clone(), Action::ClosePane);
+        assert!(reg.lookup(&chord).is_none());
+        assert!(reg.has_leader_bindings());
+        let idx = reg.lookup_leader_index(&chord).unwrap();
+        assert!(matches!(reg.get_leader(idx), Some(Action::ClosePane)));
+    }
 
     #[test]
     fn parse_simple_character() {
@@ -775,18 +1011,18 @@ mod tests {
     #[test]
     fn defaults_use_oak_mod_for_prompt_navigation() {
         let reg = KeybindRegistry::with_defaults();
-        let up = KeyChord::parse(&format!("{OAK_MOD_SHIFT}+up")).unwrap();
+        let up = KeyChord::parse_with_oak_mod("oak_mod+shift+up", platform_mods()).unwrap();
         assert!(matches!(reg.lookup(&up), Some(Action::ScrollToPrompt(-1))));
-        let down = KeyChord::parse(&format!("{OAK_MOD_SHIFT}+down")).unwrap();
+        let down = KeyChord::parse_with_oak_mod("oak_mod+shift+down", platform_mods()).unwrap();
         assert!(matches!(reg.lookup(&down), Some(Action::ScrollToPrompt(1))));
     }
 
     #[test]
     fn defaults_include_tab_keybinds() {
         let reg = KeybindRegistry::with_defaults();
-        let new_tab = KeyChord::parse(&format!("{OAK_MOD}+t")).unwrap();
+        let new_tab = KeyChord::parse_with_oak_mod("oak_mod+t", platform_mods()).unwrap();
         assert!(matches!(reg.lookup(&new_tab), Some(Action::NewTab)));
-        let close = KeyChord::parse(&format!("{OAK_MOD}+w")).unwrap();
+        let close = KeyChord::parse_with_oak_mod("oak_mod+w", platform_mods()).unwrap();
         assert!(matches!(reg.lookup(&close), Some(Action::ClosePane)));
         let next = KeyChord::parse(NEXT_TAB_CHORD).unwrap();
         assert!(matches!(reg.lookup(&next), Some(Action::NextTab)));
@@ -795,9 +1031,33 @@ mod tests {
     }
 
     #[test]
+    fn defaults_include_split_and_focus_binds() {
+        // ADR-0011's default table rows for the wired split/focus actions.
+        let reg = KeybindRegistry::with_defaults();
+        let split_right = KeyChord::parse_with_oak_mod("oak_mod+\\", platform_mods()).unwrap();
+        assert!(matches!(
+            reg.lookup(&split_right),
+            Some(Action::SplitPane { direction, .. }) if direction == "right"
+        ));
+        let split_down = KeyChord::parse_with_oak_mod("oak_mod+-", platform_mods()).unwrap();
+        assert!(matches!(
+            reg.lookup(&split_down),
+            Some(Action::SplitPane { direction, .. }) if direction == "down"
+        ));
+        for (key, dir) in [("h", "left"), ("j", "down"), ("k", "up"), ("l", "right")] {
+            let chord =
+                KeyChord::parse_with_oak_mod(&format!("oak_mod+{key}"), platform_mods()).unwrap();
+            assert!(matches!(
+                reg.lookup(&chord),
+                Some(Action::FocusPaneDirection(d)) if d == dir
+            ));
+        }
+    }
+
+    #[test]
     fn defaults_include_the_command_palette() {
         let reg = KeybindRegistry::with_defaults();
-        let chord = KeyChord::parse(&format!("{OAK_MOD}+p")).unwrap();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+p", platform_mods()).unwrap();
         assert!(matches!(
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
@@ -822,7 +1082,8 @@ mod tests {
             (9, PhysicalKeyId::Digit9),
         ];
         for (i, physical) in digits {
-            let logical = KeyChord::parse(&format!("{OAK_MOD}+{i}")).unwrap();
+            let logical =
+                KeyChord::parse_with_oak_mod(&format!("oak_mod+{i}"), platform_mods()).unwrap();
             assert!(matches!(reg.lookup(&logical), Some(Action::SwitchTab(n)) if n.get() == i));
             let mut positional = logical.clone();
             positional.key = KeyName::Physical(physical);

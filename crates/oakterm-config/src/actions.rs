@@ -272,7 +272,8 @@ fn resolve_hint(id: ActionId, keybinds: &KeybindRegistry) -> Option<String> {
 /// `SplitPane` directions collapse: left/right → `SplitPaneRight` and up/down →
 /// `SplitPaneDown`, mirroring the wire's split-axis dispatch. Focus directions
 /// do *not* collapse — each maps to its own `FocusPane*` id.
-fn action_id_of(action: &Action) -> Option<ActionId> {
+#[must_use]
+pub fn action_id_of(action: &Action) -> Option<ActionId> {
     match action {
         Action::SplitPane { direction, .. } => match direction.as_str() {
             "left" | "right" => Some(ActionId::SplitPaneRight),

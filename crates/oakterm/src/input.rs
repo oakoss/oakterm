@@ -202,6 +202,71 @@ pub(crate) fn palette_key_effect(
     }
 }
 
+/// Inputs the keybind dispatch pipeline resolves against (ADR-0011).
+pub(crate) struct DispatchContext<'a> {
+    pub registry: &'a oakterm_config::KeybindRegistry,
+    /// Active modal key table (copy mode, resize mode), if any.
+    pub table: Option<&'a oakterm_config::KeyTable>,
+    /// Configured leader key, if any.
+    pub leader: Option<&'a oakterm_config::LeaderKey>,
+    /// A leader press is pending its follow-up key. Derived from
+    /// `App.leader_pending.is_some()` at construction; recompute the
+    /// same way if a second construction site is ever added.
+    pub leader_pending: bool,
+}
+
+/// Where a keypress resolved in the dispatch layers. Indices point into
+/// the source table (`KeybindRegistry` bindings, its leader table, or
+/// the active `KeyTable`) for the caller's copy-out dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyDispatch {
+    /// The leader chord itself: arm pending (with the configured
+    /// follow-up window, in milliseconds) and swallow the key.
+    LeaderArm(u64),
+    /// A pending leader matched a `leader+X` binding.
+    LeaderAction(usize),
+    /// A pending leader had no match: the buffered leader key and this
+    /// key both go to the PTY (ADR-0011 layer 1).
+    LeaderMiss,
+    /// The active key table matched.
+    TableAction(usize),
+    /// Modal table, no match: the key is dropped, not forwarded.
+    TableDrop,
+    /// A default binding matched.
+    Binding(usize),
+    /// No layer claimed the key; forward to the PTY.
+    Forward,
+}
+
+/// Resolve a keypress through ADR-0011's dispatch layers: pending
+/// leader, then leader arm, then the active key table, then default
+/// bindings. Each layer tries the logical chord first and falls back to
+/// the physical one (Spec-0011 keybind lookup).
+pub(crate) fn resolve_key(
+    ctx: &DispatchContext,
+    logical: Option<&oakterm_config::KeyChord>,
+    physical: Option<&oakterm_config::KeyChord>,
+) -> KeyDispatch {
+    let either = |f: &dyn Fn(&oakterm_config::KeyChord) -> Option<usize>| {
+        logical.and_then(f).or_else(|| physical.and_then(f))
+    };
+
+    if ctx.leader_pending {
+        return either(&|c| ctx.registry.lookup_leader_index(c))
+            .map_or(KeyDispatch::LeaderMiss, KeyDispatch::LeaderAction);
+    }
+    if let Some(lk) = ctx.leader {
+        if logical == Some(&lk.chord) || physical == Some(&lk.chord) {
+            return KeyDispatch::LeaderArm(lk.timeout_ms);
+        }
+    }
+    if let Some(table) = ctx.table {
+        return either(&|c| table.lookup_index(c))
+            .map_or(KeyDispatch::TableDrop, KeyDispatch::TableAction);
+    }
+    either(&|c| ctx.registry.lookup_index(c)).map_or(KeyDispatch::Forward, KeyDispatch::Binding)
+}
+
 /// Encode winit modifier state to xterm mouse modifier bits.
 /// Shift=4, Alt/Meta=8, Ctrl=16.
 #[must_use]
@@ -226,6 +291,167 @@ mod tests {
     use oakterm_config::{KeyChord, KeyName, NamedKeyId};
     use winit::event::Modifiers;
     use winit::keyboard::ModifiersState;
+
+    mod resolve {
+        use super::super::{DispatchContext, KeyDispatch, resolve_key};
+        use oakterm_config::{Action, KeyChord, KeyTable, KeybindRegistry, LeaderKey};
+
+        fn chord(s: &str) -> KeyChord {
+            KeyChord::parse(s).unwrap()
+        }
+
+        fn registry() -> KeybindRegistry {
+            let mut reg = KeybindRegistry::new();
+            reg.register(chord("ctrl+t"), Action::NewTab);
+            reg.register_leader(chord("%"), Action::NewTab);
+            reg
+        }
+
+        fn leader(s: &str) -> LeaderKey {
+            LeaderKey::new(chord(s), 1000).unwrap()
+        }
+
+        fn ctx<'a>(
+            reg: &'a KeybindRegistry,
+            table: Option<&'a KeyTable>,
+            leader: Option<&'a LeaderKey>,
+            pending: bool,
+        ) -> DispatchContext<'a> {
+            DispatchContext {
+                registry: reg,
+                table,
+                leader,
+                leader_pending: pending,
+            }
+        }
+
+        #[test]
+        fn default_binding_matches_and_misses_forward() {
+            let reg = registry();
+            let c = ctx(&reg, None, None, false);
+            assert!(matches!(
+                resolve_key(&c, Some(&chord("ctrl+t")), None),
+                KeyDispatch::Binding(_)
+            ));
+            assert_eq!(
+                resolve_key(&c, Some(&chord("ctrl+x")), None),
+                KeyDispatch::Forward
+            );
+        }
+
+        #[test]
+        fn physical_fallback_reaches_every_layer() {
+            let reg = registry();
+            let c = ctx(&reg, None, None, false);
+            // Logical misses, physical hits the default binding.
+            assert!(matches!(
+                resolve_key(&c, Some(&chord("ctrl+y")), Some(&chord("ctrl+t"))),
+                KeyDispatch::Binding(_)
+            ));
+        }
+
+        #[test]
+        fn leader_chord_arms_and_pending_matches_the_leader_table() {
+            let reg = registry();
+            let leader = leader("ctrl+b");
+            let c = ctx(&reg, None, Some(&leader), false);
+            assert_eq!(
+                resolve_key(&c, Some(&chord("ctrl+b")), None),
+                KeyDispatch::LeaderArm(1000)
+            );
+
+            let pending = ctx(&reg, None, Some(&leader), true);
+            assert!(matches!(
+                resolve_key(&pending, Some(&chord("%")), None),
+                KeyDispatch::LeaderAction(_)
+            ));
+            assert_eq!(
+                resolve_key(&pending, Some(&chord("q")), None),
+                KeyDispatch::LeaderMiss
+            );
+        }
+
+        #[test]
+        fn pending_leader_shadows_every_other_layer() {
+            let reg = registry();
+            let leader = leader("ctrl+b");
+            let pending = ctx(&reg, None, Some(&leader), true);
+            // ctrl+t is a default binding, but a pending leader owns it.
+            assert_eq!(
+                resolve_key(&pending, Some(&chord("ctrl+t")), None),
+                KeyDispatch::LeaderMiss
+            );
+        }
+
+        #[test]
+        fn active_table_matches_or_drops_and_shadows_defaults() {
+            let reg = registry();
+            let mut table = KeyTable::new();
+            table.bind(chord("h"), Action::ScrollUp(1));
+            let c = ctx(&reg, Some(&table), None, false);
+            assert!(matches!(
+                resolve_key(&c, Some(&chord("h")), None),
+                KeyDispatch::TableAction(_)
+            ));
+            // Modal: an unmatched key drops — even one bound in defaults.
+            assert_eq!(
+                resolve_key(&c, Some(&chord("ctrl+t")), None),
+                KeyDispatch::TableDrop
+            );
+        }
+
+        #[test]
+        fn leader_arm_shadows_an_active_table() {
+            // ADR-0011 orders the leader layer above the key table: the
+            // leader chord arms even while a modal table is active.
+            let reg = registry();
+            let leader = leader("ctrl+b");
+            let mut table = KeyTable::new();
+            table.bind(chord("ctrl+b"), Action::ScrollUp(1));
+            let c = ctx(&reg, Some(&table), Some(&leader), false);
+            assert_eq!(
+                resolve_key(&c, Some(&chord("ctrl+b")), None),
+                KeyDispatch::LeaderArm(1000)
+            );
+            // And a pending leader shadows the table entirely.
+            let pending = ctx(&reg, Some(&table), Some(&leader), true);
+            assert!(matches!(
+                resolve_key(&pending, Some(&chord("%")), None),
+                KeyDispatch::LeaderAction(_)
+            ));
+        }
+
+        #[test]
+        fn physical_fallback_reaches_leader_and_table_layers() {
+            let reg = registry();
+            let leader = leader("ctrl+b");
+            // Pending leader: logical misses, physical matches leader+%.
+            let pending = ctx(&reg, None, Some(&leader), true);
+            assert!(matches!(
+                resolve_key(&pending, Some(&chord("q")), Some(&chord("%"))),
+                KeyDispatch::LeaderAction(_)
+            ));
+            // Table: logical misses, physical matches the table bind.
+            let mut table = KeyTable::new();
+            table.bind(chord("h"), Action::ScrollUp(1));
+            let modal = ctx(&reg, Some(&table), None, false);
+            assert!(matches!(
+                resolve_key(&modal, Some(&chord("q")), Some(&chord("h"))),
+                KeyDispatch::TableAction(_)
+            ));
+        }
+
+        #[test]
+        fn no_chord_at_all_forwards_or_drops_per_layer() {
+            let reg = registry();
+            let c = ctx(&reg, None, None, false);
+            assert_eq!(resolve_key(&c, None, None), KeyDispatch::Forward);
+            let mut table = KeyTable::new();
+            table.bind(chord("h"), Action::ScrollUp(1));
+            let modal = ctx(&reg, Some(&table), None, false);
+            assert_eq!(resolve_key(&modal, None, None), KeyDispatch::TableDrop);
+        }
+    }
 
     fn named(key: NamedKey) -> Key {
         Key::Named(key)

@@ -12,14 +12,19 @@ mod proxy;
 mod schema;
 mod stubs;
 
-pub use actions::{ActionCategory, ActionContext, ActionId, ActionRegistry, RegisteredAction};
+pub use actions::{
+    ActionCategory, ActionContext, ActionId, ActionRegistry, RegisteredAction, action_id_of,
+};
 pub use event::{EventRegistry, HandlerResult, KNOWN_EVENTS};
 pub use init::{InitResult, ensure_stubs, init_config};
-pub use keybind::{Action, KeyChord, KeyName, KeybindRegistry, NamedKeyId, PhysicalKeyId};
+pub use keybind::{
+    Action, KeyChord, KeyName, KeyTable, KeybindRegistry, ModifierSet, NamedKeyId, PhysicalKeyId,
+    default_oak_mod,
+};
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{
-    ConfigValues, CursorStyle, Padding, StatusBarPosition, TextBlending, UpdateCheck,
+    ConfigValues, CursorStyle, LeaderKey, Padding, StatusBarPosition, TextBlending, UpdateCheck,
     WindowDecorations,
 };
 
@@ -53,7 +58,9 @@ pub struct ConfigResult {
     pub config: ConfigValues,
     /// Registered event handlers (empty on error or when no config file exists).
     pub registry: EventRegistry,
-    /// Registered keybinds (empty on error or when no config file exists).
+    /// Registered keybinds: defaults plus the user's, kept even when a
+    /// config value error is reported (defaults only when no config
+    /// file exists or the script itself failed to run).
     pub keybinds: KeybindRegistry,
     /// The Lua VM, kept alive for handler invocation. `None` when no config
     /// file exists or when the VM could not be created.
@@ -275,9 +282,25 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
     lua.remove_hook();
 
     let registry = proxy::extract_event_registry(&lua);
-    let keybinds = proxy::extract_keybind_registry(&lua);
 
-    match extract_config(&lua) {
+    // Config values extract first: keybind extraction expands the
+    // `oak_mod` token against the final configured value, so setting
+    // oak_mod anywhere in the file applies to every keybind. Keybinds
+    // extract even when a config value is invalid — an unrelated typo
+    // must not discard the user's bindings — falling back to the
+    // platform oak_mod when the configured one is unavailable.
+    let config_result = extract_config(&lua);
+    let mods = config_result
+        .as_ref()
+        .ok()
+        .and_then(|c| keybind::ModifierSet::parse(&c.oak_mod).ok())
+        .unwrap_or_else(|| {
+            keybind::ModifierSet::parse(keybind::default_oak_mod()).unwrap_or_default()
+        });
+    let leader_configured = config_result.as_ref().is_ok_and(|c| c.leader.is_some());
+    let keybinds = proxy::extract_keybind_registry(&lua, mods, leader_configured);
+
+    match config_result {
         Ok(config) => ConfigResult {
             config,
             registry,
@@ -877,7 +900,47 @@ mod tests {
         assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
         let defaults = KeybindRegistry::with_defaults();
         assert_eq!(r.keybinds.len(), defaults.len());
-        let new_tab = KeyChord::parse(&format!("{}+t", keybind::OAK_MOD)).unwrap();
+        let mods = keybind::ModifierSet::parse(keybind::default_oak_mod()).unwrap();
+        let new_tab = KeyChord::parse_with_oak_mod("oak_mod+t", mods).unwrap();
+        assert!(matches!(r.keybinds.lookup(&new_tab), Some(Action::NewTab)));
+    }
+
+    #[test]
+    fn config_value_error_keeps_user_keybinds() {
+        // Mutating the leader table after assignment bypasses __newindex
+        // validation (the proxy stores a reference), so extraction fails
+        // — the error must not discard bindings the script registered.
+        let (path, _dir) = temp_config(
+            r#"
+            local t = { key = "ctrl+b" }
+            oakterm.config.leader = t
+            t.key = false
+            oakterm.keybind("ctrl+g", oakterm.action.close_pane())
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_some(), "leader extraction must fail");
+        let chord = KeyChord::parse("ctrl+g").unwrap();
+        assert!(matches!(r.keybinds.lookup(&chord), Some(Action::ClosePane)));
+    }
+
+    #[test]
+    fn oak_mod_set_after_keybinds_still_applies() {
+        // Expansion happens at extraction with the final value, so
+        // oak_mod is order-independent in the config file (deliberate
+        // deviation from ADR-0011's set-before-keybinds constraint).
+        let (path, _dir) = temp_config(
+            r#"
+            oakterm.keybind("oak_mod+d", oakterm.action.close_pane())
+            oakterm.config.oak_mod = "ctrl+alt"
+            "#,
+        );
+        let r = load_config_from(&path);
+        assert!(r.error.is_none(), "unexpected error: {:?}", r.error);
+        let chord = KeyChord::parse("ctrl+alt+d").unwrap();
+        assert!(matches!(r.keybinds.lookup(&chord), Some(Action::ClosePane)));
+        // Defaults follow the configured oak_mod too.
+        let new_tab = KeyChord::parse("ctrl+alt+t").unwrap();
         assert!(matches!(r.keybinds.lookup(&new_tab), Some(Action::NewTab)));
     }
 

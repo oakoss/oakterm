@@ -13,6 +13,10 @@ pub(crate) const OAKTERM_LUA_STUB: &str = r#"---@meta _
 ---@alias oakterm.WindowDecorations "full"|"none"
 ---@alias oakterm.UpdateCheck "off"|"check"
 ---@alias oakterm.StatusBarPosition "bottom"|"top"
+
+---@class oakterm.Leader
+---@field key string Leader chord (e.g. "ctrl+b")
+---@field timeout integer|nil Follow-up window in milliseconds (default: 1000)
 ---@alias oakterm.TextBlending "linear"|"linear_corrected"
 ---@alias oakterm.LogLevel "debug"|"info"|"warn"|"error"
 ---@alias oakterm.Platform "macos"|"linux"|"windows"
@@ -138,6 +142,8 @@ function ActionModule.show_command_palette() end
 ---@field scrollback_archive boolean Enable scrollback disk archive (default: true)
 ---@field scrollback_archive_limit integer|string Archive size limit in bytes or "1GB" (default: "1GB")
 ---@field daemon_persist boolean Keep daemon alive after last window closes (default: false)
+---@field oak_mod string Modifier combo the oak_mod keybind token expands to (default: "super" on macOS, "ctrl+shift" elsewhere)
+---@field leader oakterm.Leader|nil tmux-style leader key for leader+... chords (default: nil)
 ---@field status_bar boolean Show the status bar (default: true)
 ---@field status_bar_position oakterm.StatusBarPosition Status bar edge (default: "bottom")
 ---@field check_for_updates oakterm.UpdateCheck Update check policy (default: "off")
@@ -229,6 +235,10 @@ pub(crate) const CONFIG_TEMPLATE: &str = r#"-- OakTerm configuration
 -- oakterm.config.check_for_updates = "off"  -- "off", "check"
 
 -- Keybindings
+-- oakterm.config.oak_mod = "ctrl+shift" -- modifier for oak_mod+... chords
+-- oakterm.config.leader = { key = "ctrl+b", timeout = 1000 } -- for leader+... chords
+-- oakterm.keybind("oak_mod+t", oakterm.action.new_tab())
+-- oakterm.keybind("leader+%", oakterm.action.split_pane({ direction = "right" }))
 -- oakterm.keybind("super+shift+t", oakterm.action.new_tab())
 -- oakterm.keybind("super+shift+w", oakterm.action.close_tab())
 -- oakterm.keybind("ctrl+shift+c", oakterm.action.copy())

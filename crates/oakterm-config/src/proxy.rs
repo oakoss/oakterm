@@ -114,7 +114,7 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
     // oakterm.keybind(key, action_or_callback)
     let keybind_fn = lua.create_function(|lua, (key, action): (mlua::String, Value)| {
         let key_str = key.to_str()?;
-        if let Err(e) = KeyChord::parse(&key_str) {
+        if let Err(e) = validate_keybind_chord(&key_str) {
             return Err(mlua::Error::RuntimeError(format!(
                 "invalid key chord '{key_str}': {e}"
             )));
@@ -155,6 +155,26 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set("oakterm", oakterm)?;
 
     Ok(())
+}
+
+/// Split a keybind string into its `leader+` routing prefix (if any) and
+/// the chord to parse. Leading/trailing whitespace is trimmed first.
+fn split_leader_prefix(key_str: &str) -> (bool, &str) {
+    let trimmed = key_str.trim();
+    match trimmed.strip_prefix("leader+") {
+        Some(rest) => (true, rest),
+        None => (false, trimmed),
+    }
+}
+
+/// Syntax-check a keybind chord at `oakterm.keybind()` call time.
+/// `oak_mod` expands at extraction with the final config value, so it
+/// validates against the empty set (an `oak_mod` expansion can never
+/// introduce a parse error); a `leader+` prefix routes to the leader
+/// table at extraction, so the chord after it is what's validated.
+fn validate_keybind_chord(key_str: &str) -> Result<(), String> {
+    let (_, to_validate) = split_leader_prefix(key_str);
+    KeyChord::parse_with_oak_mod(to_validate, crate::keybind::ModifierSet::default()).map(|_| ())
 }
 
 /// Register `oakterm.os()`, `oakterm.hostname()`, and `oakterm.log()`.
@@ -369,11 +389,15 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
 ///
 /// Converts keybind entries stored by `oakterm.keybind()` into
 /// `(KeyChord, Action)` pairs. Callback functions become `RegistryKey`s.
-pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
+pub(crate) fn extract_keybind_registry(
+    lua: &Lua,
+    oak_mod: crate::keybind::ModifierSet,
+    leader_configured: bool,
+) -> KeybindRegistry {
     // Seed with the built-in defaults; user binds append after and win
     // on conflict (lookup is last-registration). This is the single
     // source of the default table — the no-config path also uses it.
-    let mut registry = KeybindRegistry::with_defaults();
+    let mut registry = KeybindRegistry::with_defaults_for(oak_mod);
     let Ok(entries) = lua.named_registry_value::<Table>(KEYBIND_REGISTRY_KEY) else {
         tracing::warn!("failed to read keybind registry from Lua VM");
         return registry;
@@ -396,7 +420,9 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
             }
         };
 
-        let chord = match KeyChord::parse(&key_str) {
+        // A `leader+` prefix routes the binding into the leader table.
+        let (is_leader, chord_str) = split_leader_prefix(&key_str);
+        let chord = match KeyChord::parse_with_oak_mod(chord_str, oak_mod) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(chord = %key_str, error = %e, "skipping keybind with invalid chord");
@@ -433,7 +459,17 @@ pub(crate) fn extract_keybind_registry(lua: &Lua) -> KeybindRegistry {
             }
         };
 
-        registry.register(chord, action);
+        if is_leader {
+            registry.register_leader(chord, action);
+        } else {
+            registry.register(chord, action);
+        }
+    }
+
+    if registry.has_leader_bindings() && !leader_configured {
+        tracing::warn!(
+            "leader+ keybinds registered but oakterm.config.leader is unset; they cannot fire"
+        );
     }
 
     registry
@@ -603,6 +639,41 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("daemon_persist")?
         .unwrap_or(defaults.daemon_persist);
 
+    let oak_mod = match backing.get::<Option<mlua::String>>("oak_mod")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            if let Err(e) = crate::keybind::ModifierSet::parse(&s) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "invalid oak_mod '{s}': {e}"
+                )));
+            }
+            s.to_string()
+        }
+        None => defaults.oak_mod,
+    };
+
+    let leader = match backing.get::<Value>("leader")? {
+        Value::Nil => defaults.leader,
+        Value::Table(t) => {
+            let key: mlua::String = t.get("key")?;
+            let key = key.to_str()?;
+            let chord = crate::keybind::KeyChord::parse(&key)
+                .map_err(|e| mlua::Error::RuntimeError(format!("invalid leader key: {e}")))?;
+            let timeout_ms = t
+                .get::<Option<u64>>("timeout")?
+                .unwrap_or(schema::DEFAULT_LEADER_TIMEOUT_MS);
+            let leader = crate::schema::LeaderKey::new(chord, timeout_ms)
+                .map_err(mlua::Error::RuntimeError)?;
+            Some(leader)
+        }
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "invalid leader value: expected table or nil, got {}",
+                other.type_name()
+            )));
+        }
+    };
+
     let status_bar: bool = backing
         .get::<Option<bool>>("status_bar")?
         .unwrap_or(defaults.status_bar);
@@ -665,6 +736,8 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         scrollback_archive,
         scrollback_archive_limit,
         daemon_persist,
+        oak_mod,
+        leader,
         status_bar,
         status_bar_position,
         check_for_updates,
@@ -977,6 +1050,144 @@ mod tests {
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("full, none"), "got: {msg}");
+    }
+
+    #[test]
+    fn oak_mod_defaults_to_the_platform_value() {
+        let lua = setup();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.oak_mod, crate::keybind::default_oak_mod());
+    }
+
+    #[test]
+    fn set_valid_oak_mod() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.oak_mod = "ctrl+alt""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.oak_mod, "ctrl+alt");
+    }
+
+    #[test]
+    fn set_invalid_oak_mod() {
+        let lua = setup();
+        let err = lua.load(r#"oakterm.config.oak_mod = "ctrl+x""#).exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("unknown modifier"), "got: {msg}");
+    }
+
+    #[test]
+    fn keybind_accepts_the_oak_mod_token() {
+        let lua = setup();
+        lua.load(r#"oakterm.keybind("oak_mod+d", oakterm.action.close_pane())"#)
+            .exec()
+            .unwrap();
+        let mods = crate::keybind::ModifierSet::parse("ctrl+alt").unwrap();
+        let reg = extract_keybind_registry(&lua, mods, false);
+        let chord = KeyChord::parse("ctrl+alt+d").unwrap();
+        assert!(matches!(reg.lookup(&chord), Some(Action::ClosePane)));
+    }
+
+    #[test]
+    fn leader_defaults_to_none_and_parses_when_set() {
+        let lua = setup();
+        assert_eq!(extract_config(&lua).unwrap().leader, None);
+        lua.load(r#"oakterm.config.leader = { key = "ctrl+b", timeout = 500 }"#)
+            .exec()
+            .unwrap();
+        let leader = extract_config(&lua).unwrap().leader.unwrap();
+        assert_eq!(leader.chord, KeyChord::parse("ctrl+b").unwrap());
+        assert_eq!(leader.timeout_ms, 500);
+    }
+
+    #[test]
+    fn leader_timeout_defaults_when_omitted() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.leader = { key = "ctrl+a" }"#)
+            .exec()
+            .unwrap();
+        let leader = extract_config(&lua).unwrap().leader.unwrap();
+        assert_eq!(leader.timeout_ms, 1000);
+    }
+
+    #[test]
+    fn leader_rejects_bad_shapes() {
+        let lua = setup();
+        assert!(
+            lua.load(r#"oakterm.config.leader = "ctrl+b""#)
+                .exec()
+                .is_err()
+        );
+        assert!(
+            lua.load("oakterm.config.leader = { timeout = 500 }")
+                .exec()
+                .is_err(),
+            "missing key"
+        );
+        assert!(
+            lua.load(r#"oakterm.config.leader = { key = "nope+x" }"#)
+                .exec()
+                .is_err()
+        );
+        assert!(
+            lua.load(r#"oakterm.config.leader = { key = "ctrl+b", timeout = -5 }"#)
+                .exec()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn leader_rejects_zero_and_fractional_timeouts() {
+        let lua = setup();
+        assert!(
+            lua.load(r#"oakterm.config.leader = { key = "ctrl+b", timeout = 0 }"#)
+                .exec()
+                .is_err()
+        );
+        assert!(
+            lua.load(r#"oakterm.config.leader = { key = "ctrl+b", timeout = 500.5 }"#)
+                .exec()
+                .is_err()
+        );
+        assert!(
+            lua.load(r#"oakterm.config.leader = { key = "oak_mod+b" }"#)
+                .exec()
+                .is_err(),
+            "the leader chord itself takes no oak_mod token"
+        );
+    }
+
+    #[test]
+    fn leader_binds_compose_with_oak_mod_in_the_rest() {
+        let lua = setup();
+        lua.load(r#"oakterm.keybind("leader+oak_mod+d", oakterm.action.new_tab())"#)
+            .exec()
+            .unwrap();
+        let mods = crate::keybind::ModifierSet::parse("ctrl+alt").unwrap();
+        let reg = extract_keybind_registry(&lua, mods, true);
+        let chord = KeyChord::parse("ctrl+alt+d").unwrap();
+        assert!(reg.lookup(&chord).is_none());
+        let idx = reg.lookup_leader_index(&chord).unwrap();
+        assert!(matches!(reg.get_leader(idx), Some(Action::NewTab)));
+    }
+
+    #[test]
+    fn leader_prefixed_binds_land_in_the_leader_table() {
+        let lua = setup();
+        lua.load(r#"oakterm.keybind("leader+5", oakterm.action.close_pane())"#)
+            .exec()
+            .unwrap();
+        let mods = crate::keybind::ModifierSet::parse("ctrl+alt").unwrap();
+        let reg = extract_keybind_registry(&lua, mods, true);
+        let chord = KeyChord::parse("5").unwrap();
+        assert!(
+            reg.lookup(&chord).is_none(),
+            "leader binds stay out of the main table"
+        );
+        let idx = reg.lookup_leader_index(&chord).unwrap();
+        assert!(matches!(reg.get_leader(idx), Some(Action::ClosePane)));
     }
 
     #[test]
