@@ -25,7 +25,7 @@ repository = "https://github.com/oakoss/oakterm"
 arboard = "3.6.1"
 
 # GPU rendering
-wgpu = "29.0.3"
+wgpu = "29.0.4"
 
 # macOS color space (Display P3)
 objc2 = "0.6.4"
@@ -40,17 +40,17 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # Accessibility
 accesskit = "0.24.1"
-accesskit_winit = "0.33.1"
+accesskit_winit = "0.33.2"
 
 # Lua config
 gethostname = "1.1.0"
-mlua = { version = "0.11.6", features = ["lua54", "vendored", "send"] }
+mlua = { version = "0.12.0", features = ["lua54", "vendored", "send"] }
 strsim = "0.11.1"
 
 # Async runtime
-tokio = { version = "1.52.3", features = ["full"] }
-tokio-util = { version = "0.7.18", features = ["codec"] }
-bytes = "1.12.0"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-util = { version = "0.7.19", features = ["codec"] }
+bytes = "1.12.1"
 
 # Structured logging
 tracing = "0.1.44"
@@ -60,8 +60,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 prost = "0.14.4"
 
 # Serialization
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 
 # Scroll buffer archive
@@ -69,14 +69,14 @@ zstd = "0.13.3"
 ring = "0.17.14"
 
 # Atlas cache
-lru = "0.18.0"
+lru = "0.18.2"
 
 # Font loading and rasterization
 ttf-parser = "0.25.1"
-fontdb = "0.23.0"
-swash = "0.2.9"
+fontdb = "0.24.0"
+swash = "0.2.10"
 etagere = "0.3.0"
-bytemuck = { version = "1.25.0", features = ["derive"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
 
 # Config hot-reload
 notify = "8.2.0"
@@ -94,13 +94,13 @@ rustix = { version = "1.1.4", features = [
   "fs",
   "stdio",
 ] }
-libc = "0.2.186"
+libc = "0.2.189"
 
 # Shell-style argument splitting
 shlex = "2.0.1"
 
 # Search
-regex = "1.12.4"
+regex = "1.13.1"
 
 # VT parser
 vte = { version = "0.15.0", features = ["ansi"] }
