@@ -15,6 +15,7 @@ target/
 .claude/.review-mark
 .claude/.no-review-gate
 .claude/.review-stop-block
+.claude/.review-in-progress
 
 # Task tracking
 .trekker/

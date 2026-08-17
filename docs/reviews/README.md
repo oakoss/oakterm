@@ -69,3 +69,4 @@ Not every review needs every section. Competitive research reviews may only have
 | 2026-07-06 | [Codebase Improvement Audit](2026-07-06-232328-codebase-improvement-audit.md)               | Whole-workspace code audit at 60c80c4 — 14 findings, 4 batches             |
 | 2026-07-06 | [Architecture Deepening Review](2026-07-06-233000-architecture-deepening.md)                | Depth/testability audit at 29e36e2 — 6 deepen + 6 explore, 7 keep          |
 | 2026-08-16 | [Agent Tooling Landscape Audit](2026-08-16-215731-agent-tooling-landscape-audit.md)         | 11 agent-adjacent tools + Anthropic auth/billing policy — 3 ADR candidates |
+| 2026-08-17 | [GPUI Evaluation](2026-08-17-181057-gpui-evaluation.md)                                     | Zed's GPUI vs ADR-0018 wgpu — rejected; ADR-0018 amended (Option E)        |

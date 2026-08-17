@@ -59,6 +59,22 @@ Single legacy API (Alacritty's approach via glutin).
 
 - Deprecated on macOS; no modern-API access (Metal/Vulkan); a dead end for the compositing and image-protocol work ([ADR-0004](0004-kitty-graphics-in-core.md)) the renderer must do.
 
+### Option E: GPUI (Zed's UI framework)
+
+_Added 2026-08-17, evaluated after acceptance — full analysis in the [GPUI evaluation](../reviews/2026-08-17-181057-gpui-evaluation.md)._ Zed's GPU-accelerated framework; production-proven for terminal rendering (Zed's terminal, tty7).
+
+**Pros:**
+
+- Fast terminal rendering demonstrated in shipping products; Apache-2.0.
+- AccessKit and text shaping built in.
+
+**Cons:**
+
+- Wrong layer: a full application framework (owns the event loop, windowing, taffy layout, text system), not a GPU abstraction — adopting it replaces winit, the render loop, the glyph atlas, and the a11y bridge, and its widget-tree value targets chrome that OakTerm deliberately renders as terminal cells.
+- wgpu underneath anyway on Linux (moved off blade in early 2026, per third-party reporting) and web; on macOS its direct Metal duplicates what this ADR's escape hatch already reserves behind the trait seam — at a far smaller blast radius.
+- Reintroduces on macOS/Windows the multi-backend, multi-shader-language maintenance surface Option B was rejected for (carried by Zed, but its churn flows to consumers pre-1.0).
+- Consumption risk: pre-1.0 with routine breaking changes, crates.io publishing stalled mid-restructure (current code requires a git dependency on the Zed monorepo), single vendor whose roadmap is Zed.
+
 ## Decision
 
 **Option A — wgpu, behind a GPU trait seam, with a competitive-parity benchmark as the acceptance gate.**
@@ -79,3 +95,4 @@ wgpu collapses three native backends into one WGSL codebase while the abstractio
 - [13-abstraction.md](../ideas/13-abstraction.md)
 - [ADR-0002: Performance Philosophy](0002-performance-philosophy.md)
 - [ADR-0004: Kitty Graphics in Core](0004-kitty-graphics-in-core.md)
+- [GPUI Evaluation (2026-08-17)](../reviews/2026-08-17-181057-gpui-evaluation.md)
