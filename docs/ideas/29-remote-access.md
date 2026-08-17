@@ -22,7 +22,7 @@ Run the terminal daemon on a server. Connect to it from your desktop terminal li
 
 ## The Model
 
-```lua
+```text
 ┌─────────────────────────────────┐     ┌─────────────────────────────┐
 │  Your Mac (client)              │     │  Proxmox Server (daemon)    │
 │                                 │     │                             │
@@ -84,13 +84,6 @@ From your Mac/Linux/Windows terminal, connect to the remote daemon:
 
 Or in config:
 
-```text
-remote-domain.homelab.host = proxmox.local
-remote-domain.homelab.port = 7890
-remote-domain.homelab.auth = token
-remote-domain.homelab.token = ${OAKTERM_HOMELAB_TOKEN}
-```
-
 ```lua
 remote_domains = {
   {
@@ -132,17 +125,19 @@ Remote panes show under their domain name with a connection indicator. Click one
 
 ### What the protocol handles
 
-| Capability            | How                                                                            |
-| --------------------- | ------------------------------------------------------------------------------ |
-| Pane output streaming | VT byte stream over WebSocket — the client renders it locally with its own GPU |
-| Pane input            | Keystrokes sent over WebSocket to the daemon                                   |
-| Sidebar state         | Structured data (JSON) — sections, entries, badges                             |
-| Notifications         | Push events from daemon to client                                              |
-| Plugin state          | Remote plugins run on the daemon, their sidebar/palette entries sync to client |
-| Scroll buffer         | Client requests scroll regions on demand, daemon sends from its buffer         |
-| File operations       | Plugins on the daemon access the server filesystem, not the client's           |
+Remote access is the same daemon wire protocol ([Spec-0001](../specs/0001-daemon-wire-protocol.md)) carried over TLS WebSocket instead of a Unix socket — not a separate message format ([ADR-0007](../adrs/0007-daemon-architecture.md)). Spec-0001 already reserves a frame flag for zstd compression on remote connections. Capabilities not yet in the wire protocol (sidebar sync, notifications, plugin state) land as protocol extensions when their phases arrive.
 
-The client does its own rendering — the server doesn't need a GPU. The protocol sends VT output (same bytes a PTY would produce) and the client's local renderer handles fonts, ligatures, images, everything.
+| Capability            | How                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pane output streaming | Daemon pushes `DirtyNotify` (0x70); client pulls `GetRenderUpdate` (0x71) and rasterizes the returned dirty grid rows (`RenderUpdate` 0x72) with its own GPU |
+| Pane input            | `KeyInput`/`MouseInput` frames sent over WebSocket to the daemon                                                                                             |
+| Sidebar state         | Protocol extension, not yet specified — structured sections, entries, badges                                                                                 |
+| Notifications         | Protocol extension, not yet specified — push events from daemon to client                                                                                    |
+| Plugin state          | Protocol extension, not yet specified — remote plugins' sidebar/palette entries sync                                                                         |
+| Scroll buffer         | Client requests scroll regions on demand (`GetScrollback`), daemon sends from its buffer                                                                     |
+| File operations       | Plugins on the daemon access the server filesystem, not the client's                                                                                         |
+
+The client does its own rasterization — the server needs no GPU. The daemon parses VT output and ships dirty grid state (`RenderUpdate`); the client's local renderer handles fonts and ligatures. Image protocols (Kitty graphics) need an image/blob transport that Spec-0001 does not yet define — remote images are unsupported until the image-transport ADR (TREK-179) resolves it.
 
 ## Difference from SSH Domains
 
@@ -208,10 +203,10 @@ The daemon-to-client connection is a core feature — networking for remote doma
 - Daemon mode (`--daemon`) — background process management, PID file
 - **Network listener** — TLS-encrypted WebSocket server on configurable port
 - **Authentication** — token and mTLS built into the protocol
-- **Protocol** — WebSocket message format for pane I/O, sidebar sync, notifications, plugin state
+- **Protocol** — the Spec-0001 daemon wire protocol over WebSocket (pane I/O today; sidebar sync, notifications, plugin state as later protocol extensions)
 - **Remote domain configuration** — `remote_domains` in config, same level as `ssh_domains`
 - **`:connect` command** — core command to connect to a remote daemon
-- **Client-side remote pane rendering** — VT stream from WebSocket, rendered by local GPU
+- **Client-side remote pane rendering** — `RenderUpdate` grid state over WebSocket, rasterized by local GPU
 - **Connection management** — reconnection on network drop, session resumption
 
 ### What's a plugin
@@ -239,11 +234,17 @@ The remote connection is too deep to be a plugin:
 - Rate limiting on auth failures
 - Daemon logs all connections with timestamps and client info
 - `:debug security` shows active remote connections
-- Configurable: `remote-allow-interactive = false` for monitor-only access
+- Configurable: `remote_allow_interactive = false` for monitor-only access
+
+## Prior Art
+
+Remote steering of long-running agent sessions is the strongest converged demand in the 2026 agent-tooling wave: Zeron ships a single binary with headed/headless modes and phone clients that watch and steer desktop sessions; ZCode's Bot Channel monitors Goals from WeChat/Telegram; Orca ships a mobile companion app. Zeron's mobile clients are monitor-first with opt-in interaction — the same default as `remote_allow_interactive = false` here. Zeron reached this architecture by rewriting an Electron app from scratch; oakterm's daemon/client split provides it natively. See the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md).
 
 ## Related Docs
 
 - [Architecture](01-architecture.md) — server/client daemon model
+- [ADR-0007: Daemon Architecture](../adrs/0007-daemon-architecture.md) — the daemon model remote access extends
+- [Spec-0001: Daemon Wire Protocol](../specs/0001-daemon-wire-protocol.md) — the protocol remote connections reuse
 - [Abstraction Layer](13-abstraction.md) — Null implementations for headless traits
 - [Multiplexer](03-multiplexer.md) — SSH domains (different from remote domains)
 - [Security](21-security.md) — auth and encryption

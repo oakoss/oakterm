@@ -41,7 +41,7 @@ Context window usage shown as a progress bar in the sidebar.
 
 ## Scrollback Handling
 
-Community pain point: Claude Code breaks terminal scrollback — jumping to top/bottom erratically.
+Community pain point: Claude Code breaks terminal scrollback — jumping to top/bottom erratically ([anthropics/claude-code#34845](https://github.com/anthropics/claude-code/issues/34845), [#36816](https://github.com/anthropics/claude-code/issues/36816), [#37627](https://github.com/anthropics/claude-code/issues/37627); Anthropic attributes it to Ink's ANSI escape handling and is rewriting the renderer).
 
 Solution: the terminal knows a pane is an agent process. Agent panes get scroll pinning — the agent's output doesn't hijack your scroll position. You can scroll up to review while the agent keeps working below.
 
@@ -134,3 +134,4 @@ Fork a workspace at its current state to try something risky. Git worktrees make
 - [Memory Management](15-memory-management.md) — child process memory attribution
 - [Shell Integration](18-shell-integration.md) — command completion notifications
 - [Agent Protocol](39-agent-protocol.md) — structured channel for ACP-aware agents (complements the lifecycle managed here)
+- [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) — scrollback-breakage re-verification, 2026 agent-tooling prior art

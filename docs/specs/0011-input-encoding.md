@@ -3,7 +3,7 @@ spec: '0011'
 title: Input Encoding & Keyboard Protocol
 status: accepted
 date: 2026-07-06
-adrs: ['0016']
+adrs: ['0016', '0007']
 tags: [core]
 ---
 

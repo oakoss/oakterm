@@ -1,6 +1,6 @@
 ---
 title: 'Agent Protocol (ACP)'
-status: draft
+status: reviewing
 category: core
 description: 'Speak the Agent Client Protocol so any ACP-compatible agent (Claude, Codex, Gemini, OpenCode) lights up the terminal with structured prompts, tool calls, and permissions'
 tags: ['agents', 'acp', 'claude-code', 'codex', 'gemini', 'opencode']
@@ -16,15 +16,15 @@ Agents today are growing structured surfaces: streaming text, tool calls with ar
 
 Three consequences for oakterm:
 
-1. **Per-agent integration cost.** Wiring "first-class Claude" + "first-class Codex" + "first-class Gemini" each requires reverse-engineering a different output format. With the input classifier landing (ADR-0014), this cost grows linearly per supported agent.
+1. **Per-agent integration cost.** Wiring "first-class Claude" + "first-class Codex" + "first-class Gemini" each requires reverse-engineering a different output format. With the input classifier landing (ADR-0014), this cost multiplies per (agent, feature).
 2. **Lost UX leverage.** A tool-call event painted as text can't trigger a permission modal, a diff pane, or an accessibility announcement. The terminal sees lines, not events.
 3. **Plugin ecosystem fragmentation.** Phase 2 plugins ([Plugin System](06-plugins.md)) that want to participate in agent flows — exposing context, registering tools, intercepting permissions — would have to integrate per-agent, not per-protocol.
 
-ACP is the editor-side equivalent of LSP for agents. Solving these once at the protocol layer scales linearly per agent instead of multiplying per (agent, feature).
+ACP is the editor-side equivalent of LSP for agents. Solving these once at the protocol layer scales once for every agent instead of multiplying per (agent, feature).
 
 ## What ACP Is
 
-Open protocol from Zed for connecting code editors to coding agents. JSON-RPC over stdio (HTTP/WebSocket transport in progress). Capability-negotiated, versioned. Spec at v0.12.x as of April 2026, actively maintained in the [agentclientprotocol](https://github.com/agentclientprotocol) GitHub org.
+Open protocol from Zed for connecting code editors to coding agents. JSON-RPC over stdio (HTTP/WebSocket transport in progress). Capability-negotiated, versioned. The protocol reached **stable version 1** in 2026 — `session/resume`, `session/close`, `logout`, and the `session_info_update` notification are now stabilized — and is actively maintained in the [agentclientprotocol](https://github.com/agentclientprotocol) GitHub org.
 
 **Core method shapes:**
 
@@ -60,17 +60,23 @@ Agents drive the terminal that already exists. We don't bolt a chat UI on top.
 
 ACP is one protocol; the agent ecosystem behind it is plural. Today's known servers:
 
-- **Claude** — via `@agentclientprotocol/claude-agent-acp` (npm)
-- **Codex CLI** — via Zed's adapter
+- **Claude** — via `@agentclientprotocol/claude-agent-acp` (npm; a wrapper over the Claude Agent SDK)
+- **Codex CLI** — official `codex-acp` server in the agentclientprotocol org
 - **Gemini CLI** — listed in the agent registry
 - **OpenCode** — listed
-- **GitHub Copilot** — public preview
+- **GitHub Copilot** — ACP support in Copilot CLI, public preview since 2026-01-28
 
 Each agent owns its own auth, billing, and capabilities. oakterm doesn't pick winners. A user with Claude Pro picks Claude; a user with ChatGPT Plus picks Codex; a user in the Google ecosystem picks Gemini; a user who wants fully local picks OpenCode; a user paying per-token plugs in their API key.
 
 The protocol bet is also a portfolio bet. The product is the agent surface in the terminal, not "AI in the terminal" — and ACP keeps that surface vendor-neutral.
 
 It also forecloses marketing and policy traps. We never claim to be a Claude product or a ChatGPT product. We're a terminal that runs agents the user has configured.
+
+## The Other Protocol Surface: Native Structured Interfaces
+
+ACP is not the only structured channel into these agents, and the 2026 wrapper ecosystem mostly ships on the other one. Claude Code exposes a stream-json subprocess interface and the Claude Agent SDK (which drives the locally installed CLI); Codex exposes an app-server JSON-RPC interface. Shipping products integrate against these directly: Zeron drives Claude Code via stream-json and Codex via app-server; bb and T3 Code drive the local Claude Code CLI through the Agent SDK; Atomic embeds the Claude, Copilot, and OpenCode SDKs. The Claude ACP adapter above is itself a wrapper over the same Agent SDK.
+
+This refines this doc's core premise: native interfaces are a second escape from the per-(agent, feature) multiplication — vendor-maintained structured events instead of reverse-engineered ANSI output — at the price of one adapter per agent instead of one protocol for all. Which surface(s) oakterm speaks — ACP-only, native-first, or ACP as the abstraction with native transports behind one internal trait — is the decision slated for ADR-0022; see the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) for the evidence base.
 
 ## How It Fits With Existing oakterm Architecture
 
@@ -133,7 +139,7 @@ agent_providers = {
     protocol = "acp",
   },
   codex = {
-    command = { "codex", "acp" },
+    command = { "codex-acp" },
     protocol = "acp",
   },
   gemini = {
@@ -164,7 +170,7 @@ This is a constraint, not an open question. Anthropic's [published policy on the
 
 > "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. Please use the API key authentication methods described in this document instead."
 
-The author of [Sandcastle](https://github.com/mattpocock/sandcastle) hit this same wall in [issue #191](https://github.com/mattpocock/sandcastle/issues/191) and has been unable to obtain a written exception. Until Anthropic publishes a clear approval channel, oakterm operates on the following stance:
+Anthropic's 2026 enforcement and policy moves made the boundaries concrete (full timeline with sources in the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md)): third-party tools running their own subscription OAuth were blocked in January and OpenCode received a legal request in March; since April 4, third-party subscription auth is sanctioned but billed per-token from claude.ai "extra usage" rather than plan limits; and Anthropic publicly confirmed to T3 Code that tools wrapping the _local Claude Code CLI_ are allowed. The sanctioned ladder, top to bottom: spawn the interactive official CLI in a PTY; drive the local CLI via the Agent SDK; per-token extra-usage OAuth; and — enforcement-tested ToS violation — scraping or impersonating the official client's tokens. A terminal sits in the top tier by construction. oakterm operates on the following stance:
 
 **What oakterm ships and documents:**
 
@@ -185,7 +191,7 @@ A user who has run `claude setup-token` themselves and exported `CLAUDE_CODE_OAU
 
 This mirrors how every terminal handles every other authenticated tool — iTerm2 doesn't ship "use your AWS root account" copy; it just runs `aws` with the user's environment.
 
-**Revisit trigger.** If Anthropic publishes a clear approval process or amended policy, revisit. Until then, status quo.
+**Revisit trigger.** The original trigger ("Anthropic publishes a clearer policy") partially fired in 2026 — and the clearer policy confirms this posture rather than loosening it. Revisit again only if Anthropic changes the extra-usage model or publishes a formal third-party approval channel. One adjacent constraint worth recording now: if oakterm ever surfaces agent usage/cost meters, the data comes from PTY-owned output or agent self-report, never from reading provider credential stores (see the landscape audit's Orca finding; decision slated for ADR-0024).
 
 ## Prior Art
 
@@ -195,7 +201,9 @@ Warp also enumerates the same agent portfolio at the _skill-discovery_ layer: th
 
 **[Zed](https://zed.dev/docs/ai/external-agents) (reference ACP client).** Zed's external-agent panel launches `claude-agent-acp` as a subprocess, exposes `/login` for Pro/Max OAuth via the adapter, and decoupled this from Zed's own AI subscription as of v0.202.7. Their auth flow works _in practice_ but rests on whatever private arrangement (if any) exists between Zed and Anthropic — not a published exception. We can't safely assume downstream clients of the same adapter inherit any approval.
 
-**[Sandcastle](https://github.com/mattpocock/sandcastle) (auth gray zone, in writing).** Issue #191 documents the author's months-long unsuccessful attempt to get a written position from Anthropic on subscription auth in third-party tools. His public stance: "Anthropic publicly documents how to do this in Claude Code itself, via `claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN`. I can't legally recommend you use it. But you are able to do it." This is the same posture oakterm adopts.
+**[Sandcastle](https://github.com/mattpocock/sandcastle) (auth gray zone, in writing).** Issue #191 documents the author's months-long unsuccessful attempt to get a written position from Anthropic on subscription auth in third-party tools. His public stance: "Anthropic publicly documents how to do this in Claude Code itself, via `claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN`. I can't legally recommend you use it. But you are able to do it." Superseded by the 2026 policy timeline above — the ambiguity Sandcastle was stuck in has since resolved into the sanctioned ladder — but preserved here as the origin of oakterm's posture.
+
+**2026 wrapper ecosystem.** Eleven agent-adjacent tools surveyed in the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md): the integration seams, auth patterns, and billing outcomes that inform ADR-0022 and this doc's landscape claims.
 
 ## Open Questions
 
@@ -211,7 +219,7 @@ Warp also enumerates the same agent portfolio at the _skill-discovery_ layer: th
 
 6. **Multi-agent in one pane vs. one-agent-per-pane.** The Rust SDK exposes `Conductor` and `Proxy` types. Do we use those to host multiple concurrent ACP sessions per pane (e.g. a coordinator agent that delegates to specialists), or stay one-session-per-pane and rely on idea 07's worktree-per-agent fan-out for multi-agent work?
 
-7. **Protocol version-pin policy.** ACP is at v0.12.x with active churn. Do we track tip on every adapter release, pin a minor version and bump deliberately, or vendor the crate to control breakage timing? Each choice trades update cadence against test surface.
+7. **Protocol version-pin policy.** ACP reached stable v1, but methods continue to stabilize incrementally. Do we track tip on every adapter release, pin a version and bump deliberately, or vendor the crate to control breakage timing? Each choice trades update cadence against test surface. Slated for ADR-0022.
 
 8. **HTTP/WebSocket transport.** The spec lists remote ACP as in-progress. Phase 4 ([Networking](29-remote-access.md)) might want to consume this; today, stdio-only is fine.
 
@@ -240,3 +248,4 @@ Warp also enumerates the same agent portfolio at the _skill-discovery_ layer: th
 - [ADR-0014: Input Classifier](../adrs/0014-input-classifier.md) — what routes input to ACP in the first place
 - [ADR-0005: Lua Sandboxed Config](../adrs/0005-lua-sandboxed-config.md) — config language used in examples
 - [Warp Architecture Review](../reviews/2026-04-28-210532-warp-architecture-review.md) — gateway-pattern prior art and AGPL constraint
+- [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) — 2026 wrapper ecosystem, native-interface seams, verified auth/billing timeline
