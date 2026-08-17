@@ -103,7 +103,7 @@ Input flows through these layers in order:
 | `oak_mod + P`           | Command palette                                                                  |
 | `oak_mod + R`           | Enter resize mode                                                                |
 
-Tab cycling deliberately breaks the `oak_mod` pattern: on Linux `oak_mod + Shift` folds into `oak_mod` (a chord cannot repeat a modifier), which would collide with `oak_mod + [` copy mode, so each platform gets its native tab-cycling convention instead. Until the configurable `oak_mod` machinery lands, default keybinds ship pre-expanded to the platform's `oak_mod` value.
+Tab cycling deliberately breaks the `oak_mod` pattern: on Linux `oak_mod + Shift` folds into `oak_mod` (a chord cannot repeat a modifier), which would collide with `oak_mod + [` copy mode, so each platform gets its native tab-cycling convention instead. Default keybinds are expanded against the configured `oak_mod` value at config-extraction time (`KeybindRegistry::with_defaults_for`; see As Built).
 
 ### Key tables
 
@@ -136,7 +136,7 @@ oakterm.keybind("leader+\"", oakterm.action.split_pane({ direction = "down" }))
 oakterm.config.copy_mode_keybinds = "vim"  -- or "emacs" or "basic"
 ```
 
-`oak_mod` in a keybind string is expanded at registration time to the configured modifier. This means changing `oak_mod` after keybinds are registered does not retroactively update them — `oak_mod` must be set before keybinds.
+`oak_mod` in a keybind string is expanded at config-extraction time to the configured modifier — see As Built.
 
 ### Performable actions
 
@@ -149,6 +149,15 @@ Borrowed from Ghostty: some actions are context-dependent. `oakterm.action.copy(
 - The wire protocol does not need changes for keybind dispatch; keybinds are resolved in the GUI process before input is forwarded to the daemon.
 - Copy mode key table and resize mode key table will be specified in their respective specs (Spec-0008 Copy Mode).
 - The status bar spec must include mode indicator display.
+
+## As Built
+
+Four places where the shipped implementation (`crates/oakterm-config/src/keybind.rs`, `proxy.rs`) corrected or refined this decision:
+
+- **`oak_mod` is order-independent, not "must be set before keybinds."** This ADR specified registration-time expansion, which implied `oak_mod` had to be set before the keybinds that use it. The shipped runtime instead resolves `oak_mod` at config-extraction time against the config's final value, so file order doesn't matter — this ADR's original constraint doesn't hold. Full validation and token contract: [Spec-0005](../specs/0005-lua-config-runtime.md).
+- **Overlap between `oak_mod` and an explicit modifier folds instead of erroring.** See Spec-0005 for the fold-vs-error contract; explicit duplicate modifiers (not involving `oak_mod`) still error regardless.
+- **Leader dispatch consumes silently instead of releasing to the PTY.** Spec-0005 covers the leader table's separate-namespace shape and the unset-`leader`-warns behavior. What it doesn't cover, because it's dispatch runtime rather than config extraction: a non-performable leader action is consumed silently — the leader chord already swallowed the keypress, so there's nothing to release — while a non-performable default-layer binding instead releases the key to the PTY, per the Performable Actions section above.
+- **Default keybinds register wired-only.** Only actions with a working handler register as defaults (Spec-0009's registration policy applies here too). The live wired set: split right (`oak_mod+\`) and split down (`oak_mod+-`); focus pane left/down/up/right (`oak_mod+h/j/k/l`, TREK-109); new tab (`oak_mod+t`); close pane (`oak_mod+w`); command palette (`oak_mod+p`); tab-cycling; prompt navigation (`oak_mod+shift+up`/`down`); and the four scroll defaults (`shift+pageup`/`pagedown`/`home`/`end`). Copy mode, resize mode, floating, and zoom stay unregistered until their actions land.
 
 ## References
 

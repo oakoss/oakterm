@@ -111,7 +111,7 @@ ACP slots between three existing concerns:
 - Tool-call rendering and permission prompts as native UI
 - Slash commands routed through the `:` palette
 
-A plain CLI agent without ACP support still works — it's just opaque output. ACP is opt-in per agent.
+A plain CLI agent without ACP support still works — it's just opaque output. ACP is opt-in per agent. This is one instance of [ADR-0024](../adrs/0024-agent-state-sources.md)'s general precedence rule: process detection always owns pane liveness; an ACP session, an agent hook, or a self-report owns semantic state when present; idea 07's screen heuristics are the floor a plain CLI agent falls back to, never a source that overrides a structured one.
 
 **Relationship to [Agent Control API](32-agent-control-api.md).** Idea 32 is the _inverse_ direction: agent → terminal control via `oakterm ctl`. ACP is terminal → agent in a structured way. The two are complementary:
 
@@ -255,6 +255,7 @@ Every question below received a disposition in [ADR-0022](../adrs/0022-agent-int
 - [Configuration](09-config.md) — config syntax for `agent_providers`
 - [Conventions](30-conventions.md) — naming and palette command conventions
 - [ADR-0022: Agent Integration Protocol](../adrs/0022-agent-integration-protocol.md) — the accepted decision that resolves this doc's proposal
+- [ADR-0024: Agent State Sources](../adrs/0024-agent-state-sources.md) — the precedence rule ACP participates in as a tier-2 semantic-state source
 - [ADR-0014: Input Classifier](../adrs/0014-input-classifier.md) — what routes input to ACP in the first place
 - [ADR-0005: Lua Sandboxed Config](../adrs/0005-lua-sandboxed-config.md) — config language used in examples
 - [Warp Architecture Review](../reviews/2026-04-28-210532-warp-architecture-review.md) — gateway-pattern prior art and AGPL constraint

@@ -27,6 +27,8 @@ oakterm ctl <command> [args]
 
 The `ctl` subcommand connects to the running daemon via `$OAKTERM_SOCKET` (auto-set in every pane's environment). The daemon knows which pane the request came from.
 
+Three layers of the same control surface, each for a different caller: a `SKILL.md` (planned, TREK-278) will give agents workflow guidance without reading this doc; the `oakterm ctl` CLI below is what shell scripts and most agents call; long-lived programs can hit the raw daemon socket directly. This doc sketches the surface; the forthcoming Spec-0012 (Agent Control API, TREK-278) formalizes the wire contract, ID scheme, and precedence rules the daemon enforces.
+
 ### Pane Management
 
 ```bash
@@ -43,34 +45,49 @@ oakterm ctl pane list                             # all panes (JSON)
 oakterm ctl pane list --format table              # human-readable
 
 # Read output from another pane
-oakterm ctl pane output <pane-id>                 # last 100 lines
-oakterm ctl pane output <pane-id> --lines 500     # last 500 lines
-oakterm ctl pane output <pane-id> --follow        # stream new output
+oakterm ctl pane read <pane-id>                                  # last 100 lines, --source recent (default)
+oakterm ctl pane read <pane-id> --lines 500                      # last 500 lines
+oakterm ctl pane read <pane-id> --follow                         # stream new output
+oakterm ctl pane read <pane-id> --source visible                 # current viewport only
+oakterm ctl pane read <pane-id> --source recent-unwrapped        # scrollback with soft wraps joined back — the form `wait output` matches against
 
-# Send input to another pane
-oakterm ctl pane input <pane-id> "npm run build"
-oakterm ctl pane input <pane-id> --enter          # press enter
+# Send input to another pane — split by what a TTY actually accepts (herdr precedent)
+oakterm ctl pane send-text <pane-id> "npm run build"             # literal text, no Enter
+oakterm ctl pane send-keys <pane-id> Enter                       # keypresses: Enter, Esc, C-c, ...
+oakterm ctl pane send-input <pane-id> "npm run build" Enter      # atomic literal + keys, in order
+
+# Block until a condition is met, instead of polling
+oakterm ctl wait output <pane-id> --match "ready on port 3000" --timeout 30000
+oakterm ctl wait output <pane-id> --regex "port \d+" --timeout 30000
+oakterm ctl wait status <pane-id> --status done --timeout 60000
 
 # Focus
 oakterm ctl pane focus <pane-id>                  # switch view to a pane
 
 # Close
 oakterm ctl pane close <pane-id>
+
+# Return a hook-claimed pane to plain-shell state (agent exited or was released explicitly)
+oakterm ctl pane release <pane-id>                # scoped per ADR-0024 rule 5: only panes an agent claimed on top of a surviving shell; a pane whose child process *is* the agent exits via rule 1 instead
 ```
+
+Pane IDs have a **dual stable + compact form**, matching herdr's contract: responses always return the stable opaque ID (`OAKTERM_PANE_ID`-shaped, stable for the pane's lifetime); requests accept either the stable ID or the compact human-readable shorthand (e.g. `1-2`), which may renumber when peers close. Agents script against the stable form; humans type the compact one interactively.
 
 ### Self (current pane)
 
 ```bash
 # Set metadata on the calling pane
 oakterm ctl self set-title "Building auth module"
-oakterm ctl self set-status working               # working, needs-input, done, error
+oakterm ctl self set-status working               # working | blocked | done [--outcome success|error|cancelled]
 oakterm ctl self set-color "#a6e3a1"              # tab/sidebar accent color
 oakterm ctl self set-progress 65                  # progress bar (0-100)
-oakterm ctl self set-badge "3 files changed"
+oakterm ctl self set-badge "3 files changed"      # free-form detail string, doesn't affect cycling/filtering
 
 # Read own pane info
 oakterm ctl self info                             # JSON: pane-id, cwd, title, status
 ```
+
+`set-status` only accepts the three states a pane can self-report (ADR-0023): `working`, `blocked`, and `done` (paired with `--outcome success|error|cancelled`). `idle` and `unknown` are not self-reportable — `idle` is reached only by daemon-global acknowledgment of a `done` pane, and `unknown` is what the heuristic floor reports when nothing else has spoken.
 
 ### Notifications
 
@@ -119,11 +136,11 @@ Not every agent should be able to do everything. Permissions are **per-pane**, s
 ```lua
 -- When launching an agent
 agent_permissions = {
-  self = true,          -- can set own title, status, color (always allowed)
+  self = true,          -- can set own title, status, color, badge (always allowed)
   notify = true,        -- can send notifications (default: true)
   pane_create = true,   -- can open new panes (default: false)
   pane_read = false,    -- can read other panes' output (default: false)
-  pane_input = false,   -- can send input to other panes (default: false)
+  pane_input = false,   -- can send-text/send-keys/send-input to other panes (default: false)
   pane_close = false,   -- can close other panes (default: false)
   sidebar = false,      -- can modify sidebar (default: false)
   prompt = true,        -- can ask user for input (default: true)
@@ -133,12 +150,12 @@ agent_permissions = {
 ```lua
 -- In config.lua
 agent_permissions = {
-  self = true,          -- can set own title, status, color (always allowed)
+  self = true,          -- can set own title, status, color, badge (always allowed)
   notify = true,        -- can send notifications (default: true)
   prompt = true,        -- can prompt user for input (default: true)
   pane_create = false,  -- can open new panes (default: false)
   pane_read = false,    -- can read other panes' output (default: false)
-  pane_input = false,   -- can send input to other panes (default: false)
+  pane_input = false,   -- can send-text/send-keys/send-input to other panes (default: false)
   pane_close = false,   -- can close panes (default: false)
   sidebar = false,      -- can modify sidebar (default: false)
 }
@@ -217,7 +234,7 @@ oakterm ctl self set-title "Analyzing codebase"
 oakterm ctl self set-progress 50
 oakterm ctl self set-title "Writing tests"
 # ... does more work ...
-oakterm ctl self set-status done
+oakterm ctl self set-status done --outcome success
 oakterm ctl self set-badge "4 files, 12 tests"
 oakterm ctl notify "feat/auth complete" --level success
 ```
@@ -228,8 +245,8 @@ The sidebar and tab automatically reflect these updates in real-time.
 
 ```bash
 oakterm ctl pane create --drawer bottom --command "npm test"
-# waits for tests...
-TEST_OUTPUT=$(oakterm ctl pane output $TEST_PANE --lines 5)
+oakterm ctl wait status $TEST_PANE --status done --timeout 60000
+TEST_OUTPUT=$(oakterm ctl pane read $TEST_PANE --lines 5)
 # reads results, continues working
 ```
 
@@ -261,6 +278,8 @@ oakterm ctl notify "Dev environment ready"
 ## Related Docs
 
 - [ADR-0021: Agent Control API](../adrs/0021-agent-control-api.md) — the decision: CLI over MCP, and the permission/security model
+- [ADR-0023: Agent State Vocabulary](../adrs/0023-agent-state-vocabulary.md) — the lifecycle states `set-status` takes and the outcome field `done` carries
+- [ADR-0024: Agent State Sources](../adrs/0024-agent-state-sources.md) — precedence rules self-report participates in; scopes `pane release` to hook-claimed panes
 - [Agent Management](07-agent-management.md) — the plugin that manages agent lifecycle
 - [Sidebar](04-sidebar.md) — where agent status appears
 - [Security](21-security.md) — permission model principles

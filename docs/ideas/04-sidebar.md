@@ -52,7 +52,7 @@ Not a file tree. Not a session list. It shows **things that are running** — gr
 
 **Agents** — autonomous processes that produce code and need review
 
-- Status: working / needs input / done / error
+- Status: five lifecycle states — `working` / `blocked` / `done` / `idle` / `unknown` — plus an outcome (`success` / `error` / `cancelled`) attached at completion ([ADR-0023](../adrs/0023-agent-state-vocabulary.md)). `done` moves to `idle` on daemon-global acknowledgment (any client viewing the pane clears it everywhere); the attention cycle drains `done+error`, then `blocked`, then `done+success`. `done+success` and `done+cancelled` age out via the recency window even if never acknowledged; `done+error` and `blocked` never age out.
 - Context window %, branch, files changed
 - Memory usage (child process RSS) with growth indicator
 
@@ -122,14 +122,14 @@ Folders are sidebar-side organization only — the daemon's `Workspace → Tab �
 
 Each category has its own notification logic:
 
-| Category | Notifies when                                 |
-| -------- | --------------------------------------------- |
-| Agent    | Needs approval, finished, errored             |
-| Service  | Crashes, port conflict, restart loop          |
-| Watcher  | Tests go red, type errors appear, build fails |
-| Shell    | Process exits (configurable)                  |
+| Category | Notifies when                                                  |
+| -------- | -------------------------------------------------------------- |
+| Agent    | Enters `blocked`, reaches `done+error`, reaches `done+success` |
+| Service  | Crashes, port conflict, restart loop                           |
+| Watcher  | Tests go red, type errors appear, build fails                  |
+| Shell    | Process exits (configurable)                                   |
 
-`Cmd+Shift+U` cycles through everything that needs attention.
+`Cmd+Shift+U` cycles through everything that needs attention, draining agent entries in ADR-0023's priority order: `done+error`, then `blocked`, then `done+success` ([ADR-0023](../adrs/0023-agent-state-vocabulary.md)).
 
 ## Interaction
 
@@ -151,6 +151,7 @@ A Docker/Podman plugin adds a CONTAINERS section to the sidebar. Auto-discovers 
 
 - [Plugin System](06-plugins.md) — sidebar data model (core) and sidebar-ui (plugin)
 - [Agent Management](07-agent-management.md) — AGENTS section
+- [ADR-0023](../adrs/0023-agent-state-vocabulary.md) — agent state vocabulary and attention-cycle ordering
 - [Memory Management](15-memory-management.md) — per-pane memory display
 - [Harpoon](27-harpoon.md) — pane bookmarks complement the sidebar
 - [Remote Access](29-remote-access.md) — remote panes appear in sidebar

@@ -3,7 +3,7 @@ spec: '0005'
 title: Lua Config Runtime
 status: complete
 date: 2026-03-27
-adrs: ['0005']
+adrs: ['0005', '0011']
 tags: [config, core]
 ---
 
@@ -171,19 +171,34 @@ oakterm.config.window_decorations = "full"
 oakterm.config.confirm_close_process = true
 
 -- Phase 1: Multiplexer config (ADR-0011, Spec-0007, Spec-0008, Spec-0010)
--- NOT YET IMPLEMENTED. The current runtime treats unknown keys as hard errors,
--- so setting any of the keys below raises a config error until Phase 1 lands.
 oakterm.config.oak_mod = "ctrl+shift"       -- Linux default; "super" on macOS (super = Cmd key)
 oakterm.config.leader = nil                  -- optional: { key = "ctrl+b", timeout = 1000 }
-oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic"
 oakterm.config.status_bar = true
 oakterm.config.status_bar_position = "bottom" -- "top" or "bottom"
-oakterm.config.restartable_commands = {}     -- list of command prefixes to restore on session load
+
+-- NOT YET IMPLEMENTED. The current runtime treats unknown keys as hard errors,
+-- so setting either key below raises a config error until its feature lands.
+oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic" (ships with copy mode, TREK-112/113)
+oakterm.config.restartable_commands = {}     -- list of command prefixes to restore on session load (Spec-0010)
 ```
 
 The `oakterm.config` table is implemented as a **proxy table**: an empty table with `__newindex` and `__index` on its metatable, backed by a hidden storage table. Every write routes through `__newindex`, which validates the key. The `raw*` functions that could bypass the metamethods (`rawset`, `rawget`, `rawequal`, `rawlen`) are removed from the sandbox (see above), so there is no way to write past the validation. The metatable has `__metatable` set to a string, preventing `getmetatable`/`setmetatable` from inspecting or replacing the protection.
 
 The `__newindex` metamethod validates keys against the known config schema. Setting an unknown key (e.g., `oakterm.config.font_szie = 14`) raises an immediate error with a "did you mean?" suggestion if a close match exists.
+
+#### `oak_mod` and `leader` (ADR-0011)
+
+`oak_mod` is validated as a modifier-only combo (`ModifierSet::parse`): one or more of `ctrl`/`control`, `alt`/`option`/`opt`, `shift`, `super`/`cmd`/`command`/`win`, joined with `+`, no duplicates. Default is the platform value — `"ctrl+shift"` on Linux/Windows, `"super"` on macOS. An invalid combo (unknown modifier, a non-modifier token, duplicates) raises a config error immediately.
+
+`leader` is `nil` (disabled, the default) or a table `{ key = <chord string>, timeout = <positive integer ms> }`:
+
+- `key` parses as an ordinary key chord (no `oak_mod` token — the leader chord itself is fixed, not `oak_mod`-relative).
+- `timeout` defaults to `1000` when omitted; it must be a positive integer number of milliseconds. Zero, negative, or fractional values raise a config error (a `0ms` follow-up window would silently disable the leader layer).
+
+Two keybind-string tokens read these values at config-extraction time:
+
+- `oak_mod+<rest>` expands `oak_mod` to its configured modifier set. Expansion happens against the config's **final** value regardless of where in the file `oakterm.config.oak_mod` is assigned relative to the `oakterm.keybind(...)` calls that use it — `oak_mod` is order-independent in the config file. An explicit modifier that overlaps `oak_mod`'s set (e.g. `oak_mod+shift+up` when `oak_mod` already contains `shift`) folds silently instead of erroring; duplicate explicit modifiers still error.
+- `leader+<rest>` routes the binding into a separate leader table, matched only while a leader press is pending, instead of the default keybind table. The `<rest>` may itself use `oak_mod` (`leader+oak_mod+d`). Registering a `leader+` binding while `leader` is unset does not error, but the binding can never fire — the runtime warns.
 
 #### `oakterm.action` Table
 

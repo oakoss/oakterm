@@ -28,7 +28,9 @@ Agents never touch your working directory. Run 5 agents in parallel on the same 
 
 ## Status Tracking
 
-The plugin watches agent processes for state changes:
+State comes from a three-tier precedence, not from watching output alone ([ADR-0024](../adrs/0024-agent-state-sources.md)): the daemon's process detection owns pane liveness unconditionally — a vanished process is always `done`, never `working`, regardless of what any other source last claimed. Above that floor, an explicit agent-level report (ACP `session/update`, an agent hook, or `oakterm ctl self set-status`) is authoritative for semantic state and overrides pattern matching for the rest of the session; the screen heuristics below only run when no explicit agent-level source has spoken — shell-level OSC 133 marks alone do not suppress them. OSC 133 marks are authoritative for command lifecycle only and never claim agent semantic state. A subagent-stop event maps to the parent pane's `working`, never to `done`.
+
+The plugin's heuristic layer — the floor beneath explicit reports — watches agent process output for state changes:
 
 | Badge | Meaning                 |
 | ----- | ----------------------- |
@@ -36,6 +38,8 @@ The plugin watches agent processes for state changes:
 | ❓    | Needs approval or input |
 | ✓     | Finished                |
 | ✗     | Errored                 |
+
+These map onto [ADR-0023](../adrs/0023-agent-state-vocabulary.md)'s lifecycle states (`working`, `blocked`, `done`+outcome) — this table is the heuristic-detection badge set, not the full vocabulary. When no pattern matches, the pane reports `unknown` rather than guessing.
 
 Context window usage shown as a progress bar in the sidebar.
 
@@ -98,7 +102,7 @@ agent_providers = {
 }
 ```
 
-The plugin detects state from process output. Provider-specific detection patterns are configurable.
+Provider-specific heuristic patterns are configurable and used as the fallback tier when a provider offers no ACP session, hook, or self-report channel ([ADR-0024](../adrs/0024-agent-state-sources.md)).
 
 ## Workspace Setup Scripts (from Conductor)
 
@@ -134,4 +138,6 @@ Fork a workspace at its current state to try something risky. Git worktrees make
 - [Memory Management](15-memory-management.md) — child process memory attribution
 - [Shell Integration](18-shell-integration.md) — command completion notifications
 - [Agent Protocol](39-agent-protocol.md) — structured channel for ACP-aware agents (complements the lifecycle managed here)
+- [ADR-0023](../adrs/0023-agent-state-vocabulary.md) — the state vocabulary this plugin's badges map onto
+- [ADR-0024](../adrs/0024-agent-state-sources.md) — the three-tier precedence heuristic detection sits under
 - [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) — scrollback-breakage re-verification, 2026 agent-tooling prior art

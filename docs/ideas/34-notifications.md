@@ -16,15 +16,17 @@ Referenced in 10+ docs but never fully specced. There are three notification sur
 
 The primary notification surface. Badges on sidebar entries show state at a glance without interrupting you.
 
-| Badge | Meaning                 | Set by                                  |
-| ----- | ----------------------- | --------------------------------------- |
-| ⟳     | Working                 | agent-manager, watcher                  |
-| ❓    | Needs input/approval    | agent-manager                           |
-| ✓     | Done/success            | agent-manager, watcher                  |
-| ✗     | Error/failed            | agent-manager, service-monitor, watcher |
-| ⚠     | Warning (memory, crash) | service-monitor, memory alerts          |
+| Badge | Meaning                        | Set by                                  |
+| ----- | ------------------------------ | --------------------------------------- |
+| ⟳     | Working                        | agent-manager, watcher                  |
+| ❓    | Blocked (needs input/approval) | agent-manager                           |
+| ✓     | Done + success                 | agent-manager, watcher                  |
+| ✗     | Done + error / failed          | agent-manager, service-monitor, watcher |
+| ⚠     | Warning (memory, crash)        | service-monitor, memory alerts          |
 
 These are passive — you see them when you glance at the sidebar. No popup, no sound, no interruption.
+
+For agent-manager entries, these badges are [ADR-0023](../adrs/0023-agent-state-vocabulary.md)'s lifecycle state + outcome (`working`, `blocked`, `done`+`success`/`error`/`cancelled`); watcher and service-monitor keep their own independent meaning for the same glyph — the warnings tier and non-agent badges are unchanged by ADR-0023.
 
 ### 2. In-Terminal Notifications (banners)
 
@@ -80,12 +82,12 @@ Event (agent done, test failed, etc.)
 
 Priority order:
 
-1. Errors (✗)
-2. Needs input (❓)
+1. Errors (✗) — for agent panes, `done`+`error` ([ADR-0023](../adrs/0023-agent-state-vocabulary.md)); never ages out of the cycle.
+2. Needs input (❓) — for agent panes, `blocked`; never ages out.
 3. Warnings (⚠)
-4. Done (✓) — only if recent and unacknowledged
+4. Done (✓) — only if recent and unacknowledged; for agent panes, `done`+`success` or `done`+`cancelled` age out of this tier over time even if never acknowledged, while `done`+`error` (tier 1) and `blocked` (tier 2) never do.
 
-Pressing `Cmd+Shift+U` focuses the next pane in the cycle. The badge clears when you've viewed the pane.
+Pressing `Cmd+Shift+U` focuses the next pane in the cycle. Acknowledgment ("seen") is daemon-global: viewing the pane from any client — desktop, a second window, a future remote client — clears the badge everywhere, not just for the client that looked (ADR-0023).
 
 ## Notification History
 
@@ -173,6 +175,7 @@ notify.send(Notification {
 
 - [Sidebar](04-sidebar.md) — badge display
 - [Agent Management](07-agent-management.md) — agent state notifications
+- [ADR-0023](../adrs/0023-agent-state-vocabulary.md) — agent lifecycle state + outcome, acknowledgment, and attention-cycle ordering
 - [Shell Integration](18-shell-integration.md) — process completion notifications
 - [Agent Control API](32-agent-control-api.md) — `oakterm ctl notify`
 - [Accessibility](17-accessibility.md) — screen reader announcements, sound cue plugin
