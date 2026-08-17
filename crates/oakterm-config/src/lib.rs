@@ -338,7 +338,7 @@ fn install_require(lua: &Lua, config_dir: &Path) -> mlua::Result<()> {
     lua.set_named_registry_value(CIRCULAR_SENTINEL_KEY, lua.create_table()?)?;
 
     let config_dir = config_dir.to_path_buf();
-    let require_fn = lua.create_function(move |lua, name: mlua::String| {
+    let require_fn = lua.create_function(move |lua, name: mlua::LuaString| {
         let name_str = name.to_str()?;
         validate_module_name(&name_str)?;
 

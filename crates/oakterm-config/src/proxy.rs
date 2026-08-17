@@ -38,7 +38,7 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
     // __newindex: validate key + value, then write to backing.
     meta.set(
         "__newindex",
-        lua.create_function(|lua, (_, key, value): (Table, mlua::String, Value)| {
+        lua.create_function(|lua, (_, key, value): (Table, mlua::LuaString, Value)| {
             let key_str = key.to_str()?;
 
             let Some(def) = schema::find_key(&key_str) else {
@@ -70,7 +70,7 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
     lua.set_named_registry_value(EVENT_REGISTRY_KEY, lua.create_table()?)?;
 
     // oakterm.on(event, callback)
-    let on_fn = lua.create_function(|lua, (event, callback): (mlua::String, Function)| {
+    let on_fn = lua.create_function(|lua, (event, callback): (mlua::LuaString, Function)| {
         let event_str = event.to_str()?;
 
         if !KNOWN_EVENTS.contains(&event_str.as_ref()) {
@@ -112,7 +112,7 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
     register_action_constructors(lua, &action)?;
 
     // oakterm.keybind(key, action_or_callback)
-    let keybind_fn = lua.create_function(|lua, (key, action): (mlua::String, Value)| {
+    let keybind_fn = lua.create_function(|lua, (key, action): (mlua::LuaString, Value)| {
         let key_str = key.to_str()?;
         if let Err(e) = validate_keybind_chord(&key_str) {
             return Err(mlua::Error::RuntimeError(format!(
@@ -123,7 +123,7 @@ pub fn register_config_table(lua: &Lua) -> mlua::Result<()> {
         // Validate action is a table (from oakterm.action.*) or a function.
         match &action {
             Value::Table(t) => {
-                if t.get::<Option<mlua::String>>("__action_type")?.is_none() {
+                if t.get::<Option<mlua::LuaString>>("__action_type")?.is_none() {
                     return Err(mlua::Error::RuntimeError(
                         "keybind action must be from oakterm.action.* or a function".to_string(),
                     ));
@@ -206,26 +206,27 @@ fn register_platform_utilities(lua: &Lua, oakterm: &Table) -> mlua::Result<()> {
     })?;
 
     // oakterm.log(level, message) — config-level logging.
-    let log_fn = lua.create_function(|_, (level, message): (mlua::String, mlua::String)| {
-        let level_str = level.to_str()?;
-        match level_str.as_ref() {
-            "debug" | "info" | "warn" | "error" => {}
-            _ => {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "invalid log level '{level_str}' (expected: debug, info, warn, error)"
-                )));
+    let log_fn =
+        lua.create_function(|_, (level, message): (mlua::LuaString, mlua::LuaString)| {
+            let level_str = level.to_str()?;
+            match level_str.as_ref() {
+                "debug" | "info" | "warn" | "error" => {}
+                _ => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "invalid log level '{level_str}' (expected: debug, info, warn, error)"
+                    )));
+                }
             }
-        }
-        let msg = message.to_str()?;
-        match level_str.as_ref() {
-            "debug" => tracing::debug!(target: "config", "{msg}"),
-            "info" => tracing::info!(target: "config", "{msg}"),
-            "warn" => tracing::warn!(target: "config", "{msg}"),
-            "error" => tracing::error!(target: "config", "{msg}"),
-            _ => unreachable!(),
-        }
-        Ok(())
-    })?;
+            let msg = message.to_str()?;
+            match level_str.as_ref() {
+                "debug" => tracing::debug!(target: "config", "{msg}"),
+                "info" => tracing::info!(target: "config", "{msg}"),
+                "warn" => tracing::warn!(target: "config", "{msg}"),
+                "error" => tracing::error!(target: "config", "{msg}"),
+                _ => unreachable!(),
+            }
+            Ok(())
+        })?;
 
     // oakterm.appearance() — current system dark/light mode.
     let appearance_fn = lua.create_function(|_, ()| Ok(crate::current_appearance()))?;
@@ -291,7 +292,7 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
     // send_string(data)
     action.set(
         "send_string",
-        lua.create_function(|lua, data: mlua::String| {
+        lua.create_function(|lua, data: mlua::LuaString| {
             let t = lua.create_table()?;
             t.set("__action_type", "send_string")?;
             t.set("data", data)?;
@@ -305,7 +306,7 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let t = lua.create_table()?;
             t.set("__action_type", "split_pane")?;
-            t.set("direction", opts.get::<mlua::String>("direction")?)?;
+            t.set("direction", opts.get::<mlua::LuaString>("direction")?)?;
             t.set("size", opts.get::<f64>("size").unwrap_or(0.5))?;
             Ok(t)
         })?,
@@ -331,7 +332,7 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
     // focus_pane_direction(direction)
     action.set(
         "focus_pane_direction",
-        lua.create_function(|lua, direction: mlua::String| {
+        lua.create_function(|lua, direction: mlua::LuaString| {
             let t = lua.create_table()?;
             t.set("__action_type", "focus_pane_direction")?;
             t.set("direction", direction)?;
@@ -353,7 +354,7 @@ pub(crate) fn extract_event_registry(lua: &Lua) -> EventRegistry {
         return registry;
     };
 
-    for pair in event_table.pairs::<mlua::String, Table>() {
+    for pair in event_table.pairs::<mlua::LuaString, Table>() {
         let (event_name, handlers) = match pair {
             Ok(p) => p,
             Err(e) => {
@@ -528,7 +529,7 @@ fn extract_action_from_table(t: &Table) -> Result<Action, String> {
             Ok(Action::ScrollToPrompt(direction as i32))
         }
         "send_string" => {
-            let data: mlua::String = t
+            let data: mlua::LuaString = t
                 .get("data")
                 .map_err(|e| format!("send_string missing data: {e}"))?;
             Ok(Action::SendString(data.as_bytes().to_vec()))
@@ -563,7 +564,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
     let defaults = ConfigValues::default();
 
     let font_family: String = backing
-        .get::<Option<mlua::String>>("font_family")?
+        .get::<Option<mlua::LuaString>>("font_family")?
         .map(|s| s.to_str().map(|s| s.to_string()))
         .transpose()?
         .unwrap_or(defaults.font_family);
@@ -572,7 +573,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<f64>>("font_size")?
         .unwrap_or(defaults.font_size);
 
-    let cursor_style: CursorStyle = match backing.get::<Option<mlua::String>>("cursor_style")? {
+    let cursor_style: CursorStyle = match backing.get::<Option<mlua::LuaString>>("cursor_style")? {
         Some(s) => {
             let s = s.to_str()?;
             CursorStyle::from_config_str(&s).ok_or_else(|| {
@@ -603,12 +604,12 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
     let padding = extract_padding(&backing, defaults.padding)?;
 
     let theme: String = backing
-        .get::<Option<mlua::String>>("theme")?
+        .get::<Option<mlua::LuaString>>("theme")?
         .map(|s| s.to_str().map(|s| s.to_string()))
         .transpose()?
         .unwrap_or(defaults.theme);
 
-    let window_decorations = match backing.get::<Option<mlua::String>>("window_decorations")? {
+    let window_decorations = match backing.get::<Option<mlua::LuaString>>("window_decorations")? {
         Some(s) => {
             let s = s.to_str()?;
             WindowDecorations::from_config_str(&s).ok_or_else(|| {
@@ -639,7 +640,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("daemon_persist")?
         .unwrap_or(defaults.daemon_persist);
 
-    let oak_mod = match backing.get::<Option<mlua::String>>("oak_mod")? {
+    let oak_mod = match backing.get::<Option<mlua::LuaString>>("oak_mod")? {
         Some(s) => {
             let s = s.to_str()?;
             if let Err(e) = crate::keybind::ModifierSet::parse(&s) {
@@ -655,7 +656,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
     let leader = match backing.get::<Value>("leader")? {
         Value::Nil => defaults.leader,
         Value::Table(t) => {
-            let key: mlua::String = t.get("key")?;
+            let key: mlua::LuaString = t.get("key")?;
             let key = key.to_str()?;
             let chord = crate::keybind::KeyChord::parse(&key)
                 .map_err(|e| mlua::Error::RuntimeError(format!("invalid leader key: {e}")))?;
@@ -678,7 +679,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         .get::<Option<bool>>("status_bar")?
         .unwrap_or(defaults.status_bar);
 
-    let status_bar_position = match backing.get::<Option<mlua::String>>("status_bar_position")? {
+    let status_bar_position = match backing.get::<Option<mlua::LuaString>>("status_bar_position")? {
         Some(s) => {
             let s = s.to_str()?;
             StatusBarPosition::from_config_str(&s).ok_or_else(|| {
@@ -691,7 +692,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         None => defaults.status_bar_position,
     };
 
-    let check_for_updates = match backing.get::<Option<mlua::String>>("check_for_updates")? {
+    let check_for_updates = match backing.get::<Option<mlua::LuaString>>("check_for_updates")? {
         Some(s) => {
             let s = s.to_str()?;
             UpdateCheck::from_config_str(&s).ok_or_else(|| {
@@ -704,7 +705,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         None => defaults.check_for_updates,
     };
 
-    let text_blending = match backing.get::<Option<mlua::String>>("text_blending")? {
+    let text_blending = match backing.get::<Option<mlua::LuaString>>("text_blending")? {
         Some(s) => {
             let s = s.to_str()?;
             TextBlending::from_config_str(&s).ok_or_else(|| {

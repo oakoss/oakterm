@@ -509,7 +509,7 @@ fn validate_leader(_lua: &Lua, value: &Value) -> mlua::Result<()> {
             "expected a table like { key = \"ctrl+b\", timeout = 1000 } or nil".to_string(),
         ));
     };
-    let Some(key) = t.get::<Option<mlua::String>>("key")? else {
+    let Some(key) = t.get::<Option<mlua::LuaString>>("key")? else {
         return Err(mlua::Error::RuntimeError(
             "leader table requires a 'key' string".to_string(),
         ));
