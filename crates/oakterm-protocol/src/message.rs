@@ -52,6 +52,12 @@ pub const MSG_FOCUS_PANE: u16 = 0x94;
 pub const MSG_LIST_PANES: u16 = 0x95;
 pub const MSG_LIST_PANES_RESPONSE: u16 = 0x96;
 
+// GUI — copy mode (Spec-0001 0x97-0x9A, Spec-0008).
+pub const MSG_ENTER_COPY_MODE: u16 = 0x97;
+pub const MSG_EXIT_COPY_MODE: u16 = 0x98;
+pub const MSG_YANK_SELECTION: u16 = 0x99;
+pub const MSG_YANK_RESPONSE: u16 = 0x9A;
+
 // Split topology (Spec-0001 0xA0-0xAF).
 pub const MSG_SPLIT_PANE: u16 = 0xA0;
 pub const MSG_SPLIT_PANE_RESPONSE: u16 = 0xA1;
@@ -1410,6 +1416,186 @@ impl ListPanesResponse {
     /// Returns an error if frame construction fails.
     pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
         Frame::new(MSG_LIST_PANES_RESPONSE, serial, self.encode()?)
+    }
+}
+
+// --- Copy mode messages (0x97-0x9A) ---
+
+/// Payload for `EnterCopyMode` (0x97) and `ExitCopyMode` (0x98). Both are
+/// pushes: entering pins the pane's viewport for the sending client,
+/// exiting unpins it (ADR-0012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyMode {
+    pub pane_id: u32,
+}
+
+impl CopyMode {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CopyMode too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
+    }
+
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_enter_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_ENTER_COPY_MODE, 0, self.encode())
+    }
+
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_exit_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_EXIT_COPY_MODE, 0, self.encode())
+    }
+}
+
+/// Copy mode selection shape (Spec-0008 `CopySelectionType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CopySelectionType {
+    /// Cells between the endpoints in reading order.
+    Character = 0,
+    /// Whole rows between the endpoints.
+    Line = 1,
+    /// The rectangle the endpoints corner.
+    Block = 2,
+}
+
+impl TryFrom<u8> for CopySelectionType {
+    type Error = io::Error;
+    fn try_from(v: u8) -> io::Result<Self> {
+        match v {
+            0 => Ok(Self::Character),
+            1 => Ok(Self::Line),
+            2 => Ok(Self::Block),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown copy selection type: 0x{v:02X}"),
+            )),
+        }
+    }
+}
+
+/// `YankSelection` (0x99): client asks the daemon to resolve a selection
+/// range into text. Rows are in the client's copy-mode index space: 0 is
+/// the top of the viewport pinned at `EnterCopyMode`, negative values run
+/// back into scrollback (Spec-0008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YankSelection {
+    pub pane_id: u32,
+    pub start_row: i64,
+    pub start_col: u16,
+    pub end_row: i64,
+    pub end_col: u16,
+    pub selection_type: CopySelectionType,
+}
+
+impl YankSelection {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(25);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.start_row.to_le_bytes());
+        buf.extend_from_slice(&self.start_col.to_le_bytes());
+        buf.extend_from_slice(&self.end_row.to_le_bytes());
+        buf.extend_from_slice(&self.end_col.to_le_bytes());
+        buf.push(self.selection_type as u8);
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short or the selection type
+    /// is unknown.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 25 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "YankSelection too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            start_row: i64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
+            start_col: u16::from_le_bytes([data[12], data[13]]),
+            end_row: i64::from_le_bytes([
+                data[14], data[15], data[16], data[17], data[18], data[19], data[20], data[21],
+            ]),
+            end_col: u16::from_le_bytes([data[22], data[23]]),
+            selection_type: CopySelectionType::try_from(data[24])?,
+        })
+    }
+
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_YANK_SELECTION, serial, self.encode())
+    }
+}
+
+/// `YankResponse` (0x9A): the extracted text, resolved across the archive,
+/// the hot scrollback buffer, and the live grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YankResponse {
+    pub text: String,
+}
+
+impl YankResponse {
+    /// # Errors
+    /// Returns an error if the text exceeds u32 bytes.
+    pub fn encode(&self) -> io::Result<Vec<u8>> {
+        let len: u32 = self.text.len().try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "yank text exceeds u32 bytes")
+        })?;
+        let mut buf = Vec::with_capacity(4 + self.text.len());
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(self.text.as_bytes());
+        Ok(buf)
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is truncated or not valid UTF-8.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "YankResponse too short",
+            ));
+        }
+        let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let end = 4usize.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "YankResponse length overflow")
+        })?;
+        if data.len() < end {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "YankResponse text truncated",
+            ));
+        }
+        let text = std::str::from_utf8(&data[4..end])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            .to_string();
+        Ok(Self { text })
+    }
+
+    /// # Errors
+    /// Returns an error if encoding or frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_YANK_RESPONSE, serial, self.encode()?)
     }
 }
 

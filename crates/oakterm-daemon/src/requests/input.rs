@@ -175,7 +175,17 @@ pub(super) async fn resize(
             {
                 warn!(conn_id, error = %e, "PTY resize failed");
             } else {
+                let before = pane.history_len();
                 pane.screens.resize_all(msg.cols, msg.rows);
+                let dropped = pane.invalidate_pins_after_resize(before);
+                if dropped > 0 {
+                    warn!(
+                        conn_id,
+                        pane_id = msg.pane_id,
+                        pins = dropped,
+                        "resize moved grid rows into scrollback; dropped copy mode pins"
+                    );
+                }
                 pane.bump_dirty();
                 // Notify clients so they fetch the resized grid immediately,
                 // without waiting for the child process to produce output.
@@ -276,7 +286,17 @@ fn spawn_pty(
                 pid,
                 cancel: cancel_tx,
             };
+            let before = pane.history_len();
             pane.screens.resize_all(msg.cols, msg.rows);
+            let dropped = pane.invalidate_pins_after_resize(before);
+            if dropped > 0 {
+                warn!(
+                    conn_id,
+                    pane_id = msg.pane_id,
+                    pins = dropped,
+                    "spawn resize moved grid rows into scrollback; dropped copy mode pins"
+                );
+            }
             let pane_id = msg.pane_id;
             drop(pane);
 
@@ -338,8 +358,45 @@ fn encode_mouse_sgr(msg: &MouseInput, sgr: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_mouse_sgr;
-    use oakterm_protocol::input::MouseInput;
+    use super::{encode_mouse_sgr, resize};
+    use crate::pane::{PaneManager, lock_live_pane};
+    use oakterm_protocol::input::{MouseInput, Resize};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, watch};
+
+    /// A client can enter copy mode before the pane's first `Resize`, and
+    /// that resize spawns the PTY through a separate path from the
+    /// already-running one. It shrinks the grid the same way, so it owes
+    /// the same pin invalidation.
+    #[tokio::test]
+    async fn the_spawning_resize_drops_pins_it_invalidates() {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, "/bin/sleep 60".to_string(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            assert!(pane.pin_copy_mode(7).is_none());
+        }
+
+        let (dirty_tx, _dirty_rx) = watch::channel(0u64);
+        let msg = Resize {
+            pane_id,
+            cols: 80,
+            rows: 10,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        resize(0, &msg.to_frame().expect("resize frame"), &panes, &dirty_tx).await;
+
+        let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        assert!(pane.history_len() > 0, "shrink moved rows into scrollback");
+        assert!(
+            pane.copy_mode_pins.is_empty(),
+            "the spawning resize must drop pins it invalidated"
+        );
+    }
 
     #[test]
     fn x10_mouse_encode_saturates_extreme_coordinates() {

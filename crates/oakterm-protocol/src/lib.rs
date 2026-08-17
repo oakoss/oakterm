@@ -869,6 +869,121 @@ mod tests {
         assert_eq!(frame.serial, 42);
     }
 
+    // --- Copy mode (0x97-0x9A) ---
+
+    #[test]
+    fn copy_mode_roundtrip() {
+        let msg = CopyMode { pane_id: 7 };
+        let encoded = msg.encode();
+        assert_eq!(encoded.len(), 4);
+        assert_eq!(CopyMode::decode(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn copy_mode_frames_carry_their_own_type() {
+        let msg = CopyMode { pane_id: 7 };
+        let enter = msg.to_enter_frame().unwrap();
+        let exit = msg.to_exit_frame().unwrap();
+        assert_eq!(enter.msg_type, MSG_ENTER_COPY_MODE);
+        assert_eq!(exit.msg_type, MSG_EXIT_COPY_MODE);
+        // Spec-0001: both are pushes.
+        assert_eq!(enter.serial, 0);
+        assert_eq!(exit.serial, 0);
+    }
+
+    #[test]
+    fn copy_mode_too_short() {
+        assert!(CopyMode::decode(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn yank_selection_roundtrip() {
+        for ty in [
+            CopySelectionType::Character,
+            CopySelectionType::Line,
+            CopySelectionType::Block,
+        ] {
+            let msg = YankSelection {
+                pane_id: 2,
+                start_row: -4_000_000_000,
+                start_col: 3,
+                end_row: 12,
+                end_col: 79,
+                selection_type: ty,
+            };
+            let encoded = msg.encode();
+            assert_eq!(encoded.len(), 25);
+            assert_eq!(YankSelection::decode(&encoded).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn yank_selection_unknown_type_rejected() {
+        let mut encoded = YankSelection {
+            pane_id: 1,
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 0,
+            selection_type: CopySelectionType::Character,
+        }
+        .encode();
+        *encoded.last_mut().unwrap() = 9;
+        assert!(YankSelection::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn yank_selection_too_short() {
+        assert!(YankSelection::decode(&[0; 24]).is_err());
+    }
+
+    #[test]
+    fn yank_response_roundtrip() {
+        let resp = YankResponse {
+            text: "café ☕\nsecond line".to_string(),
+        };
+        let encoded = resp.encode().unwrap();
+        assert_eq!(YankResponse::decode(&encoded).unwrap(), resp);
+    }
+
+    #[test]
+    fn yank_response_empty() {
+        let resp = YankResponse {
+            text: String::new(),
+        };
+        let encoded = resp.encode().unwrap();
+        assert_eq!(encoded.len(), 4);
+        assert!(YankResponse::decode(&encoded).unwrap().text.is_empty());
+    }
+
+    #[test]
+    fn yank_response_truncated_text_rejected() {
+        let mut encoded = YankResponse {
+            text: "hello".to_string(),
+        }
+        .encode()
+        .unwrap();
+        encoded.pop();
+        assert!(YankResponse::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn yank_response_invalid_utf8_rejected() {
+        let mut encoded = 2u32.to_le_bytes().to_vec();
+        encoded.extend_from_slice(&[0xFF, 0xFE]);
+        assert!(YankResponse::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn yank_response_as_frame() {
+        let resp = YankResponse {
+            text: "x".to_string(),
+        };
+        let frame = resp.to_frame(11).unwrap();
+        assert_eq!(frame.msg_type, MSG_YANK_RESPONSE);
+        assert_eq!(frame.serial, 11);
+    }
+
     // --- Split topology (0xA0-0xA4) ---
 
     #[test]

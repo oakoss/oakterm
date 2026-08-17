@@ -4,7 +4,7 @@ mod shutdown;
 
 use crate::framing::{read_frame, write_frame};
 use crate::pane::{PaneManager, PtyState, SharedPane, lock_live_pane};
-use crate::requests::{RequestResult, handle_request};
+use crate::requests::{RequestResult, handle_request, release_client_pins};
 use crate::session::default_state_dir;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec, HEADER_SIZE};
@@ -378,6 +378,8 @@ async fn handle_client(
             }
         }
     }
+
+    release_client_pins(conn_id, &panes).await;
 }
 
 fn io<'a>(
@@ -698,5 +700,109 @@ fn archive_base_dir() -> std::path::PathBuf {
     {
         // No per-user isolation — unsupported platform, exists for compilation only.
         std::env::temp_dir().join("oakterm")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oakterm_protocol::message::{ClientType, CopyMode};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_util::codec::Encoder;
+
+    async fn handshake(stream: &mut UnixStream) {
+        let mut codec = FrameCodec;
+        let hello = ClientHello {
+            protocol_version_major: ClientHello::VERSION_MAJOR,
+            protocol_version_minor: ClientHello::VERSION_MINOR,
+            client_type: ClientType::Gui,
+            client_name: "pin-test".to_string(),
+        };
+        let mut buf = BytesMut::new();
+        codec
+            .encode(hello.to_frame(1).expect("encode hello"), &mut buf)
+            .expect("encode frame");
+        stream.write_all(&buf).await.expect("write hello");
+
+        let mut read_buf = BytesMut::with_capacity(256);
+        loop {
+            stream.read_buf(&mut read_buf).await.expect("read hello");
+            if codec.decode(&mut read_buf).expect("decode").is_some() {
+                return;
+            }
+        }
+    }
+
+    /// The pin release lives on `handle_client`'s exit path rather than in
+    /// any request handler, so only a real connection drop exercises it.
+    #[tokio::test]
+    async fn client_disconnect_releases_copy_mode_pins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("sock");
+        let mut daemon = Daemon::with_socket_path(80, 24, socket.clone());
+        daemon.set_persist(true);
+        daemon.set_state_dir(dir.path().join("state"));
+        let panes = Arc::clone(&daemon.panes);
+        let pane_id = panes.lock().await.snapshot()[0].0;
+
+        let handle = tokio::spawn(async move {
+            let _ = daemon.run().await;
+        });
+        for _ in 0..40 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        {
+            let mut stream = UnixStream::connect(&socket).await.expect("connect");
+            handshake(&mut stream).await;
+            let mut codec = FrameCodec;
+            let mut buf = BytesMut::new();
+            codec
+                .encode(
+                    CopyMode { pane_id }.to_enter_frame().expect("enter"),
+                    &mut buf,
+                )
+                .expect("encode enter");
+            stream.write_all(&buf).await.expect("write enter");
+
+            for _ in 0..40 {
+                if !lock_live_pane(&panes, pane_id)
+                    .await
+                    .expect("pane")
+                    .copy_mode_pins
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            assert_eq!(
+                lock_live_pane(&panes, pane_id)
+                    .await
+                    .expect("pane")
+                    .copy_mode_pins
+                    .len(),
+                1,
+                "EnterCopyMode did not pin"
+            );
+        }
+
+        for _ in 0..40 {
+            if lock_live_pane(&panes, pane_id)
+                .await
+                .expect("pane")
+                .copy_mode_pins
+                .is_empty()
+            {
+                handle.abort();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        handle.abort();
+        panic!("pin outlived the connection");
     }
 }
