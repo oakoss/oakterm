@@ -13,6 +13,7 @@ use crate::scroll::archive_core::{ArchiveCore, ArchiveStats};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,11 @@ const MAILBOX_DEPTH: usize = 4;
 /// can't respond within this is treated as wedged; callers get an error
 /// (or a best-effort default) instead of hanging.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long teardown waits for a writer to notice the disconnect. Short
+/// on purpose: the wait only covers a message already being processed,
+/// and a writer that needs longer is abandoned rather than held onto.
+const JOIN_GRACE: Duration = Duration::from_secs(1);
 
 /// Message to the writer thread. Queries carry a reply channel; the
 /// writer answers after processing everything queued before them.
@@ -50,8 +56,16 @@ enum WriterMsg {
     /// Block the writer until `gate`'s sender drops — deterministic
     /// saturation for tests. `entered` acks that the writer is parked,
     /// so callers know later batches can't be drained early.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     Stall {
+        entered: SyncSender<()>,
+        gate: mpsc::Receiver<()>,
+    },
+    /// Arm a one-shot stall on the *next* read. Unlike `Stall`, this
+    /// signals only once a read has actually arrived, giving tests a
+    /// rendezvous on the read being in flight rather than a sleep.
+    #[cfg(any(test, feature = "test-hooks"))]
+    StallNextRead {
         entered: SyncSender<()>,
         gate: mpsc::Receiver<()>,
     },
@@ -78,8 +92,11 @@ pub struct ArchiveManager {
 }
 
 /// Channel and thread of a running writer; both live and die together.
+/// This is the only strong reference to the sender, so dropping it
+/// disconnects the mailbox — that disconnect is the writer's exit signal,
+/// and it is why [`ArchiveReader`] may only ever hold a `Weak`.
 struct WriterHandle {
-    tx: SyncSender<WriterMsg>,
+    tx: Arc<SyncSender<WriterMsg>>,
     thread: thread::JoinHandle<()>,
 }
 
@@ -89,6 +106,137 @@ struct WriterHandle {
 fn log_if_unheard<T>(send_result: Result<(), mpsc::SendError<io::Result<T>>>, op: &str) {
     if let Err(mpsc::SendError(Err(e))) = send_result {
         tracing::warn!(error = %e, op, "archive operation failed after caller stopped waiting");
+    }
+}
+
+/// Enqueue `msg`, retrying while the mailbox is full of batches, giving up
+/// at `deadline`.
+///
+/// The strong reference is taken per attempt and released before the
+/// sleep. Holding it across the wait would keep the mailbox connected
+/// while nothing is draining it, which is exactly how a caller here could
+/// stall a teardown running on another thread.
+fn send_with_deadline(
+    tx: &Weak<SyncSender<WriterMsg>>,
+    mut msg: WriterMsg,
+    deadline: Instant,
+) -> io::Result<()> {
+    loop {
+        let Some(sender) = tx.upgrade() else {
+            return Err(io::Error::other("archive writer thread exited"));
+        };
+        match sender.try_send(msg) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Full(returned)) => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::other(
+                        "archive writer did not accept a query within 10s",
+                    ));
+                }
+                msg = returned;
+                drop(sender);
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                return Err(io::Error::other("archive writer thread exited"));
+            }
+        }
+    }
+}
+
+/// Enqueue a query with a bounded wait on both the send and the reply.
+/// Every caller — manager and reader alike — goes through this, so the
+/// wedged-writer contract has one definition.
+///
+/// The reply rides its own channel, so no reference to the mailbox is held
+/// while waiting for it: a teardown may disconnect the writer mid-query,
+/// and this call then ends on the reply channel closing.
+fn query_writer<T>(
+    tx: &Weak<SyncSender<WriterMsg>>,
+    build: impl FnOnce(SyncSender<T>) -> WriterMsg,
+) -> io::Result<T> {
+    let deadline = Instant::now() + QUERY_TIMEOUT;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    send_with_deadline(tx, build(reply_tx), deadline)?;
+    match reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(value) => Ok(value),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("archive writer thread exited"))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(io::Error::other("archive writer did not reply within 10s"))
+        }
+    }
+}
+
+/// Read-only handle to a pane's archive writer.
+///
+/// `Send + 'static` and cloneable, so a read can be moved onto a blocking
+/// task rather than run under whatever locks the caller holds. Reads
+/// observe the same state the owning [`ArchiveManager`] would: the writer
+/// answers them in mailbox order.
+///
+/// The reference is deliberately weak: teardown stops the writer by
+/// dropping the manager's sender, so a reader that could hold it alive
+/// would leak the thread. Methods fail fast once the manager is gone.
+#[derive(Clone)]
+pub struct ArchiveReader {
+    tx: Weak<SyncSender<WriterMsg>>,
+}
+
+impl ArchiveReader {
+    /// Read archived rows in `[start, start + count)`, tagged with their
+    /// absolute indices — see [`ArchiveManager::read_range`] for the
+    /// gap and alignment contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading from disk fails or the writer is dead
+    /// or wedged.
+    pub fn read_range(&self, start: u64, count: usize) -> io::Result<Vec<(u64, Row)>> {
+        query_writer(&self.tx, |reply| WriterMsg::Read {
+            start,
+            count,
+            reply,
+        })?
+    }
+
+    /// Rows the writer itself lost: paused discards and write-error
+    /// abandonment. Add [`ArchiveManager::dropped_rows`] for the total —
+    /// enqueue-side drops are counted on the caller's thread, not here.
+    /// A mailbox round-trip like any query; `None` whenever that query
+    /// fails — writer gone, wedged, or unreachable.
+    #[must_use]
+    pub fn writer_lost_rows(&self) -> Option<u64> {
+        query_writer(&self.tx, WriterMsg::Stats)
+            .inspect_err(|e| tracing::debug!(error = %e, "archive stats query failed"))
+            .ok()
+            .map(|s| s.lost_rows)
+    }
+}
+
+/// A read parked at the writer, from [`ArchiveManager::stall_next_read`].
+/// Polling is non-blocking so async tests can await on it without tying
+/// up a runtime worker.
+#[cfg(any(test, feature = "test-hooks"))]
+pub struct ReadStall {
+    entered: mpsc::Receiver<()>,
+    gate: SyncSender<()>,
+    arrived: bool,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl ReadStall {
+    /// Whether a read has reached the writer and parked. Latches, so it
+    /// stays true once observed.
+    pub fn read_arrived(&mut self) -> bool {
+        self.arrived |= self.entered.try_recv().is_ok();
+        self.arrived
+    }
+
+    /// Let the parked read proceed.
+    pub fn release(self) {
+        drop(self.gate);
     }
 }
 
@@ -105,6 +253,8 @@ impl ArchiveManager {
     pub fn new(session_dir: PathBuf, max_disk_bytes: u64) -> io::Result<Self> {
         let mut core = ArchiveCore::new(session_dir.clone(), max_disk_bytes)?;
         let (tx, rx) = mpsc::sync_channel::<WriterMsg>(MAILBOX_DEPTH);
+        #[cfg(any(test, feature = "test-hooks"))]
+        let mut stall_next_read: Option<(SyncSender<()>, mpsc::Receiver<()>)> = None;
         let writer_thread = thread::Builder::new()
             .name("archive-writer".to_string())
             .spawn(move || {
@@ -129,6 +279,11 @@ impl ArchiveManager {
                             count,
                             reply,
                         } => {
+                            #[cfg(any(test, feature = "test-hooks"))]
+                            if let Some((entered, gate)) = stall_next_read.take() {
+                                let _ = entered.send(());
+                                let _ = gate.recv();
+                            }
                             // Seal only when the window reaches unsealed
                             // rows, so reads of pure history don't churn
                             // segments or risk read-triggered loss on a
@@ -153,10 +308,14 @@ impl ArchiveManager {
                             log_if_unheard(reply.send(core.shutdown()), "shutdown");
                             break;
                         }
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "test-hooks"))]
                         WriterMsg::Stall { entered, gate } => {
                             let _ = entered.send(());
                             let _ = gate.recv();
+                        }
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        WriterMsg::StallNextRead { entered, gate } => {
+                            stall_next_read = Some((entered, gate));
                         }
                         #[cfg(test)]
                         #[allow(clippy::missing_panics_doc)]
@@ -166,7 +325,7 @@ impl ArchiveManager {
             })?;
         Ok(Self {
             writer: Some(WriterHandle {
-                tx,
+                tx: Arc::new(tx),
                 thread: writer_thread,
             }),
             session_dir,
@@ -228,42 +387,80 @@ impl ArchiveManager {
         }
     }
 
-    /// Enqueue a query with a bounded wait on both the send (the mailbox
-    /// may be full of batches) and the reply.
     fn query<T>(&self, build: impl FnOnce(SyncSender<T>) -> WriterMsg) -> io::Result<T> {
         let writer = self
             .writer
             .as_ref()
             .ok_or_else(|| io::Error::other("archive writer shut down"))?;
-        let deadline = Instant::now() + QUERY_TIMEOUT;
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        let mut msg = build(reply_tx);
-        loop {
-            match writer.tx.try_send(msg) {
-                Ok(()) => break,
-                Err(mpsc::TrySendError::Full(returned)) => {
-                    if Instant::now() >= deadline {
-                        return Err(io::Error::other(
-                            "archive writer did not accept a query within 10s",
-                        ));
-                    }
-                    msg = returned;
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => {
-                    return Err(io::Error::other("archive writer thread exited"));
-                }
-            }
+        // Borrowing `self` keeps the strong reference alive for the call,
+        // so the downgrade here can always be upgraded back.
+        query_writer(&Arc::downgrade(&writer.tx), build)
+    }
+
+    /// A handle that can read this archive without borrowing the manager,
+    /// so callers can hand the read to another thread instead of holding
+    /// their own locks across it. `None` once the writer is shut down.
+    #[must_use]
+    pub fn reader(&self) -> Option<ArchiveReader> {
+        self.writer.as_ref().map(|w| ArchiveReader {
+            tx: Arc::downgrade(&w.tx),
+        })
+    }
+
+    /// Park the writer on the *next* read it receives, so tests can wait
+    /// for a read to be genuinely in flight instead of sleeping and
+    /// assuming. Unlike [`Self::stall_writer`], the signal proves the read
+    /// reached the writer, which also orders anything enqueued afterwards
+    /// behind it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the writer is already gone.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn stall_next_read(&self) -> ReadStall {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (gate_tx, gate_rx) = mpsc::sync_channel(0);
+        self.writer
+            .as_ref()
+            .expect("writer running")
+            .tx
+            .send(WriterMsg::StallNextRead {
+                entered: entered_tx,
+                gate: gate_rx,
+            })
+            .expect("send stall-next-read");
+        ReadStall {
+            entered: entered_rx,
+            gate: gate_tx,
+            arrived: false,
         }
-        match reply_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(value) => Ok(value),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(io::Error::other("archive writer thread exited"))
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                Err(io::Error::other("archive writer did not reply within 10s"))
-            }
-        }
+    }
+
+    /// Park the writer until the returned sender drops, so tests can
+    /// exercise callers against a writer that will not answer. Returns
+    /// once the writer is actually parked — without that rendezvous it
+    /// could still drain queued work first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the writer is already gone.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn stall_writer(&self) -> SyncSender<()> {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (gate_tx, gate_rx) = mpsc::sync_channel(0);
+        self.writer
+            .as_ref()
+            .expect("writer running")
+            .tx
+            .send(WriterMsg::Stall {
+                entered: entered_tx,
+                gate: gate_rx,
+            })
+            .expect("send stall");
+        entered_rx.recv().expect("writer parked in stall");
+        gate_tx
     }
 
     /// Observable state snapshot; `None` when the writer is dead or wedged.
@@ -304,11 +501,9 @@ impl ArchiveManager {
     /// Returns an error if reading from disk fails or the writer is dead
     /// or wedged.
     pub fn read_range(&self, start: u64, count: usize) -> io::Result<Vec<(u64, Row)>> {
-        self.query(|reply| WriterMsg::Read {
-            start,
-            count,
-            reply,
-        })?
+        self.reader()
+            .ok_or_else(|| io::Error::other("archive writer shut down"))?
+            .read_range(start, count)
     }
 
     /// Every row ever handed to `archive_rows`, whether stored, dropped,
@@ -424,27 +619,44 @@ impl ArchiveManager {
         self.writer.as_ref().is_some_and(|w| w.thread.is_finished())
     }
 
-    /// Join a writer that is known to have exited (or is about to).
-    fn join_writer(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            drop(writer.tx);
-            if writer.thread.join().is_err() {
-                tracing::error!("archive writer thread panicked");
+    /// Disconnect the mailbox and wait up to `grace` for the writer to
+    /// notice and exit.
+    ///
+    /// A writer parked inside a blocking `write` or fsync sees neither the
+    /// disconnect nor anything else until that syscall returns, so the
+    /// wait is bounded and gives up rather than blocking teardown. An
+    /// abandoned thread still exits on its own once it reaches `recv`;
+    /// only the join is lost.
+    fn stop_writer(&mut self, grace: Duration) {
+        let Some(writer) = self.writer.take() else {
+            return;
+        };
+        drop(writer.tx);
+        let deadline = Instant::now() + grace;
+        while !writer.thread.is_finished() {
+            if Instant::now() >= deadline {
+                tracing::warn!(
+                    path = %self.session_dir.display(),
+                    "archive writer did not exit; abandoning it, files left for orphan cleanup"
+                );
+                return;
             }
+            thread::sleep(Duration::from_millis(1));
+        }
+        if writer.thread.join().is_err() {
+            tracing::error!("archive writer thread panicked");
         }
     }
 
-    /// Abandon a wedged writer without joining — joining would hang
-    /// teardown in exactly the scenario the query timeout exists to
-    /// survive; dropping the channel lets it exit on its own.
+    /// Stop a writer expected to be responsive or already gone.
+    fn join_writer(&mut self) {
+        self.stop_writer(JOIN_GRACE);
+    }
+
+    /// Abandon a writer already known to be wedged. Waiting is pointless
+    /// in exactly the scenario the query timeout exists to survive.
     fn detach_writer(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            drop(writer.tx);
-            tracing::warn!(
-                path = %self.session_dir.display(),
-                "detaching wedged archive writer; queued rows may still be written, files left for orphan cleanup"
-            );
-        }
+        self.stop_writer(Duration::ZERO);
     }
 
     /// Delete orphaned archive directories that don't match the current session.
@@ -542,26 +754,6 @@ mod tests {
             .collect()
     }
 
-    /// Block the writer until the returned sender drops, so the mailbox
-    /// can be filled deterministically. Waits for the writer to actually
-    /// park — without the rendezvous it could drain early batches before
-    /// stalling, splitting the drops mid-sequence.
-    fn stall(mgr: &ArchiveManager) -> SyncSender<()> {
-        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
-        let (gate_tx, gate_rx) = mpsc::sync_channel(0);
-        mgr.writer
-            .as_ref()
-            .expect("writer running")
-            .tx
-            .send(WriterMsg::Stall {
-                entered: entered_tx,
-                gate: gate_rx,
-            })
-            .expect("send stall");
-        entered_rx.recv().expect("writer parked in stall");
-        gate_tx
-    }
-
     #[test]
     fn large_batch_triggers_flush() {
         let dir = tempfile::tempdir().unwrap();
@@ -587,7 +779,7 @@ mod tests {
         let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
         let sent = 10 * STALL_BATCHES as u64;
         {
-            let _gate = stall(&mgr);
+            let _gate = mgr.stall_writer();
             for _ in 0..STALL_BATCHES {
                 mgr.archive_rows(make_rows(10, 80)).unwrap();
             }
@@ -609,7 +801,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
         {
-            let _gate = stall(&mgr);
+            let _gate = mgr.stall_writer();
             for _ in 0..=STALL_BATCHES {
                 mgr.archive_rows(make_rows(10, 80)).unwrap();
             }
@@ -684,7 +876,7 @@ mod tests {
         let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
         let sent = 10 * STALL_BATCHES as u64;
         {
-            let _gate = stall(&mgr);
+            let _gate = mgr.stall_writer();
             for _ in 0..STALL_BATCHES {
                 mgr.archive_rows(make_rows(10, 80)).unwrap();
             }
@@ -797,7 +989,7 @@ mod tests {
         let archive_dir = dir.path().join("archive");
         let mut mgr = ArchiveManager::new(archive_dir.clone(), u64::MAX).unwrap();
         {
-            let _gate = stall(&mgr);
+            let _gate = mgr.stall_writer();
             for _ in 0..MAILBOX_DEPTH {
                 mgr.archive_rows(make_rows(10, 80)).unwrap();
             }
@@ -890,6 +1082,138 @@ mod tests {
 
         // Unrecognised name should be left alone.
         assert!(base.join("not-a-pid").exists());
+    }
+
+    #[test]
+    fn reader_sees_rows_the_manager_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        mgr.archive_rows(make_rows(10, 40)).unwrap();
+        let reader = mgr.reader().expect("writer running");
+
+        // Same seal-before-read behaviour as the manager's own read.
+        let rows = reader.read_range(0, 10).unwrap();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[9].0, 9);
+        assert_eq!(rows[9].1.cells[0].codepoint, 'J');
+    }
+
+    #[test]
+    fn reader_is_none_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        mgr.shutdown().unwrap();
+        assert!(mgr.reader().is_none());
+    }
+
+    fn wait_for(within: Duration, mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + within;
+        while !cond() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+
+    /// The invariant the whole reader design rests on: dropping the
+    /// manager's sender must disconnect the mailbox even with readers
+    /// outstanding, because that disconnect is the writer's only exit
+    /// signal. A reader holding a strong sender would park the thread
+    /// forever.
+    #[test]
+    fn a_reader_cannot_keep_the_writer_thread_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        let reader = mgr.reader().expect("writer running");
+        let writer = mgr.writer.take().expect("writer running");
+
+        drop(writer.tx);
+
+        assert!(
+            wait_for(Duration::from_secs(5), || writer.thread.is_finished()),
+            "a reader must not keep the writer thread alive"
+        );
+        writer.thread.join().expect("writer exited cleanly");
+        assert!(reader.read_range(0, 1).is_err());
+    }
+
+    /// Detaching is for a writer already known to be wedged, so it must
+    /// not wait — and with the mailbox full there is no way to ask the
+    /// thread to stop, which is exactly why the exit signal has to be the
+    /// disconnect rather than a message. An outstanding reader must not
+    /// be able to undo it.
+    #[test]
+    fn detaching_a_wedged_writer_neither_waits_nor_leaves_a_way_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        let reader = mgr.reader().expect("writer running");
+        let gate = mgr.stall_writer();
+        for _ in 0..STALL_BATCHES {
+            mgr.archive_rows(make_rows(10, 80)).unwrap();
+        }
+
+        let started = Instant::now();
+        mgr.detach_writer();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "detaching a wedged writer must not wait on it"
+        );
+
+        let started = Instant::now();
+        let err = reader.read_range(0, 1).expect_err("writer unreachable");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a reader whose manager is gone must fail fast, not wait out the query timeout"
+        );
+        assert!(
+            err.to_string().contains("exited"),
+            "unexpected error: {err}"
+        );
+
+        drop(gate);
+    }
+
+    /// A reader handed to a blocking task can outlive the pane it came
+    /// from, and teardown must still finish.
+    #[test]
+    fn an_outstanding_reader_does_not_block_teardown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = ArchiveManager::new(dir.path().join("archive"), u64::MAX).unwrap();
+        mgr.archive_rows(make_rows(10, 40)).unwrap();
+        let reader = mgr.reader().expect("writer running");
+
+        // Dropped on its own thread so a teardown that blocks fails here
+        // with a diagnosis, rather than hanging until a CI timeout kills
+        // the run and says nothing about which test wedged.
+        let dropped = thread::spawn(move || drop(mgr));
+        assert!(
+            wait_for(Duration::from_secs(10), || dropped.is_finished()),
+            "teardown blocked with a reader outstanding"
+        );
+        dropped.join().expect("teardown panicked");
+
+        // The writer is gone; the stale handle errors instead of hanging.
+        let err = reader.read_range(0, 10).expect_err("writer stopped");
+        assert!(
+            err.to_string().contains("exited"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn an_outstanding_reader_does_not_block_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_dir = dir.path().join("archive");
+        let mut mgr = ArchiveManager::new(archive_dir.clone(), u64::MAX).unwrap();
+        mgr.archive_rows(make_rows(10, 40)).unwrap();
+        let reader = mgr.reader().expect("writer running");
+
+        mgr.shutdown().unwrap();
+
+        assert!(!archive_dir.exists());
+        assert!(reader.read_range(0, 10).is_err());
     }
 
     #[test]

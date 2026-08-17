@@ -6,8 +6,9 @@ use crate::wire::row_to_wire;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{ErrorCode, GetScrollback, MSG_SCROLLBACK_DATA, ScrollbackData};
 use oakterm_protocol::render::DirtyRow;
+use oakterm_terminal::grid::cell::Rgb;
 use oakterm_terminal::grid::row::Row;
-use oakterm_terminal::scroll::archive_manager::ArchiveManager;
+use oakterm_terminal::scroll::archive_manager::{ArchiveManager, ArchiveReader};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
@@ -65,7 +66,7 @@ pub(super) async fn get_scrollback(
             "malformed GetScrollback",
         );
     };
-    let Some(pane) = lock_live_pane(panes, req.pane_id).await else {
+    let Some(snapshot) = snapshot_under_lock(conn_id, &req, panes).await else {
         return make_error_response(
             conn_id,
             frame.serial,
@@ -73,18 +74,39 @@ pub(super) async fn get_scrollback(
             "unknown pane",
         );
     };
-    let base = pane.copy_mode_base(conn_id);
-    let layout = HistoryLayout::of(&pane);
-    let buf = pane.screens.scrollback();
-    let archive = pane.screens.archive();
-    let plan = plan_scrollback_read(&layout, base, req.start_row, req.count);
+    let ScrollbackSnapshot {
+        plan,
+        access,
+        palette,
+        cols,
+        tail,
+    } = snapshot;
 
-    let rows = match build_scrollback_rows(conn_id, req.pane_id, &pane, &plan, archive, buf) {
-        Ok(rows) => rows,
-        Err(message) => {
-            return make_error_response(conn_id, frame.serial, ErrorCode::InternalError, message);
-        }
-    };
+    let mut rows: Vec<DirtyRow> = Vec::with_capacity(plan.archive_count + tail.len());
+    if plan.archive_count > 0 {
+        let found = match read_archive_rows(
+            conn_id,
+            req.pane_id,
+            access,
+            plan.archive_start,
+            plan.archive_count,
+        )
+        .await
+        {
+            Ok(found) => found,
+            Err(message) => {
+                return make_error_response(
+                    conn_id,
+                    frame.serial,
+                    ErrorCode::InternalError,
+                    message,
+                );
+            }
+        };
+        let (aligned, _) = align_archive_rows(found, plan.archive_start, plan.archive_count, cols);
+        rows.extend(aligned.iter().map(|row| row_to_wire(row, 0, &palette)));
+    }
+    rows.extend(tail);
 
     let data = ScrollbackData {
         pane_id: req.pane_id,
@@ -119,33 +141,60 @@ pub(super) async fn get_scrollback(
     }
 }
 
-/// Assemble the response rows in absolute-index order: archived, then
-/// blanks for the pruned-without-an-archive gap, then hot buffer rows.
-fn build_scrollback_rows(
+/// Everything a response needs from behind the pane lock, so the archive
+/// read can run without it. The hot rows are converted here rather than
+/// after that read: a prune while the lock is free would shift them out
+/// from under `plan.hot_start`.
+///
+/// Nothing here is re-read afterwards, so a pane closing mid-read still
+/// yields a consistent response — deliberately unlike `resolve_yank`,
+/// which re-locks to assemble and so fails a closed pane. Refusing would
+/// only lose history the client can no longer obtain.
+struct ScrollbackSnapshot {
+    plan: ScrollbackReadPlan,
+    access: ArchiveAccess,
+    palette: [Rgb; 256],
+    cols: usize,
+    /// Blanks for the pruned-without-an-archive gap, then hot buffer rows
+    /// — everything after the archived portion of the window.
+    tail: Vec<DirtyRow>,
+}
+
+async fn snapshot_under_lock(
+    conn_id: u64,
+    req: &GetScrollback,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> Option<ScrollbackSnapshot> {
+    let pane = lock_live_pane(panes, req.pane_id).await?;
+    let layout = HistoryLayout::of(&pane);
+    let plan = plan_scrollback_read(
+        &layout,
+        pane.copy_mode_base(conn_id),
+        req.start_row,
+        req.count,
+    );
+    let grid = pane.screens.active_grid();
+    let palette = grid.palette;
+    let cols = usize::from(grid.cols);
+    Some(ScrollbackSnapshot {
+        tail: build_tail_rows(conn_id, req.pane_id, &pane, &plan, cols, &palette),
+        access: ArchiveAccess::of(&pane),
+        plan,
+        palette,
+        cols,
+    })
+}
+
+fn build_tail_rows(
     conn_id: u64,
     pane_id: u32,
     pane: &PaneState,
     plan: &ScrollbackReadPlan,
-    archive: Option<&ArchiveManager>,
-    buf: &oakterm_terminal::scroll::HotBuffer,
-) -> Result<Vec<DirtyRow>, &'static str> {
-    let palette = &pane.screens.active_grid().palette;
-    let cols = usize::from(pane.screens.active_grid().cols);
-    let mut rows: Vec<DirtyRow> =
-        Vec::with_capacity(plan.archive_count + plan.gap_count + plan.hot_count);
-
-    if plan.archive_count > 0 {
-        let found = read_archive_rows(
-            conn_id,
-            pane_id,
-            archive,
-            plan.archive_start,
-            plan.archive_count,
-        )?;
-        for row in align_archive_rows(found, plan.archive_start, plan.archive_count, cols) {
-            rows.push(row_to_wire(&row, 0, palette));
-        }
-    }
+    cols: usize,
+    palette: &[Rgb; 256],
+) -> Vec<DirtyRow> {
+    let buf = pane.screens.scrollback();
+    let mut rows: Vec<DirtyRow> = Vec::with_capacity(plan.gap_count + plan.hot_count);
 
     if plan.gap_count > 0 {
         warn!(
@@ -175,37 +224,107 @@ fn build_scrollback_rows(
             rows.push(row_to_wire(&Row::new(cols), 0, palette));
         }
     }
-    Ok(rows)
+    rows
 }
 
-/// Errors surface as an error frame, never blank rows: a blank means a
-/// permanent gap, but a transient failure (wedged writer, EIO) must stay
-/// retryable for the client.
-pub(super) fn read_archive_rows(
+/// Read archived rows off the runtime, holding no pane lock: the query
+/// blocks until the writer answers or its timeout expires, which must
+/// stall neither the pane nor a tokio worker (TREK-197).
+///
+/// Every failure — a dead or wedged writer, a disk error, a panicking
+/// read — surfaces as an error frame, never blank rows: a blank means a
+/// permanent gap, but a transient failure must stay retryable.
+pub(super) async fn read_archive_rows(
     conn_id: u64,
     pane_id: u32,
-    archive: Option<&ArchiveManager>,
+    access: ArchiveAccess,
     start: u64,
     count: usize,
 ) -> Result<Vec<(u64, Row)>, &'static str> {
-    let Some(archive) = archive else {
-        // Unreachable in practice: a nonzero count implies archived > 0,
-        // read from this same binding. Logged loudly in case that
-        // invariant ever breaks.
-        error!(conn_id, pane_id, "archive vanished mid-request");
-        return Err("archive unavailable");
+    let reader = match access {
+        ArchiveAccess::Ready(reader) => reader,
+        ArchiveAccess::WriterGone => {
+            warn!(
+                conn_id,
+                pane_id, start, count, "archive writer shut down; window unreadable"
+            );
+            return Err("archive unavailable");
+        }
+        ArchiveAccess::Absent => {
+            // The plan only asks for archived rows when `archived > 0`,
+            // which a pane without an archive can never reach.
+            error!(
+                conn_id,
+                pane_id, start, count, "archived rows planned on a pane with no archive"
+            );
+            return Err("archive unavailable");
+        }
     };
-    archive.read_range(start, count).map_err(|e| {
-        warn!(
-            conn_id,
-            pane_id,
-            start,
-            count,
-            error = %e,
-            "archive read failed"
-        );
-        "archive read failed"
-    })
+    let outcome = tokio::task::spawn_blocking(move || reader.read_range(start, count)).await;
+    map_read_outcome(conn_id, pane_id, start, count, outcome)
+}
+
+/// How a pane's archive can be reached for a read. The two unreadable
+/// states are kept apart because they mean opposite things: a writer that
+/// shut down is a routine post-teardown read, while a plan that wants
+/// archived rows from a pane holding no archive is a broken invariant.
+#[derive(Clone)]
+pub(super) enum ArchiveAccess {
+    Ready(ArchiveReader),
+    WriterGone,
+    Absent,
+}
+
+impl ArchiveAccess {
+    pub(super) fn of(pane: &PaneState) -> Self {
+        match pane.screens.archive() {
+            None => Self::Absent,
+            Some(archive) => archive.reader().map_or(Self::WriterGone, Self::Ready),
+        }
+    }
+
+    pub(super) fn reader(&self) -> Option<&ArchiveReader> {
+        match self {
+            Self::Ready(reader) => Some(reader),
+            Self::WriterGone | Self::Absent => None,
+        }
+    }
+}
+
+type ReadOutcome = Result<std::io::Result<Vec<(u64, Row)>>, tokio::task::JoinError>;
+
+fn map_read_outcome(
+    conn_id: u64,
+    pane_id: u32,
+    start: u64,
+    count: usize,
+    outcome: ReadOutcome,
+) -> Result<Vec<(u64, Row)>, &'static str> {
+    match outcome {
+        Ok(Ok(rows)) => Ok(rows),
+        Ok(Err(e)) => {
+            warn!(
+                conn_id,
+                pane_id,
+                start,
+                count,
+                error = %e,
+                "archive read failed"
+            );
+            Err("archive read failed")
+        }
+        Err(e) => {
+            error!(
+                conn_id,
+                pane_id,
+                start,
+                count,
+                error = %e,
+                "archive read task failed"
+            );
+            Err("archive read failed")
+        }
+    }
 }
 
 /// How a `GetScrollback` request maps onto the combined history:
@@ -265,15 +384,20 @@ fn plan_scrollback_read(
 /// `[start, start + count)`, blank-filling indices the archive has no
 /// row for (gaps from the Spec-0004 overload policy) so the client can
 /// consume the response by position.
+///
+/// Returns the rows alongside how many the archive actually supplied —
+/// the difference is blank fill, which the client cannot tell from real
+/// blank output, so callers that report on the read need the count.
 pub(super) fn align_archive_rows(
     found: Vec<(u64, Row)>,
     start: u64,
     count: usize,
     cols: usize,
-) -> Vec<Row> {
+) -> (Vec<Row>, usize) {
     let mut found = found.into_iter().peekable();
     let mut out_of_contract: u64 = 0;
-    let rows = (start..start + count as u64)
+    let mut supplied = 0usize;
+    let rows: Vec<Row> = (start..start + count as u64)
         .map(|idx| {
             // Entries behind the cursor (index regression, duplicates)
             // violate the sorted-unique contract; absorbing one silently
@@ -283,7 +407,10 @@ pub(super) fn align_archive_rows(
                 out_of_contract += 1;
             }
             match found.peek() {
-                Some((i, _)) if *i == idx => found.next().expect("peeked").1,
+                Some((i, _)) if *i == idx => {
+                    supplied += 1;
+                    found.next().expect("peeked").1
+                }
                 _ => Row::new(cols),
             }
         })
@@ -295,12 +422,26 @@ pub(super) fn align_archive_rows(
             start, count, "archive rows outside the requested window; indexing bug suspected"
         );
     }
-    rows
+    if supplied < count {
+        // Expected when the archive dropped rows under load, and the only
+        // signal that the blanks below are missing data rather than blank
+        // terminal output.
+        warn!(
+            missing = count - supplied,
+            start, count, "archive supplied fewer rows than the window; blank-filled"
+        );
+    }
+    (rows, supplied)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use oakterm_protocol::message::ErrorMessage;
+    use oakterm_terminal::scroll::archive_manager::ReadStall;
+    use std::time::Duration;
+
+    const COLS: usize = 80;
 
     /// A pane whose whole history is still reachable: everything pruned
     /// out of the hot buffer was captured by the archive.
@@ -448,7 +589,7 @@ mod tests {
 
         let aligned = align_archive_rows(vec![(12, row_a), (14, row_b)], 10, 6, 4);
 
-        let heads: Vec<char> = aligned.iter().map(|r| r.cells[0].codepoint).collect();
+        let heads: Vec<char> = aligned.0.iter().map(|r| r.cells[0].codepoint).collect();
         assert_eq!(heads, vec!['\0', '\0', 'A', '\0', 'B', '\0']);
     }
 
@@ -462,7 +603,7 @@ mod tests {
         // An entry below the window must not wedge alignment of later rows.
         let aligned = align_archive_rows(vec![(9, stale), (12, row_a)], 10, 4, 4);
 
-        let heads: Vec<char> = aligned.iter().map(|r| r.cells[0].codepoint).collect();
+        let heads: Vec<char> = aligned.0.iter().map(|r| r.cells[0].codepoint).collect();
         assert_eq!(heads, vec!['\0', '\0', 'A', '\0']);
     }
 
@@ -472,6 +613,350 @@ mod tests {
         assert_eq!(
             plan.archive_count + plan.hot_count,
             MAX_SCROLLBACK_ROWS_PER_REQUEST as usize
+        );
+    }
+
+    // --- Handler ---
+
+    fn row_from(text: &str) -> Row {
+        let mut row = Row::new(COLS);
+        for (cell, ch) in row.cells.iter_mut().zip(text.chars()) {
+            cell.codepoint = ch;
+        }
+        row
+    }
+
+    fn scrollback_frame(pane_id: u32, start_row: i64, count: u32) -> Frame {
+        Frame::new(
+            oakterm_protocol::message::MSG_GET_SCROLLBACK,
+            9,
+            GetScrollback {
+                pane_id,
+                start_row,
+                count,
+            }
+            .encode(),
+        )
+        .expect("frame")
+    }
+
+    /// Drives the real prune-into-archive path: only rows that pass
+    /// through the hot buffer are counted in the absolute index space.
+    async fn pane_with_archived_prefix(
+        dir: &std::path::Path,
+        lines: &[&str],
+        keep: usize,
+    ) -> (Arc<Mutex<PaneManager>>, u32) {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            let archive =
+                ArchiveManager::new(dir.join("archive"), 1 << 20).expect("create archive");
+            pane.screens.set_archive(archive);
+
+            pane.screens.push_to_scrollback(row_from(lines[0]));
+            let row_bytes = pane.screens.scrollback().used_bytes();
+            let pruned = pane
+                .screens
+                .scrollback_mut()
+                .set_max_bytes(row_bytes * (keep + 1));
+            assert!(pruned.is_empty(), "resize must not drop rows unarchived");
+            for line in &lines[1..] {
+                pane.screens.push_to_scrollback(row_from(line));
+            }
+        }
+        (panes, pane_id)
+    }
+
+    fn response_rows(result: RequestResult) -> Vec<String> {
+        let RequestResult::Response(frame) = result else {
+            panic!("expected a ScrollbackData response");
+        };
+        assert_eq!(frame.msg_type, MSG_SCROLLBACK_DATA);
+        ScrollbackData::decode(&frame.payload)
+            .expect("decode ScrollbackData")
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|c| char::from_u32(c.codepoint).unwrap_or('\0'))
+                    .collect::<String>()
+                    .trim_end_matches('\0')
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn get_scrollback_spans_the_archive_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+
+        let result = get_scrollback(1, &scrollback_frame(pane_id, -4, 4), &panes).await;
+
+        assert_eq!(response_rows(result), vec!["one", "two", "three", "four"]);
+    }
+
+    /// The genuine disk-failure path: the writer is alive and answers,
+    /// but the read itself fails. Distinct from the shut-down case below,
+    /// which is refused before any read is attempted — both produce an
+    /// error frame, so only a test that actually reaches `read_range` can
+    /// tell the arms apart.
+    #[tokio::test]
+    async fn get_scrollback_reports_a_failing_disk_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let archive_dir = dir.path().join("archive");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            let archive = pane.screens.archive_mut().expect("archive");
+            archive.flush_pending().expect("flush");
+            archive.seal_active_segment().expect("seal");
+        }
+        // The writer keeps its segment metadata, so the read is attempted
+        // and fails on the missing file rather than being skipped.
+        let mut removed = 0;
+        for entry in std::fs::read_dir(&archive_dir).expect("read archive dir") {
+            let entry = entry.expect("dir entry");
+            if entry.file_name().to_string_lossy().starts_with("segment-") {
+                std::fs::remove_file(entry.path()).expect("remove segment");
+                removed += 1;
+            }
+        }
+        assert!(removed > 0, "need a sealed segment to break");
+
+        let RequestResult::Response(frame) =
+            get_scrollback(1, &scrollback_frame(pane_id, -4, 4), &panes).await
+        else {
+            panic!("expected an error response");
+        };
+        let err = ErrorMessage::decode(&frame.payload).expect("decode ErrorMessage");
+        assert_eq!(
+            ErrorCode::try_from(err.code).expect("known code"),
+            ErrorCode::InternalError
+        );
+    }
+
+    /// A transient archive failure must surface as an error frame, never
+    /// as blank rows — a blank means a permanent hole, but a dead or
+    /// wedged writer is retryable.
+    #[tokio::test]
+    async fn get_scrollback_reports_an_archive_read_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens
+                .archive_mut()
+                .expect("archive")
+                .shutdown()
+                .expect("shutdown");
+        }
+
+        let RequestResult::Response(frame) =
+            get_scrollback(1, &scrollback_frame(pane_id, -4, 4), &panes).await
+        else {
+            panic!("expected an error response");
+        };
+        let err = ErrorMessage::decode(&frame.payload).expect("decode ErrorMessage");
+        assert_eq!(
+            ErrorCode::try_from(err.code).expect("known code"),
+            ErrorCode::InternalError
+        );
+    }
+
+    /// Wait until a read has actually reached the archive writer. A fixed
+    /// sleep would only distinguish "finished" from "not finished": a task
+    /// that had not yet reached the read would leave the pane lock free
+    /// for the innocent reason that nobody had taken it, and every lock
+    /// assertion below it would pass vacuously.
+    pub(in crate::requests) async fn await_read_in_flight(stall: &mut ReadStall) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !stall.read_arrived() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no archive read reached the writer"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// The contract has two halves, and this is the half a `worker_threads
+    /// = 4` test cannot see: the read must be on `spawn_blocking`, not on
+    /// a runtime worker. With a single worker, a read left inline occupies
+    /// the only thread the runtime has and all async work stops — the
+    /// starvation this whole task exists to prevent.
+    ///
+    /// Driven from a plain thread rather than `#[tokio::test]` because
+    /// every observation has to happen from outside the runtime: a starved
+    /// worker cannot run the assertions that would notice it starving, so
+    /// an in-runtime check only sees the aftermath and blames whatever it
+    /// trips over next.
+    #[test]
+    fn a_stalled_archive_read_does_not_occupy_a_runtime_worker() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) = rt.block_on(pane_with_archived_prefix(
+            dir.path(),
+            &["one", "two", "three", "four"],
+            2,
+        ));
+        let mut stall = rt.block_on(async {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        });
+
+        // A canary that can only tick if the runtime still has a worker.
+        let ticks = Arc::new(AtomicU64::new(0));
+        rt.spawn({
+            let ticks = Arc::clone(&ticks);
+            async move {
+                loop {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        });
+        let request = rt.spawn({
+            let panes = Arc::clone(&panes);
+            let frame = scrollback_frame(pane_id, -4, 4);
+            async move { get_scrollback(1, &frame, &panes).await }
+        });
+
+        while !stall.read_arrived() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let before = ticks.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(200));
+        let after = ticks.load(Ordering::SeqCst);
+        assert!(
+            after > before,
+            "runtime worker starved by the archive read: the canary made no progress \
+             in 200ms while the read was parked"
+        );
+
+        stall.release();
+        assert_eq!(
+            response_rows(rt.block_on(request).expect("request task")),
+            vec!["one", "two", "three", "four"]
+        );
+    }
+
+    /// The proof that the archive read no longer runs under the pane
+    /// lock: with the writer parked, the request cannot answer, yet the
+    /// pane stays lockable. The budget is far under the archive's 10s
+    /// query timeout, so the lock-held shape fails here instead of
+    /// hanging.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stalled_archive_read_does_not_hold_the_pane_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        let mut stall = {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        };
+
+        let request = tokio::spawn({
+            let panes = Arc::clone(&panes);
+            let frame = scrollback_frame(pane_id, -4, 4);
+            async move { get_scrollback(1, &frame, &panes).await }
+        });
+        await_read_in_flight(&mut stall).await;
+
+        assert!(
+            !request.is_finished(),
+            "the stalled writer must still be blocking the read"
+        );
+        let locked =
+            tokio::time::timeout(Duration::from_millis(500), lock_live_pane(&panes, pane_id)).await;
+        assert!(
+            locked
+                .expect("pane lock free during the archive read")
+                .is_some(),
+            "pane vanished"
+        );
+
+        stall.release();
+        let rows = response_rows(request.await.expect("request task"));
+        assert_eq!(rows, vec!["one", "two", "three", "four"]);
+    }
+
+    /// Why this handler needs no top-up, unlike a yank: the hot rows are
+    /// converted while the lock is held, so rows migrating into the
+    /// archive during the read can be neither served twice nor lost.
+    /// Rebuilding the tail afterwards would read a hot buffer that had
+    /// moved on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rows_migrating_into_the_archive_mid_read_are_served_exactly_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        let mut stall = {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        };
+
+        let request = tokio::spawn({
+            let panes = Arc::clone(&panes);
+            let frame = scrollback_frame(pane_id, -4, 4);
+            async move { get_scrollback(1, &frame, &panes).await }
+        });
+        await_read_in_flight(&mut stall).await;
+
+        // "three" and "four" migrate out of the hot buffer and into the
+        // archive while the snapshot's archive read is still parked.
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            for line in ["five", "six"] {
+                pane.screens.push_to_scrollback(row_from(line));
+            }
+            assert!(
+                pane.screens
+                    .archive()
+                    .expect("archive")
+                    .total_rows_received()
+                    > 2,
+                "the pushes must archive rows the request already snapshotted"
+            );
+        }
+
+        stall.release();
+        assert_eq!(
+            response_rows(request.await.expect("request task")),
+            vec!["one", "two", "three", "four"]
+        );
+    }
+
+    /// Covers the mapping only: a `JoinError` — which a panicking blocking
+    /// task produces — must become an error rather than a silent empty
+    /// result the client would read as a permanent gap. The production
+    /// wiring around it is not exercised here; nothing in `read_range`
+    /// panics on purpose, so a real one cannot be provoked without a hook
+    /// that would only test itself.
+    #[tokio::test]
+    async fn a_join_error_maps_to_an_error_not_an_empty_read() {
+        let join_error = tokio::spawn(async { panic!("boom") })
+            .await
+            .expect_err("task panicked");
+
+        assert_eq!(
+            map_read_outcome(1, 2, 0, 4, Err(join_error)),
+            Err("archive read failed")
         );
     }
 

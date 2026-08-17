@@ -24,6 +24,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+oakterm-terminal = { path = "../oakterm-terminal", features = ["test-hooks"] }
 tempfile = "3.27.0"
 
 [build-dependencies]
