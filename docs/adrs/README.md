@@ -50,3 +50,6 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0019](0019-wasm-plugin-runtime-wasmtime.md) | WASM Plugin Runtime (Wasmtime)  | accepted | plugins, core, security, abstraction  |
 | [0020](0020-daemon-upgrade-version-skew.md)  | Daemon Upgrade and Version Skew | accepted | core                                  |
 | [0021](0021-agent-control-api.md)            | Agent Control API               | accepted | core, security, agents                |
+| [0022](0022-agent-integration-protocol.md)   | Agent Integration Protocol      | accepted | core, agents                          |
+| [0023](0023-agent-state-vocabulary.md)       | Agent State Vocabulary          | accepted | core, agents                          |
+| [0024](0024-agent-state-sources.md)          | Agent State Sources             | accepted | core, agents, security                |

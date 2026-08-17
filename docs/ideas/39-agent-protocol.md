@@ -1,6 +1,6 @@
 ---
 title: 'Agent Protocol (ACP)'
-status: reviewing
+status: decided
 category: core
 description: 'Speak the Agent Client Protocol so any ACP-compatible agent (Claude, Codex, Gemini, OpenCode) lights up the terminal with structured prompts, tool calls, and permissions'
 tags: ['agents', 'acp', 'claude-code', 'codex', 'gemini', 'opencode']
@@ -76,7 +76,7 @@ It also forecloses marketing and policy traps. We never claim to be a Claude pro
 
 ACP is not the only structured channel into these agents, and the 2026 wrapper ecosystem mostly ships on the other one. Claude Code exposes a stream-json subprocess interface and the Claude Agent SDK (which drives the locally installed CLI); Codex exposes an app-server JSON-RPC interface. Shipping products integrate against these directly: Zeron drives Claude Code via stream-json and Codex via app-server; bb and T3 Code drive the local Claude Code CLI through the Agent SDK; Atomic embeds the Claude, Copilot, and OpenCode SDKs. The Claude ACP adapter above is itself a wrapper over the same Agent SDK.
 
-This refines this doc's core premise: native interfaces are a second escape from the per-(agent, feature) multiplication — vendor-maintained structured events instead of reverse-engineered ANSI output — at the price of one adapter per agent instead of one protocol for all. Which surface(s) oakterm speaks — ACP-only, native-first, or ACP as the abstraction with native transports behind one internal trait — is the decision slated for ADR-0022; see the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) for the evidence base.
+This refines this doc's core premise: native interfaces are a second escape from the per-(agent, feature) multiplication — vendor-maintained structured events instead of reverse-engineered ANSI output — at the price of one adapter per agent instead of one protocol for all. [ADR-0022](../adrs/0022-agent-integration-protocol.md) decides the shape: ACP is the first and only transport built now, a spec-owned event vocabulary keeps native transports addable without UI or plugin changes, evidence triggers gate them, and Claude's stream-json transport is pre-designated because the ACP adapter's Node runtime is unacceptable for the default Claude path. See the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md) for the evidence base.
 
 ## How It Fits With Existing oakterm Architecture
 
@@ -133,11 +133,18 @@ agent_providers = {
     command = "aider",
   },
 
-  -- ACP-aware: structured channel, native tool-call rendering, permission prompts.
+  -- Default Claude: the official CLI as an opaque PTY pane. No extra toolchain (ADR-0022).
   claude = {
+    command = "claude",
+  },
+
+  -- Opt-in structured Claude via the ACP adapter. Requires a Node runtime (ADR-0022).
+  claude_acp = {
     command = { "npx", "@agentclientprotocol/claude-agent-acp" },
     protocol = "acp",
   },
+
+  -- ACP-aware: structured channel, native tool-call rendering, permission prompts.
   codex = {
     command = { "codex-acp" },
     protocol = "acp",
@@ -207,23 +214,25 @@ Warp also enumerates the same agent portfolio at the _skill-discovery_ layer: th
 
 ## Open Questions
 
-1. **Where does the ACP client live in the layout tree?** A pane that is "an ACP session" is structurally different from a pane that is a PTY. Does it occupy the same pane primitive with a different render path? A new pane type? See [Spec-0007](../specs/0007-pane-tree-layout.md) for the existing pane model.
+Every question below received a disposition in [ADR-0022](../adrs/0022-agent-integration-protocol.md)'s Consequences — none block the decision; each is annotated with where its answer lands.
 
-2. **How do `fs/write_text_file` operations relate to the user's working tree?** ACP assumes "client applies edits." For an editor that means writing to the open buffer; for a terminal it could mean writing directly to disk, proxying to a paired editor (Helix, Neovim, VS Code), or refusing the capability and forcing agents to terminal-only mode. Each choice has very different security and UX implications.
+1. **Where does the ACP client live in the layout tree?** A pane that is "an ACP session" is structurally different from a pane that is a PTY. Does it occupy the same pane primitive with a different render path? A new pane type? See [Spec-0007](../specs/0007-pane-tree-layout.md) for the existing pane model. Dispersed by ADR-0022 to a Spec-0007 revision.
 
-3. **Diff display.** `fs/write_text_file` passes whole-file content. We compute the diff client-side for display. What's the rendering primitive — floating pane via `:diff` (idea 07), inline overlay, or sidebar entry?
+2. **How do `fs/write_text_file` operations relate to the user's working tree?** ACP assumes "client applies edits." For an editor that means writing to the open buffer; for a terminal it could mean writing directly to disk, proxying to a paired editor (Helix, Neovim, VS Code), or refusing the capability and forcing agents to terminal-only mode. Each choice has very different security and UX implications. Dispersed by ADR-0022 to the agent-session spec.
 
-4. **Plan / TODO rendering.** `session/update plan` events are list-shaped. Sidebar section ([Sidebar](04-sidebar.md)) is the natural home, but there's a UX question about per-pane vs. workspace-level surfacing.
+3. **Diff display.** `fs/write_text_file` passes whole-file content. We compute the diff client-side for display. What's the rendering primitive — floating pane via `:diff` (idea 07), inline overlay, or sidebar entry? Dispersed by ADR-0022 to the agent-session spec.
 
-5. **Sandbox boundary for `terminal/*`.** Letting an agent run _anything_ in the user's shell is the largest security surface in this design. The per-pane permission model from [Agent Control API](32-agent-control-api.md) plus the risk scoring from idea 32 is the substrate, but ACP-driven `terminal/create` calls need explicit policy: which commands need approval, which auto-approve within a permission class, which always escalate. See also [Security](21-security.md).
+4. **Plan / TODO rendering.** `session/update plan` events are list-shaped. Sidebar section ([Sidebar](04-sidebar.md)) is the natural home, but there's a UX question about per-pane vs. workspace-level surfacing. Dispersed by ADR-0022 to the agent-session spec.
 
-6. **Multi-agent in one pane vs. one-agent-per-pane.** The Rust SDK exposes `Conductor` and `Proxy` types. Do we use those to host multiple concurrent ACP sessions per pane (e.g. a coordinator agent that delegates to specialists), or stay one-session-per-pane and rely on idea 07's worktree-per-agent fan-out for multi-agent work?
+5. **Sandbox boundary for `terminal/*`.** Letting an agent run _anything_ in the user's shell is the largest security surface in this design. The per-pane permission model from [Agent Control API](32-agent-control-api.md) (ADR-0021's default-deny + escalation contract; risk scoring deferred there) is the substrate, but ACP-driven `terminal/create` calls need explicit policy: which commands need approval, which auto-approve within a permission class, which always escalate. See also [Security](21-security.md). Dispersed by ADR-0022 to the ADR-0021 permission substrate, to be specified in the forthcoming Spec-0012.
 
-7. **Protocol version-pin policy.** ACP reached stable v1, but methods continue to stabilize incrementally. Do we track tip on every adapter release, pin a version and bump deliberately, or vendor the crate to control breakage timing? Each choice trades update cadence against test surface. Slated for ADR-0022.
+6. **Multi-agent in one pane vs. one-agent-per-pane.** The Rust SDK exposes `Conductor` and `Proxy` types. Do we use those to host multiple concurrent ACP sessions per pane (e.g. a coordinator agent that delegates to specialists), or stay one-session-per-pane and rely on idea 07's worktree-per-agent fan-out for multi-agent work? Deferred by ADR-0022: one session per pane initially, revisited with real usage.
 
-8. **HTTP/WebSocket transport.** The spec lists remote ACP as in-progress. Phase 4 ([Networking](29-remote-access.md)) might want to consume this; today, stdio-only is fine.
+7. **Protocol version-pin policy.** Settled by [ADR-0022](../adrs/0022-agent-integration-protocol.md): pin the crate (and adapter) to specific versions, bump deliberately with a changelog review, no tip-tracking, no vendoring; capability negotiation gates optional features at runtime.
 
-9. **AGPL contagion via agents.** Some agents (notably any forks of the AGPL-licensed Warp internals) might themselves be AGPL. Spawning an AGPL subprocess is generally considered safe (no linking), but documenting this for community-contributed agent presets is worth doing.
+8. **HTTP/WebSocket transport.** The spec lists remote ACP as in-progress. Phase 4 ([Networking](29-remote-access.md)) might want to consume this; today, stdio-only is fine. Deferred by ADR-0022 to Phase 4.
+
+9. **AGPL contagion via agents.** Some agents (notably any forks of the AGPL-licensed Warp internals) might themselves be AGPL. Spawning an AGPL subprocess is generally considered safe (no linking), but documenting this for community-contributed agent presets is worth doing. Per ADR-0022 this is a documentation note, not a decision — written when agent presets ship.
 
 ## What This Is Not
 
@@ -245,6 +254,7 @@ Warp also enumerates the same agent portfolio at the _skill-discovery_ layer: th
 - [Security](21-security.md) — permission model principles for agent-driven actions
 - [Configuration](09-config.md) — config syntax for `agent_providers`
 - [Conventions](30-conventions.md) — naming and palette command conventions
+- [ADR-0022: Agent Integration Protocol](../adrs/0022-agent-integration-protocol.md) — the accepted decision that resolves this doc's proposal
 - [ADR-0014: Input Classifier](../adrs/0014-input-classifier.md) — what routes input to ACP in the first place
 - [ADR-0005: Lua Sandboxed Config](../adrs/0005-lua-sandboxed-config.md) — config language used in examples
 - [Warp Architecture Review](../reviews/2026-04-28-210532-warp-architecture-review.md) — gateway-pattern prior art and AGPL constraint
