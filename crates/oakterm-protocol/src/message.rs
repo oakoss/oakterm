@@ -88,6 +88,12 @@ pub const LIST_TABS_MIN_MINOR: u16 = 2;
 /// `RenameTab`, `RenameWorkspace`, and `CloseWorkspace` (Spec-0001 1.3).
 /// Clients gate these on the peer's advertised minor.
 pub const TAB_OPS_MIN_MINOR: u16 = 3;
+/// Protocol minor a client needs before it may enter copy mode: the
+/// first to postdate both the copy-mode messages (0x97-0x9A, cataloged
+/// without a version event) and `ScrollbackData.start_row` reporting the
+/// served start (Spec-0001 1.4). An older daemon echoes the request, so a
+/// clamped window would key the client's cache onto the wrong rows.
+pub const COPY_MODE_MIN_MINOR: u16 = 4;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -417,10 +423,10 @@ pub struct ClientHello {
 
 impl ClientHello {
     pub const VERSION_MAJOR: u16 = 1;
-    /// Minor 3 ships the tab-lifecycle ops (`MoveTab`, `RenameTab`,
-    /// `RenameWorkspace`, `CloseWorkspace`; Spec-0001 1.3); the constant
-    /// tracks the spec's version-history table.
-    pub const VERSION_MINOR: u16 = 3;
+    /// Minor 4 ships `ScrollbackData.start_row` reporting the start the
+    /// daemon served rather than echoing the request (Spec-0001 1.4); the
+    /// constant tracks the spec's version-history table.
+    pub const VERSION_MINOR: u16 = 4;
 
     /// # Errors
     /// Returns an error if the client name exceeds u16 max length.
@@ -708,6 +714,9 @@ impl GetScrollback {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScrollbackData {
     pub pane_id: u32,
+    /// Where serving actually started, in the request's coordinate space:
+    /// `rows[i]` is row `start_row + i`. A request reaching past the
+    /// oldest retained row front-clamps, so this is not an echo.
     pub start_row: i64,
     pub has_more: bool,
     /// Total number of rows currently in the daemon's hot scrollback buffer.

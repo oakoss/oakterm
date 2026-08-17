@@ -22,9 +22,14 @@ Per-pane state tracked by the GUI while copy mode is active.
 ```rust
 struct CopyModeState {
     /// Cursor position in daemon row-index space (i64).
-    /// Row 0 = top of the visible area at the time copy mode was entered.
-    /// Positive values = further down the visible area.
-    /// Negative values = scrollback above the visible area.
+    /// Row 0 = the live grid's top row when copy mode was entered — the
+    /// row the daemon pins. Entering unscrolled, that is also the top of
+    /// the visible area; entering from scrollback at offset N, the
+    /// visible area is `[-N, -N + visible_rows)` and the cursor seeds at
+    /// its bottom, so the client tracks the entry offset rather than
+    /// assuming 0.
+    /// Positive values = further down the live grid.
+    /// Negative values = scrollback above it.
     cursor_row: i64,
     cursor_col: u16,
 
@@ -71,16 +76,12 @@ struct CachedRow {
 }
 
 struct ViewportCache {
-    /// Cached rows, keyed by daemon row index.
+    /// Cached rows, keyed by daemon row index. Every served row is
+    /// stored, blank gap fills included, so the key range IS the cache
+    /// window — deriving `start`/`end` from the keys keeps them from
+    /// drifting out of step with the rows they describe. The pin is row
+    /// 0 by definition, so it needs no field either.
     rows: BTreeMap<i64, CachedRow>,
-
-    /// The pinned viewport offset (row index of the first visible row
-    /// when copy mode was entered).
-    pinned_offset: i64,
-
-    /// Cache window: rows from `start` to `start + count` are cached.
-    start: i64,
-    count: u32,
 }
 
 struct SearchState {
@@ -204,6 +205,8 @@ Existing messages reused without modification to their payloads:
 
 `GetScrollback` and `FindPrompt` resolve their `i64` offsets against the sending client's pin while it holds one, so all three of cache fills, prompt jumps, and yanks share one origin. See Spec-0001's copy-mode addendum.
 
+**The client's viewport offset is never authoritative for daemon coordinates.** It is a client-side concept the daemon never receives, it names the page a client _requested_ rather than the one it has painted, and treating it as an origin has produced the same defect at three layers: a pin that ignored it, a spec sentence claiming the daemon records it, and coordinates seeded from a page not yet on screen. A client entering copy mode from scrollback translates its own offset into the daemon's space; it never assumes the daemon shares it.
+
 ### Row Coordinate Space
 
 Every row that has ever scrolled off the live grid holds a stable absolute index for the life of the pane, counted from the first row ever pushed. The daemon derives it from a monotonic push counter, not from the archive's row count: panes without a disk archive discard pruned rows, and an index derived from `archived + hot_buffer_len` would slide backwards as they were dropped, silently re-pointing a pinned row at whatever later occupied that slot.
@@ -223,9 +226,9 @@ A `Resize` that shrinks the grid moves rows between the live grid and scrollback
 
 1. User presses `oak_mod + [` (or configured keybind).
 2. GUI activates the copy mode key table for the focused pane.
-3. GUI sends `EnterCopyMode { pane_id }` to the daemon. The daemon records the client ID and the pane's current viewport offset as the pinned position. `EnterCopyMode` from a client that is already pinned on that pane re-pins at the current offset — an implicit exit plus enter — since the re-entering client refills its cache anyway.
+3. GUI sends `EnterCopyMode { pane_id }` to the daemon. The daemon records the client ID against the pane's history length — the absolute index of the live grid's top row — as the pinned position. The client's own viewport offset is not on the wire and the daemon never sees it, so a client entering from scrollback tracks that offset itself. `EnterCopyMode` from a client that is already pinned on that pane re-pins at the current position — an implicit exit plus enter — since the re-entering client refills its cache anyway.
 4. GUI sends `GetScrollback { pane_id, start_row, count }` to fill the initial cache (visible rows plus one screen above and below).
-5. Cursor starts at the bottom-left of the visible area: `(cursor_row = rows - 1, cursor_col = 0)` where `rows` is the pane's visible row count. Row 0 is the top of the visible area.
+5. Cursor starts at the bottom-left of the visible area: `(cursor_row = viewport_top + rows - 1, cursor_col = 0)`, where `rows` is the pane's visible row count and `viewport_top` is `-offset` for a client entering at scroll offset `offset`. Entering unscrolled this is `rows - 1`. The cursor seeds on a displayed row but is not confined to the displayed page — the live grid below a scrolled viewport stays addressable.
 
 ### Cursor Movement
 

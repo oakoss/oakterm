@@ -110,7 +110,7 @@ pub(super) async fn get_scrollback(
 
     let data = ScrollbackData {
         pane_id: req.pane_id,
-        start_row: req.start_row,
+        start_row: plan.served_start_row,
         has_more: plan.has_more,
         total_rows: plan.total_rows,
         rows,
@@ -334,6 +334,10 @@ fn map_read_outcome(
 struct ScrollbackReadPlan {
     archive_start: u64,
     archive_count: usize,
+    /// Origin-relative start actually served. Rows carry no index of
+    /// their own, so a client keying off its request would mis-file
+    /// every row of a front-clamped window.
+    served_start_row: i64,
     /// Blank rows standing in for the pruned-without-an-archive range,
     /// emitted between the archive and hot portions so the response stays
     /// positionally aligned with the requested window.
@@ -370,6 +374,10 @@ fn plan_scrollback_read(
 
     ScrollbackReadPlan {
         archive_start,
+        // Both operands count rows of one pane, and the coordinate space
+        // is i64 on the wire regardless, so a pane deep enough to
+        // saturate could not have named the row in its request either.
+        served_start_row: i64::try_from(i128::from(start) - i128::from(base)).unwrap_or(i64::MIN),
         archive_count: usize::try_from(archive_end - archive_start)
             .expect("bounded by request cap"),
         gap_count: usize::try_from(gap_count).expect("bounded by request cap"),
@@ -563,6 +571,48 @@ pub(super) mod tests {
         assert!(!plan.has_more, "nothing older than absolute row 0");
     }
 
+    /// A window that fits inside history is served exactly where it was
+    /// asked for — the case that must stay indistinguishable from the
+    /// echo this field replaced.
+    #[test]
+    fn an_unclamped_window_serves_the_requested_start() {
+        assert_eq!(plan_unpinned(0, 100, -50, 10).served_start_row, -50);
+        assert_eq!(
+            plan_scrollback_read(&layout(0, 120), 100, -10, 5).served_start_row,
+            -10
+        );
+    }
+
+    /// The front clamp is what makes the served start load-bearing: rows
+    /// arrive positionally, so a client keying off `-70` here would file
+    /// absolute rows 0..10 as if they were rows 30..40.
+    #[test]
+    fn a_front_clamped_window_serves_a_later_start_than_requested() {
+        let plan = plan_unpinned(100, 50, -70, 10);
+        assert_eq!(plan.served_start_row, -70, "150 rows of history absorbs it");
+
+        // Reaching past the oldest row: the window starts at absolute 0,
+        // which is 150 rows before the live present.
+        let clamped = plan_unpinned(100, 50, -400, 10);
+        assert_eq!(clamped.archive_start, 0);
+        assert_eq!(clamped.served_start_row, -150);
+        assert_ne!(
+            clamped.served_start_row, -400,
+            "echoing the request is the mis-keying bug"
+        );
+    }
+
+    /// Under a pin the served start stays in the pin's coordinate space,
+    /// so it composes with the client's cache keys rather than the live
+    /// present's.
+    #[test]
+    fn a_pinned_front_clamped_window_serves_in_pin_coordinates() {
+        // Pinned at absolute 40 with only 40 rows of history behind it.
+        let plan = plan_scrollback_read(&layout(0, 60), 40, -100, 10);
+        assert_eq!(plan.hot_start, 0, "clamped onto the oldest row");
+        assert_eq!(plan.served_start_row, -40);
+    }
+
     #[test]
     fn scrollback_plan_count_clamps_to_present() {
         let plan = plan_unpinned(0, 20, -5, 100);
@@ -640,6 +690,20 @@ pub(super) mod tests {
         .expect("frame")
     }
 
+    async fn pane_with_scrollback(lines: &[&str]) -> (Arc<Mutex<PaneManager>>, u32) {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        for line in lines {
+            pane.screens.push_to_scrollback(row_from(line));
+        }
+        drop(pane);
+        (panes, pane_id)
+    }
+
     /// Drives the real prune-into-archive path: only rows that pass
     /// through the hot buffer are counted in the absolute index space.
     async fn pane_with_archived_prefix(
@@ -672,13 +736,16 @@ pub(super) mod tests {
         (panes, pane_id)
     }
 
-    fn response_rows(result: RequestResult) -> Vec<String> {
+    fn response_data(result: RequestResult) -> ScrollbackData {
         let RequestResult::Response(frame) = result else {
             panic!("expected a ScrollbackData response");
         };
         assert_eq!(frame.msg_type, MSG_SCROLLBACK_DATA);
-        ScrollbackData::decode(&frame.payload)
-            .expect("decode ScrollbackData")
+        ScrollbackData::decode(&frame.payload).expect("decode ScrollbackData")
+    }
+
+    fn response_rows(result: RequestResult) -> Vec<String> {
+        response_data(result)
             .rows
             .iter()
             .map(|row| {
@@ -701,6 +768,39 @@ pub(super) mod tests {
         let result = get_scrollback(1, &scrollback_frame(pane_id, -4, 4), &panes).await;
 
         assert_eq!(response_rows(result), vec!["one", "two", "three", "four"]);
+    }
+
+    /// End to end through the handler: a request reaching past the oldest
+    /// retained row reports where it was actually served, and the rows
+    /// that come back line up with that start rather than the request.
+    #[tokio::test]
+    async fn the_response_reports_the_start_it_served_not_the_one_requested() {
+        let (panes, pane_id) = pane_with_scrollback(&["one", "two", "three"]).await;
+
+        let served =
+            response_data(get_scrollback(1, &scrollback_frame(pane_id, -10, 10), &panes).await);
+
+        assert_eq!(served.start_row, -3, "only three rows precede the origin");
+        assert_eq!(served.rows.len(), 3);
+        let keyed_from_request: Vec<i64> = (0..3).map(|i| -10 + i).collect();
+        let keyed_from_response: Vec<i64> = (0..3).map(|i| served.start_row + i).collect();
+        assert_eq!(keyed_from_response, vec![-3, -2, -1]);
+        assert_ne!(
+            keyed_from_request, keyed_from_response,
+            "the pre-fix echo keyed these rows ten rows too early"
+        );
+    }
+
+    /// A window wholly inside history keeps reporting the requested
+    /// start, so the field's new meaning is not a blanket rewrite.
+    #[tokio::test]
+    async fn an_unclamped_response_still_reports_the_requested_start() {
+        let (panes, pane_id) = pane_with_scrollback(&["one", "two", "three"]).await;
+
+        let served =
+            response_data(get_scrollback(1, &scrollback_frame(pane_id, -2, 2), &panes).await);
+
+        assert_eq!(served.start_row, -2);
     }
 
     /// The genuine disk-failure path: the writer is alive and answers,
