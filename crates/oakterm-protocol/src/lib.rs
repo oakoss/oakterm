@@ -96,6 +96,32 @@ mod tests {
         assert!(buf.is_empty()); // Buffer cleared on fatal error.
     }
 
+    /// A capability gate must never name a minor this build's own daemon
+    /// does not advertise, or the feature is dead against a matched pair
+    /// — the gate would be indistinguishable from the feature being
+    /// broken, since both just fail to start.
+    #[test]
+    fn every_capability_gate_is_reachable_by_this_builds_daemon() {
+        for (name, gate) in [
+            ("LIST_TABS_MIN_MINOR", LIST_TABS_MIN_MINOR),
+            ("TAB_OPS_MIN_MINOR", TAB_OPS_MIN_MINOR),
+            ("COPY_MODE_MIN_MINOR", COPY_MODE_MIN_MINOR),
+        ] {
+            assert!(
+                gate <= ClientHello::VERSION_MINOR,
+                "{name} = {gate} exceeds the advertised minor {}",
+                ClientHello::VERSION_MINOR
+            );
+        }
+    }
+
+    /// Copy mode is gated at the minor that introduced the served-start
+    /// `ScrollbackData` semantics its cache is keyed on (Spec-0001 1.4).
+    #[test]
+    fn copy_mode_is_gated_at_the_served_start_minor() {
+        assert_eq!(COPY_MODE_MIN_MINOR, 4);
+    }
+
     #[test]
     fn client_hello_roundtrip() {
         let hello = ClientHello {
