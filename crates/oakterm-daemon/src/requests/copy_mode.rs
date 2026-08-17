@@ -1,9 +1,7 @@
 //! Copy mode family: `EnterCopyMode` (0x97), `ExitCopyMode` (0x98), and
 //! `YankSelection` (0x99) / `YankResponse` (0x9A). See Spec-0008.
 
-use super::scrollback::{
-    HistoryLayout, MAX_SCROLLBACK_ROWS_PER_REQUEST, align_archive_rows, read_archive_rows,
-};
+use super::scrollback::{ArchiveAccess, HistoryLayout, align_archive_rows, read_archive_rows};
 use super::{RequestResult, make_error_response};
 use crate::pane::{PaneManager, PaneState, SharedPane, lock_live_pane};
 use oakterm_protocol::frame::{Frame, MAX_PAYLOAD};
@@ -11,7 +9,7 @@ use oakterm_protocol::message::{
     CopyMode, CopySelectionType, ErrorCode, YankResponse, YankSelection,
 };
 use oakterm_terminal::grid::row::Row;
-use oakterm_terminal::scroll::archive_manager::ArchiveManager;
+use oakterm_terminal::scroll::archive_manager::{ArchiveManager, ArchiveReader};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
@@ -333,8 +331,8 @@ enum YankFailure {
 }
 
 /// Planning, the archive read, and assembly each take the pane lock
-/// separately: the archive read is blocking (TREK-197) and holding the
-/// lock across a large one would stall this pane's PTY reader.
+/// separately: the archive read blocks until the writer answers (TREK-197)
+/// and holding the lock across it would stall this pane's PTY reader.
 async fn resolve_yank(
     conn_id: u64,
     req: &YankSelection,
@@ -349,13 +347,14 @@ async fn resolve_yank(
             .saturating_add(u64::from(pane.screens.active_grid().rows));
         let layout = HistoryLayout::of(&pane);
         let cols = usize::from(pane.screens.active_grid().cols);
+        let access = ArchiveAccess::of(&pane);
         plan_yank(pane.copy_mode_base(conn_id), req)
             .clamped_to(grid_end)
-            .map(|plan| (plan, layout, cols))
+            .map(|plan| (plan, layout, cols, access))
     };
 
     // The whole selection sits past the last row that exists.
-    let Some((plan, layout, cols)) = planned else {
+    let Some((plan, layout, cols, access)) = planned else {
         return Ok(String::new());
     };
     if plan.row_count() > MAX_YANK_ROWS {
@@ -364,29 +363,71 @@ async fn resolve_yank(
 
     let archive_start = plan.first_row.min(layout.archived);
     let archive_end = plan.last_row.saturating_add(1).min(layout.archived);
-    let archive_rows = read_archive_chunked(
+    let (first_rows, _) = read_archive_span(
         conn_id,
         req.pane_id,
-        panes,
+        &access,
         archive_start,
         archive_end,
         cols,
     )
     .await
     .map_err(YankFailure::Archive)?;
+    let mut window = ArchiveWindow::new(archive_start, first_rows);
 
-    let pane = lock_live_pane(panes, req.pane_id).await.ok_or_else(|| {
-        warn!(conn_id, pane_id = req.pane_id, "pane closed mid-yank");
-        YankFailure::UnknownPane
-    })?;
-    Ok(collect_yank_text(
-        conn_id,
-        req.pane_id,
-        &pane,
-        &plan,
-        &archive_rows,
-        archive_start,
-    ))
+    // Rows can migrate out of the hot buffer and into the archive while
+    // the read above runs, landing outside the window it covered. One
+    // top-up read collects them; rows that migrate after it blank-fill as
+    // before, which is what bounds this to a single extra read.
+    let top_up_start = archive_end.max(plan.first_row);
+    let mut assembled = None;
+    let top_up_end = {
+        let pane = lock_live_pane(panes, req.pane_id).await.ok_or_else(|| {
+            warn!(conn_id, pane_id = req.pane_id, "pane closed mid-yank");
+            YankFailure::UnknownPane
+        })?;
+        let end = HistoryLayout::of(&pane)
+            .archived
+            .min(plan.last_row.saturating_add(1));
+        // Nothing migrated, which is the common case: assemble under the
+        // guard already held rather than dropping and re-taking it.
+        if end <= top_up_start {
+            assembled = Some(collect_yank_text(&pane, &plan, &window));
+        }
+        end
+    };
+
+    let (text, missing) = if let Some(done) = assembled {
+        done
+    } else {
+        let (extra, recovered) = read_archive_span(
+            conn_id,
+            req.pane_id,
+            &access,
+            top_up_start,
+            top_up_end,
+            cols,
+        )
+        .await
+        .map_err(YankFailure::Archive)?;
+        window.extend(top_up_start, extra);
+        debug!(
+            conn_id,
+            pane_id = req.pane_id,
+            requested = top_up_end - top_up_start,
+            recovered,
+            "rows migrated into the archive mid-yank; topped up"
+        );
+        let pane = lock_live_pane(panes, req.pane_id).await.ok_or_else(|| {
+            warn!(conn_id, pane_id = req.pane_id, "pane closed mid-yank");
+            YankFailure::UnknownPane
+        })?;
+        collect_yank_text(&pane, &plan, &window)
+    };
+    if let Some(missing) = missing {
+        warn_missing_rows(conn_id, req.pane_id, missing, access.reader().cloned());
+    }
+    Ok(text)
 }
 
 /// Walk the plan's rows across the tiers they can live in — disk archive,
@@ -394,89 +435,157 @@ async fn resolve_yank(
 /// order, which is also ascending absolute index. The plan is already
 /// clamped to rows that exist.
 fn collect_yank_text(
-    conn_id: u64,
-    pane_id: u32,
     pane: &PaneState,
     plan: &YankPlan,
-    archive_rows: &[Row],
-    archive_start: u64,
-) -> String {
+    archive: &ArchiveWindow,
+) -> (String, Option<MissingRows>) {
     let layout = HistoryLayout::of(pane);
     let buf = pane.screens.scrollback();
     let grid = pane.screens.active_grid();
 
-    let mut missing = 0u64;
+    let mut missing = MissingRows::default();
     let mut rows: Vec<(u64, Option<&Row>)> = Vec::new();
     for abs in plan.first_row..=plan.last_row {
         let row = if abs < layout.archived {
-            archive_rows.get(usize::try_from(abs - archive_start).unwrap_or(usize::MAX))
+            let row = archive.get(abs);
+            missing.archive_gap += u64::from(row.is_none());
+            row
         } else if abs < layout.hot_first {
+            missing.pruned += 1;
             None
         } else if abs < layout.pushed {
-            buf.get(usize::try_from(abs - layout.hot_first).unwrap_or(usize::MAX))
+            let row = buf.get(usize::try_from(abs - layout.hot_first).unwrap_or(usize::MAX));
+            missing.index_miss += u64::from(row.is_none());
+            row
         } else {
-            grid.lines
-                .get(usize::try_from(abs - layout.pushed).unwrap_or(usize::MAX))
+            let row = grid
+                .lines
+                .get(usize::try_from(abs - layout.pushed).unwrap_or(usize::MAX));
+            missing.index_miss += u64::from(row.is_none());
+            row
         };
-        missing += u64::from(row.is_none());
         rows.push((abs, row));
     }
-    if missing > 0 {
-        // Distinguish the two ways a row can be absent so the log points
-        // at the right cause: an unarchived prune versus rows the archive
-        // dropped under load (Spec-0004 overload policy).
-        let lost = pane
+    if missing.total() > 0 {
+        missing.dropped = pane
             .screens
             .archive()
-            .map_or(0, ArchiveManager::lost_rows)
-            .max(
-                pane.screens
-                    .archive()
-                    .map_or(0, ArchiveManager::dropped_rows),
-            );
+            .map_or(0, ArchiveManager::dropped_rows);
+    }
+    let missing = (missing.total() > 0).then_some(missing);
+    (extract_text(plan, rows.into_iter()), missing)
+}
+
+/// Rows the assembled text could not source, split by cause — they mean
+/// different things and only one is normal. `pruned` is a permanent hole
+/// (pruned with no archive attached); `archive_gap` is a Spec-0004
+/// overload loss or a row that migrated in after the top-up; `index_miss`
+/// is a row the plan claimed exists in a live tier, which is a bug here,
+/// not data loss. `dropped` is the enqueue-side loss count, a free field
+/// read taken under the lock for context.
+#[derive(Clone, Copy, Default)]
+struct MissingRows {
+    archive_gap: u64,
+    pruned: u64,
+    index_miss: u64,
+    dropped: u64,
+}
+
+impl MissingRows {
+    fn total(&self) -> u64 {
+        self.archive_gap + self.pruned + self.index_miss
+    }
+}
+
+/// Report blank-filled rows without making the client wait for it.
+///
+/// The writer-side loss count is a mailbox round-trip that can take the
+/// full query timeout, and this runs on the response path — awaiting it
+/// would delay a `YankResponse` by up to 10s to decorate a log line. A
+/// detached task can lose the line if the runtime shuts down first, which
+/// is the right trade for a diagnostic: at that point the daemon is
+/// exiting anyway.
+fn warn_missing_rows(
+    conn_id: u64,
+    pane_id: u32,
+    missing: MissingRows,
+    reader: Option<ArchiveReader>,
+) {
+    tokio::spawn(async move {
+        let writer_lost = match reader {
+            Some(reader) => {
+                match tokio::task::spawn_blocking(move || reader.writer_lost_rows()).await {
+                    Ok(lost) => lost,
+                    Err(e) => {
+                        warn!(conn_id, pane_id, error = %e, "archive stats task failed");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
         warn!(
             conn_id,
             pane_id,
-            missing,
-            archive_lost_rows = lost,
-            "yank crossed rows no longer in history; blank-filled"
+            archive_gap = missing.archive_gap,
+            pruned_before_archive = missing.pruned,
+            index_miss = missing.index_miss,
+            archive_dropped_rows = missing.dropped,
+            archive_writer_lost_rows = ?writer_lost,
+            "yank could not source every row; blank-filled"
         );
-    }
-    extract_text(plan, rows.into_iter())
+    });
 }
 
-/// Read `[start, end)` from the archive in bounded chunks, taking and
-/// releasing the pane lock around each one so a large yank cannot stall
-/// the pane's PTY reader for the whole read. Safe to interleave because
-/// absolute row indices never shift (see `HistoryLayout`), so a chunk
-/// fetched earlier stays valid.
+/// Archive rows for one yank, plus the absolute index of the first entry.
+/// A wrong origin shifts every row and yields wrong text with no error.
+struct ArchiveWindow {
+    rows: Vec<Row>,
+    start: u64,
+}
+
+impl ArchiveWindow {
+    fn new(start: u64, rows: Vec<Row>) -> Self {
+        Self { rows, start }
+    }
+
+    /// Append rows read from absolute index `from`, rebasing if nothing
+    /// has been collected yet.
+    fn extend(&mut self, from: u64, rows: Vec<Row>) {
+        if self.rows.is_empty() {
+            self.start = from;
+        }
+        assert!(
+            from.checked_sub(self.start) == u64::try_from(self.rows.len()).ok(),
+            "an archive window must stay contiguous"
+        );
+        self.rows.extend(rows);
+    }
+
+    fn get(&self, abs: u64) -> Option<&Row> {
+        let offset = abs.checked_sub(self.start)?;
+        self.rows.get(usize::try_from(offset).ok()?)
+    }
+}
+
+/// Returns the aligned rows and how many the archive actually supplied.
 ///
-/// A row that migrates from the hot buffer into the archive *during* the
-/// read lands outside this window and blank-fills — it fails safe rather
-/// than returning the wrong row, and is warned by `collect_yank_text`.
-async fn read_archive_chunked(
+/// One read, not a chunk loop: `ArchiveCore::read_range` pulls every
+/// touched segment file whole, so splitting a span only re-reads segments.
+async fn read_archive_span(
     conn_id: u64,
     pane_id: u32,
-    panes: &Arc<Mutex<PaneManager>>,
+    access: &ArchiveAccess,
     start: u64,
     end: u64,
     cols: usize,
-) -> Result<Vec<Row>, &'static str> {
-    let chunk = u64::from(MAX_SCROLLBACK_ROWS_PER_REQUEST);
-    let mut rows = Vec::new();
-    let mut at = start;
-    while at < end {
-        let count = usize::try_from((end - at).min(chunk)).unwrap_or(usize::MAX);
-        let found = {
-            let Some(pane) = lock_live_pane(panes, pane_id).await else {
-                return Err("pane closed mid-yank");
-            };
-            read_archive_rows(conn_id, pane_id, pane.screens.archive(), at, count)?
-        };
-        rows.extend(align_archive_rows(found, at, count, cols));
-        at += count as u64;
+) -> Result<(Vec<Row>, usize), &'static str> {
+    if start >= end {
+        return Ok((Vec::new(), 0));
     }
-    Ok(rows)
+    let count = usize::try_from(end - start).unwrap_or(usize::MAX);
+    let found = read_archive_rows(conn_id, pane_id, access.clone(), start, count).await?;
+    Ok(align_archive_rows(found, start, count, cols))
 }
 
 /// Release every pin this client holds, across all panes. Copy-mode pins
@@ -498,6 +607,7 @@ pub(crate) async fn release_client_pins(conn_id: u64, panes: &Arc<Mutex<PaneMana
 
 #[cfg(test)]
 mod tests {
+    use super::super::scrollback::tests::await_read_in_flight;
     use super::*;
     use oakterm_protocol::message::{ErrorMessage, MSG_YANK_RESPONSE};
 
@@ -1291,6 +1401,213 @@ mod tests {
             expect_error(yank_selection(1, &frame, &panes).await),
             ErrorCode::InvalidMessage
         );
+    }
+
+    /// Take the pane lock, failing rather than hanging if it is held.
+    /// Without the bound, a lock-held-across-the-read regression deadlocks
+    /// until the archive's 10s query timeout and then trips whichever
+    /// downstream assertion notices first, blaming the wrong thing.
+    async fn lock_pane_promptly(
+        panes: &Arc<Mutex<PaneManager>>,
+        pane_id: u32,
+    ) -> tokio::sync::OwnedMutexGuard<PaneState> {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            lock_live_pane(panes, pane_id),
+        )
+        .await
+        .expect("pane lock held across the archive read")
+        .expect("pane")
+    }
+
+    /// The yank's *main* archive read must be off the pane lock, not just
+    /// the diagnostic. With the writer parked mid-read the yank cannot
+    /// answer, yet the pane has to stay lockable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stalled_yank_read_does_not_hold_the_pane_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        let mut stall = {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        };
+
+        let frame = yank_frame(pane_id, req(-4, 0, -1, 0, CopySelectionType::Line));
+        let yank = tokio::spawn({
+            let panes = Arc::clone(&panes);
+            async move { yank_selection(1, &frame, &panes).await }
+        });
+        await_read_in_flight(&mut stall).await;
+
+        assert!(!yank.is_finished(), "the parked read must hold the yank");
+        drop(lock_pane_promptly(&panes, pane_id).await);
+
+        stall.release();
+        assert_eq!(
+            expect_yanked(yank.await.expect("yank task")),
+            "one\ntwo\nthree\nfour"
+        );
+    }
+
+    /// A row can migrate out of the hot buffer and into the archive after
+    /// the yank has planned its read, landing outside the window that read
+    /// covered. It must be topped up, not blank-filled: it is still in
+    /// history, so returning an empty line would lose real output.
+    ///
+    /// The stalled writer holds the first read open; the rows pushed while
+    /// it is parked queue behind it, so the top-up read observes them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_row_archived_mid_yank_is_topped_up_not_blank_filled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        let mut stall = {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        };
+
+        let frame = yank_frame(pane_id, req(-4, 0, -1, 0, CopySelectionType::Line));
+        let yank = tokio::spawn({
+            let panes = Arc::clone(&panes);
+            async move { yank_selection(1, &frame, &panes).await }
+        });
+        // The rendezvous also orders the pushes below *after* the yank's
+        // read: were they to win the race, no top-up would be needed and
+        // the test would exercise nothing.
+        await_read_in_flight(&mut stall).await;
+
+        // "three" and "four" are pruned into the archive while the yank's
+        // first read is still parked.
+        push_scrollback(&panes, pane_id, &["five", "six"]).await;
+        {
+            let pane = lock_pane_promptly(&panes, pane_id).await;
+            let archive = pane.screens.archive().expect("archive");
+            assert_eq!(archive.dropped_rows(), 0, "the mailbox must not overflow");
+            assert!(
+                archive.total_rows_received() > 2,
+                "the pushes must have archived the rows the yank already planned around"
+            );
+        }
+
+        stall.release();
+        assert_eq!(
+            expect_yanked(yank.await.expect("yank task")),
+            "one\ntwo\nthree\nfour"
+        );
+    }
+
+    /// The top-up's other shape, and the one whose failure is silent: the
+    /// first read's span was empty, so the top-up's rows are the first
+    /// thing collected and the window must rebase onto them. Get it wrong
+    /// and every row shifts against its absolute index, yielding
+    /// confidently wrong text with no error anywhere.
+    ///
+    /// Covered here rather than through a concurrent yank because an empty
+    /// span issues no read at all, leaving nothing to synchronise on — a
+    /// timing-based version could only ever be hopeful.
+    #[test]
+    fn an_empty_archive_window_rebases_onto_the_top_up() {
+        let mut window = ArchiveWindow::new(7, Vec::new());
+
+        window.extend(9, vec![row_from("nine", COLS), row_from("ten", COLS)]);
+
+        assert!(window.get(7).is_none(), "the planned origin held nothing");
+        assert!(window.get(8).is_none());
+        assert_eq!(window.get(9).expect("row 9").text_range(0, 4), "nine");
+        assert_eq!(window.get(10).expect("row 10").text_range(0, 3), "ten");
+        assert!(window.get(11).is_none());
+    }
+
+    #[test]
+    fn a_populated_archive_window_extends_without_moving() {
+        let mut window = ArchiveWindow::new(4, vec![row_from("four", COLS)]);
+
+        window.extend(5, vec![row_from("five", COLS)]);
+
+        assert!(window.get(3).is_none(), "nothing lies before the origin");
+        assert_eq!(window.get(4).expect("row 4").text_range(0, 4), "four");
+        assert_eq!(window.get(5).expect("row 5").text_range(0, 4), "five");
+    }
+
+    /// Nothing holds the pane open across the archive read any more, so a
+    /// close landing mid-read must be caught when the yank comes back for
+    /// the lock — an error, never text assembled from a dead pane.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_pane_closed_mid_yank_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        let mut stall = {
+            let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens.archive().expect("archive").stall_next_read()
+        };
+
+        let frame = yank_frame(pane_id, req(-4, 0, -1, 0, CopySelectionType::Line));
+        let yank = tokio::spawn({
+            let panes = Arc::clone(&panes);
+            async move { yank_selection(1, &frame, &panes).await }
+        });
+        await_read_in_flight(&mut stall).await;
+
+        lock_pane_promptly(&panes, pane_id).await.closed = true;
+        stall.release();
+
+        assert_eq!(
+            expect_error(yank.await.expect("yank task")),
+            ErrorCode::UnknownPane
+        );
+    }
+
+    /// The missing-rows diagnostic wants a writer round-trip for the
+    /// lost-row count, and a wedged writer makes that round-trip cost the
+    /// full query timeout. This yank reads nothing from disk — its rows
+    /// fell into a gap that predates the archive — so the stalled writer
+    /// can only be reached by the diagnostic, and neither the response nor
+    /// the pane lock may wait on it. A log field is never worth either.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_missing_rows_diagnostic_delays_neither_response_nor_pane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) = pane_with_scrollback(&["gone"]).await;
+        cap_scrollback_rows(&panes, pane_id, 2).await;
+        push_scrollback(&panes, pane_id, &["a", "b", "c", "keep"]).await;
+        let gate = {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            // Attached after the prunes, so the lost rows are a permanent
+            // gap and no archive read is planned.
+            pane.screens.set_archive(
+                ArchiveManager::new(dir.path().join("archive"), 1 << 20).expect("archive"),
+            );
+            pane.screens.archive().expect("archive").stall_writer()
+        };
+        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+
+        let frame = yank_frame(pane_id, req(-5, 0, -1, 0, CopySelectionType::Line));
+        let answered = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            yank_selection(1, &frame, &panes),
+        )
+        .await
+        .expect("response must not wait on the diagnostic");
+
+        let locked = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            lock_live_pane(&panes, pane_id),
+        )
+        .await;
+        assert!(
+            locked
+                .expect("pane lock free during the missing-rows diagnostic")
+                .is_some(),
+            "pane vanished"
+        );
+
+        let text = expect_yanked(answered);
+        assert_eq!(text.split('\n').count(), 5, "one line per requested row");
+        drop(gate);
     }
 
     #[tokio::test]
