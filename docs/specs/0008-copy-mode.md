@@ -196,10 +196,26 @@ Copy mode uses these wire protocol messages (see Spec-0001 for framing):
 | `0x99`   | YankSelection | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `start_col: u16`, `end_row: i64`, `end_col: u16`, `selection_type: u8` (0=character, 1=line, 2=block) |
 | `0x9A`   | YankResponse  | D→C       | Response | `text_len: u32`, `text: UTF-8`                                                                                                          |
 
-Existing messages reused without modification:
+Existing messages reused without modification to their payloads:
 
 - `GetScrollback` (0x73) / `ScrollbackData` (0x74): viewport cache fills.
+- `FindPrompt` (0x75) / `PromptPosition` (0x76): prompt jumps.
 - `SearchScrollback` (0x77) / `SearchResults` (0x78) / `SearchNext` (0x79) / `SearchPrev` (0x7A) / `SearchClose` (0x7B): search operations.
+
+`GetScrollback` and `FindPrompt` resolve their `i64` offsets against the sending client's pin while it holds one, so all three of cache fills, prompt jumps, and yanks share one origin. See Spec-0001's copy-mode addendum.
+
+### Row Coordinate Space
+
+Every row that has ever scrolled off the live grid holds a stable absolute index for the life of the pane, counted from the first row ever pushed. The daemon derives it from a monotonic push counter, not from the archive's row count: panes without a disk archive discard pruned rows, and an index derived from `archived + hot_buffer_len` would slide backwards as they were dropped, silently re-pointing a pinned row at whatever later occupied that slot.
+
+A pinned client's copy-mode row `n` is absolute row `pin + n`. Absolute indices resolve, in ascending order, to:
+
+1. **Disk archive** — rows the archive captured.
+2. **Gap** — rows pruned from the hot buffer while no archive was attached, or dropped by the archive under load (Spec-0004 overload policy). These are permanently gone and read as blank rows; they keep their indices so later rows do not shift.
+3. **Hot buffer** — retained scrollback rows.
+4. **Live grid** — rows still on screen, at `pushed + grid_row`.
+
+A `Resize` that shrinks the grid moves rows between the live grid and scrollback. Rows already in scrollback keep their absolute indices across it; rows still on the live grid do not, because the grid captures its trailing rows into scrollback. Clients re-enter copy mode after a resize they initiated.
 
 ## Behavior
 
@@ -207,7 +223,7 @@ Existing messages reused without modification:
 
 1. User presses `oak_mod + [` (or configured keybind).
 2. GUI activates the copy mode key table for the focused pane.
-3. GUI sends `EnterCopyMode { pane_id }` to the daemon. The daemon records the client ID and the pane's current viewport offset as the pinned position.
+3. GUI sends `EnterCopyMode { pane_id }` to the daemon. The daemon records the client ID and the pane's current viewport offset as the pinned position. `EnterCopyMode` from a client that is already pinned on that pane re-pins at the current offset — an implicit exit plus enter — since the re-entering client refills its cache anyway.
 4. GUI sends `GetScrollback { pane_id, start_row, count }` to fill the initial cache (visible rows plus one screen above and below).
 5. Cursor starts at the bottom-left of the visible area: `(cursor_row = rows - 1, cursor_col = 0)` where `rows` is the pane's visible row count. Row 0 is the top of the visible area.
 
@@ -243,9 +259,13 @@ All cursor movement is local to the GUI. No IPC per keystroke.
 
 1. User presses `y` (vim), `Alt+w` (emacs), or `Ctrl+c` (basic) with an active selection.
 2. GUI sends `YankSelection { pane_id, start, end, type }` to the daemon.
-3. The daemon extracts text from the selection range across hot buffer and disk archive. For character and line selections, text is extracted in reading order with newlines between rows. For block selections, each row's selected columns are extracted with newlines between rows.
+3. The daemon extracts text from the selection range across the disk archive, the hot buffer, and the live grid (see Row Coordinate Space). Selections routinely include on-screen rows — the copy mode cursor starts on the live grid — so the grid is part of the yank path even though `GetScrollback` never serves it. For character and line selections, text is extracted in reading order with newlines between rows. For block selections, each row's selected columns are extracted with newlines between rows. Each row's text is trimmed of trailing spaces; rows falling in a gap contribute an empty line so line N of the result is always row N of the range.
 4. Daemon responds with `YankResponse { text }`.
 5. GUI writes the text to the system clipboard and exits copy mode.
+
+**Selection range semantics.** Both endpoints are inclusive cell coordinates, matching Spec-0003's `Selection`. A range whose endpoints arrive out of order is normalized rather than rejected: character and line selections normalize in reading order, while a block normalizes each axis independently, so any drag direction yields the same rectangle. An endpoint outside available history opens the selection to that row's edge — a start before the oldest retained row begins at column 0, and an end past the last live grid row runs to the end of the last real row — because the column it named belongs to a row that does not exist. Block selections keep their column range when the row span is trimmed; the columns define the rectangle on every row, not an endpoint on the last one.
+
+**Row `>= 0` asymmetry.** `YankSelection` resolves non-negative rows against the live grid, while `GetScrollback` clamps its window to history and never returns grid rows. This is intentional: the client already receives grid content through `RenderUpdate`, so serving it twice would duplicate the render path, but yanked text must be a single contiguous string spanning both.
 
 ### Exit
 

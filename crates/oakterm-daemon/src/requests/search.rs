@@ -35,8 +35,15 @@ pub(super) async fn find_prompt(
             "unknown pane",
         );
     };
-    let found_offset =
-        find_prompt_in_buffer(pane.screens.scrollback(), req.from_offset, req.direction);
+    // Spec-0001: FindPrompt shares GetScrollback's coordinate space, so it
+    // must resolve against the same origin — the copy-mode pin when the
+    // client has one, or the live present otherwise.
+    let found_offset = find_prompt_in_buffer(
+        pane.screens.scrollback(),
+        pane.copy_mode_base(conn_id),
+        req.from_offset,
+        req.direction,
+    );
     let response = PromptPosition {
         pane_id: req.pane_id,
         offset: found_offset,
@@ -223,16 +230,19 @@ fn build_search_response(
 
 /// Returns `Some(negative_offset)` if found, `None` otherwise. The offset
 /// uses the same coordinate space as `GetScrollback.start_row`.
+/// Offsets are relative to `base` in the absolute row space; the buffer
+/// holds `[buf.first_index(), buf.first_index() + buf.len())` of it.
 fn find_prompt_in_buffer(
     buf: &oakterm_terminal::scroll::HotBuffer,
+    base: u64,
     from_offset: i64,
     direction: SearchDirection,
 ) -> Option<i64> {
-    // SAFETY: buf.len() fits in i64 — HotBuffer is capped at 50MB (~250K rows).
-    #[allow(clippy::cast_possible_wrap)]
-    let buf_len = buf.len() as i64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let from_idx = (buf_len + from_offset).max(0) as usize;
+    let hot_first = i128::from(buf.first_index());
+    let base = i128::from(base);
+    let from_idx =
+        usize::try_from((base + i128::from(from_offset) - hot_first).clamp(0, buf.len() as i128))
+            .unwrap_or(0);
 
     let found_idx = match direction {
         SearchDirection::Older => (0..from_idx).rev().find(|&i| {
@@ -248,11 +258,7 @@ fn find_prompt_in_buffer(
         }
     };
 
-    found_idx.map(|idx| {
-        #[allow(clippy::cast_possible_wrap)]
-        let offset = idx as i64 - buf_len;
-        offset
-    })
+    found_idx.and_then(|idx| i64::try_from(hot_first + idx as i128 - base).ok())
 }
 
 #[cfg(test)]
@@ -260,6 +266,44 @@ mod tests {
     use super::*;
     use oakterm_terminal::grid::row::Row;
     use oakterm_terminal::scroll::HotBuffer;
+
+    /// A client not in copy mode: the origin is the live present.
+    fn find_prompt_unpinned(
+        buf: &HotBuffer,
+        from_offset: i64,
+        direction: SearchDirection,
+    ) -> Option<i64> {
+        find_prompt_in_buffer(buf, buf.pushed(), from_offset, direction)
+    }
+
+    /// A pinned client's offsets must name the same rows `GetScrollback`
+    /// would return for them, so `FindPrompt` resolves against the pin too.
+    #[test]
+    fn find_prompt_resolves_against_a_pinned_base() {
+        let mut buf = buffer_with_prompts(10, &[3]);
+        let pinned_base = buf.pushed();
+
+        // The prompt sits at offset -7 from the present at pin time.
+        assert_eq!(
+            find_prompt_in_buffer(&buf, pinned_base, 0, SearchDirection::Older),
+            Some(-7)
+        );
+
+        for _ in 0..5 {
+            buf.push(Row::new(80));
+        }
+
+        assert_eq!(
+            find_prompt_in_buffer(&buf, pinned_base, 0, SearchDirection::Older),
+            Some(-7),
+            "the pin holds the prompt's offset steady as output arrives"
+        );
+        assert_eq!(
+            find_prompt_unpinned(&buf, 0, SearchDirection::Older),
+            Some(-12),
+            "an unpinned client sees it recede with the present"
+        );
+    }
 
     /// Push rows into a buffer, marking specific indices as `PromptStart`.
     fn buffer_with_prompts(total: usize, prompt_indices: &[usize]) -> HotBuffer {
@@ -279,7 +323,7 @@ mod tests {
         // Rows: [P, _, _, P, _, _, _, _, _, _]  (P at 0 and 3)
         let buf = buffer_with_prompts(10, &[0, 3]);
         // Search backward from offset -5 (index 5)
-        let result = find_prompt_in_buffer(&buf, -5, SearchDirection::Older);
+        let result = find_prompt_unpinned(&buf, -5, SearchDirection::Older);
         // Nearest prompt before index 5 is at index 3 → offset = 3 - 10 = -7
         assert_eq!(result, Some(-7));
     }
@@ -289,7 +333,7 @@ mod tests {
         // Rows: [_, _, _, P, _, _]  (P at 3)
         let buf = buffer_with_prompts(6, &[3]);
         // Search backward from index 3 (offset -3): should skip index 3 itself
-        let result = find_prompt_in_buffer(&buf, -3, SearchDirection::Older);
+        let result = find_prompt_unpinned(&buf, -3, SearchDirection::Older);
         assert_eq!(result, None);
     }
 
@@ -298,7 +342,7 @@ mod tests {
         // Rows: [_, _, _, _, P, _, _, P, _, _]  (P at 4 and 7)
         let buf = buffer_with_prompts(10, &[4, 7]);
         // Search forward from offset -8 (index 2)
-        let result = find_prompt_in_buffer(&buf, -8, SearchDirection::Newer);
+        let result = find_prompt_unpinned(&buf, -8, SearchDirection::Newer);
         // Nearest prompt after index 2 is at index 4 → offset = 4 - 10 = -6
         assert_eq!(result, Some(-6));
     }
@@ -308,35 +352,29 @@ mod tests {
         // Rows: [_, _, _, P, _, _]  (P at 3)
         let buf = buffer_with_prompts(6, &[3]);
         // Search forward from index 3 (offset -3): should skip index 3
-        let result = find_prompt_in_buffer(&buf, -3, SearchDirection::Newer);
+        let result = find_prompt_unpinned(&buf, -3, SearchDirection::Newer);
         assert_eq!(result, None);
     }
 
     #[test]
     fn find_prompt_empty_buffer() {
         let buf = HotBuffer::new(1024);
-        assert_eq!(find_prompt_in_buffer(&buf, 0, SearchDirection::Older), None);
-        assert_eq!(find_prompt_in_buffer(&buf, 0, SearchDirection::Newer), None);
+        assert_eq!(find_prompt_unpinned(&buf, 0, SearchDirection::Older), None);
+        assert_eq!(find_prompt_unpinned(&buf, 0, SearchDirection::Newer), None);
     }
 
     #[test]
     fn find_prompt_no_prompts_in_buffer() {
         let buf = buffer_with_prompts(10, &[]);
-        assert_eq!(
-            find_prompt_in_buffer(&buf, -5, SearchDirection::Older),
-            None
-        );
-        assert_eq!(
-            find_prompt_in_buffer(&buf, -5, SearchDirection::Newer),
-            None
-        );
+        assert_eq!(find_prompt_unpinned(&buf, -5, SearchDirection::Older), None);
+        assert_eq!(find_prompt_unpinned(&buf, -5, SearchDirection::Newer), None);
     }
 
     #[test]
     fn find_prompt_offset_clamped_to_zero() {
         // offset more negative than buffer length → clamped to index 0
         let buf = buffer_with_prompts(5, &[2]);
-        let result = find_prompt_in_buffer(&buf, -100, SearchDirection::Newer);
+        let result = find_prompt_unpinned(&buf, -100, SearchDirection::Newer);
         assert_eq!(result, Some(-3)); // index 2 → 2 - 5 = -3
     }
 
@@ -345,10 +383,10 @@ mod tests {
         // offset 0 means live view (from_idx = buf.len())
         let buf = buffer_with_prompts(5, &[1, 3]);
         // Backward from live should find the last prompt (index 3)
-        let result = find_prompt_in_buffer(&buf, 0, SearchDirection::Older);
+        let result = find_prompt_unpinned(&buf, 0, SearchDirection::Older);
         assert_eq!(result, Some(-2)); // index 3 → 3 - 5 = -2
         // Forward from live: nothing after buf.len()
-        let result = find_prompt_in_buffer(&buf, 0, SearchDirection::Newer);
+        let result = find_prompt_unpinned(&buf, 0, SearchDirection::Newer);
         assert_eq!(result, None);
     }
 
@@ -357,7 +395,7 @@ mod tests {
         // Verify the offset produced by find_prompt_in_buffer converts back
         // to the correct viewport_offset via checked_neg + u32::try_from.
         let buf = buffer_with_prompts(100, &[25, 50, 75]);
-        let offset = find_prompt_in_buffer(&buf, -30, SearchDirection::Older)
+        let offset = find_prompt_unpinned(&buf, -30, SearchDirection::Older)
             .expect("should find prompt at index 50");
         // from_idx = 100 + (-30) = 70; nearest prompt before 70 is at index 50
         assert_eq!(offset, -50); // 50 - 100 = -50
@@ -388,7 +426,7 @@ mod tests {
             !ss.scrollback().is_empty(),
             "prompt row should have scrolled into the hot buffer"
         );
-        let found = find_prompt_in_buffer(ss.scrollback(), 0, SearchDirection::Older);
+        let found = find_prompt_unpinned(ss.scrollback(), 0, SearchDirection::Older);
         assert!(
             found.is_some(),
             "find_prompt_in_buffer should locate the decoded OSC 133;A mark"

@@ -6,21 +6,22 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ClosePane, CloseTab, CloseWorkspace, CloseWorkspaceResponse,
-    CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage, GetLayoutTree, HandshakeStatus,
-    LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE,
-    MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE, MSG_CLOSE_WORKSPACE, MSG_CLOSE_WORKSPACE_RESPONSE,
-    MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT,
-    MSG_LAYOUT_TREE, MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_MOVE_TAB,
-    MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE,
-    MSG_PANE_EXITED, MSG_PING, MSG_PONG, MSG_RENAME_TAB, MSG_RENAME_WORKSPACE,
-    MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK,
-    MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB,
-    MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, MoveTab, NewTab, NewTabResponse, NewWorkspace,
-    NewWorkspaceResponse, PaneExited, RenameTab, RenameWorkspace, RequestShutdown,
-    RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
-    ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
-    SwitchWorkspace, TabList,
+    ClientHello, ClientType, ClosePane, CloseTab, CloseWorkspace, CloseWorkspaceResponse, CopyMode,
+    CopySelectionType, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage, GetLayoutTree,
+    HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE,
+    MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE, MSG_CLOSE_WORKSPACE,
+    MSG_CLOSE_WORKSPACE_RESPONSE, MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ENTER_COPY_MODE,
+    MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT, MSG_LAYOUT_TREE, MSG_LIST_PANES,
+    MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_MOVE_TAB, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE,
+    MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG,
+    MSG_RENAME_TAB, MSG_RENAME_WORKSPACE, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO,
+    MSG_SHUTDOWN, MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
+    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, MSG_YANK_RESPONSE,
+    MSG_YANK_SELECTION, MoveTab, NewTab, NewTabResponse, NewWorkspace, NewWorkspaceResponse,
+    PaneExited, RenameTab, RenameWorkspace, RequestShutdown, RequestShutdownReason, ResizePane,
+    ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus, ShutdownReason, SplitDirection,
+    SplitPane, SplitPaneResponse, SwapPane, SwitchTab, SwitchWorkspace, TabList, YankResponse,
+    YankSelection,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -1106,6 +1107,164 @@ async fn switch_tab_changes_active_tab() {
         list_tabs_ok(&mut stream, &mut codec, 413).await.active_tab,
         tab_id
     );
+}
+
+/// Spec-0008 copy mode over the wire: `EnterCopyMode` and `ExitCopyMode`
+/// are silent pushes, so a Ping after them must still get its Pong with no
+/// Error in between.
+#[tokio::test]
+async fn copy_mode_enter_and_exit_are_silent_pushes() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let msg = CopyMode { pane_id: 0 };
+    write_frame(
+        &mut stream,
+        &mut codec,
+        msg.to_enter_frame().expect("enter"),
+    )
+    .await;
+    write_frame(&mut stream, &mut codec, msg.to_exit_frame().expect("exit")).await;
+    let ping = Frame::new(MSG_PING, 610, vec![]).expect("ping frame");
+    write_frame(&mut stream, &mut codec, ping).await;
+
+    // Drain every frame up to the Pong: an Error push would arrive with
+    // serial 0, which the serial-matching reader would otherwise discard.
+    let mut buf = BytesMut::with_capacity(4096);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Some(frame) = codec.decode(&mut buf).expect("decode") {
+            assert_ne!(
+                frame.msg_type, MSG_ERROR,
+                "copy mode pushes must not produce an Error"
+            );
+            if frame.msg_type == MSG_PONG {
+                return;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "no Pong within 5s");
+        let n = stream.read_buf(&mut buf).await.expect("read");
+        assert!(n > 0, "daemon closed the connection");
+    }
+}
+
+#[tokio::test]
+async fn yank_selection_returns_pane_text() {
+    let (mut stream, mut codec, _td) = connect_and_handshake_as(ClientType::Control).await;
+
+    // The child prints one line then blocks, so the text stays on the grid
+    // for the yank to resolve.
+    // Multi-byte and wide glyphs, so the response exercises UTF-8 framing
+    // rather than a pure-ASCII path.
+    let create = CreatePane {
+        command: "/bin/sh -c 'printf \"copymode-café-漢\\n\"; read line'".to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(MSG_CREATE_PANE, 620, create.encode().expect("encode")).expect("frame");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 620).await;
+    let pane_id = CreatePaneResponse::decode(&resp.payload)
+        .expect("decode CreatePaneResponse")
+        .pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 24,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(&mut stream, &mut codec, resize.to_frame().expect("resize")).await;
+    poll_for_pid(&mut stream, &mut codec, pane_id).await;
+
+    write_frame(
+        &mut stream,
+        &mut codec,
+        CopyMode { pane_id }.to_enter_frame().expect("enter"),
+    )
+    .await;
+
+    // Copy-mode row 0 is the top of the pinned viewport, where the child's
+    // first line lands. Poll: the VT parse races the yank.
+    let yank = YankSelection {
+        pane_id,
+        start_row: 0,
+        start_col: 0,
+        end_row: 0,
+        end_col: 0,
+        selection_type: CopySelectionType::Line,
+    };
+    let mut serial = 630;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        serial += 1;
+        write_frame(
+            &mut stream,
+            &mut codec,
+            yank.to_frame(serial).expect("yank frame"),
+        )
+        .await;
+        let resp = read_response_with_serial(&mut stream, &mut codec, serial).await;
+        assert_eq!(resp.msg_type, MSG_YANK_RESPONSE);
+        let text = YankResponse::decode(&resp.payload)
+            .expect("decode YankResponse")
+            .text;
+        if text == "copymode-café-漢" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "yank never returned the child's output, last saw {text:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn copy_mode_on_an_unknown_pane_reports_errors() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    // EnterCopyMode is a push, so the failure arrives as an Error push.
+    write_frame(
+        &mut stream,
+        &mut codec,
+        CopyMode { pane_id: 99 }.to_enter_frame().expect("enter"),
+    )
+    .await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+
+    let yank = YankSelection {
+        pane_id: 99,
+        start_row: -1,
+        start_col: 0,
+        end_row: -1,
+        end_col: 0,
+        selection_type: CopySelectionType::Line,
+    };
+    write_frame(&mut stream, &mut codec, yank.to_frame(640).expect("yank")).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 640).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::UnknownPane as u32);
+}
+
+#[tokio::test]
+async fn malformed_copy_mode_payloads_error() {
+    let (mut stream, mut codec, _td) = connect_and_handshake().await;
+
+    let frame = Frame::new(MSG_YANK_SELECTION, 650, vec![0x00]).expect("short yank");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 650).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::MalformedPayload as u32);
+
+    let frame = Frame::new(MSG_ENTER_COPY_MODE, 0, vec![0x00]).expect("short enter");
+    write_frame(&mut stream, &mut codec, frame).await;
+    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
+    assert_eq!(err.code, ErrorCode::MalformedPayload as u32);
 }
 
 #[tokio::test]

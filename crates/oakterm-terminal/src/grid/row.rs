@@ -188,8 +188,23 @@ impl Row {
     /// trailing spaces from unwritten cells are trimmed.
     #[must_use]
     pub fn text(&self) -> String {
-        let mut s = String::with_capacity(self.cells.len());
-        for cell in &self.cells {
+        self.text_range(0, usize::MAX)
+    }
+
+    /// Extract the text of the columns in `start..=end`, clamped to the
+    /// row's width. Same cell handling as [`Row::text`]: a continuation
+    /// cell at `start` is skipped, since its head column falls outside
+    /// the range.
+    #[must_use]
+    pub fn text_range(&self, start: usize, end: usize) -> String {
+        let Some(cells) = self
+            .cells
+            .get(start..=end.min(self.cells.len().saturating_sub(1)))
+        else {
+            return String::new();
+        };
+        let mut s = String::with_capacity(cells.len());
+        for cell in cells {
             if cell.wide == super::cell::WideState::WideCont {
                 continue;
             }
@@ -206,5 +221,66 @@ impl Row {
         let trimmed = s.trim_end_matches(' ').len();
         s.truncate(trimmed);
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::cell::WideState;
+
+    fn row_from(text: &str) -> Row {
+        let mut row = Row::new(text.chars().count());
+        for (cell, ch) in row.cells.iter_mut().zip(text.chars()) {
+            cell.codepoint = ch;
+        }
+        row
+    }
+
+    #[test]
+    fn text_range_slices_columns_inclusively() {
+        let row = row_from("hello world");
+        assert_eq!(row.text_range(0, 4), "hello");
+        assert_eq!(row.text_range(6, 10), "world");
+        assert_eq!(row.text_range(4, 4), "o");
+    }
+
+    #[test]
+    fn text_range_clamps_past_the_row_width() {
+        let row = row_from("abc");
+        assert_eq!(row.text_range(0, usize::MAX), "abc");
+        assert_eq!(row.text_range(2, 99), "c");
+        assert_eq!(row.text_range(3, 99), "");
+    }
+
+    #[test]
+    fn text_range_inverted_range_is_empty() {
+        let row = row_from("abc");
+        assert_eq!(row.text_range(2, 1), "");
+    }
+
+    #[test]
+    fn text_range_trims_trailing_blanks_but_keeps_interior() {
+        let mut row = Row::new(6);
+        row.cells[1].codepoint = 'a';
+        row.cells[3].codepoint = 'b';
+        assert_eq!(row.text_range(0, 5), " a b");
+    }
+
+    #[test]
+    fn text_range_skips_a_leading_continuation_cell() {
+        let mut row = Row::new(4);
+        row.cells[0].codepoint = '漢';
+        row.cells[0].wide = WideState::Wide;
+        row.cells[1].wide = WideState::WideCont;
+        row.cells[2].codepoint = 'x';
+
+        assert_eq!(row.text_range(0, 3), "漢x");
+        assert_eq!(row.text_range(1, 3), "x");
+    }
+
+    #[test]
+    fn text_range_on_an_empty_row_is_empty() {
+        assert_eq!(Row::new(0).text_range(0, usize::MAX), "");
     }
 }

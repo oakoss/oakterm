@@ -5,6 +5,7 @@ use oakterm_mux::{
     SplitDirection, SplitPreview, Tab, TabId, Workspace, WorkspaceId,
 };
 use oakterm_terminal::grid::ScreenSet;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
@@ -81,9 +82,59 @@ pub(crate) struct PaneState {
     /// `closed` treat the pane as absent, so a request racing a close
     /// resolves to `UnknownPane` like it did under the single-lock design.
     pub(crate) closed: bool,
+    /// Clients in copy mode, mapped to the absolute history row their
+    /// copy-mode row 0 refers to (ADR-0012 viewport pinning). Pinning is
+    /// per-client: one client can navigate scrollback while another keeps
+    /// following live output on the same pane.
+    pub(crate) copy_mode_pins: HashMap<u64, u64>,
 }
 
 impl PaneState {
+    /// Absolute index of the first live grid row: the count of rows that
+    /// have ever scrolled off into history. Monotonic for the life of the
+    /// pane regardless of whether an archive is attached, which is what
+    /// makes it safe to pin against.
+    pub(crate) fn history_len(&self) -> u64 {
+        self.screens.scrollback().pushed()
+    }
+
+    /// Pin this client's copy-mode viewport at the current history end
+    /// (ADR-0012: Enter records the *current* offset). Returns the pin it
+    /// replaced, if any — a re-entering client is treated as an implicit
+    /// exit plus enter, since it is about to refill its cache anyway.
+    pub(crate) fn pin_copy_mode(&mut self, conn_id: u64) -> Option<u64> {
+        let base = self.history_len();
+        self.copy_mode_pins.insert(conn_id, base)
+    }
+
+    /// Drop every pin after a resize that captured live grid rows into
+    /// scrollback: those rows land at absolute indices no earlier pin
+    /// predicts, so a surviving pin would resolve copy-mode rows against
+    /// shifted content. Spec-0008 has the client re-enter copy mode after
+    /// a resize it initiated. Returns how many pins were dropped.
+    pub(crate) fn invalidate_pins_after_resize(&mut self, history_len_before: u64) -> usize {
+        if self.history_len() == history_len_before {
+            return 0;
+        }
+        let dropped = self.copy_mode_pins.len();
+        self.copy_mode_pins.clear();
+        dropped
+    }
+
+    /// Release this client's pin. Returns false when it held none.
+    pub(crate) fn unpin_copy_mode(&mut self, conn_id: u64) -> bool {
+        self.copy_mode_pins.remove(&conn_id).is_some()
+    }
+
+    /// The absolute row this client's copy-mode row 0 maps to; an unpinned
+    /// client resolves against the live history end.
+    pub(crate) fn copy_mode_base(&self, conn_id: u64) -> u64 {
+        self.copy_mode_pins
+            .get(&conn_id)
+            .copied()
+            .unwrap_or_else(|| self.history_len())
+    }
+
     /// Advance the client-visible dirty counter after a VT parse or
     /// resize. Screen switches (alt/primary) reset the active grid's
     /// seqno space, but `dirty_seqno` must keep increasing so clients
@@ -188,6 +239,7 @@ impl PaneManager {
                 command,
                 cwd,
                 closed: false,
+                copy_mode_pins: HashMap::new(),
             })),
         );
     }

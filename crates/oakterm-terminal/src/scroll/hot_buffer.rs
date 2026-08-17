@@ -17,6 +17,7 @@ pub struct HotBuffer {
     rows: VecDeque<Row>,
     max_bytes: usize,
     used_bytes: usize,
+    pushed: u64,
 }
 
 impl HotBuffer {
@@ -27,6 +28,7 @@ impl HotBuffer {
             rows: VecDeque::new(),
             max_bytes,
             used_bytes: 0,
+            pushed: 0,
         }
     }
 
@@ -36,7 +38,24 @@ impl HotBuffer {
     pub fn push(&mut self, row: Row) -> Vec<Row> {
         self.used_bytes += row_byte_size(&row);
         self.rows.push_back(row);
+        self.pushed += 1;
         self.prune_if_needed()
+    }
+
+    /// Rows ever pushed. Monotonic, and independent of whether an archive
+    /// captured the pruned ones, which is what lets it anchor the absolute
+    /// scrollback index space (Spec-0004): row `n` of all history keeps
+    /// index `n` for the life of the pane.
+    #[must_use]
+    pub fn pushed(&self) -> u64 {
+        self.pushed
+    }
+
+    /// Absolute index of the oldest retained row — equivalently, the count
+    /// of rows pruned out so far.
+    #[must_use]
+    pub fn first_index(&self) -> u64 {
+        self.pushed - self.rows.len() as u64
     }
 
     /// Number of rows in the buffer.
@@ -160,6 +179,51 @@ mod tests {
         let size_one = buf.used_bytes();
         buf.push(make_row(80));
         assert_eq!(buf.used_bytes(), size_one * 2);
+    }
+
+    #[test]
+    fn pushed_counts_every_row_ever_pushed() {
+        let mut buf = HotBuffer::new(1024 * 1024);
+        assert_eq!(buf.pushed(), 0);
+        assert_eq!(buf.first_index(), 0);
+        for _ in 0..3 {
+            buf.push(make_row(80));
+        }
+        assert_eq!(buf.pushed(), 3);
+        assert_eq!(buf.first_index(), 0, "nothing pruned yet");
+    }
+
+    /// The absolute index space must not depend on whether an archive
+    /// captured the pruned rows: `first_index` tracks pruning directly.
+    #[test]
+    fn pruning_advances_first_index_without_an_archive() {
+        let row_size = row_byte_size(&make_row(80));
+        let mut buf = HotBuffer::new(row_size * 5);
+        for _ in 0..10 {
+            buf.push(make_row(80));
+        }
+        assert_eq!(buf.pushed(), 10);
+        assert_eq!(
+            buf.first_index(),
+            10 - buf.len() as u64,
+            "oldest retained row keeps its absolute index"
+        );
+        assert!(buf.first_index() > 0, "pruning happened");
+    }
+
+    #[test]
+    fn shrinking_the_limit_also_advances_first_index() {
+        let row_size = row_byte_size(&make_row(80));
+        let mut buf = HotBuffer::new(row_size * 100);
+        for _ in 0..10 {
+            buf.push(make_row(80));
+        }
+        assert_eq!(buf.first_index(), 0);
+
+        let pruned = buf.set_max_bytes(row_size * 2);
+        assert!(!pruned.is_empty());
+        assert_eq!(buf.pushed(), 10, "pushed never rewinds");
+        assert_eq!(buf.first_index(), 10 - buf.len() as u64);
     }
 
     #[test]
