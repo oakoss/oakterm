@@ -2,7 +2,9 @@
 //! multiplies with it when split rendering (TREK-99) lands — scrollback
 //! viewport, selection, and mode flags all follow a pane, not the window.
 
+use crate::copy_mode::{CopyModeState, FillFailure, FillRequest};
 use crate::render_grid::ClientGrid;
+use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::{DirtyRow, RenderUpdate};
 use oakterm_terminal::grid::selection::Selection;
 use std::num::NonZeroU32;
@@ -11,11 +13,24 @@ use std::num::NonZeroU32;
 /// live-snapshot are only ever changed together, through the methods
 /// below. Nothing else may call `ClientGrid::enter_scrollback` /
 /// `exit_scrollback` or move the offset — that split ownership is the
-/// TREK-139 scrollback-corruption class.
+/// TREK-139 scrollback-corruption class. Copy-mode row indices join that
+/// invariant: they are resolved against a daemon pin taken when the grid
+/// froze, so they mean nothing once it thaws.
 pub(crate) struct PaneView {
     grid: ClientGrid,
     /// Lines scrolled up from bottom. 0 = live view (at bottom).
     viewport_offset: u32,
+    /// Copy-mode state while this pane is in it. Per-pane rather than
+    /// per-window so it survives focus moving to another pane and back.
+    copy_mode: Option<CopyModeState>,
+    /// Offset the visible cells were last composed at. `viewport_offset`
+    /// moves when a scroll is REQUESTED; this moves when its page
+    /// arrives, so between the two only this one names rows on screen.
+    painted_offset: u32,
+    /// Serial of the newest host-scrollback request. Older replies carry
+    /// rows for an offset the viewport has since left, and painting one
+    /// puts the wrong page on screen until the next request answers.
+    scrollback_serial: Option<u32>,
     pub(crate) selection: Option<Selection>,
     /// Whether the terminal has DECSET 2004 (bracketed paste) active.
     pub(crate) bracketed_paste: bool,
@@ -31,6 +46,9 @@ impl PaneView {
         Self {
             grid,
             viewport_offset: 0,
+            copy_mode: None,
+            painted_offset: 0,
+            scrollback_serial: None,
             selection: None,
             bracketed_paste: false,
             last_sent_dims: (0, 0),
@@ -61,57 +79,97 @@ impl PaneView {
         self.grid.is_scrolled()
     }
 
+    /// Discard copy-mode state because the viewport moved or thawed,
+    /// reporting whether there was any. Copy-mode rows are indexed off a
+    /// pin taken against the view as it stood, so any move invalidates
+    /// them — every viewport primitive routes through here so no present
+    /// or future caller can move the view and leave them behind.
+    fn invalidate_copy_mode(&mut self) -> bool {
+        self.copy_mode.take().is_some()
+    }
+
+    /// Put the live snapshot back on screen. That page is painted by
+    /// definition, so the painted offset returns to 0 with it.
+    fn restore_live_page(&mut self) {
+        self.grid.exit_scrollback();
+        self.painted_offset = 0;
+    }
+
+    /// Move the viewport to live, leaving copy mode alone. Only for
+    /// callers that have already settled it.
+    fn snap_to_live(&mut self) {
+        self.viewport_offset = 0;
+        self.restore_live_page();
+    }
+
+    /// Snapshot the live view, leaving copy mode alone.
+    fn freeze(&mut self) {
+        self.grid.enter_scrollback();
+    }
+
     /// Scroll up into host scrollback, entering scrollback mode on the
     /// first scroll so the grid snapshots the live view.
-    pub(crate) fn scroll_up(&mut self, lines: u32) {
-        self.grid.enter_scrollback();
+    #[must_use = "a discarded copy mode leaves a daemon pin to release"]
+    pub(crate) fn scroll_up(&mut self, lines: u32) -> bool {
+        self.freeze();
         self.viewport_offset = self.viewport_offset.saturating_add(lines);
+        self.invalidate_copy_mode()
     }
 
     /// Scroll toward live view, exiting scrollback when the viewport
-    /// reaches live. Returns true on reaching live (offset 0), signalling
-    /// the caller to request a full refresh.
-    pub(crate) fn scroll_down(&mut self, lines: u32) -> bool {
+    /// reaches live.
+    pub(crate) fn scroll_down(&mut self, lines: u32) -> ScrollOutcome {
         self.viewport_offset = self.viewport_offset.saturating_sub(lines);
-        if self.viewport_offset == 0 {
-            self.grid.exit_scrollback();
-            true
-        } else {
-            false
+        let reached_live = self.viewport_offset == 0;
+        if reached_live {
+            self.restore_live_page();
+        }
+        ScrollOutcome {
+            reached_live,
+            copy_mode_exited: self.invalidate_copy_mode(),
         }
     }
 
     /// Return to live view: offset 0, snapshot restored.
-    pub(crate) fn return_to_live(&mut self) {
-        self.viewport_offset = 0;
-        self.grid.exit_scrollback();
+    #[must_use = "a discarded copy mode leaves a daemon pin to release"]
+    pub(crate) fn return_to_live(&mut self) -> bool {
+        self.snap_to_live();
+        self.invalidate_copy_mode()
     }
 
     /// Jump straight to a scrollback offset, entering scrollback on the
     /// first jump. Offset 0 returns to live.
-    pub(crate) fn set_scroll_offset(&mut self, offset: u32) {
+    #[must_use = "a discarded copy mode leaves a daemon pin to release"]
+    pub(crate) fn set_scroll_offset(&mut self, offset: u32) -> bool {
         if offset == 0 {
-            self.return_to_live();
+            self.snap_to_live();
         } else {
-            self.grid.enter_scrollback();
+            self.freeze();
             self.viewport_offset = offset;
         }
+        self.invalidate_copy_mode()
     }
 
     /// Snapshot the live view without moving the viewport, so the view a
     /// prompt search was issued against stays frozen until the daemon
     /// answers with a target offset (or `return_to_live` cancels).
-    pub(crate) fn freeze_live(&mut self) {
-        self.grid.enter_scrollback();
+    #[must_use = "a discarded copy mode leaves a daemon pin to release"]
+    pub(crate) fn freeze_live(&mut self) -> bool {
+        self.freeze();
+        self.invalidate_copy_mode()
     }
 
     /// Clamp the offset to the daemon's reported scrollback length,
     /// returning to live when the clamp lands at zero.
+    ///
+    /// Copy mode is untouched because it cannot be active here: every
+    /// scrollback reply for a pane in copy mode is claimed by serial or
+    /// dropped before the clamp.
     pub(crate) fn clamp_scrollback(&mut self, total: u32) -> ScrollbackClampOutcome {
         let outcome = clamp_viewport(self.viewport_offset, total);
         match outcome {
             ScrollbackClampOutcome::Clamp(clamped) => self.viewport_offset = clamped.get(),
-            ScrollbackClampOutcome::ReturnToLive => self.return_to_live(),
+            ScrollbackClampOutcome::ReturnToLive => self.snap_to_live(),
         }
         outcome
     }
@@ -133,17 +191,145 @@ impl PaneView {
         #[allow(clippy::cast_possible_truncation)]
         let offset = self.viewport_offset.min(u32::from(u16::MAX)) as u16;
         self.grid.apply_scrollback(rows, offset);
+        self.painted_offset = self.viewport_offset;
         if show_indicator {
             self.grid.set_scroll_indicator(self.viewport_offset);
         }
     }
 
     /// Resize the grid and return to live view; a scrollback page has the
-    /// wrong dimensions to keep showing.
-    pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
-        self.return_to_live();
+    /// wrong dimensions to keep showing. Returns whether copy mode was
+    /// torn down, which obliges the caller to send `ExitCopyMode`: a
+    /// resize that moves no rows leaves the daemon's pin in place, and it
+    /// tells the client nothing either way (Spec-0008).
+    #[must_use = "a discarded copy mode leaves a daemon pin to release"]
+    pub(crate) fn resize(&mut self, cols: u16, rows: u16) -> bool {
+        let exited = self.invalidate_copy_mode();
+        self.snap_to_live();
         self.grid.resize(cols, rows);
+        exited
     }
+
+    /// Enter copy mode: freeze the live view and seed the cursor at the
+    /// bottom-left of what is on screen (Spec-0008). Returns the initial
+    /// cache fill for the caller to send once `EnterCopyMode` has gone
+    /// out, so the daemon pins before it resolves the window.
+    ///
+    /// Re-entering re-seeds, matching the daemon's treatment of a second
+    /// `EnterCopyMode` as an implicit exit plus enter (ADR-0012).
+    #[allow(dead_code, reason = "reached once the key table dispatches (TREK-112)")]
+    pub(crate) fn enter_copy_mode(&mut self) -> FillRequest {
+        // `freeze`, not `freeze_live`: a re-entry replaces the state
+        // rather than owing an `ExitCopyMode`, since the daemon treats a
+        // second enter as a re-pin.
+        self.freeze();
+        // Seed from the painted page: a scroll still awaiting its page
+        // leaves `viewport_offset` naming undrawn rows, and copy mode
+        // drops that reply, so the skew would never resolve. Adopting it
+        // abandons the pending scroll the user cannot see yet.
+        self.viewport_offset = self.painted_offset;
+        let state = CopyModeState::new(self.grid.rows, self.painted_offset);
+        let fill = state.initial_fill();
+        self.copy_mode = Some(state);
+        fill
+    }
+
+    /// Leave copy mode and thaw the view. Returns whether there was any
+    /// state to discard, so a caller only sends `ExitCopyMode` for a pin
+    /// the daemon actually holds.
+    pub(crate) fn exit_copy_mode(&mut self) -> bool {
+        let exited = self.invalidate_copy_mode();
+        if exited {
+            self.snap_to_live();
+        }
+        exited
+    }
+
+    #[must_use]
+    pub(crate) fn is_copy_mode(&self) -> bool {
+        self.copy_mode.is_some()
+    }
+
+    /// Note the host-scrollback request now outstanding for this pane.
+    pub(crate) fn record_scrollback_request(&mut self, serial: u32) {
+        self.scrollback_serial = Some(serial);
+    }
+
+    /// Whether a `ScrollbackData` answers this pane's newest host-
+    /// scrollback request. An older reply describes an offset the
+    /// viewport has left, so painting it shows the wrong page.
+    #[must_use]
+    pub(crate) fn claims_scrollback(&self, serial: u32) -> bool {
+        self.scrollback_serial == Some(serial)
+    }
+
+    #[must_use]
+    #[allow(dead_code, reason = "read by the copy-mode renderer (TREK-114)")]
+    pub(crate) fn copy_mode(&self) -> Option<&CopyModeState> {
+        self.copy_mode.as_ref()
+    }
+
+    /// Move the copy-mode cursor, clamped to the rows copy mode can
+    /// address. A no-op outside copy mode.
+    #[allow(dead_code, reason = "driven by the copy-mode motions (TREK-112)")]
+    pub(crate) fn set_copy_mode_cursor(&mut self, row: i64, col: u16) {
+        if let Some(state) = &mut self.copy_mode {
+            state.set_cursor(row, col);
+        }
+    }
+
+    /// Note a `GetScrollback` sent for the copy-mode cache, so its reply
+    /// can be matched back to the window it asked for.
+    pub(crate) fn record_copy_mode_fill(&mut self, serial: u32, request: FillRequest) {
+        if let Some(state) = &mut self.copy_mode {
+            state.record_fill(serial, request);
+        }
+    }
+
+    /// File a `ScrollbackData` into the copy-mode cache. False means the
+    /// reply belongs to the ordinary scrollback path instead.
+    pub(crate) fn apply_copy_mode_scrollback(
+        &mut self,
+        serial: u32,
+        data: &ScrollbackData,
+    ) -> bool {
+        self.copy_mode
+            .as_mut()
+            .is_some_and(|state| state.apply_fill(serial, data))
+    }
+
+    /// The next background fill the cursor's position calls for, if any.
+    #[must_use]
+    pub(crate) fn plan_copy_mode_prefetch(&self) -> Option<FillRequest> {
+        self.copy_mode.as_ref()?.plan_prefetch()
+    }
+
+    /// Retire a copy-mode fill the daemon answered with an error.
+    pub(crate) fn fail_copy_mode_fill(&mut self, serial: u32, retryable: bool) -> FillFailure {
+        self.copy_mode
+            .as_mut()
+            .map_or(FillFailure::Unclaimed, |state| {
+                state.fail_fill(serial, retryable)
+            })
+    }
+
+    /// Note the re-issue of a fill that already failed once.
+    pub(crate) fn record_copy_mode_retry(&mut self, serial: u32, request: FillRequest) {
+        if let Some(state) = &mut self.copy_mode {
+            state.record_retry(serial, request);
+        }
+    }
+}
+
+/// Outcome of scrolling toward live view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a discarded copy mode leaves a daemon pin to release"]
+pub(crate) struct ScrollOutcome {
+    /// The viewport reached live (offset 0); the caller should request a
+    /// full refresh.
+    pub(crate) reached_live: bool,
+    /// Copy mode was discarded; the caller owes an `ExitCopyMode`.
+    pub(crate) copy_mode_exited: bool,
 }
 
 /// Outcome of clamping the host scrollback viewport offset against the
@@ -169,7 +355,9 @@ fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
 #[cfg(test)]
 mod tests {
     use super::{PaneView, ScrollbackClampOutcome, clamp_viewport};
+    use crate::copy_mode::{CopyModeState, FillRequest};
     use crate::render_grid::ClientGrid;
+    use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
     use std::num::NonZeroU32;
 
@@ -221,6 +409,13 @@ mod tests {
 
     /// Offset and snapshot must agree except in the deliberate
     /// `freeze_live` handshake (scrolled at offset 0).
+    ///
+    /// The copy-mode half is the converse, and the half that matters
+    /// there: copy mode's defining state is frozen-at-offset-0, so the
+    /// first check alone would assert nothing about it. An active copy
+    /// mode must hold a frozen grid whose `viewport_top` names the very
+    /// offset the viewport is at — that pair is what makes the cursor's
+    /// rows the rows on screen.
     fn assert_lockstep(view: &PaneView) {
         if view.viewport_offset() > 0 {
             assert!(
@@ -229,15 +424,23 @@ mod tests {
                 view.viewport_offset()
             );
         }
+        if let Some(state) = view.copy_mode() {
+            assert!(view.is_scrolled(), "copy mode on a thawed grid");
+            assert_eq!(
+                state.viewport_top(),
+                -i64::from(view.viewport_offset()),
+                "copy mode indexes a different page than the viewport shows"
+            );
+        }
     }
 
     #[test]
     fn scroll_up_enters_scrollback_and_accumulates() {
         let mut view = PaneView::new(ClientGrid::new(80, 24));
-        view.scroll_up(5);
+        assert!(!view.scroll_up(5), "no copy mode to release");
         assert!(view.is_scrolled());
         assert_eq!(view.viewport_offset(), 5);
-        view.scroll_up(3);
+        assert!(!view.scroll_up(3), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 8);
         assert_lockstep(&view);
     }
@@ -245,10 +448,16 @@ mod tests {
     #[test]
     fn scroll_down_reports_reaching_live_and_exits_scrollback() {
         let mut view = PaneView::new(ClientGrid::new(80, 24));
-        view.scroll_up(5);
-        assert!(!view.scroll_down(3), "still scrolled at offset 2");
+        assert!(!view.scroll_up(5), "no copy mode to release");
+        assert!(
+            !view.scroll_down(3).reached_live,
+            "still scrolled at offset 2"
+        );
         assert!(view.is_scrolled());
-        assert!(view.scroll_down(10), "saturates to live at offset 0");
+        assert!(
+            view.scroll_down(10).reached_live,
+            "saturates to live at offset 0"
+        );
         assert_eq!(view.viewport_offset(), 0);
         assert!(!view.is_scrolled(), "reaching live must exit scrollback");
     }
@@ -260,14 +469,14 @@ mod tests {
         assert_eq!(view.grid().row_text(0), "live");
 
         // Scrolled: updates land in the snapshot, visible cells freeze.
-        view.scroll_up(5);
+        assert!(!view.scroll_up(5), "no copy mode to release");
         view.apply_update(&make_update(2, 0, b"new!"));
         assert_eq!(view.grid().row_text(0), "live", "visible cells frozen");
         assert_eq!(view.grid().seqno, 2, "snapshot still tracks the daemon");
 
         // Back to live: the snapshot (with the buffered update) is visible
         // and updates land in the visible cells again.
-        view.return_to_live();
+        assert!(!view.return_to_live(), "no copy mode to release");
         assert_eq!(view.grid().row_text(0), "new!");
         view.apply_update(&make_update(3, 0, b"more"));
         assert_eq!(view.grid().row_text(0), "more");
@@ -277,8 +486,8 @@ mod tests {
     #[test]
     fn return_to_live_resets_offset_and_snapshot_together() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
-        view.scroll_up(7);
-        view.return_to_live();
+        assert!(!view.scroll_up(7), "no copy mode to release");
+        assert!(!view.return_to_live(), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 0);
         assert!(!view.is_scrolled());
     }
@@ -286,12 +495,12 @@ mod tests {
     #[test]
     fn set_scroll_offset_enters_scrollback_and_zero_returns_to_live() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
-        view.set_scroll_offset(12);
+        assert!(!view.set_scroll_offset(12), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 12);
         assert!(view.is_scrolled());
         assert_lockstep(&view);
 
-        view.set_scroll_offset(0);
+        assert!(!view.set_scroll_offset(0), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 0);
         assert!(!view.is_scrolled());
     }
@@ -300,11 +509,11 @@ mod tests {
     fn set_scroll_offset_keeps_existing_snapshot() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
         view.apply_update(&make_update(1, 0, b"orig"));
-        view.freeze_live();
+        assert!(!view.freeze_live(), "no copy mode to release");
         view.apply_update(&make_update(2, 0, b"new!"));
         // Jumping to an offset must not re-snapshot the frozen cells.
-        view.set_scroll_offset(3);
-        view.return_to_live();
+        assert!(!view.set_scroll_offset(3), "no copy mode to release");
+        assert!(!view.return_to_live(), "no copy mode to release");
         assert_eq!(view.grid().row_text(0), "new!");
     }
 
@@ -312,12 +521,12 @@ mod tests {
     fn freeze_live_holds_view_at_offset_zero() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
         view.apply_update(&make_update(1, 0, b"live"));
-        view.freeze_live();
+        assert!(!view.freeze_live(), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 0);
         assert!(view.is_scrolled());
         view.apply_update(&make_update(2, 0, b"new!"));
         assert_eq!(view.grid().row_text(0), "live", "frozen view holds");
-        view.return_to_live();
+        assert!(!view.return_to_live(), "no copy mode to release");
         assert_eq!(view.grid().row_text(0), "new!");
     }
 
@@ -325,13 +534,13 @@ mod tests {
     fn freeze_live_while_scrolled_preserves_offset_and_snapshot() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
         view.apply_update(&make_update(1, 0, b"aaaa"));
-        view.scroll_up(50);
+        assert!(!view.scroll_up(50), "no copy mode to release");
         view.apply_scrollback(&[make_dirty_row(0, b"page")], false);
         assert_eq!(view.viewport_offset(), 50);
 
         // PromptSearch(Older) can fire while already scrolled: freeze_live
         // must not move the offset or re-snapshot the visible scrollback page.
-        view.freeze_live();
+        assert!(!view.freeze_live(), "no copy mode to release");
         assert_eq!(view.viewport_offset(), 50);
         assert!(view.is_scrolled());
         view.apply_update(&make_update(2, 0, b"live"));
@@ -342,7 +551,7 @@ mod tests {
     #[test]
     fn clamp_scrollback_applies_clamp_to_offset() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
-        view.scroll_up(2412);
+        assert!(!view.scroll_up(2412), "no copy mode to release");
         assert_eq!(
             view.clamp_scrollback(50),
             ScrollbackClampOutcome::Clamp(nz(50))
@@ -355,7 +564,7 @@ mod tests {
     #[test]
     fn clamp_scrollback_empty_buffer_returns_to_live() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
-        view.scroll_up(10);
+        assert!(!view.scroll_up(10), "no copy mode to release");
         assert_eq!(
             view.clamp_scrollback(0),
             ScrollbackClampOutcome::ReturnToLive
@@ -368,23 +577,264 @@ mod tests {
     fn apply_scrollback_composes_at_own_offset() {
         let mut view = PaneView::new(ClientGrid::new(3, 3));
         view.apply_update(&make_update(1, 0, b"abc"));
-        view.scroll_up(1);
+        assert!(!view.scroll_up(1), "no copy mode to release");
         view.apply_scrollback(&[make_dirty_row(0, b"sbk")], false);
         // Top row from scrollback, live snapshot fills below.
         assert_eq!(view.grid().row_text(0), "sbk");
         assert_eq!(view.grid().row_text(1), "abc");
-        view.return_to_live();
+        assert!(!view.return_to_live(), "no copy mode to release");
         assert_eq!(view.grid().row_text(0), "abc");
     }
 
     #[test]
     fn resize_returns_to_live() {
         let mut view = PaneView::new(ClientGrid::new(4, 2));
-        view.scroll_up(9);
-        view.resize(10, 5);
+        assert!(!view.scroll_up(9), "no copy mode to release");
+        assert!(!view.resize(10, 5), "no copy mode to tear down");
         assert_eq!(view.viewport_offset(), 0);
         assert!(!view.is_scrolled());
         assert_eq!((view.grid().cols, view.grid().rows), (10, 5));
+    }
+
+    // --- Copy mode (Spec-0008) ---
+
+    fn scrollback_data(start_row: i64, rows: usize) -> ScrollbackData {
+        ScrollbackData {
+            pane_id: 0,
+            start_row,
+            has_more: true,
+            total_rows: 500,
+            rows: (0..rows).map(|_| make_dirty_row(0, b"sbk")).collect(),
+        }
+    }
+
+    /// Entry freezes the view in place rather than scrolling it: the
+    /// cursor starts on the live grid, and the daemon's pin is only
+    /// meaningful against the rows that were on screen when it was taken.
+    #[test]
+    fn entering_copy_mode_freezes_the_view_at_offset_zero() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.apply_update(&make_update(1, 0, b"live"));
+
+        let fill = view.enter_copy_mode();
+
+        assert_eq!(view.viewport_offset(), 0);
+        assert!(view.is_scrolled(), "the live view is frozen");
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((7, 0)));
+        assert_eq!(fill.start_row, -8, "one screen above the viewport");
+        assert_lockstep(&view);
+
+        // Output arriving during copy mode must not move what is shown.
+        view.apply_update(&make_update(2, 0, b"new!"));
+        assert_eq!(view.grid().row_text(0), "live");
+    }
+
+    /// The race: `viewport_offset` moves when a scroll is requested, but
+    /// the grid keeps showing the previous page until that reply lands.
+    /// Seeding from the requested offset would index rows nothing has
+    /// drawn — and permanently, since copy mode drops the reply that
+    /// would have caught the view up.
+    #[test]
+    fn entering_copy_mode_mid_scroll_seeds_from_the_painted_page() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        assert!(!view.scroll_up(5), "no copy mode to release");
+        view.apply_scrollback(&[make_dirty_row(0, b"page")], false);
+
+        // A second scroll: the offset moves, its page has not arrived.
+        assert!(!view.scroll_up(30), "no copy mode to release");
+
+        let fill = view.enter_copy_mode();
+
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((2, 0)),
+            "seeded from the painted page at offset 5, not the pending 35"
+        );
+        assert_eq!(fill.start_row, -13, "one screen above the painted page");
+        assert_eq!(
+            view.viewport_offset(),
+            5,
+            "the offset adopts the page actually on screen"
+        );
+        assert_lockstep(&view);
+    }
+
+    /// With no scroll outstanding the two offsets agree, so entry is
+    /// unchanged — the fix must not perturb the settled case. This also
+    /// carries the wiring guard: every other `viewport_top` test builds
+    /// the state directly, so `new(rows, 0)` here would go unnoticed.
+    #[test]
+    fn entering_copy_mode_with_no_pending_page_uses_the_current_offset() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        assert!(!view.scroll_up(5), "no copy mode to release");
+        view.apply_scrollback(&[make_dirty_row(0, b"page")], false);
+
+        let fill = view.enter_copy_mode();
+
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((2, 0)));
+        assert_eq!(fill.start_row, -13);
+        assert_eq!(view.viewport_offset(), 5);
+    }
+
+    /// Returning to live restores a page that is painted by definition,
+    /// so a later entry must not seed from a stale scrollback offset.
+    #[test]
+    fn reaching_live_resets_the_painted_page() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        assert!(!view.scroll_up(5), "no copy mode to release");
+        view.apply_scrollback(&[make_dirty_row(0, b"page")], false);
+        assert!(view.scroll_down(5).reached_live);
+
+        view.enter_copy_mode();
+
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((7, 0)),
+            "live view seeds at the grid bottom"
+        );
+        assert_lockstep(&view);
+    }
+
+    #[test]
+    fn exiting_copy_mode_discards_the_state_and_thaws_the_view() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.apply_update(&make_update(1, 0, b"live"));
+        view.enter_copy_mode();
+        view.apply_update(&make_update(2, 0, b"new!"));
+
+        assert!(view.exit_copy_mode());
+
+        assert!(view.copy_mode().is_none());
+        assert!(!view.is_scrolled(), "the view follows live output again");
+        assert_eq!(view.grid().row_text(0), "new!");
+        assert!(
+            !view.exit_copy_mode(),
+            "a second exit must not claim a pin to release"
+        );
+    }
+
+    /// A resize invalidates the pin's row indices, and the daemon says
+    /// nothing when it drops one, so the client tears down on its own.
+    #[test]
+    fn resize_tears_down_copy_mode_and_reports_it() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.enter_copy_mode();
+
+        assert!(view.resize(10, 5), "caller owes the daemon an ExitCopyMode");
+
+        assert!(view.copy_mode().is_none());
+        assert!(!view.is_scrolled());
+        assert_lockstep(&view);
+    }
+
+    /// Copy-mode fills are matched by serial, so a reply that belongs to
+    /// the ordinary scrollback path is refused rather than swallowed.
+    #[test]
+    fn only_a_matching_fill_serial_lands_in_the_copy_mode_cache() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.enter_copy_mode();
+        view.record_copy_mode_fill(
+            42,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+
+        assert!(!view.apply_copy_mode_scrollback(9, &scrollback_data(-8, 8)));
+        assert!(view.apply_copy_mode_scrollback(42, &scrollback_data(-8, 8)));
+        assert_eq!(view.copy_mode().map(|s| s.cache().len()), Some(8));
+    }
+
+    /// A pane not in copy mode leaves every scrollback reply to the
+    /// ordinary path, which is what keeps the host-scrollback viewport
+    /// working while another pane is in copy mode.
+    #[test]
+    fn a_pane_outside_copy_mode_claims_no_scrollback_reply() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        assert!(!view.apply_copy_mode_scrollback(42, &scrollback_data(-8, 8)));
+        assert!(view.plan_copy_mode_prefetch().is_none());
+    }
+
+    /// Every viewport primitive tears copy mode down and says so. The
+    /// pin is indexed against the view as it stood at entry, so any move
+    /// leaves the cursor naming rows that are no longer on screen — and
+    /// a caller that is not told cannot release the daemon's pin.
+    #[test]
+    fn every_viewport_move_reports_tearing_copy_mode_down() {
+        fn assert_tears_down(name: &str, apply: impl Fn(&mut PaneView) -> bool) {
+            let mut view = PaneView::new(ClientGrid::new(4, 8));
+            view.enter_copy_mode();
+
+            assert!(apply(&mut view), "{name} did not report the teardown");
+            assert!(
+                view.copy_mode().is_none(),
+                "{name} left copy mode populated"
+            );
+        }
+
+        assert_tears_down("scroll_up", |v| v.scroll_up(5));
+        assert_tears_down("scroll_down", |v| v.scroll_down(3).copy_mode_exited);
+        assert_tears_down("return_to_live", PaneView::return_to_live);
+        assert_tears_down("set_scroll_offset", |v| v.set_scroll_offset(7));
+        assert_tears_down("set_scroll_offset(0)", |v| v.set_scroll_offset(0));
+        assert_tears_down("freeze_live", PaneView::freeze_live);
+        assert_tears_down("resize", |v| v.resize(10, 5));
+    }
+
+    /// The relayout path: a move that changes nothing about the
+    /// dimensions still thaws the grid, so it must still tear copy mode
+    /// down — otherwise live output scrolls the rows the cursor names.
+    #[test]
+    fn returning_to_live_at_offset_zero_still_tears_copy_mode_down() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.enter_copy_mode();
+        assert_eq!(view.viewport_offset(), 0, "entered live, not scrolled");
+
+        assert!(view.return_to_live(), "the thaw invalidates copy mode");
+        assert!(view.copy_mode().is_none());
+    }
+
+    /// A reply to a superseded request describes an offset the viewport
+    /// has left; painting it would show the wrong page.
+    #[test]
+    fn only_the_newest_scrollback_request_is_claimed() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.record_scrollback_request(11);
+        assert!(view.claims_scrollback(11));
+
+        view.record_scrollback_request(12);
+        assert!(!view.claims_scrollback(11), "superseded");
+        assert!(view.claims_scrollback(12));
+    }
+
+    #[test]
+    fn a_pane_that_asked_for_no_scrollback_claims_nothing() {
+        let view = PaneView::new(ClientGrid::new(4, 8));
+        assert!(!view.claims_scrollback(0));
+        assert!(!view.claims_scrollback(11));
+    }
+
+    /// Copy mode belongs to the pane, not the window: two panes hold
+    /// independent state, which is what lets it survive focus moving
+    /// away and back.
+    #[test]
+    fn two_panes_hold_copy_mode_state_independently() {
+        let mut a = PaneView::new(ClientGrid::new(4, 8));
+        let mut b = PaneView::new(ClientGrid::new(4, 4));
+        a.enter_copy_mode();
+        b.enter_copy_mode();
+
+        a.set_copy_mode_cursor(0, 0);
+
+        assert_eq!(a.copy_mode().map(CopyModeState::cursor), Some((0, 0)));
+        assert_eq!(
+            b.copy_mode().map(CopyModeState::cursor),
+            Some((3, 0)),
+            "the other pane keeps its own cursor and height"
+        );
+        assert!(b.exit_copy_mode());
+        assert!(a.copy_mode().is_some(), "exiting one must not exit both");
     }
 
     #[test]

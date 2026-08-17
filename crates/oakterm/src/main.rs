@@ -1,4 +1,5 @@
 mod a11y_bridge;
+mod copy_mode;
 mod daemon_conn;
 mod frame;
 mod gpu;
@@ -27,12 +28,12 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    ClosePane, CloseTab, FindPrompt, FocusPane, GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR,
-    LayoutTreeNode, MSG_CLOSE_PANE, MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE,
-    MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB,
-    MSG_RESIZE_PANE, MSG_SPLIT_PANE, MSG_SWITCH_TAB, NewTab, PromptPosition, ResizePane,
-    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab,
-    TabList,
+    COPY_MODE_MIN_MINOR, ClosePane, CloseTab, CopyMode, ErrorCode, FindPrompt, FocusPane,
+    GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR, LayoutTreeNode, MSG_CLOSE_PANE,
+    MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE,
+    MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB, MSG_RESIZE_PANE,
+    MSG_SPLIT_PANE, MSG_SWITCH_TAB, NewTab, PromptPosition, ResizePane, ScrollbackData,
+    SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab, TabList,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -85,7 +86,12 @@ impl accesskit::DeactivationHandler for NoOpDeactivationHandler {
 #[derive(Debug)]
 enum UserEvent {
     RenderUpdate(Box<RenderUpdate>),
-    ScrollbackData(Box<ScrollbackData>),
+    /// The serial correlates the reply with the fill that asked for it;
+    /// copy mode keeps several in flight and they may answer out of order.
+    ScrollbackData {
+        serial: u32,
+        data: Box<ScrollbackData>,
+    },
     PromptPosition(PromptPosition),
     TitleChanged(u32, String),
     Bell,
@@ -112,9 +118,12 @@ enum UserEvent {
         serial: u32,
     },
     /// The daemon answered the request at `serial` with an error frame;
-    /// pending state keyed to it (or anything older) is dead.
+    /// pending state keyed to it (or anything older) is dead. `code` is
+    /// the only handle on a serial-0 failure, which is how a rejected
+    /// push such as `EnterCopyMode` reports itself.
     RequestFailed {
         serial: u32,
+        code: Option<ErrorCode>,
     },
 }
 
@@ -383,20 +392,21 @@ fn plan_pane_syncs(
     geometry: &layout::LayoutGeometry,
     (cell_width, cell_height): (f32, f32),
     panes: &mut HashMap<u32, PaneView>,
-) -> Vec<Resize> {
-    let mut resizes = Vec::new();
+) -> PaneSyncPlan {
+    let mut plan = PaneSyncPlan::default();
     for pane in &geometry.panes {
         let (cols, rows) = layout::grid_dims(pane.rect, cell_width, cell_height);
         let view = panes
             .entry(pane.pane_id)
             .or_insert_with(|| PaneView::new(ClientGrid::new(cols, rows)));
-        if view.grid().cols != cols || view.grid().rows != rows {
-            view.resize(cols, rows);
+        let dims_changed = view.grid().cols != cols || view.grid().rows != rows;
+        if dims_changed && view.resize(cols, rows) {
+            plan.copy_mode_exits.push(pane.pane_id);
         }
         if view.last_sent_dims == (cols, rows) {
             continue;
         }
-        resizes.push(Resize {
+        plan.resizes.push(Resize {
             pane_id: pane.pane_id,
             cols,
             rows,
@@ -404,7 +414,98 @@ fn plan_pane_syncs(
             pixel_height: u16::try_from(pane.rect.height).unwrap_or(u16::MAX),
         });
     }
-    resizes
+    plan
+}
+
+/// What offering a `ScrollbackData` reply to a pane's copy-mode cache
+/// said about it. One enum rather than two bools because "filled" already
+/// implies "in copy mode" — only a pane holding state can accept a fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyModeReply {
+    NotInCopyMode,
+    /// The serial matched an outstanding fill and the rows were filed.
+    Filled,
+    /// In copy mode, but this reply answers no fill of its own.
+    Unrelated,
+}
+
+/// What a pane's state says about a `ScrollbackData` reply addressed to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrollbackReply {
+    copy_mode: CopyModeReply,
+    claims_request: bool,
+    at_live_offset: bool,
+}
+
+/// Where a `ScrollbackData` reply goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollbackRoute {
+    /// Consumed by the copy-mode cache; prefetch may follow.
+    CopyModeFill,
+    /// Not usable, with the reason for the log line.
+    Drop(&'static str),
+    /// Compose it into the visible viewport.
+    Paint,
+}
+
+/// Decide a `ScrollbackData` reply's fate.
+///
+/// The copy-mode arm comes first on purpose, and that ordering is the
+/// whole reason this is a function rather than a chain of guards: copy
+/// mode sits at `at_live_offset`, which the last arm drops, so testing
+/// the order by hand is the only way to notice it inverting.
+fn route_scrollback(reply: ScrollbackReply) -> ScrollbackRoute {
+    if reply.copy_mode == CopyModeReply::Filled {
+        ScrollbackRoute::CopyModeFill
+    } else if reply.copy_mode == CopyModeReply::Unrelated {
+        // A reply to a request that predates entry; painting it would
+        // thaw the frozen page the cursor is indexed against.
+        ScrollbackRoute::Drop("pane is in copy mode")
+    } else if !reply.claims_request {
+        ScrollbackRoute::Drop("superseded by a newer request")
+    } else if reply.at_live_offset {
+        ScrollbackRoute::Drop("pane returned to live")
+    } else {
+        ScrollbackRoute::Paint
+    }
+}
+
+/// Whether the daemon speaks the `ScrollbackData` semantics copy mode's
+/// cache is keyed on (Spec-0001 1.4).
+fn copy_mode_supported(server_minor: u16) -> bool {
+    server_minor >= COPY_MODE_MIN_MINOR
+}
+
+/// Whether re-issuing a failed request could succeed. A pane that no
+/// longer exists will refuse every retry.
+fn failure_is_retryable(code: Option<ErrorCode>) -> bool {
+    code != Some(ErrorCode::UnknownPane)
+}
+
+/// Find the pane owning a failed copy-mode fill and retire it there.
+/// The error frame names only a serial, so the owning pane is whichever
+/// one is holding it.
+fn fail_copy_mode_fill(
+    panes: &mut HashMap<u32, PaneView>,
+    serial: u32,
+    retryable: bool,
+) -> Option<(u32, copy_mode::FillFailure)> {
+    panes.iter_mut().find_map(
+        |(pane_id, view)| match view.fail_copy_mode_fill(serial, retryable) {
+            copy_mode::FillFailure::Unclaimed => None,
+            outcome => Some((*pane_id, outcome)),
+        },
+    )
+}
+
+/// What one geometry reconcile owes the daemon: the `Resize` messages,
+/// and the panes a resize dropped out of copy mode, whose pins the
+/// daemon may still hold (Spec-0008 has the client re-enter after a
+/// resize it initiated).
+#[derive(Default)]
+struct PaneSyncPlan {
+    resizes: Vec<Resize>,
+    copy_mode_exits: Vec<u32>,
 }
 
 /// Convert a winit `MouseScrollDelta` into integer "wheel notches" (1 notch =
@@ -622,42 +723,205 @@ impl App {
     }
 
     /// Request scrollback rows from the daemon for the pane's viewport offset.
-    fn request_scrollback(&self, pane_id: u32) {
-        if let (Some(daemon), Some(view)) = (&self.daemon, self.panes.get(&pane_id)) {
-            let req = GetScrollback {
-                pane_id,
-                start_row: -i64::from(view.viewport_offset()),
-                count: u32::from(view.grid().rows),
-            };
-            match Frame::new(MSG_GET_SCROLLBACK, 0, req.encode()) {
-                Ok(frame) => {
-                    if let Err(e) = daemon.send_frame(&frame) {
-                        error!(error = %e, "failed to send GetScrollback");
-                    }
-                }
-                Err(e) => error!(error = %e, "failed to create GetScrollback frame"),
-            }
+    ///
+    /// Carries a real serial rather than a push's 0: copy mode keeps
+    /// several fills in flight at once, and replies route only by
+    /// `pane_id`, so nothing else could tell them apart.
+    fn request_scrollback(&mut self, pane_id: u32) {
+        let Some(req) = self.panes.get(&pane_id).map(|view| GetScrollback {
+            pane_id,
+            start_row: -i64::from(view.viewport_offset()),
+            count: u32::from(view.grid().rows),
+        }) else {
+            return;
+        };
+        let Some(serial) =
+            self.send_request_serial(MSG_GET_SCROLLBACK, req.encode(), "GetScrollback")
+        else {
+            return;
+        };
+        if let Some(view) = self.panes.get_mut(&pane_id) {
+            view.record_scrollback_request(serial);
         }
     }
 
     /// Ask the daemon to find the next/previous prompt relative to the
     /// current viewport offset.
-    fn request_find_prompt(&self, direction: SearchDirection) {
-        if let Some(daemon) = &self.daemon {
-            let req = FindPrompt {
-                pane_id: self.focused_pane,
-                from_offset: -i64::from(self.viewport_offset()),
-                direction,
-            };
-            match Frame::new(MSG_FIND_PROMPT, 0, req.encode()) {
-                Ok(frame) => {
-                    if let Err(e) = daemon.send_frame(&frame) {
-                        error!(error = %e, "failed to send FindPrompt");
-                    }
+    fn request_find_prompt(&mut self, direction: SearchDirection) {
+        let req = FindPrompt {
+            pane_id: self.focused_pane,
+            from_offset: -i64::from(self.viewport_offset()),
+            direction,
+        };
+        self.send_request(MSG_FIND_PROMPT, req.encode(), "FindPrompt");
+    }
+
+    /// Enter copy mode on a pane: pin the daemon's viewport, freeze the
+    /// local view, and fill the cache (Spec-0008 entry).
+    ///
+    /// `EnterCopyMode` is a push the daemon never acknowledges, so the
+    /// fill that follows doubles as the confirmation — its reply can only
+    /// arrive for a pane that existed when the pin was taken.
+    ///
+    /// Refused against a pre-1.4 daemon, whose echoed `start_row` would
+    /// key a clamped window onto the wrong rows indistinguishably from a
+    /// correct one. No copy mode beats silently yanking the wrong text.
+    #[expect(dead_code, reason = "dispatched by the copy-mode key table (TREK-112)")]
+    fn enter_copy_mode(&mut self, pane_id: u32) {
+        if !copy_mode_supported(self.server_minor) {
+            warn!(
+                server_minor = self.server_minor,
+                pane_id, "daemon predates copy mode's scrollback semantics; refusing to enter"
+            );
+            return;
+        }
+        let Some(view) = self.panes.get_mut(&pane_id) else {
+            warn!(pane_id, "copy mode requested for an untracked pane");
+            return;
+        };
+        let fill = view.enter_copy_mode();
+        let sent = match (CopyMode { pane_id }).to_enter_frame() {
+            Ok(frame) => self.send_or_disconnect(&frame, "EnterCopyMode"),
+            Err(e) => {
+                error!(error = %e, "failed to create EnterCopyMode frame");
+                false
+            }
+        };
+        if !sent {
+            // The pin was never asked for, so drop the local state
+            // without an `ExitCopyMode` the daemon has nothing to match.
+            if let Some(view) = self.panes.get_mut(&pane_id) {
+                view.exit_copy_mode();
+            }
+            return;
+        }
+        debug!(pane_id, "copy mode entered; filling viewport cache");
+        self.send_copy_mode_fill(pane_id, fill);
+    }
+
+    /// Leave copy mode on a pane, releasing the daemon's pin. A pane that
+    /// was not in copy mode sends nothing.
+    fn exit_copy_mode(&mut self, pane_id: u32) {
+        if !self
+            .panes
+            .get_mut(&pane_id)
+            .is_some_and(PaneView::exit_copy_mode)
+        {
+            return;
+        }
+        self.send_exit_copy_mode(pane_id);
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Settle a daemon error that answered a copy-mode cache fill.
+    /// Returns whether the serial belonged to one.
+    fn handle_failed_copy_mode_fill(&mut self, serial: u32, code: Option<ErrorCode>) -> bool {
+        let retryable = failure_is_retryable(code);
+        let Some((pane_id, outcome)) = fail_copy_mode_fill(&mut self.panes, serial, retryable)
+        else {
+            return false;
+        };
+        match outcome {
+            copy_mode::FillFailure::Unclaimed => return false,
+            copy_mode::FillFailure::Retry(fill) => {
+                warn!(
+                    pane_id,
+                    serial,
+                    start_row = fill.start_row,
+                    "copy mode cache fill failed; retrying once"
+                );
+                self.retry_copy_mode_fill(pane_id, fill);
+            }
+            copy_mode::FillFailure::Abandon => {
+                warn!(
+                    pane_id,
+                    serial,
+                    ?code,
+                    "copy mode cache fill failed again; leaving copy mode"
+                );
+                if retryable {
+                    self.exit_copy_mode(pane_id);
+                } else if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.exit_copy_mode();
                 }
-                Err(e) => error!(error = %e, "failed to create FindPrompt frame"),
             }
         }
+        true
+    }
+
+    /// Re-issue a failed fill under a fresh serial, marked so a second
+    /// failure abandons instead of retrying forever.
+    fn retry_copy_mode_fill(&mut self, pane_id: u32, fill: copy_mode::FillRequest) {
+        let req = GetScrollback {
+            pane_id,
+            start_row: fill.start_row,
+            count: fill.count,
+        };
+        let Some(serial) =
+            self.send_request_serial(MSG_GET_SCROLLBACK, req.encode(), "GetScrollback")
+        else {
+            return;
+        };
+        if let Some(view) = self.panes.get_mut(&pane_id) {
+            view.record_copy_mode_retry(serial, fill);
+        }
+    }
+
+    /// Release the daemon pin left behind when a viewport move discarded
+    /// copy-mode state. The `#[must_use]` on those primitives routes
+    /// every such move here rather than leaving the pin held for the life
+    /// of the pane.
+    fn release_copy_mode_pin(&mut self, pane_id: u32, exited: bool) {
+        if exited {
+            debug!(pane_id, "viewport moved; leaving copy mode");
+            self.send_exit_copy_mode(pane_id);
+        }
+    }
+
+    /// Release a daemon pin without touching client state, for the paths
+    /// that already discarded it (resize, a rejected entry).
+    fn send_exit_copy_mode(&mut self, pane_id: u32) {
+        match (CopyMode { pane_id }).to_exit_frame() {
+            Ok(frame) => {
+                if self.send_or_disconnect(&frame, "ExitCopyMode") {
+                    debug!(pane_id, "copy mode exited; viewport unpinned");
+                }
+            }
+            Err(e) => error!(error = %e, "failed to create ExitCopyMode frame"),
+        }
+    }
+
+    /// Send one copy-mode cache fill and record its serial so the reply
+    /// can be matched to the window it asked for.
+    fn send_copy_mode_fill(&mut self, pane_id: u32, fill: copy_mode::FillRequest) {
+        let req = GetScrollback {
+            pane_id,
+            start_row: fill.start_row,
+            count: fill.count,
+        };
+        let Some(serial) =
+            self.send_request_serial(MSG_GET_SCROLLBACK, req.encode(), "GetScrollback")
+        else {
+            return;
+        };
+        if let Some(view) = self.panes.get_mut(&pane_id) {
+            view.record_copy_mode_fill(serial, fill);
+        }
+    }
+
+    /// Issue the fill the cursor's position calls for, if the cursor has
+    /// reached a cache boundary and that window is not already coming.
+    fn prefetch_copy_mode(&mut self, pane_id: u32) {
+        let Some(fill) = self
+            .panes
+            .get(&pane_id)
+            .and_then(PaneView::plan_copy_mode_prefetch)
+        else {
+            return;
+        };
+        self.send_copy_mode_fill(pane_id, fill);
     }
 
     /// Scroll a pane's viewport by `lines`. Positive = up (into
@@ -665,16 +929,22 @@ impl App {
     /// scrollback.
     fn scroll_viewport(&mut self, pane_id: u32, lines: i32) {
         if lines > 0 {
-            if let Some(view) = self.panes.get_mut(&pane_id) {
+            let exited = self.panes.get_mut(&pane_id).is_some_and(|view| {
                 #[allow(clippy::cast_sign_loss)]
-                view.scroll_up(lines as u32);
-            }
+                view.scroll_up(lines as u32)
+            });
+            self.release_copy_mode_pin(pane_id, exited);
             self.request_scrollback(pane_id);
         } else if lines < 0 && self.pane_viewport_offset(pane_id) > 0 {
-            let Some(view) = self.panes.get_mut(&pane_id) else {
+            let Some(outcome) = self
+                .panes
+                .get_mut(&pane_id)
+                .map(|view| view.scroll_down(lines.unsigned_abs()))
+            else {
                 return;
             };
-            if view.scroll_down(lines.unsigned_abs()) {
+            self.release_copy_mode_pin(pane_id, outcome.copy_mode_exited);
+            if outcome.reached_live {
                 self.return_to_live(pane_id);
             } else {
                 self.request_scrollback(pane_id);
@@ -684,9 +954,11 @@ impl App {
 
     /// Return a pane to live view from scrollback.
     fn return_to_live(&mut self, pane_id: u32) {
-        if let Some(view) = self.panes.get_mut(&pane_id) {
-            view.return_to_live();
-        }
+        let exited = self
+            .panes
+            .get_mut(&pane_id)
+            .is_some_and(PaneView::return_to_live);
+        self.release_copy_mode_pin(pane_id, exited);
         // Request a full refresh to ensure live view is current.
         if let Some(daemon) = &self.daemon {
             let req = GetRenderUpdate {
@@ -985,6 +1257,13 @@ impl ApplicationHandler<UserEvent> for App {
                     info!(
                         server_minor = self.server_minor,
                         "daemon predates ListTabs; the tab bar and tab keybinds are inactive"
+                    );
+                }
+                if !copy_mode_supported(self.server_minor) {
+                    info!(
+                        server_minor = self.server_minor,
+                        "daemon predates the served-start scrollback semantics; copy mode is \
+                         inactive"
                     );
                 }
             }
@@ -1540,14 +1819,32 @@ impl ApplicationHandler<UserEvent> for App {
                     adapter.update_if_active(|| tree_update);
                 }
             }
-            UserEvent::ScrollbackData(data) => {
+            UserEvent::ScrollbackData { serial, data } => {
                 // Route by the response's pane: AT can scroll a
                 // background pane, so the reply must not land on the
                 // focused one.
                 let pane_id = data.pane_id;
-                if self.pane_viewport_offset(pane_id) == 0 {
-                    debug!(pane_id, "dropping stale scrollback response");
-                    return;
+                let reply = self.panes.get_mut(&pane_id).map(|view| ScrollbackReply {
+                    copy_mode: if view.apply_copy_mode_scrollback(serial, &data) {
+                        CopyModeReply::Filled
+                    } else if view.is_copy_mode() {
+                        CopyModeReply::Unrelated
+                    } else {
+                        CopyModeReply::NotInCopyMode
+                    },
+                    claims_request: view.claims_scrollback(serial),
+                    at_live_offset: view.viewport_offset() == 0,
+                });
+                match reply.map_or(ScrollbackRoute::Drop("unknown pane"), route_scrollback) {
+                    ScrollbackRoute::CopyModeFill => {
+                        self.prefetch_copy_mode(pane_id);
+                        return;
+                    }
+                    ScrollbackRoute::Drop(why) => {
+                        debug!(pane_id, serial, why, "dropping scrollback response");
+                        return;
+                    }
+                    ScrollbackRoute::Paint => {}
                 }
                 {
                     let clamp = self
@@ -1592,10 +1889,12 @@ impl ApplicationHandler<UserEvent> for App {
                     if new_offset == 0 {
                         self.return_to_live(self.focused_pane);
                     } else {
-                        if let Some(view) = self.focused_view_mut() {
-                            view.set_scroll_offset(new_offset);
-                        }
-                        self.request_scrollback(self.focused_pane);
+                        let exited = self
+                            .focused_view_mut()
+                            .is_some_and(|view| view.set_scroll_offset(new_offset));
+                        let pane_id = self.focused_pane;
+                        self.release_copy_mode_pin(pane_id, exited);
+                        self.request_scrollback(pane_id);
                     }
                 }
             }
@@ -1721,9 +2020,11 @@ impl ApplicationHandler<UserEvent> for App {
                             } else if target == 0 {
                                 self.return_to_live(target_pane);
                             } else {
-                                if let Some(view) = self.panes.get_mut(&target_pane) {
-                                    view.set_scroll_offset(target);
-                                }
+                                let exited = self
+                                    .panes
+                                    .get_mut(&target_pane)
+                                    .is_some_and(|view| view.set_scroll_offset(target));
+                                self.release_copy_mode_pin(target_pane, exited);
                                 self.request_scrollback(target_pane);
                             }
                         } else {
@@ -1827,11 +2128,16 @@ impl ApplicationHandler<UserEvent> for App {
                     self.request_layout_tree();
                 }
             }
-            UserEvent::RequestFailed { serial } => {
+            UserEvent::RequestFailed { serial, code } => {
                 // Responses arrive in request order: a failed serial
                 // means every pending close at or below it was answered
                 // (this error or an earlier response).
                 self.pending_pane_closes.retain(|p| p.serial > serial);
+                // A rejected `EnterCopyMode` needs no handling of its
+                // own: the entry sequence sends its cache fill straight
+                // after, so the same missing pane fails that fill too, at
+                // a serial that names the pane exactly.
+                self.handle_failed_copy_mode_fill(serial, code);
             }
             UserEvent::ConfigReloaded(cr) => {
                 self.handle_config_reload(*cr);
@@ -2009,15 +2315,18 @@ impl App {
     fn execute_action_desc(&mut self, action_desc: ActionDesc) -> bool {
         match action_desc {
             ActionDesc::ScrollUp(lines) => {
+                let mut exited = false;
                 if let Some(view) = self.focused_view_mut() {
                     let amount = if lines == 0 {
                         u32::from(view.grid().rows)
                     } else {
                         lines
                     };
-                    view.scroll_up(amount);
+                    exited = view.scroll_up(amount);
                 }
-                self.request_scrollback(self.focused_pane);
+                let pane_id = self.focused_pane;
+                self.release_copy_mode_pin(pane_id, exited);
+                self.request_scrollback(pane_id);
                 true
             }
             ActionDesc::ScrollDown(lines) => {
@@ -2032,10 +2341,13 @@ impl App {
                 } else {
                     lines
                 };
-                if view.scroll_down(amount) {
-                    self.return_to_live(self.focused_pane);
+                let outcome = view.scroll_down(amount);
+                let pane_id = self.focused_pane;
+                self.release_copy_mode_pin(pane_id, outcome.copy_mode_exited);
+                if outcome.reached_live {
+                    self.return_to_live(pane_id);
                 } else {
-                    self.request_scrollback(self.focused_pane);
+                    self.request_scrollback(pane_id);
                 }
                 true
             }
@@ -2046,9 +2358,9 @@ impl App {
                     SearchDirection::Newer
                 };
                 if dir == SearchDirection::Older {
-                    if let Some(view) = self.focused_view_mut() {
-                        view.freeze_live();
-                    }
+                    let exited = self.focused_view_mut().is_some_and(PaneView::freeze_live);
+                    let pane_id = self.focused_pane;
+                    self.release_copy_mode_pin(pane_id, exited);
                     self.request_find_prompt(dir);
                 } else if self.viewport_offset() > 0 {
                     self.request_find_prompt(dir);
@@ -2762,10 +3074,15 @@ impl App {
     /// and chrome. Shared by window resizes and tab-bar visibility
     /// changes — both move the content area.
     fn relayout_panes(&mut self) {
-        // Resize exits scrollback for the focused pane.
-        if let Some(view) = self.panes.get_mut(&self.focused_pane) {
-            view.return_to_live();
-        }
+        // Thaws the focused pane's view whether or not its dimensions
+        // change, so copy mode has to go with it — otherwise live output
+        // scrolls the rows the cursor is indexed against.
+        let focused = self.focused_pane;
+        let exited = self
+            .panes
+            .get_mut(&focused)
+            .is_some_and(PaneView::return_to_live);
+        self.release_copy_mode_pin(focused, exited);
 
         // With splits, every pane's rect changes: recompute the
         // geometry and resize each PTY to its rect. The
@@ -2803,6 +3120,7 @@ impl App {
             None => return,
         };
         let (top_px, bottom_px) = self.chrome_px();
+        let mut copy_mode_exited = false;
         let pending_resize = match (&self.font, self.panes.get_mut(&self.focused_pane)) {
             (Some(font), Some(view)) => {
                 let (cols, rows) = window_to_grid_dims(
@@ -2813,9 +3131,7 @@ impl App {
                     bottom_px,
                 );
                 let dims_changed = view.grid().rows != rows || view.grid().cols != cols;
-                if dims_changed {
-                    view.resize(cols, rows);
-                }
+                copy_mode_exited = dims_changed && view.resize(cols, rows);
 
                 // Full a11y tree rebuild on resize (row count changed).
                 if dims_changed {
@@ -2837,6 +3153,8 @@ impl App {
             }
             _ => None,
         };
+        let focused = self.focused_pane;
+        self.release_copy_mode_pin(focused, copy_mode_exited);
         if let Some(msg) = pending_resize {
             self.send_resize(msg);
         }
@@ -2913,7 +3231,7 @@ impl App {
             warn!("layout geometry present but font unavailable; panes not synced");
             return;
         };
-        let resizes = {
+        let plan = {
             let Some(geometry) = self.layout.geometry() else {
                 warn!("layout tree adopted but no geometry; panes not synced");
                 return;
@@ -2924,7 +3242,11 @@ impl App {
                 &mut self.panes,
             )
         };
-        for msg in resizes {
+        for pane_id in plan.copy_mode_exits {
+            warn!(pane_id, "resize left copy mode; unpinning");
+            self.send_exit_copy_mode(pane_id);
+        }
+        for msg in plan.resizes {
             self.send_resize(msg);
         }
     }
@@ -3004,6 +3326,7 @@ impl App {
                 );
                 let (top_px, bottom_px) =
                     chrome_split(tab_px, status_px, self.config.status_bar_position);
+                let mut copy_mode_exited = false;
                 let pending_resize = if let (Some(gpu), Some(view)) =
                     (&self.gpu, self.panes.get_mut(&self.focused_pane))
                 {
@@ -3017,7 +3340,7 @@ impl App {
                     );
                     let cols = cols.max(1);
                     let rows = rows.max(1);
-                    view.resize(cols, rows);
+                    copy_mode_exited = view.resize(cols, rows);
 
                     // Row bounds derive from cell dimensions; rebuild the
                     // a11y tree at the new metrics.
@@ -3047,6 +3370,8 @@ impl App {
                     warn!("config reload: font changed but gpu/view unavailable");
                     None
                 };
+                let focused = self.focused_pane;
+                self.release_copy_mode_pin(focused, copy_mode_exited);
                 if let Some(msg) = pending_resize {
                     self.send_resize(msg);
                 }
@@ -3293,13 +3618,17 @@ fn version_string() -> String {
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{
-        ActionDesc, App, FocusHealth, PendingPaneClose, TabAdoption, TabSyncTiming, check_focus,
-        chrome_split, drain_wheel_notches, plan_pane_syncs, resolve_pane_close, tab_sync_timing,
-        try_init_font, window_to_grid_dims,
+        ActionDesc, App, CopyModeReply, FocusHealth, PendingPaneClose, ScrollbackReply,
+        ScrollbackRoute, TabAdoption, TabSyncTiming, check_focus, chrome_split,
+        copy_mode_supported, drain_wheel_notches, fail_copy_mode_fill, failure_is_retryable,
+        plan_pane_syncs, resolve_pane_close, route_scrollback, tab_sync_timing, try_init_font,
+        window_to_grid_dims,
     };
+    use crate::copy_mode::{FillFailure, FillRequest};
     use crate::layout::{LayoutGeometry, PaneRect, PixelRect};
     use crate::pane_view::PaneView;
     use crate::render_grid::ClientGrid;
+    use oakterm_protocol::message::ErrorCode;
     use std::collections::HashMap;
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::event::MouseScrollDelta;
@@ -3549,10 +3878,10 @@ mod tests {
         // a fresh view must never be deduplicated away.
         let geometry = geometry_of(&[(7, 400, 200)]);
         let mut panes = HashMap::new();
-        let resizes = plan_pane_syncs(&geometry, CELL, &mut panes);
-        assert_eq!(resizes.len(), 1);
-        assert_eq!(resizes[0].pane_id, 7);
-        assert_eq!((resizes[0].cols, resizes[0].rows), (40, 10));
+        let plan = plan_pane_syncs(&geometry, CELL, &mut panes);
+        assert_eq!(plan.resizes.len(), 1);
+        assert_eq!(plan.resizes[0].pane_id, 7);
+        assert_eq!((plan.resizes[0].cols, plan.resizes[0].rows), (40, 10));
         assert!(panes.contains_key(&7));
     }
 
@@ -3562,11 +3891,21 @@ mod tests {
         // after a successful send — so a failed send is retried.
         let geometry = geometry_of(&[(7, 400, 200)]);
         let mut panes = HashMap::new();
-        assert_eq!(plan_pane_syncs(&geometry, CELL, &mut panes).len(), 1);
-        assert_eq!(plan_pane_syncs(&geometry, CELL, &mut panes).len(), 1);
+        assert_eq!(
+            plan_pane_syncs(&geometry, CELL, &mut panes).resizes.len(),
+            1
+        );
+        assert_eq!(
+            plan_pane_syncs(&geometry, CELL, &mut panes).resizes.len(),
+            1
+        );
 
         panes.get_mut(&7).unwrap().last_sent_dims = (40, 10);
-        assert!(plan_pane_syncs(&geometry, CELL, &mut panes).is_empty());
+        assert!(
+            plan_pane_syncs(&geometry, CELL, &mut panes)
+                .resizes
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3577,9 +3916,9 @@ mod tests {
         panes.get_mut(&7).unwrap().last_sent_dims = (40, 10);
 
         let grown = geometry_of(&[(7, 800, 200)]);
-        let resizes = plan_pane_syncs(&grown, CELL, &mut panes);
-        assert_eq!(resizes.len(), 1);
-        assert_eq!((resizes[0].cols, resizes[0].rows), (80, 10));
+        let plan = plan_pane_syncs(&grown, CELL, &mut panes);
+        assert_eq!(plan.resizes.len(), 1);
+        assert_eq!((plan.resizes[0].cols, plan.resizes[0].rows), (80, 10));
         let view = &panes[&7];
         assert_eq!((view.grid().cols, view.grid().rows), (80, 10));
         assert_eq!(view.last_sent_dims, (40, 10), "plan must not commit");
@@ -3593,7 +3932,10 @@ mod tests {
         let geometry = geometry_of(&[(7, 400, 200)]);
         let mut panes = HashMap::new();
         plan_pane_syncs(&geometry, CELL, &mut panes);
-        panes.get_mut(&7).unwrap().scroll_up(5);
+        assert!(
+            !panes.get_mut(&7).unwrap().scroll_up(5),
+            "no copy mode to release"
+        );
         assert!(panes[&7].is_scrolled());
 
         let grown = geometry_of(&[(7, 800, 200)]);
@@ -3603,6 +3945,197 @@ mod tests {
         assert!(!view.is_scrolled(), "offset and snapshot both reset");
     }
 
+    /// The error frame names only a serial, so the owning pane is found
+    /// by asking each one — and the pane that never issued it must not
+    /// claim it, or one pane's failure retires another's fill.
+    #[test]
+    fn a_failed_fill_is_retired_on_the_pane_that_issued_it() {
+        let mut panes = HashMap::new();
+        for id in [7, 8] {
+            let mut view = PaneView::new(ClientGrid::new(4, 8));
+            view.enter_copy_mode();
+            panes.insert(id, view);
+        }
+        let fill = FillRequest {
+            start_row: -8,
+            count: 8,
+        };
+        panes.get_mut(&8).unwrap().record_copy_mode_fill(42, fill);
+
+        let (pane_id, outcome) =
+            fail_copy_mode_fill(&mut panes, 42, true).expect("some pane owns it");
+
+        assert_eq!(pane_id, 8);
+        assert_eq!(outcome, FillFailure::Retry(fill));
+        assert!(
+            panes[&7].copy_mode().is_some(),
+            "the uninvolved pane keeps copy mode"
+        );
+    }
+
+    /// What replaced the serial-0 sweep. A rejected `EnterCopyMode` is
+    /// followed immediately by its cache fill, so the same missing pane
+    /// fails that fill at a serial naming it exactly — and the pane whose
+    /// entry SUCCEEDED keeps both its copy mode and its daemon pin. The
+    /// sweep dropped that pane too and sent no `ExitCopyMode`, leaking
+    /// the pin for the life of the pane.
+    #[test]
+    fn a_rejected_entry_settles_on_its_own_pane_only() {
+        let mut panes = HashMap::new();
+        for id in [7, 8] {
+            let mut view = PaneView::new(ClientGrid::new(4, 8));
+            let fill = view.enter_copy_mode();
+            // Both panes are mid-entry: fill sent, no reply yet.
+            view.record_copy_mode_fill(if id == 7 { 40 } else { 41 }, fill);
+            panes.insert(id, view);
+        }
+
+        let (pane_id, outcome) = fail_copy_mode_fill(
+            &mut panes,
+            41,
+            failure_is_retryable(Some(ErrorCode::UnknownPane)),
+        )
+        .expect("the rejected pane owns serial 41");
+
+        assert_eq!(pane_id, 8);
+        assert_eq!(outcome, FillFailure::Abandon);
+        assert!(
+            panes[&7].copy_mode().is_some(),
+            "the pane whose entry succeeded keeps copy mode and its pin"
+        );
+    }
+
+    /// A serial belonging to no copy-mode fill leaves every pane alone,
+    /// so ordinary request failures fall through to their own handling.
+    #[test]
+    fn an_unrelated_failure_claims_no_pane() {
+        let mut panes = HashMap::new();
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.enter_copy_mode();
+        panes.insert(7, view);
+
+        assert!(fail_copy_mode_fill(&mut panes, 999, true).is_none());
+        assert!(panes[&7].copy_mode().is_some());
+    }
+
+    fn reply() -> ScrollbackReply {
+        ScrollbackReply {
+            copy_mode: CopyModeReply::NotInCopyMode,
+            claims_request: true,
+            at_live_offset: false,
+        }
+    }
+
+    /// The load-bearing ordering, and the reason this is a function
+    /// rather than a chain of guards: copy mode sits AT the live offset,
+    /// which the last arm drops, so a fill must be claimed before that
+    /// arm is ever reached. Invert the order and copy mode silently never
+    /// fills — no visible error, just an empty cache.
+    #[test]
+    fn a_copy_mode_fill_at_the_live_offset_is_not_dropped_as_stale() {
+        let filled = ScrollbackReply {
+            copy_mode: CopyModeReply::Filled,
+            at_live_offset: true,
+            claims_request: false,
+        };
+
+        assert_eq!(route_scrollback(filled), ScrollbackRoute::CopyModeFill);
+    }
+
+    /// Every other reply reaching a pane in copy mode predates entry;
+    /// painting one would thaw the page the cursor is indexed against.
+    #[test]
+    fn an_unclaimed_reply_during_copy_mode_is_dropped() {
+        let route = route_scrollback(ScrollbackReply {
+            copy_mode: CopyModeReply::Unrelated,
+            claims_request: true,
+            at_live_offset: false,
+        });
+
+        assert!(matches!(route, ScrollbackRoute::Drop(_)));
+    }
+
+    #[test]
+    fn a_superseded_reply_is_dropped_before_the_offset_check() {
+        let route = route_scrollback(ScrollbackReply {
+            claims_request: false,
+            at_live_offset: false,
+            ..reply()
+        });
+
+        assert!(matches!(route, ScrollbackRoute::Drop(_)));
+    }
+
+    #[test]
+    fn a_claimed_reply_for_a_scrolled_pane_paints() {
+        assert_eq!(route_scrollback(reply()), ScrollbackRoute::Paint);
+    }
+
+    /// The pre-copy-mode guard: a pane that returned to live has no use
+    /// for rows describing an offset it left.
+    #[test]
+    fn a_claimed_reply_at_the_live_offset_is_dropped() {
+        let route = route_scrollback(ScrollbackReply {
+            at_live_offset: true,
+            ..reply()
+        });
+
+        assert!(matches!(route, ScrollbackRoute::Drop(_)));
+    }
+
+    /// Copy mode's cache keys rows off `ScrollbackData.start_row` meaning
+    /// the SERVED start, which only a 1.4 daemon reports.
+    #[test]
+    fn copy_mode_requires_the_served_start_protocol() {
+        assert!(!copy_mode_supported(0));
+        assert!(!copy_mode_supported(3), "pre-1.4 echoes the request");
+        assert!(copy_mode_supported(4));
+        assert!(copy_mode_supported(5), "later daemons still qualify");
+    }
+
+    /// A pane that no longer exists refuses every retry, so re-issuing
+    /// against it would spin; everything else is worth one more attempt.
+    #[test]
+    fn only_a_missing_pane_makes_a_failure_unretryable() {
+        assert!(!failure_is_retryable(Some(ErrorCode::UnknownPane)));
+        assert!(failure_is_retryable(Some(ErrorCode::InternalError)));
+        assert!(failure_is_retryable(Some(ErrorCode::PaneExited)));
+        assert!(failure_is_retryable(None));
+    }
+
+    /// A resize invalidates the daemon's copy-mode pin, and the daemon
+    /// reports nothing when it drops one, so the plan has to surface the
+    /// panes whose pins the client still owes an `ExitCopyMode`.
+    #[test]
+    fn plan_pane_syncs_reports_panes_a_resize_took_out_of_copy_mode() {
+        let geometry = geometry_of(&[(7, 400, 200)]);
+        let mut panes = HashMap::new();
+        plan_pane_syncs(&geometry, CELL, &mut panes);
+        panes.get_mut(&7).unwrap().enter_copy_mode();
+
+        let grown = geometry_of(&[(7, 800, 200)]);
+        let plan = plan_pane_syncs(&grown, CELL, &mut panes);
+
+        assert_eq!(plan.copy_mode_exits, vec![7]);
+        assert!(panes[&7].copy_mode().is_none());
+    }
+
+    /// A reconcile that changes no dimensions must leave copy mode alone;
+    /// tearing down on every layout adoption would drop the user out of
+    /// copy mode whenever an unrelated pane moved.
+    #[test]
+    fn plan_pane_syncs_keeps_copy_mode_when_dimensions_are_unchanged() {
+        let geometry = geometry_of(&[(7, 400, 200)]);
+        let mut panes = HashMap::new();
+        plan_pane_syncs(&geometry, CELL, &mut panes);
+        panes.get_mut(&7).unwrap().enter_copy_mode();
+
+        let plan = plan_pane_syncs(&geometry, CELL, &mut panes);
+
+        assert!(plan.copy_mode_exits.is_empty());
+        assert!(panes[&7].copy_mode().is_some());
+    }
+
     #[test]
     fn plan_pane_syncs_preexisting_view_with_matching_dims_sends_nothing() {
         let mut panes = HashMap::new();
@@ -3610,7 +4143,11 @@ mod tests {
         view.last_sent_dims = (40, 10);
         panes.insert(7, view);
         let geometry = geometry_of(&[(7, 400, 200)]);
-        assert!(plan_pane_syncs(&geometry, CELL, &mut panes).is_empty());
+        assert!(
+            plan_pane_syncs(&geometry, CELL, &mut panes)
+                .resizes
+                .is_empty()
+        );
     }
 
     // --- drain_wheel_notches: LineDelta ---

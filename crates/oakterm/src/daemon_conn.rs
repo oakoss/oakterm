@@ -453,10 +453,25 @@ fn daemon_reader(
 /// helper doesn't own — `DirtyNotify`/`RenderUpdate` stay in
 /// `daemon_reader` because they drive its in-flight state machine.
 fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool {
+    let Some(events) = events_for_frame(frame) else {
+        return false;
+    };
+    for event in events {
+        let _ = proxy.send_event(event);
+    }
+    true
+}
+
+/// Decode a frame into the `UserEvent`s it produces, `None` for message
+/// types this helper doesn't own. Split from the send so the decisions
+/// here — which serial travels with a reply, which errors ring the bell
+/// — are reachable without an event loop.
+fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
+    let mut events = Vec::new();
     match frame.msg_type {
         MSG_TITLE_CHANGED => match TitleChanged::decode(&frame.payload) {
             Ok(msg) => {
-                let _ = proxy.send_event(UserEvent::TitleChanged(msg.pane_id, msg.title));
+                events.push(UserEvent::TitleChanged(msg.pane_id, msg.title));
             }
             Err(e) => {
                 error!(error = %e, "failed to decode TitleChanged");
@@ -464,7 +479,10 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         },
         MSG_SCROLLBACK_DATA => match ScrollbackData::decode(&frame.payload) {
             Ok(data) => {
-                let _ = proxy.send_event(UserEvent::ScrollbackData(Box::new(data)));
+                events.push(UserEvent::ScrollbackData {
+                    serial: frame.serial,
+                    data: Box::new(data),
+                });
             }
             Err(e) => {
                 error!(error = %e, "failed to decode ScrollbackData");
@@ -472,18 +490,18 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         },
         MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
             Ok(pos) => {
-                let _ = proxy.send_event(UserEvent::PromptPosition(pos));
+                events.push(UserEvent::PromptPosition(pos));
             }
             Err(e) => {
                 error!(error = %e, "failed to decode PromptPosition");
             }
         },
         MSG_BELL => {
-            let _ = proxy.send_event(UserEvent::Bell);
+            events.push(UserEvent::Bell);
         }
         MSG_SPLIT_PANE_RESPONSE => match SplitPaneResponse::decode(&frame.payload) {
             Ok(resp) => {
-                let _ = proxy.send_event(UserEvent::SplitCreated(resp.new_pane_id));
+                events.push(UserEvent::SplitCreated(resp.new_pane_id));
             }
             Err(e) => {
                 error!(error = %e, "failed to decode SplitPaneResponse");
@@ -491,7 +509,7 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         },
         MSG_LAYOUT_TREE => match LayoutTree::decode(&frame.payload) {
             Ok(msg) => {
-                let _ = proxy.send_event(UserEvent::LayoutTree(Box::new(msg.tree)));
+                events.push(UserEvent::LayoutTree(Box::new(msg.tree)));
             }
             Err(e) => {
                 error!(error = %e, "failed to decode LayoutTree");
@@ -499,7 +517,7 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         },
         MSG_TAB_LIST => match TabList::decode(&frame.payload) {
             Ok(msg) => {
-                let _ = proxy.send_event(UserEvent::TabList(Box::new(msg)));
+                events.push(UserEvent::TabList(Box::new(msg)));
             }
             Err(e) => {
                 error!(error = %e, "failed to decode TabList");
@@ -507,7 +525,7 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
         },
         MSG_NEW_TAB_RESPONSE => match NewTabResponse::decode(&frame.payload) {
             Ok(resp) => {
-                let _ = proxy.send_event(UserEvent::TabCreated {
+                events.push(UserEvent::TabCreated {
                     tab_id: resp.tab_id,
                     pane_id: resp.pane_id,
                 });
@@ -517,37 +535,45 @@ fn forward_event_frame(frame: &Frame, proxy: &EventLoopProxy<UserEvent>) -> bool
             }
         },
         MSG_CLOSE_TAB_RESPONSE => {
-            let _ = proxy.send_event(UserEvent::TabClosed);
+            events.push(UserEvent::TabClosed);
         }
         MSG_CLOSE_PANE_RESPONSE => {
-            let _ = proxy.send_event(UserEvent::PaneClosed {
+            events.push(UserEvent::PaneClosed {
                 serial: frame.serial,
             });
         }
         MSG_ERROR => {
             log_daemon_error(frame);
-            let _ = proxy.send_event(UserEvent::RequestFailed {
+            let code = ErrorMessage::decode(&frame.payload)
+                .ok()
+                .and_then(|err| ErrorCode::try_from(err.code).ok());
+            events.push(UserEvent::RequestFailed {
                 serial: frame.serial,
+                code,
             });
-            // Rejected layout/tab/pane operations are routine
-            // user-triggered outcomes; ring the bell so the keybind or
-            // click doesn't appear silently dead.
-            if let Ok(err) = ErrorMessage::decode(&frame.payload) {
-                if matches!(
-                    ErrorCode::try_from(err.code),
-                    Ok(ErrorCode::LayoutRejected
-                        | ErrorCode::UnknownPane
-                        | ErrorCode::UnknownTab
-                        | ErrorCode::UnknownWorkspace)
-                ) {
-                    let _ = proxy.send_event(UserEvent::Bell);
-                }
+            if error_rings_bell(code) {
+                events.push(UserEvent::Bell);
             }
         }
         MSG_SHUTDOWN => log_daemon_shutdown(frame),
-        _ => return false,
+        _ => return None,
     }
-    true
+    Some(events)
+}
+
+/// Whether a rejected request should ring the bell. These are routine
+/// user-triggered outcomes, and a silent one makes the keybind or click
+/// look dead.
+fn error_rings_bell(code: Option<ErrorCode>) -> bool {
+    matches!(
+        code,
+        Some(
+            ErrorCode::LayoutRejected
+                | ErrorCode::UnknownPane
+                | ErrorCode::UnknownTab
+                | ErrorCode::UnknownWorkspace
+        )
+    )
 }
 
 /// Read a single frame from a blocking stream.
@@ -585,7 +611,118 @@ fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Frame> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirtyOutcome, ReaderState, UpdateOutcome};
+    use super::{DirtyOutcome, ReaderState, UpdateOutcome, error_rings_bell, events_for_frame};
+    use crate::UserEvent;
+    use oakterm_protocol::frame::Frame;
+    use oakterm_protocol::message::{
+        ErrorCode, ErrorMessage, MSG_ERROR, MSG_SCROLLBACK_DATA, ScrollbackData,
+    };
+
+    fn scrollback_frame(serial: u32) -> Frame {
+        let payload = ScrollbackData {
+            pane_id: 3,
+            start_row: -8,
+            has_more: true,
+            total_rows: 100,
+            rows: vec![],
+        }
+        .encode()
+        .expect("encode");
+        Frame::new(MSG_SCROLLBACK_DATA, serial, payload).expect("frame")
+    }
+
+    fn error_frame(serial: u32, code: ErrorCode) -> Frame {
+        let payload = ErrorMessage {
+            code: code as u32,
+            message: "nope".into(),
+        }
+        .encode()
+        .expect("encode");
+        Frame::new(MSG_ERROR, serial, payload).expect("frame")
+    }
+
+    /// The reply's serial is the only thing correlating a copy-mode cache
+    /// fill with the window it asked for. Forwarding 0 instead would leave
+    /// every fill unclaimable, which no test above this layer can see.
+    #[test]
+    fn a_scrollback_reply_carries_the_frames_serial() {
+        let events = events_for_frame(&scrollback_frame(37)).expect("owned type");
+
+        match events.as_slice() {
+            [UserEvent::ScrollbackData { serial, data }] => {
+                assert_eq!(*serial, 37);
+                assert_eq!(data.pane_id, 3);
+            }
+            other => panic!("expected one ScrollbackData, got {other:?}"),
+        }
+    }
+
+    /// The error code is what tells a rejected copy-mode entry from a
+    /// transient read failure; decoding it to `None` would make every
+    /// failure look retryable and silently disable the bell.
+    #[test]
+    fn an_error_frame_carries_its_decoded_code() {
+        let events = events_for_frame(&error_frame(9, ErrorCode::UnknownPane)).expect("owned type");
+
+        match events.as_slice() {
+            [UserEvent::RequestFailed { serial, code }, UserEvent::Bell] => {
+                assert_eq!(*serial, 9);
+                assert_eq!(*code, Some(ErrorCode::UnknownPane));
+            }
+            other => panic!("expected RequestFailed + Bell, got {other:?}"),
+        }
+    }
+
+    /// An internal error is not a user-triggered rejection, so it reports
+    /// its code without the bell.
+    #[test]
+    fn an_internal_error_reports_its_code_without_ringing() {
+        let events =
+            events_for_frame(&error_frame(9, ErrorCode::InternalError)).expect("owned type");
+
+        match events.as_slice() {
+            [UserEvent::RequestFailed { code, .. }] => {
+                assert_eq!(*code, Some(ErrorCode::InternalError));
+            }
+            other => panic!("expected a lone RequestFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_user_triggered_rejections_ring_the_bell() {
+        for code in [
+            ErrorCode::LayoutRejected,
+            ErrorCode::UnknownPane,
+            ErrorCode::UnknownTab,
+            ErrorCode::UnknownWorkspace,
+        ] {
+            assert!(error_rings_bell(Some(code)), "{code:?} should ring");
+        }
+        for code in [
+            ErrorCode::InternalError,
+            ErrorCode::MalformedPayload,
+            ErrorCode::PaneExited,
+        ] {
+            assert!(!error_rings_bell(Some(code)), "{code:?} must not ring");
+        }
+        assert!(!error_rings_bell(None));
+    }
+
+    /// Message types this helper does not own must stay unclaimed, or
+    /// `daemon_reader` stops logging them as unhandled.
+    #[test]
+    fn an_unowned_message_type_is_not_claimed() {
+        let frame = Frame::new(0x7FFF, 1, vec![]).expect("frame");
+        assert!(events_for_frame(&frame).is_none());
+    }
+
+    /// A malformed payload is logged and dropped, not turned into an
+    /// event carrying garbage — but the type stays claimed.
+    #[test]
+    fn a_malformed_payload_yields_no_events() {
+        let frame = Frame::new(MSG_SCROLLBACK_DATA, 5, vec![0x00]).expect("frame");
+        assert_eq!(events_for_frame(&frame).expect("owned type").len(), 0);
+    }
 
     #[test]
     fn dirty_notify_with_no_in_flight_sends() {

@@ -1296,7 +1296,7 @@ mod tests {
     #[test]
     fn apply_scrollback_carries_scroll_state() {
         let mut view = PaneView::new(ClientGrid::new(80, 24));
-        view.scroll_up(5);
+        assert!(!view.scroll_up(5), "no copy mode to release");
         let state = tracked_model(0, &view);
         let update = apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 })
             .expect("scrollback push");
@@ -1317,10 +1317,10 @@ mod tests {
         // Scroll first so a stale snapshot would carry scroll_y = 5; resize
         // (viewport reset to 0 by the caller) must rebuild from fresh state.
         let mut view = PaneView::new(ClientGrid::new(80, 24));
-        view.scroll_up(5);
+        assert!(!view.scroll_up(5), "no copy mode to release");
         let state = tracked_model(0, &view);
         apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
-        view.scroll_down(5);
+        assert!(!view.scroll_down(5).copy_mode_exited);
         let update = apply(&state, 0, &view, A11yEvent::Resize).expect("full rebuild");
         assert!(update.tree.is_some(), "resize must rebuild the full tree");
         let terminal = update
@@ -1432,10 +1432,10 @@ mod tests {
         // A no-push frame still refreshes the snapshot, so an AT connecting
         // later sees the current scroll position, not a stale one.
         let mut view = PaneView::new(ClientGrid::new(80, 24));
-        view.scroll_up(5);
+        assert!(!view.scroll_up(5), "no copy mode to release");
         let state = tracked_model(0, &view);
         apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
-        view.scroll_down(5);
+        assert!(!view.scroll_down(5).copy_mode_exited);
         assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
         let full = state.lock().unwrap().as_ref().unwrap().build_full_tree();
         let terminal = full
