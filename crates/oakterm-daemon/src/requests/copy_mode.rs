@@ -363,7 +363,7 @@ async fn resolve_yank(
 
     let archive_start = plan.first_row.min(layout.archived);
     let archive_end = plan.last_row.saturating_add(1).min(layout.archived);
-    let (first_rows, _) = read_archive_span(
+    let (first_rows, mut archive_shortfall) = read_archive_span(
         conn_id,
         req.pane_id,
         &access,
@@ -392,7 +392,7 @@ async fn resolve_yank(
         // Nothing migrated, which is the common case: assemble under the
         // guard already held rather than dropping and re-taking it.
         if end <= top_up_start {
-            assembled = Some(collect_yank_text(&pane, &plan, &window));
+            assembled = Some(collect_yank_text(&pane, &plan, &window, archive_shortfall));
         }
         end
     };
@@ -400,7 +400,7 @@ async fn resolve_yank(
     let (text, missing) = if let Some(done) = assembled {
         done
     } else {
-        let (extra, recovered) = read_archive_span(
+        let (extra, top_up_shortfall) = read_archive_span(
             conn_id,
             req.pane_id,
             &access,
@@ -411,18 +411,20 @@ async fn resolve_yank(
         .await
         .map_err(YankFailure::Archive)?;
         window.extend(top_up_start, extra);
+        archive_shortfall += top_up_shortfall;
+        let requested = top_up_end - top_up_start;
         debug!(
             conn_id,
             pane_id = req.pane_id,
-            requested = top_up_end - top_up_start,
-            recovered,
+            requested,
+            recovered = requested - top_up_shortfall,
             "rows migrated into the archive mid-yank; topped up"
         );
         let pane = lock_live_pane(panes, req.pane_id).await.ok_or_else(|| {
             warn!(conn_id, pane_id = req.pane_id, "pane closed mid-yank");
             YankFailure::UnknownPane
         })?;
-        collect_yank_text(&pane, &plan, &window)
+        collect_yank_text(&pane, &plan, &window, archive_shortfall)
     };
     if let Some(missing) = missing {
         warn_missing_rows(conn_id, req.pane_id, missing, access.reader().cloned());
@@ -438,12 +440,19 @@ fn collect_yank_text(
     pane: &PaneState,
     plan: &YankPlan,
     archive: &ArchiveWindow,
+    archive_shortfall: u64,
 ) -> (String, Option<MissingRows>) {
     let layout = HistoryLayout::of(pane);
     let buf = pane.screens.scrollback();
     let grid = pane.screens.active_grid();
 
-    let mut missing = MissingRows::default();
+    // Seeded rather than counted below: rows the archive could not supply
+    // were blank-filled inside the window, so every lookup for them
+    // succeeds and none of them would ever be counted here.
+    let mut missing = MissingRows {
+        archive_gap: archive_shortfall,
+        ..MissingRows::default()
+    };
     let mut rows: Vec<(u64, Option<&Row>)> = Vec::new();
     for abs in plan.first_row..=plan.last_row {
         let row = if abs < layout.archived {
@@ -568,7 +577,10 @@ impl ArchiveWindow {
     }
 }
 
-/// Returns the aligned rows and how many the archive actually supplied.
+/// Returns the aligned rows and how many of them are blank fill the
+/// archive could not supply. That shortfall is invisible downstream —
+/// blank fill is indistinguishable from a blank terminal row — so it has
+/// to travel with the rows.
 ///
 /// One read, not a chunk loop: `ArchiveCore::read_range` pulls every
 /// touched segment file whole, so splitting a span only re-reads segments.
@@ -579,13 +591,14 @@ async fn read_archive_span(
     start: u64,
     end: u64,
     cols: usize,
-) -> Result<(Vec<Row>, usize), &'static str> {
+) -> Result<(Vec<Row>, u64), &'static str> {
     if start >= end {
         return Ok((Vec::new(), 0));
     }
     let count = usize::try_from(end - start).unwrap_or(usize::MAX);
     let found = read_archive_rows(conn_id, pane_id, access.clone(), start, count).await?;
-    Ok(align_archive_rows(found, start, count, cols))
+    let (rows, supplied) = align_archive_rows(found, start, count, cols);
+    Ok((rows, u64::try_from(count - supplied).unwrap_or(u64::MAX)))
 }
 
 /// Release every pin this client holds, across all panes. Copy-mode pins
@@ -1508,6 +1521,63 @@ mod tests {
     /// Covered here rather than through a concurrent yank because an empty
     /// span issues no read at all, leaving nothing to synchronise on — a
     /// timing-based version could only ever be hopeful.
+    /// A row the archive could not supply is blank-filled *inside* the
+    /// window, so `ArchiveWindow::get` answers `Some(blank)` for it and no
+    /// lookup ever misses. Counting only lookup misses therefore hides the
+    /// Spec-0004 overload loss the counter exists to report — the shortfall
+    /// has to be carried from the read itself.
+    #[tokio::test]
+    async fn an_in_window_archive_shortfall_counts_as_a_gap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (panes, pane_id) =
+            pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
+        let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        assert_eq!(HistoryLayout::of(&pane).archived, 2, "rows 0..2 archived");
+
+        // The read covered rows 0 and 1 but the archive supplied only row
+        // 0; row 1 came back as blank fill, a shortfall of one.
+        let plan = plan_yank(4, &req(-4, 0, -3, 0, CopySelectionType::Line));
+        let window = ArchiveWindow::new(0, vec![row_from("one", COLS), Row::new(COLS)]);
+
+        let (_, missing) = collect_yank_text(&pane, &plan, &window, 1);
+
+        let missing = missing.expect("a blank-filled archive row is a missing row");
+        assert_eq!(missing.archive_gap, 1);
+        assert_eq!(missing.index_miss, 0, "not a planning bug");
+        assert_eq!(missing.pruned, 0, "the archive had these rows' indices");
+    }
+
+    /// The shortfall and the lookup miss count different rows, so a row
+    /// must not reach both: blank fill lands inside the window and is
+    /// carried by the shortfall, while a row that migrated in after the
+    /// top-up lies outside it and is caught by the miss.
+    #[tokio::test]
+    async fn a_blank_filled_row_is_not_counted_twice() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lines = ["one", "two", "three", "four", "five", "six"];
+        let (panes, pane_id) = pane_with_archived_prefix(dir.path(), &lines, 2).await;
+        let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        assert!(
+            HistoryLayout::of(&pane).archived > 2,
+            "row 2 must sit in the archive tier"
+        );
+
+        // Window covers rows 0 and 1 with one blank fill; row 2 is
+        // archived but was never collected.
+        let base = u64::try_from(lines.len()).expect("row count");
+        let plan = plan_yank(base, &req(-6, 0, -4, 0, CopySelectionType::Line));
+        assert_eq!((plan.first_row, plan.last_row), (0, 2));
+        let window = ArchiveWindow::new(0, vec![row_from("one", COLS), Row::new(COLS)]);
+
+        let (_, missing) = collect_yank_text(&pane, &plan, &window, 1);
+
+        let missing = missing.expect("missing rows");
+        assert_eq!(
+            missing.archive_gap, 2,
+            "one blank fill plus one uncollected row, each counted once"
+        );
+    }
+
     #[test]
     fn an_empty_archive_window_rebases_onto_the_top_up() {
         let mut window = ArchiveWindow::new(7, Vec::new());
