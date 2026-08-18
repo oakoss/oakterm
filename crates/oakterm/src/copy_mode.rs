@@ -10,14 +10,17 @@
 //! `[-offset, -offset + visible_rows)`, which is why `viewport_top`
 //! exists rather than everything assuming 0.
 
-// Nothing dispatches into copy mode until the key table lands
-// (TREK-112), so every entry point below is reachable only from tests.
-#![allow(dead_code)]
-
+use crate::copy_keys::PendingPrefix;
+use crate::copy_motion::MotionBounds;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::DirtyRow;
 use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
+
+/// Spec-0008's `CopySelectionType` is the wire enum: the client's shapes
+/// and the daemon's are the same three by definition, and a second enum
+/// beside it would only add a conversion that can drift.
+pub(crate) use oakterm_protocol::message::CopySelectionType;
 
 /// Per-request row cap the daemon enforces (Spec-0001 `GetScrollback`).
 const MAX_ROWS_PER_REQUEST: u32 = 4096;
@@ -97,16 +100,37 @@ impl ViewportCache {
         self.rows.keys().next_back().map(|last| last + 1)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.rows.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, row: i64) -> Option<&DirtyRow> {
         self.rows.get(&row)
+    }
+
+    /// The row's cells as characters, empty cells reading as blanks —
+    /// the form word motions scan. `None` for an unserved row.
+    pub(crate) fn row_chars(&self, row: i64) -> Option<Vec<char>> {
+        self.rows.get(&row).map(|dirty| {
+            dirty
+                .cells
+                .iter()
+                .map(|cell| {
+                    if cell.codepoint == 0 {
+                        ' '
+                    } else {
+                        char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}')
+                    }
+                })
+                .collect()
+        })
     }
 
     /// File a served window, keyed from where the daemon actually started
@@ -152,15 +176,79 @@ impl ViewportCache {
     }
 }
 
+/// An active selection: the anchor it started from, with the cursor as
+/// its other end (Spec-0008 Selection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CopySelection {
+    pub(crate) ty: CopySelectionType,
+    pub(crate) anchor_row: i64,
+    pub(crate) anchor_col: u16,
+}
+
+/// A selection ordered into the inclusive endpoints `YankSelection`
+/// carries (Spec-0008 selection range semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct YankRange {
+    pub(crate) ty: CopySelectionType,
+    pub(crate) start_row: i64,
+    pub(crate) start_col: u16,
+    pub(crate) end_row: i64,
+    pub(crate) end_col: u16,
+}
+
+/// Order a selection's endpoints. Character and line ranges normalize in
+/// reading order; a block normalizes each axis on its own, so any drag
+/// direction yields the same rectangle.
+///
+/// The daemon normalizes again on receipt — this is what lets the client
+/// render the selection it is about to send without a second ordering
+/// rule that could disagree with the one on the wire.
+fn normalize_range(selection: CopySelection, cursor: (i64, u16)) -> YankRange {
+    let CopySelection {
+        ty,
+        anchor_row,
+        anchor_col,
+    } = selection;
+    let (cursor_row, cursor_col) = cursor;
+    if ty == CopySelectionType::Block {
+        return YankRange {
+            ty,
+            start_row: anchor_row.min(cursor_row),
+            start_col: anchor_col.min(cursor_col),
+            end_row: anchor_row.max(cursor_row),
+            end_col: anchor_col.max(cursor_col),
+        };
+    }
+    let (start, end) = if (anchor_row, anchor_col) <= (cursor_row, cursor_col) {
+        ((anchor_row, anchor_col), (cursor_row, cursor_col))
+    } else {
+        ((cursor_row, cursor_col), (anchor_row, anchor_col))
+    };
+    YankRange {
+        ty,
+        start_row: start.0,
+        start_col: start.1,
+        end_row: end.0,
+        end_col: end.1,
+    }
+}
+
 /// Copy-mode state for one pane. Lives inside `PaneView` so it follows
 /// the pane across focus changes rather than the window.
 pub(crate) struct CopyModeState {
     cursor_row: i64,
     cursor_col: u16,
+    selection: Option<CopySelection>,
+    /// The first key of a sequence (`gg`) awaiting its second. Per-pane
+    /// so focusing away and back cannot fire a `g` armed on another pane.
+    pending_prefix: Option<PendingPrefix>,
     cache: ViewportCache,
     /// Visible rows at entry, which is both the pinned viewport height
     /// and the chunk size for fills.
     visible_rows: u16,
+    /// Pane width at entry. The cursor's column clamp lives here so the
+    /// state and the motion bounds cannot disagree about the pane shape.
+    cols: u16,
     /// Daemon row at the top of the frozen viewport: `-offset` entering
     /// from scrollback, 0 entering live. The pin is always the live
     /// grid's top, so without this the rows shown and the rows operated
@@ -177,14 +265,17 @@ impl CopyModeState {
     /// Seed at the bottom-left of the frozen viewport (Spec-0008 entry).
     /// `viewport_offset` is the pane's scroll offset at entry; entering
     /// live (0) seeds at `rows - 1` as the spec describes.
-    pub(crate) fn new(visible_rows: u16, viewport_offset: u32) -> Self {
+    pub(crate) fn new(cols: u16, visible_rows: u16, viewport_offset: u32) -> Self {
         let rows = u32::from(visible_rows.max(1));
         let viewport_top = -i64::from(viewport_offset);
         Self {
             cursor_row: viewport_top + i64::from(rows) - 1,
             cursor_col: 0,
+            selection: None,
+            pending_prefix: None,
             cache: ViewportCache::new(rows.saturating_mul(CACHE_ROWS_PER_SCREEN)),
             visible_rows: visible_rows.max(1),
+            cols: cols.max(1),
             viewport_top,
             in_flight: HashMap::new(),
             history_start: None,
@@ -204,8 +295,10 @@ impl CopyModeState {
         self.viewport_top
     }
 
-    /// The newest row copy mode can address: the bottom of the pinned
-    /// viewport, which the frozen grid snapshot still holds.
+    /// The newest row copy mode can address: the live grid's bottom row.
+    /// Entering scrolled, the rows below the frozen page are addressable
+    /// but read as blank — `PaneRows` serves the frozen snapshot, and the
+    /// live rows behind it are deliberately not consulted.
     fn last_row(&self) -> i64 {
         i64::from(self.visible_rows) - 1
     }
@@ -226,7 +319,61 @@ impl CopyModeState {
     /// serves.
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
-        self.cursor_col = col;
+        self.cursor_col = col.min(self.cols - 1);
+    }
+
+    /// The region motions resolve inside: the addressable rows plus the
+    /// pane's shape.
+    pub(crate) fn motion_bounds(&self) -> MotionBounds {
+        MotionBounds {
+            first_row: self.first_row(),
+            last_row: self.last_row(),
+            cols: self.cols,
+            visible_rows: self.visible_rows,
+        }
+    }
+
+    /// The prefix key awaiting the rest of its sequence.
+    pub(crate) fn pending_prefix(&self) -> Option<PendingPrefix> {
+        self.pending_prefix
+    }
+
+    pub(crate) fn set_pending_prefix(&mut self, pending: Option<PendingPrefix>) {
+        self.pending_prefix = pending;
+    }
+
+    /// Start, switch, or cancel a selection (Spec-0008): toggling the
+    /// active type cancels it, a different type switches shape and keeps
+    /// the anchor where the user put it.
+    pub(crate) fn toggle_selection(&mut self, ty: CopySelectionType) {
+        match self.selection.map(|selection| selection.ty) {
+            Some(active) if active == ty => self.selection = None,
+            Some(_) => {
+                if let Some(selection) = self.selection.as_mut() {
+                    selection.ty = ty;
+                }
+            }
+            None => {
+                self.selection = Some(CopySelection {
+                    ty,
+                    anchor_row: self.cursor_row,
+                    anchor_col: self.cursor_col,
+                });
+            }
+        }
+    }
+
+    /// Drop the selection, reporting whether there was one. Escape uses
+    /// the answer to decide between clearing and leaving copy mode.
+    pub(crate) fn clear_selection(&mut self) -> bool {
+        self.selection.take().is_some()
+    }
+
+    /// The selection as ordered inclusive endpoints, or `None` when
+    /// there is nothing selected to yank.
+    pub(crate) fn yank_range(&self) -> Option<YankRange> {
+        self.selection
+            .map(|selection| normalize_range(selection, (self.cursor_row, self.cursor_col)))
     }
 
     /// The entry fill: the frozen viewport plus one screen either side
@@ -260,11 +407,14 @@ impl CopyModeState {
         let chunk = u32::from(self.visible_rows).min(MAX_ROWS_PER_REQUEST);
 
         let candidate = if self.cursor_row < start + zone {
+            // Saturating because `oldest` is a sentinel until the daemon
+            // reports where history begins; the true span is irrelevant
+            // once it exceeds one chunk.
             let oldest = self.history_start.unwrap_or(i64::MIN);
             if start <= oldest {
                 return None;
             }
-            let want = i64::from(chunk).min(start - oldest);
+            let want = i64::from(chunk).min(start.saturating_sub(oldest));
             FillRequest {
                 start_row: start - want,
                 count: u32::try_from(want).unwrap_or(chunk),
@@ -319,6 +469,7 @@ impl CopyModeState {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn is_fill_in_flight(&self, serial: u32) -> bool {
         self.in_flight.contains_key(&serial)
     }
@@ -375,7 +526,9 @@ impl CopyModeState {
 
 #[cfg(test)]
 mod tests {
-    use super::{CopyModeState, FillFailure, FillRequest, ViewportCache};
+    use super::{
+        CopyModeState, CopySelectionType, FillFailure, FillRequest, ViewportCache, YankRange,
+    };
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
 
@@ -442,7 +595,7 @@ mod tests {
     /// naming entirely different rows.
     #[test]
     fn a_clamped_window_keys_from_the_served_start() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         // Asked for rows -20..-16; only three rows of history exist, so
         // the daemon serves -3..0 instead.
         state.record_fill(
@@ -492,7 +645,7 @@ mod tests {
     /// a blanket reinterpretation of every response.
     #[test]
     fn an_unclamped_window_keys_where_it_was_requested() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         state.record_fill(
             7,
             FillRequest {
@@ -511,7 +664,7 @@ mod tests {
     /// filed at whatever start it happens to carry.
     #[test]
     fn a_reply_with_an_unknown_serial_is_refused() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         state.record_fill(
             11,
             FillRequest {
@@ -532,7 +685,7 @@ mod tests {
     /// the most recent one did.
     #[test]
     fn out_of_order_replies_file_against_their_own_request() {
-        let mut state = CopyModeState::new(64, 0);
+        let mut state = CopyModeState::new(80, 64, 0);
         state.record_fill(
             20,
             FillRequest {
@@ -563,7 +716,7 @@ mod tests {
     /// cache and no outstanding request to fill it.
     #[test]
     fn an_error_retires_the_initial_fill_and_the_retry_fills_the_cache() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -580,7 +733,7 @@ mod tests {
     /// every retry for exactly the region the cursor is moving into.
     #[test]
     fn an_error_retires_a_prefetch_so_the_window_can_be_asked_for_again() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -12, "abcdefghijkl", true);
         state.set_cursor(-11, 0);
         let fill = state.plan_prefetch().expect("boundary reached");
@@ -601,7 +754,7 @@ mod tests {
     /// leaving copy mode.
     #[test]
     fn a_second_failure_of_the_same_window_abandons_copy_mode() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -616,7 +769,7 @@ mod tests {
     /// unretryable failure abandons on the first error.
     #[test]
     fn an_unretryable_failure_abandons_without_a_retry() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         state.record_fill(7, state.initial_fill());
 
         assert_eq!(state.fail_fill(7, false), FillFailure::Abandon);
@@ -626,7 +779,7 @@ mod tests {
     /// a copy-mode fill that is still legitimately outstanding.
     #[test]
     fn an_error_for_another_request_leaves_copy_mode_fills_alone() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -638,7 +791,7 @@ mod tests {
 
     #[test]
     fn prefetch_fires_at_the_top_quarter_of_the_window() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -12, "abcdefghijkl", true);
 
         state.set_cursor(-5, 0);
@@ -656,7 +809,7 @@ mod tests {
 
     #[test]
     fn prefetch_fires_at_the_bottom_quarter_of_the_window() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -20, "abcdefgh", true);
 
         state.set_cursor(-13, 0);
@@ -674,7 +827,7 @@ mod tests {
     /// and race two writes onto the same keys.
     #[test]
     fn prefetch_does_not_duplicate_an_in_flight_window() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -12, "abcdefghijkl", true);
         state.set_cursor(-11, 0);
 
@@ -692,7 +845,7 @@ mod tests {
     /// other end still plans while the first fill is outstanding.
     #[test]
     fn prefetch_at_the_far_boundary_is_not_suppressed() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -20, "abcdefgh", true);
         state.set_cursor(-19, 0);
         let older = state.plan_prefetch().expect("top boundary");
@@ -712,7 +865,7 @@ mod tests {
     /// exists, so walking into the top zone must stop asking.
     #[test]
     fn prefetch_stops_at_the_start_of_history() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -8, "abcdefgh", false);
 
         state.set_cursor(-8, 0);
@@ -725,7 +878,7 @@ mod tests {
     /// whose clamped reply already taught the cache where history begins.
     #[test]
     fn prefetch_shortens_the_last_chunk_before_the_start_of_history() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         state.record_fill(
             1,
             FillRequest {
@@ -751,7 +904,7 @@ mod tests {
     /// already holds; the daemon serves none of them.
     #[test]
     fn prefetch_never_reaches_past_the_pinned_viewport_top() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -4, "abcd", true);
 
         state.set_cursor(-1, 0);
@@ -762,7 +915,7 @@ mod tests {
 
     #[test]
     fn the_cursor_seeds_at_the_bottom_left_of_the_viewport() {
-        assert_eq!(CopyModeState::new(24, 0).cursor(), (23, 0));
+        assert_eq!(CopyModeState::new(80, 24, 0).cursor(), (23, 0));
     }
 
     /// Entering from scrollback: the daemon pins row 0 at the live grid's
@@ -772,7 +925,7 @@ mod tests {
     /// see. At offset 10 a 24-row pane displays rows -10..=13.
     #[test]
     fn entering_from_scrollback_seeds_the_cursor_on_a_displayed_row() {
-        let state = CopyModeState::new(24, 10);
+        let state = CopyModeState::new(80, 24, 10);
         let (row, col) = state.cursor();
 
         assert_eq!((row, col), (13, 0), "bottom of the frozen viewport");
@@ -789,7 +942,7 @@ mod tests {
     /// the user is already looking at.
     #[test]
     fn entering_from_scrollback_lets_the_cursor_reach_the_viewport_top() {
-        let mut state = CopyModeState::new(24, 10);
+        let mut state = CopyModeState::new(80, 24, 10);
 
         state.set_cursor(-10, 0);
         assert_eq!(state.cursor(), (-10, 0));
@@ -800,10 +953,10 @@ mod tests {
 
     /// The live grid rows below the frozen viewport still exist in the
     /// daemon's space, so the state must not clamp them away — scrolling
-    /// the view down to reach them is TREK-112's job.
+    /// the view down to reach them is the renderer's job (TREK-114).
     #[test]
     fn the_live_grid_below_a_scrolled_viewport_stays_addressable() {
-        let mut state = CopyModeState::new(24, 10);
+        let mut state = CopyModeState::new(80, 24, 10);
         state.set_cursor(23, 0);
         assert_eq!(state.cursor(), (23, 0));
 
@@ -816,7 +969,7 @@ mod tests {
     /// starts on, since the cache only ever holds negative rows.
     #[test]
     fn the_cursor_clamps_across_the_cache_and_the_viewport() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -6, "abcdef", true);
 
         state.set_cursor(-99, 2);
@@ -829,11 +982,35 @@ mod tests {
         assert_eq!(state.cursor(), (0, 0), "the viewport top is addressable");
     }
 
+    /// The column clamp belongs to the state, so a column past the pane
+    /// edge cannot survive in the cursor whatever asked for it, and the
+    /// bounds motions resolve against report the same width.
+    #[test]
+    fn the_cursor_column_clamps_to_the_pane_width() {
+        let mut state = CopyModeState::new(10, 4, 0);
+
+        state.set_cursor(0, 9);
+        assert_eq!(state.cursor(), (0, 9), "the last column is addressable");
+
+        state.set_cursor(0, 99);
+        assert_eq!(state.cursor(), (0, 9));
+        assert_eq!(state.motion_bounds().cols, 10, "one source of truth");
+    }
+
+    /// A degenerate width still leaves one addressable column rather than
+    /// underflowing the clamp.
+    #[test]
+    fn a_zero_width_pane_pins_the_column_at_zero() {
+        let mut state = CopyModeState::new(0, 4, 0);
+        state.set_cursor(0, 7);
+        assert_eq!(state.cursor(), (0, 0));
+    }
+
     /// Before any fill lands there is no scrollback to walk into, so the
     /// cursor stays inside the frozen viewport.
     #[test]
     fn the_cursor_clamps_to_the_viewport_with_an_empty_cache() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         state.set_cursor(-5, 0);
         assert_eq!(state.cursor(), (0, 0));
     }
@@ -867,7 +1044,7 @@ mod tests {
     /// the path that actually runs.
     #[test]
     fn a_successful_fill_drains_its_in_flight_entry() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         let fill = FillRequest {
             start_row: -12,
             count: 12,
@@ -882,6 +1059,199 @@ mod tests {
             state.plan_prefetch().is_some(),
             "a drained fill must stop suppressing the next window"
         );
+    }
+
+    // --- Selection ---
+
+    /// The anchor is the cursor position at the moment the selection
+    /// started, and the cursor is its other end: moving after starting
+    /// extends rather than dragging the whole thing.
+    #[test]
+    fn starting_a_selection_anchors_at_the_cursor_and_extends_with_it() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        filled(&mut state, -8, "abcdefgh", true);
+        state.set_cursor(-4, 2);
+
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(-2, 5);
+
+        assert_eq!(
+            state.yank_range(),
+            Some(YankRange {
+                ty: CopySelectionType::Character,
+                start_row: -4,
+                start_col: 2,
+                end_row: -2,
+                end_col: 5,
+            })
+        );
+    }
+
+    /// Toggling the same shape cancels; a different one switches without
+    /// moving the anchor, so `v` then `V` selects the same span by line.
+    #[test]
+    fn toggling_the_same_type_cancels_and_a_different_one_switches() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        state.set_cursor(1, 3);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(4, 6);
+
+        state.toggle_selection(CopySelectionType::Line);
+        let switched = state.yank_range().expect("still selecting");
+        assert_eq!(switched.ty, CopySelectionType::Line);
+        assert_eq!(
+            (switched.start_row, switched.start_col),
+            (1, 3),
+            "the anchor survives the switch"
+        );
+
+        state.toggle_selection(CopySelectionType::Line);
+        assert_eq!(state.yank_range(), None, "the same type cancels");
+    }
+
+    /// Cycling through all three shapes and back to the first must end
+    /// cancelled, not stuck selecting: each toggle either switches or
+    /// cancels, never both.
+    #[test]
+    fn cycling_the_selection_types_ends_where_it_started() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        state.toggle_selection(CopySelectionType::Character);
+        state.toggle_selection(CopySelectionType::Line);
+        state.toggle_selection(CopySelectionType::Block);
+        assert!(state.yank_range().is_some());
+
+        state.toggle_selection(CopySelectionType::Block);
+        assert_eq!(state.yank_range(), None);
+
+        // And the next start anchors afresh at wherever the cursor is.
+        state.set_cursor(2, 7);
+        state.toggle_selection(CopySelectionType::Character);
+        let range = state.yank_range().expect("a fresh selection");
+        assert_eq!((range.start_row, range.start_col), (2, 7));
+    }
+
+    #[test]
+    fn clearing_reports_whether_there_was_a_selection() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        assert!(!state.clear_selection(), "nothing to clear");
+        state.toggle_selection(CopySelectionType::Character);
+        assert!(state.clear_selection());
+        assert_eq!(state.yank_range(), None);
+    }
+
+    /// A selection dragged backwards yanks the same text as one dragged
+    /// forwards: character ranges order in reading order.
+    #[test]
+    fn a_backwards_character_selection_normalizes_in_reading_order() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        filled(&mut state, -8, "abcdefgh", true);
+        state.set_cursor(-2, 5);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(-4, 2);
+
+        assert_eq!(
+            state.yank_range(),
+            Some(YankRange {
+                ty: CopySelectionType::Character,
+                start_row: -4,
+                start_col: 2,
+                end_row: -2,
+                end_col: 5,
+            })
+        );
+    }
+
+    /// Within one row the column decides the order, which a row-only
+    /// comparison would get backwards.
+    #[test]
+    fn a_backwards_selection_inside_one_row_orders_by_column() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        state.set_cursor(3, 9);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(3, 1);
+
+        let range = state.yank_range().expect("selecting");
+        assert_eq!((range.start_col, range.end_col), (1, 9));
+    }
+
+    /// Line selections share the reading-order path with character ones;
+    /// only the block branch departs from it.
+    #[test]
+    fn a_backwards_line_selection_normalizes_in_reading_order() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        filled(&mut state, -8, "abcdefgh", true);
+        state.set_cursor(-2, 5);
+        state.toggle_selection(CopySelectionType::Line);
+        state.set_cursor(-4, 2);
+
+        assert_eq!(
+            state.yank_range(),
+            Some(YankRange {
+                ty: CopySelectionType::Line,
+                start_row: -4,
+                start_col: 2,
+                end_row: -2,
+                end_col: 5,
+            })
+        );
+    }
+
+    /// A block normalizes each axis on its own, so dragging up-and-right
+    /// yields the same rectangle as down-and-left. Reading-order
+    /// normalization would swap both endpoints together and invert the
+    /// column range.
+    #[test]
+    fn a_block_selection_normalizes_each_axis_independently() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        filled(&mut state, -8, "abcdefgh", true);
+        state.set_cursor(-2, 9);
+        state.toggle_selection(CopySelectionType::Block);
+        state.set_cursor(-5, 3);
+
+        assert_eq!(
+            state.yank_range(),
+            Some(YankRange {
+                ty: CopySelectionType::Block,
+                start_row: -5,
+                start_col: 3,
+                end_row: -2,
+                end_col: 9,
+            })
+        );
+    }
+
+    /// A selection that never moved is a single cell, not an empty one:
+    /// both endpoints are inclusive.
+    #[test]
+    fn an_unmoved_selection_covers_the_anchor_cell() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        state.set_cursor(2, 4);
+        state.toggle_selection(CopySelectionType::Character);
+
+        assert_eq!(
+            state.yank_range(),
+            Some(YankRange {
+                ty: CopySelectionType::Character,
+                start_row: 2,
+                start_col: 4,
+                end_row: 2,
+                end_col: 4,
+            })
+        );
+    }
+
+    // --- Cached row text ---
+
+    #[test]
+    fn cached_rows_read_out_as_characters_with_blanks_for_empty_cells() {
+        let mut cache = ViewportCache::new(8);
+        let mut blank = row('x');
+        blank.cells[0].codepoint = 0;
+        cache.insert_window(-2, vec![row('h'), blank]);
+
+        assert_eq!(cache.row_chars(-2), Some(vec!['h']));
+        assert_eq!(cache.row_chars(-1), Some(vec![' ']));
+        assert_eq!(cache.row_chars(-99), None, "an unserved row has no text");
     }
 
     // --- Window overlap ---
@@ -995,7 +1365,7 @@ mod tests {
     /// requiring the rows between them to exist.
     #[test]
     fn a_stale_reply_leaves_the_cursor_on_a_cached_row() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-5, 0);
 
@@ -1058,7 +1428,7 @@ mod tests {
     /// window is the one screen of scrollback above it.
     #[test]
     fn the_entry_fill_stops_at_the_pinned_grid_top() {
-        let state = CopyModeState::new(24, 0);
+        let state = CopyModeState::new(80, 24, 0);
         assert_eq!(
             state.initial_fill(),
             FillRequest {
@@ -1073,7 +1443,7 @@ mod tests {
     /// half of what is on screen without reaching into the grid.
     #[test]
     fn the_entry_fill_from_scrollback_covers_the_page_up_to_row_zero() {
-        let fill = CopyModeState::new(24, 10).initial_fill();
+        let fill = CopyModeState::new(80, 24, 10).initial_fill();
 
         assert_eq!(
             fill,
@@ -1089,7 +1459,7 @@ mod tests {
     /// the three screens land centred on the frozen page.
     #[test]
     fn a_deep_entry_fill_is_bounded_by_the_cache_capacity() {
-        let fill = CopyModeState::new(24, 100).initial_fill();
+        let fill = CopyModeState::new(80, 24, 100).initial_fill();
 
         assert_eq!(
             fill,
@@ -1111,7 +1481,7 @@ mod tests {
     #[test]
     fn no_entry_fill_ever_reaches_a_grid_row() {
         for offset in [0u32, 1, 5, 23, 24, 25, 100, 10_000] {
-            let fill = CopyModeState::new(24, offset).initial_fill();
+            let fill = CopyModeState::new(80, 24, offset).initial_fill();
             assert!(
                 fill.end_row() <= 0,
                 "offset {offset} asks for grid row {}",
@@ -1126,7 +1496,7 @@ mod tests {
     /// still lands at a negative key.
     #[test]
     fn an_entry_fill_after_output_caches_no_grid_rows() {
-        let mut state = CopyModeState::new(4, 0);
+        let mut state = CopyModeState::new(80, 4, 0);
         let fill = state.initial_fill();
         state.record_fill(1, fill);
 
@@ -1147,10 +1517,12 @@ mod tests {
     /// more than one response can carry.
     #[test]
     fn the_entry_fill_respects_the_per_request_row_cap() {
-        let state = CopyModeState::new(u16::MAX, 0);
+        let state = CopyModeState::new(80, u16::MAX, 0);
         assert_eq!(state.initial_fill().count, super::MAX_ROWS_PER_REQUEST);
         assert_eq!(
-            CopyModeState::new(u16::MAX, u32::MAX).initial_fill().count,
+            CopyModeState::new(80, u16::MAX, u32::MAX)
+                .initial_fill()
+                .count,
             super::MAX_ROWS_PER_REQUEST
         );
     }

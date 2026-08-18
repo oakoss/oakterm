@@ -12,6 +12,7 @@ use crate::frame::{
     FontState, FrameAssembly, assemble_frame, assemble_palette, assemble_status_bar,
     assemble_tab_bar, solid_section,
 };
+use crate::pane_view::PaneView;
 use crate::{App, layout, status_bar, tab_bar};
 
 /// Border colors are fixed until the theme system (TREK-212) lands.
@@ -93,9 +94,7 @@ impl App {
                     font,
                     &self.config,
                     &self.tabs,
-                    self.panes
-                        .get(&self.focused_pane)
-                        .map_or("", |v| v.title.as_str()),
+                    self.panes.get(&self.focused_pane),
                     window_height,
                     viewport,
                     &mut assembly,
@@ -193,7 +192,7 @@ fn assemble_status_bar_chrome(
     font: &mut FontState,
     config: &oakterm_config::ConfigValues,
     tabs: &tab_bar::TabsState,
-    pane_title: &str,
+    focused: Option<&PaneView>,
     window_height: u32,
     viewport: (f32, f32),
     assembly: &mut FrameAssembly,
@@ -208,11 +207,16 @@ fn assemble_status_bar_chrome(
     };
     let clock = status_bar::clock_text();
     let content = status_bar::StatusContent {
-        mode: None,
+        // The one sign a pane is in copy mode until the cursor and
+        // selection render (TREK-114): without it the view freezes and
+        // the keyboard changes meaning with nothing saying so.
+        mode: focused
+            .is_some_and(PaneView::is_copy_mode)
+            .then_some("COPY"),
         workspace: tabs.workspace_name(),
         tabs: tabs.tabs(),
         active_tab: tabs.active_tab(),
-        pane_title,
+        pane_title: focused.map_or("", |v| v.title.as_str()),
         clock: &clock,
     };
     assemble_status_bar(font, &content, viewport, y, assembly);
@@ -253,7 +257,48 @@ fn clear_color(grid_bg: [u8; 3]) -> wgpu::Color {
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact defaults, /255, and u32→f32 dims
 mod tests {
-    use super::{clear_color, text_uniforms};
+    use super::{PaneView, assemble_status_bar_chrome, clear_color, text_uniforms};
+    use crate::frame::FrameAssembly;
+    use crate::render_grid::ClientGrid;
+
+    /// Copy mode's only on-screen sign until the cursor and selection
+    /// render (TREK-114). The status bar layer is tested on its own, so
+    /// what this pins is the wiring: copy mode reaches the mode slot,
+    /// and normal mode leaves it empty.
+    #[test]
+    fn copy_mode_puts_its_indicator_in_the_status_bar() {
+        let Ok(mut font) =
+            crate::frame::try_init_font(&oakterm_config::ConfigValues::default(), 14.0)
+        else {
+            return;
+        };
+        let config = oakterm_config::ConfigValues::default();
+        let tabs = crate::tab_bar::TabsState::default();
+        let viewport = (1600.0, 600.0);
+
+        let mut pane = PaneView::new(ClientGrid::new(80, 24));
+        pane.title = "~/project".to_string();
+
+        let glyphs = |font: &mut crate::frame::FontState, pane: &PaneView| {
+            let mut assembly = FrameAssembly::default();
+            assemble_status_bar_chrome(
+                font,
+                &config,
+                &tabs,
+                Some(pane),
+                600,
+                viewport,
+                &mut assembly,
+            );
+            assembly.glyphs.len()
+        };
+
+        let normal = glyphs(&mut font, &pane);
+        pane.enter_copy_mode();
+        let copy = glyphs(&mut font, &pane);
+
+        assert_eq!(copy - normal, "[COPY]".len(), "the indicator's six cells");
+    }
 
     #[test]
     fn text_uniforms_uses_safe_defaults_without_a_font() {

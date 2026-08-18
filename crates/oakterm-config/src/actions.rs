@@ -30,6 +30,7 @@ pub enum ActionId {
     ToggleFullscreen,
     ShowCommandPalette,
     ReloadConfig,
+    EnterCopyMode,
 }
 
 impl ActionId {
@@ -39,7 +40,7 @@ impl ActionId {
     /// here as their features land (Spec-0009 lists the full target set);
     /// registering only wired actions keeps the catalog free of entries that
     /// would execute as no-ops.
-    pub const ALL: [ActionId; 14] = [
+    pub const ALL: [ActionId; 15] = [
         ActionId::SplitPaneRight,
         ActionId::SplitPaneDown,
         ActionId::ClosePane,
@@ -54,6 +55,7 @@ impl ActionId {
         ActionId::ToggleFullscreen,
         ActionId::ShowCommandPalette,
         ActionId::ReloadConfig,
+        ActionId::EnterCopyMode,
     ];
 
     /// The boundary identifier used by Lua config and the palette.
@@ -74,6 +76,7 @@ impl ActionId {
             ActionId::ToggleFullscreen => "toggle_fullscreen",
             ActionId::ShowCommandPalette => "show_command_palette",
             ActionId::ReloadConfig => "reload_config",
+            ActionId::EnterCopyMode => "enter_copy_mode",
         }
     }
 
@@ -95,6 +98,7 @@ impl ActionId {
             ActionId::ToggleFullscreen => "Toggle Fullscreen",
             ActionId::ShowCommandPalette => "Show Command Palette",
             ActionId::ReloadConfig => "Reload Config",
+            ActionId::EnterCopyMode => "Enter Copy Mode",
         }
     }
 
@@ -112,7 +116,9 @@ impl ActionId {
             ActionId::NewTab | ActionId::CloseTab | ActionId::NextTab | ActionId::PreviousTab => {
                 ActionCategory::Tab
             }
-            ActionId::ToggleFullscreen | ActionId::ShowCommandPalette => ActionCategory::View,
+            ActionId::ToggleFullscreen | ActionId::ShowCommandPalette | ActionId::EnterCopyMode => {
+                ActionCategory::View
+            }
             ActionId::ReloadConfig => ActionCategory::Config,
         }
     }
@@ -137,6 +143,10 @@ impl ActionId {
             ActionId::FocusPaneRight => ctx.can_focus_right,
             ActionId::FocusPaneUp => ctx.can_focus_up,
             ActionId::FocusPaneDown => ctx.can_focus_down,
+            // A pre-1.4 daemon's scrollback replies cannot be keyed
+            // safely, so the GUI refuses to enter (Spec-0001 1.4); the
+            // gate releases the chord to the PTY instead of eating it.
+            ActionId::EnterCopyMode => ctx.copy_mode_supported,
         }
     }
 }
@@ -172,6 +182,9 @@ pub struct ActionContext {
     pub can_focus_right: bool,
     pub can_focus_up: bool,
     pub can_focus_down: bool,
+    /// Whether the daemon speaks the scrollback semantics copy mode's
+    /// row indices depend on.
+    pub copy_mode_supported: bool,
 }
 
 /// A catalog entry: an action id plus the keybind hint resolved from the active
@@ -295,6 +308,7 @@ pub fn action_id_of(action: &Action) -> Option<ActionId> {
         Action::ToggleFullscreen => Some(ActionId::ToggleFullscreen),
         Action::ShowCommandPalette => Some(ActionId::ShowCommandPalette),
         Action::ReloadConfig => Some(ActionId::ReloadConfig),
+        Action::EnterCopyMode => Some(ActionId::EnterCopyMode),
         _ => None,
     }
 }
@@ -342,6 +356,7 @@ mod tests {
             (ActionId::ToggleFullscreen, View),
             (ActionId::ShowCommandPalette, View),
             (ActionId::ReloadConfig, Config),
+            (ActionId::EnterCopyMode, View),
         ];
         // Covering every ALL member keeps a mis-assigned category from hiding
         // behind a sampled subset.
@@ -694,10 +709,11 @@ mod tests {
                 | ActionId::PreviousTab
                 | ActionId::ToggleFullscreen
                 | ActionId::ShowCommandPalette
-                | ActionId::ReloadConfig => {}
+                | ActionId::ReloadConfig
+                | ActionId::EnterCopyMode => {}
             }
         }
-        assert_eq!(ActionId::ALL.len(), 14);
+        assert_eq!(ActionId::ALL.len(), 15);
     }
 
     #[test]
@@ -734,6 +750,7 @@ mod tests {
             can_focus_right: true,
             can_focus_up: true,
             can_focus_down: true,
+            copy_mode_supported: true,
         };
         let ids: Vec<ActionId> = reg.performable(ctx).map(RegisteredAction::id).collect();
         assert_eq!(ids, ActionId::ALL.to_vec());
@@ -759,6 +776,7 @@ mod tests {
             Action::ToggleFullscreen,
             Action::ShowCommandPalette,
             Action::ReloadConfig,
+            Action::EnterCopyMode,
         ];
         let mapped: Vec<ActionId> = actions.iter().filter_map(action_id_of).collect();
         assert_eq!(mapped, ActionId::ALL.to_vec());

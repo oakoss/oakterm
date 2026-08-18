@@ -353,6 +353,8 @@ pub enum Action {
     PreviousTab,
     /// Show the command palette.
     ShowCommandPalette,
+    /// Enter copy mode on the focused pane.
+    EnterCopyMode,
 
     /// Lua callback function.
     Callback(RegistryKey),
@@ -496,6 +498,7 @@ impl KeybindRegistry {
             ("oak_mod+t", Action::NewTab),
             ("oak_mod+w", Action::ClosePane),
             ("oak_mod+p", Action::ShowCommandPalette),
+            ("oak_mod+[", Action::EnterCopyMode),
             (NEXT_TAB_CHORD, Action::NextTab),
             (PREVIOUS_TAB_CHORD, Action::PreviousTab),
         ];
@@ -1061,6 +1064,23 @@ mod tests {
         assert!(matches!(
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
+        ));
+    }
+
+    /// ADR-0011 reserves `oak_mod+[` for copy mode, which is why tab
+    /// cycling takes a platform convention instead: on Linux
+    /// `oak_mod+shift+[` folds into this very chord.
+    #[test]
+    fn defaults_include_copy_mode_without_colliding_with_tab_cycling() {
+        let reg = KeybindRegistry::with_defaults();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+[", platform_mods()).unwrap();
+        assert!(matches!(reg.lookup(&chord), Some(Action::EnterCopyMode)));
+
+        let previous_tab = KeyChord::parse(PREVIOUS_TAB_CHORD).unwrap();
+        assert_ne!(chord, previous_tab);
+        assert!(matches!(
+            reg.lookup(&previous_tab),
+            Some(Action::PreviousTab)
         ));
     }
 

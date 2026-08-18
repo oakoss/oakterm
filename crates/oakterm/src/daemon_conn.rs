@@ -8,8 +8,9 @@ use oakterm_protocol::message::{
     MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB_RESPONSE, MSG_DIRTY_NOTIFY, MSG_ERROR,
     MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION,
     MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_SHUTDOWN,
-    MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED, NewTabResponse, PromptPosition,
-    ScrollbackData, Shutdown, SplitPaneResponse, TabList, TitleChanged,
+    MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED, MSG_YANK_RESPONSE, NewTabResponse,
+    PromptPosition, ScrollbackData, Shutdown, SplitPaneResponse, TabList, TitleChanged,
+    YankResponse,
 };
 use oakterm_protocol::render::{DirtyNotify, GetRenderUpdate, RenderUpdate};
 use std::collections::{HashMap, HashSet};
@@ -488,6 +489,24 @@ fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
                 error!(error = %e, "failed to decode ScrollbackData");
             }
         },
+        MSG_YANK_RESPONSE => match YankResponse::decode(&frame.payload) {
+            Ok(resp) => {
+                events.push(UserEvent::YankResponse {
+                    serial: frame.serial,
+                    text: resp.text,
+                });
+            }
+            Err(e) => {
+                error!(error = %e, "failed to decode YankResponse");
+                // Retire the yank through the ordinary failure path: a
+                // dropped reply would leave it pending forever, and every
+                // later response refused as answering a superseded one.
+                events.push(UserEvent::RequestFailed {
+                    serial: frame.serial,
+                    code: None,
+                });
+            }
+        },
         MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
             Ok(pos) => {
                 events.push(UserEvent::PromptPosition(pos));
@@ -542,29 +561,35 @@ fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
                 serial: frame.serial,
             });
         }
-        MSG_ERROR => {
-            log_daemon_error(frame);
-            let code = ErrorMessage::decode(&frame.payload)
-                .ok()
-                .and_then(|err| ErrorCode::try_from(err.code).ok());
-            events.push(UserEvent::RequestFailed {
-                serial: frame.serial,
-                code,
-            });
-            if error_rings_bell(code) {
-                events.push(UserEvent::Bell);
-            }
-        }
+        MSG_ERROR => events.extend(error_events(frame)),
         MSG_SHUTDOWN => log_daemon_shutdown(frame),
         _ => return None,
     }
     Some(events)
 }
 
+/// What an error frame reports: the failed serial, plus a bell for the
+/// rejections that would otherwise look like a dead keybind.
+fn error_events(frame: &Frame) -> Vec<UserEvent> {
+    log_daemon_error(frame);
+    let code = ErrorMessage::decode(&frame.payload)
+        .ok()
+        .and_then(|err| ErrorCode::try_from(err.code).ok());
+    let mut events = vec![UserEvent::RequestFailed {
+        serial: frame.serial,
+        code,
+    }];
+    if error_rings_bell(code) {
+        events.push(UserEvent::Bell);
+    }
+    events
+}
+
 /// Whether a rejected request should ring the bell. These are routine
 /// user-triggered outcomes, and a silent one makes the keybind or click
-/// look dead.
-fn error_rings_bell(code: Option<ErrorCode>) -> bool {
+/// look dead. Shared with the App's own failure paths so a rejection
+/// that already rings here is not announced twice.
+pub(crate) fn error_rings_bell(code: Option<ErrorCode>) -> bool {
     matches!(
         code,
         Some(
@@ -615,8 +640,14 @@ mod tests {
     use crate::UserEvent;
     use oakterm_protocol::frame::Frame;
     use oakterm_protocol::message::{
-        ErrorCode, ErrorMessage, MSG_ERROR, MSG_SCROLLBACK_DATA, ScrollbackData,
+        ErrorCode, ErrorMessage, MSG_ERROR, MSG_SCROLLBACK_DATA, MSG_YANK_RESPONSE, ScrollbackData,
+        YankResponse,
     };
+
+    fn yank_frame(serial: u32, text: &str) -> Frame {
+        let payload = YankResponse { text: text.into() }.encode().expect("encode");
+        Frame::new(MSG_YANK_RESPONSE, serial, payload).expect("frame")
+    }
 
     fn scrollback_frame(serial: u32) -> Frame {
         let payload = ScrollbackData {
@@ -654,6 +685,39 @@ mod tests {
                 assert_eq!(data.pane_id, 3);
             }
             other => panic!("expected one ScrollbackData, got {other:?}"),
+        }
+    }
+
+    /// A yank reply correlates by serial alone — the daemon answers with
+    /// text and nothing else — so forwarding 0 would strand every yank.
+    #[test]
+    fn a_yank_reply_carries_the_frames_serial_and_text() {
+        let events = events_for_frame(&yank_frame(41, "hello")).expect("owned type");
+
+        match events.as_slice() {
+            [UserEvent::YankResponse { serial, text }] => {
+                assert_eq!(*serial, 41);
+                assert_eq!(text, "hello");
+            }
+            other => panic!("expected one YankResponse, got {other:?}"),
+        }
+    }
+
+    /// A corrupt yank payload must still retire the pending yank. Logging
+    /// and dropping it leaves `y` inert for the rest of copy mode, since
+    /// the next reply answers a serial the client no longer expects.
+    #[test]
+    fn a_corrupt_yank_reply_fails_its_request() {
+        let truncated = Frame::new(MSG_YANK_RESPONSE, 41, vec![0xff, 0x00]).expect("frame");
+
+        let events = events_for_frame(&truncated).expect("owned type");
+
+        match events.as_slice() {
+            [UserEvent::RequestFailed { serial, code }] => {
+                assert_eq!(*serial, 41);
+                assert_eq!(*code, None, "no daemon error code to report");
+            }
+            other => panic!("expected one RequestFailed, got {other:?}"),
         }
     }
 

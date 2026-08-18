@@ -2,7 +2,11 @@
 //! multiplies with it when split rendering (TREK-99) lands — scrollback
 //! viewport, selection, and mode flags all follow a pane, not the window.
 
-use crate::copy_mode::{CopyModeState, FillFailure, FillRequest};
+use crate::copy_keys::{Motion, PendingPrefix};
+use crate::copy_mode::{
+    CopyModeState, CopySelectionType, FillFailure, FillRequest, ViewportCache, YankRange,
+};
+use crate::copy_motion::{RowText, resolve};
 use crate::render_grid::ClientGrid;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::{DirtyRow, RenderUpdate};
@@ -217,7 +221,6 @@ impl PaneView {
     ///
     /// Re-entering re-seeds, matching the daemon's treatment of a second
     /// `EnterCopyMode` as an implicit exit plus enter (ADR-0012).
-    #[allow(dead_code, reason = "reached once the key table dispatches (TREK-112)")]
     pub(crate) fn enter_copy_mode(&mut self) -> FillRequest {
         // `freeze`, not `freeze_live`: a re-entry replaces the state
         // rather than owing an `ExitCopyMode`, since the daemon treats a
@@ -228,7 +231,7 @@ impl PaneView {
         // drops that reply, so the skew would never resolve. Adopting it
         // abandons the pending scroll the user cannot see yet.
         self.viewport_offset = self.painted_offset;
-        let state = CopyModeState::new(self.grid.rows, self.painted_offset);
+        let state = CopyModeState::new(self.grid.cols, self.grid.rows, self.painted_offset);
         let fill = state.initial_fill();
         self.copy_mode = Some(state);
         fill
@@ -271,11 +274,55 @@ impl PaneView {
 
     /// Move the copy-mode cursor, clamped to the rows copy mode can
     /// address. A no-op outside copy mode.
-    #[allow(dead_code, reason = "driven by the copy-mode motions (TREK-112)")]
     pub(crate) fn set_copy_mode_cursor(&mut self, row: i64, col: u16) {
         if let Some(state) = &mut self.copy_mode {
             state.set_cursor(row, col);
         }
+    }
+
+    /// Apply a copy-mode motion, resolved against the cached scrollback
+    /// rows and the frozen page. A no-op outside copy mode.
+    pub(crate) fn move_copy_mode_cursor(&mut self, motion: Motion) {
+        let Some(state) = &self.copy_mode else {
+            return;
+        };
+        let rows = PaneRows {
+            cache: state.cache(),
+            grid: &self.grid,
+            viewport_top: state.viewport_top(),
+        };
+        let target = resolve(motion, state.cursor(), state.motion_bounds(), &rows);
+        self.set_copy_mode_cursor(target.0, target.1);
+    }
+
+    /// The prefix key a multi-key sequence is waiting on.
+    pub(crate) fn copy_mode_pending_prefix(&self) -> Option<PendingPrefix> {
+        self.copy_mode.as_ref()?.pending_prefix()
+    }
+
+    pub(crate) fn set_copy_mode_pending_prefix(&mut self, pending: Option<PendingPrefix>) {
+        if let Some(state) = &mut self.copy_mode {
+            state.set_pending_prefix(pending);
+        }
+    }
+
+    /// Start, switch, or cancel the copy-mode selection.
+    pub(crate) fn toggle_copy_mode_selection(&mut self, ty: CopySelectionType) {
+        if let Some(state) = &mut self.copy_mode {
+            state.toggle_selection(ty);
+        }
+    }
+
+    /// Drop the copy-mode selection, reporting whether there was one.
+    pub(crate) fn clear_copy_mode_selection(&mut self) -> bool {
+        self.copy_mode
+            .as_mut()
+            .is_some_and(CopyModeState::clear_selection)
+    }
+
+    /// The selection's ordered endpoints, or `None` with nothing selected.
+    pub(crate) fn copy_mode_yank_range(&self) -> Option<YankRange> {
+        self.copy_mode.as_ref()?.yank_range()
     }
 
     /// Note a `GetScrollback` sent for the copy-mode cache, so its reply
@@ -321,6 +368,25 @@ impl PaneView {
     }
 }
 
+/// Row text for copy-mode motions: the cache for scrollback, the frozen
+/// page for what is on screen. Live-grid rows below a scrolled page are
+/// addressable but unpainted, so they have no text and read as blank.
+struct PaneRows<'a> {
+    cache: &'a ViewportCache,
+    grid: &'a ClientGrid,
+    viewport_top: i64,
+}
+
+impl RowText for PaneRows<'_> {
+    fn row(&self, row: i64) -> Option<Vec<char>> {
+        if let Some(chars) = self.cache.row_chars(row) {
+            return Some(chars);
+        }
+        let visible = u16::try_from(row - self.viewport_top).ok()?;
+        (visible < self.grid.rows).then(|| self.grid.row_text(visible).chars().collect())
+    }
+}
+
 /// Outcome of scrolling toward live view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a discarded copy mode leaves a daemon pin to release"]
@@ -355,7 +421,8 @@ fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
 #[cfg(test)]
 mod tests {
     use super::{PaneView, ScrollbackClampOutcome, clamp_viewport};
-    use crate::copy_mode::{CopyModeState, FillRequest};
+    use crate::copy_keys::{Motion, PendingPrefix};
+    use crate::copy_mode::{CopyModeState, CopySelectionType, FillRequest};
     use crate::render_grid::ClientGrid;
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
@@ -744,6 +811,168 @@ mod tests {
         assert!(!view.apply_copy_mode_scrollback(9, &scrollback_data(-8, 8)));
         assert!(view.apply_copy_mode_scrollback(42, &scrollback_data(-8, 8)));
         assert_eq!(view.copy_mode().map(|s| s.cache().len()), Some(8));
+    }
+
+    /// Motions read the frozen grid for on-screen rows. Entering live,
+    /// copy-mode row N is grid row N, so a word motion has to see the
+    /// text the pane is displaying.
+    #[test]
+    fn motions_read_the_frozen_grid_for_rows_on_screen() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        view.apply_update(&make_update(1, 3, b"alpha beta"));
+        view.enter_copy_mode();
+        view.set_copy_mode_cursor(3, 0);
+
+        view.move_copy_mode_cursor(Motion::WordForward);
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((3, 6)));
+
+        view.move_copy_mode_cursor(Motion::LineEnd);
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((3, 9)));
+    }
+
+    /// And the cache for scrollback rows, which the grid never holds.
+    /// Reading only one source would make half the buffer unnavigable.
+    #[test]
+    fn motions_read_the_cache_for_rows_below_the_pin() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        view.enter_copy_mode();
+        view.record_copy_mode_fill(
+            1,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        let mut data = scrollback_data(-8, 8);
+        data.rows[0] = make_dirty_row(0, b"one two");
+        assert!(view.apply_copy_mode_scrollback(1, &data));
+
+        view.set_copy_mode_cursor(-8, 0);
+        view.move_copy_mode_cursor(Motion::WordForward);
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((-8, 4)));
+    }
+
+    /// Entering scrolled, a copy-mode row maps to grid row
+    /// `row - viewport_top` — and the cache wins wherever it holds the
+    /// row, since the grid shows the same screen line through a different
+    /// page. Getting either wrong yanks text the user never pointed at.
+    #[test]
+    fn a_scrolled_entry_resolves_motions_against_the_cached_text() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        assert!(!view.scroll_up(1), "no copy mode to release");
+        view.apply_scrollback(&[make_dirty_row(0, b"zzzz")], false);
+        view.enter_copy_mode();
+
+        // Copy-mode row -1 is grid row 0 on this page, and the cache
+        // holds different text for it than the grid shows.
+        assert!(
+            view.grid().row_text(0).starts_with("zzzz"),
+            "the grid text must differ from the cached text"
+        );
+        view.record_copy_mode_fill(
+            1,
+            FillRequest {
+                start_row: -1,
+                count: 1,
+            },
+        );
+        let mut data = scrollback_data(-1, 1);
+        data.rows[0] = make_dirty_row(0, b"one two");
+        assert!(view.apply_copy_mode_scrollback(1, &data));
+
+        view.set_copy_mode_cursor(-1, 0);
+        view.move_copy_mode_cursor(Motion::WordForward);
+
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((-1, 4)),
+            "the motion read the grid's `zzzz`, not the cache's `one two`"
+        );
+    }
+
+    /// Prefetch fires on the cursor entering the edge quarter under
+    /// motions, not only under a direct `set_cursor` — the path a user
+    /// actually walks into scrollback on.
+    #[test]
+    fn repeated_half_page_motions_reach_the_prefetch_boundary() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        view.enter_copy_mode();
+        view.record_copy_mode_fill(
+            1,
+            FillRequest {
+                start_row: -24,
+                count: 24,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(1, &scrollback_data(-24, 24)));
+        assert!(
+            view.plan_copy_mode_prefetch().is_none(),
+            "the cursor starts mid-window"
+        );
+
+        for _ in 0..7 {
+            view.move_copy_mode_cursor(Motion::HalfPageUp);
+        }
+
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((-21, 0)),
+            "seven half pages up from row 7"
+        );
+        assert_eq!(
+            view.plan_copy_mode_prefetch(),
+            Some(FillRequest {
+                start_row: -32,
+                count: 8
+            })
+        );
+    }
+
+    /// The clamp is the state's, so a motion cannot walk off the ends
+    /// even though the resolver was handed the same bounds.
+    #[test]
+    fn motions_stay_within_the_addressable_rows() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        view.enter_copy_mode();
+
+        view.set_copy_mode_cursor(0, 0);
+        view.move_copy_mode_cursor(Motion::PageUp);
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((0, 0)));
+
+        view.move_copy_mode_cursor(Motion::Bottom);
+        view.move_copy_mode_cursor(Motion::PageDown);
+        assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((7, 0)));
+    }
+
+    /// Motions and the selection are per-pane state, so nothing here
+    /// reaches a pane that is not in copy mode.
+    #[test]
+    fn copy_mode_commands_are_inert_outside_copy_mode() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+
+        view.move_copy_mode_cursor(Motion::Down);
+        view.toggle_copy_mode_selection(CopySelectionType::Character);
+        view.set_copy_mode_pending_prefix(Some(PendingPrefix::G));
+
+        assert!(view.copy_mode().is_none());
+        assert_eq!(view.copy_mode_yank_range(), None);
+        assert_eq!(view.copy_mode_pending_prefix(), None);
+        assert!(!view.clear_copy_mode_selection());
+    }
+
+    /// Copy-mode state is per-pane, so a `g` armed on one pane cannot
+    /// complete a `gg` on another after focus moves.
+    #[test]
+    fn a_pending_prefix_belongs_to_its_own_pane() {
+        let mut first = PaneView::new(ClientGrid::new(16, 8));
+        let mut second = PaneView::new(ClientGrid::new(16, 8));
+        first.enter_copy_mode();
+        second.enter_copy_mode();
+
+        first.set_copy_mode_pending_prefix(Some(PendingPrefix::G));
+
+        assert_eq!(first.copy_mode_pending_prefix(), Some(PendingPrefix::G));
+        assert_eq!(second.copy_mode_pending_prefix(), None);
     }
 
     /// A pane not in copy mode leaves every scrollback reply to the
