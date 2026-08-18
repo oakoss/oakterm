@@ -460,6 +460,7 @@ mod tests {
             can_focus_right: true,
             can_focus_up: true,
             can_focus_down: true,
+            copy_mode_supported: true,
         }
     }
 
@@ -484,7 +485,7 @@ mod tests {
         for _ in 0.."tab".len() {
             p.backspace(&reg, open_ctx());
         }
-        assert_eq!(labels(&p).len(), 14);
+        assert_eq!(labels(&p).len(), 15);
     }
 
     #[test]
@@ -528,7 +529,7 @@ mod tests {
         // The recent action leads the default view on reopen, undoubled.
         p.open(&reg, open_ctx());
         assert_eq!(labels(&p)[0], "New Tab");
-        assert_eq!(labels(&p).len(), 14);
+        assert_eq!(labels(&p).len(), 15);
     }
 
     #[test]
@@ -559,7 +560,7 @@ mod tests {
                 "Split Pane Down",
             ],
         );
-        assert_eq!(labels(&p).len(), 14);
+        assert_eq!(labels(&p).len(), 15);
     }
 
     #[test]
@@ -604,7 +605,7 @@ mod tests {
     fn window_follows_selection_only_at_its_edges() {
         let reg = registry();
         let mut p = PaletteState::new();
-        p.open(&reg, open_ctx()); // 14 results, 10-row window
+        p.open(&reg, open_ctx()); // 15 results, 10-row window
         assert_eq!(p.window_start(), 0);
 
         // Down to the window's bottom edge: no scroll yet.
@@ -618,19 +619,20 @@ mod tests {
         p.move_down();
         p.move_down();
         p.move_down();
-        assert_eq!((p.selected_index(), p.window_start()), (13, 4));
+        p.move_down();
+        assert_eq!((p.selected_index(), p.window_start()), (14, 5));
         // Clamped at the last result; the window stays put.
         p.move_down();
-        assert_eq!((p.selected_index(), p.window_start()), (13, 4));
+        assert_eq!((p.selected_index(), p.window_start()), (14, 5));
 
         // Moving up moves the cursor within the window first...
         for _ in 0..9 {
             p.move_up();
         }
-        assert_eq!((p.selected_index(), p.window_start()), (4, 4));
+        assert_eq!((p.selected_index(), p.window_start()), (5, 5));
         // ...and only scrolls once the selection crosses the top edge.
         p.move_up();
-        assert_eq!((p.selected_index(), p.window_start()), (3, 3));
+        assert_eq!((p.selected_index(), p.window_start()), (4, 4));
 
         // Any edit resets the window with the selection.
         p.input_char('t', &reg, open_ctx());

@@ -126,6 +126,10 @@ function ActionModule.previous_tab() end
 ---@return oakterm.Action
 function ActionModule.show_command_palette() end
 
+--- Enter copy mode on the focused pane.
+---@return oakterm.Action
+function ActionModule.enter_copy_mode() end
+
 --- Config fields. Unknown keys raise errors with "did you mean?" suggestions.
 ---@class oakterm.Config
 ---@field font_family string Font family name (default: platform default)

@@ -707,9 +707,10 @@ mod tests {
             can_focus_right: true,
             can_focus_up: true,
             can_focus_down: true,
+            copy_mode_supported: true,
         };
         let mut palette = crate::palette::PaletteState::new();
-        palette.open(&reg, ctx); // 14 results, 10 visible
+        palette.open(&reg, ctx); // 15 results, 10 visible
 
         let mut selected_row = |palette: &crate::palette::PaletteState| {
             let mut assembly = FrameAssembly::default();

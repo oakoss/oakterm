@@ -1,5 +1,8 @@
 mod a11y_bridge;
+mod copy_keys;
 mod copy_mode;
+mod copy_motion;
+mod copy_session;
 mod daemon_conn;
 mod frame;
 mod gpu;
@@ -32,8 +35,9 @@ use oakterm_protocol::message::{
     GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR, LayoutTreeNode, MSG_CLOSE_PANE,
     MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE,
     MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB, MSG_RESIZE_PANE,
-    MSG_SPLIT_PANE, MSG_SWITCH_TAB, NewTab, PromptPosition, ResizePane, ScrollbackData,
-    SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab, TabList,
+    MSG_SPLIT_PANE, MSG_SWITCH_TAB, MSG_YANK_SELECTION, NewTab, PromptPosition, ResizePane,
+    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab,
+    TabList, YankSelection,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -41,9 +45,13 @@ use oakterm_config::StatusBarPosition;
 use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 use a11y_bridge::{A11yEvent, A11yModel};
+use copy_session::{
+    LeaderFlush, PendingYanks, YankDisposition, YankOutcome, plan_leader_flush, yank_disposition,
+};
 use daemon_conn::{DaemonWriter, connect_to_daemon};
 use frame::{FontState, try_init_font};
 use gpu::GpuState;
+use input::button_passthrough;
 use layout_state::PaneLayout;
 use pane_view::{PaneView, ScrollbackClampOutcome};
 use render_grid::ClientGrid;
@@ -125,6 +133,11 @@ enum UserEvent {
         serial: u32,
         code: Option<ErrorCode>,
     },
+    /// A yank the daemon resolved into text (Spec-0008 Yank).
+    YankResponse {
+        serial: u32,
+        text: String,
+    },
 }
 
 /// Copyable action descriptor to break the borrow on `keybind_registry`
@@ -150,6 +163,7 @@ enum ActionDesc {
     NextTab,
     PreviousTab,
     ShowCommandPalette,
+    EnterCopyMode,
 }
 
 /// Copy-out result for one action: its descriptor, "consume the key"
@@ -216,8 +230,31 @@ fn desc_of_action(action: &oakterm_config::Action) -> DescOutcome {
         Action::NextTab => ActionDesc::NextTab,
         Action::PreviousTab => ActionDesc::PreviousTab,
         Action::ShowCommandPalette => ActionDesc::ShowCommandPalette,
+        Action::EnterCopyMode => ActionDesc::EnterCopyMode,
     };
     DescOutcome::Desc(desc)
+}
+
+/// Put text on the system clipboard, logging either failure. Both copy
+/// paths (mouse selection, copy-mode yank) go through here so a clipboard
+/// that refuses the write is never silent. Returns whether the text
+/// landed: a copy that reports success without it would have the user
+/// paste whatever the clipboard held before.
+#[must_use]
+fn write_clipboard(text: &str) -> bool {
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => {
+            if let Err(e) = clipboard.set_text(text) {
+                warn!(error = %e, "clipboard set failed");
+                return false;
+            }
+            true
+        }
+        Err(e) => {
+            warn!(error = %e, "clipboard init failed");
+            false
+        }
+    }
 }
 
 /// Run a Lua keybind callback under the standard 100ms timeout hook.
@@ -588,8 +625,10 @@ struct App {
     last_mouse_cell: (u16, u16),
     /// Current keyboard modifier state for intercepting Shift+key.
     modifiers: winit::event::Modifiers,
-    /// Buttons whose press was Shift-bypassed; suppress their release too.
-    shift_bypassed_buttons: u8,
+    /// Buttons whose press was swallowed before reaching the PTY, by a
+    /// Shift bypass or by copy mode; their release is swallowed with it
+    /// so an application never sees half a click.
+    suppressed_buttons: u8,
     /// Blink phase: true = cursor visible, false = cursor hidden.
     blink_visible: bool,
     /// Next blink toggle deadline. `None` when blink is paused.
@@ -597,10 +636,11 @@ struct App {
     /// Next status bar clock repaint (minute boundary). `None` until a
     /// frame with a clock re-arms it.
     clock_deadline: Option<std::time::Instant>,
-    /// Active modal key table (copy mode, resize mode): while set,
-    /// unmatched keys are dropped rather than forwarded to the PTY.
-    /// Constructed programmatically by the mode that owns it (no Lua
-    /// registration API in Phase 1); `None` in normal operation.
+    /// Active modal key table (resize mode): while set, unmatched keys
+    /// are dropped rather than forwarded to the PTY. Constructed
+    /// programmatically by the mode that owns it (no Lua registration API
+    /// in Phase 1); `None` in normal operation. Copy mode has its own
+    /// table keyed on characters rather than chords (`copy_keys`).
     active_key_table: Option<oakterm_config::KeyTable>,
     /// A leader press awaiting its follow-up key.
     leader_pending: Option<LeaderPending>,
@@ -649,6 +689,7 @@ struct App {
     /// Monotonic request serial. Pushes use 0 and the reader thread owns
     /// 1; App requests start above both so error frames attribute.
     next_serial: u32,
+    pending_yanks: PendingYanks,
 }
 
 impl App {
@@ -676,7 +717,7 @@ impl App {
             initial_resize_sent: false,
             last_mouse_cell: (0, 0),
             modifiers: winit::event::Modifiers::default(),
-            shift_bypassed_buttons: 0,
+            suppressed_buttons: 0,
             blink_visible: true,
             blink_deadline: None,
             clock_deadline: None,
@@ -698,6 +739,7 @@ impl App {
             server_minor: 0,
             hovered_border: None,
             border_drag: None,
+            pending_yanks: PendingYanks::default(),
             next_serial: 10,
         }
     }
@@ -766,7 +808,6 @@ impl App {
     /// Refused against a pre-1.4 daemon, whose echoed `start_row` would
     /// key a clamped window onto the wrong rows indistinguishably from a
     /// correct one. No copy mode beats silently yanking the wrong text.
-    #[expect(dead_code, reason = "dispatched by the copy-mode key table (TREK-112)")]
     fn enter_copy_mode(&mut self, pane_id: u32) {
         if !copy_mode_supported(self.server_minor) {
             warn!(
@@ -780,6 +821,9 @@ impl App {
             return;
         };
         let fill = view.enter_copy_mode();
+        // A re-entry is a fresh session with fresh row indices, so a
+        // yank still in flight from the old one must not land on it.
+        self.pending_yanks.retire(pane_id);
         let sent = match (CopyMode { pane_id }).to_enter_frame() {
             Ok(frame) => self.send_or_disconnect(&frame, "EnterCopyMode"),
             Err(e) => {
@@ -797,11 +841,20 @@ impl App {
         }
         debug!(pane_id, "copy mode entered; filling viewport cache");
         self.send_copy_mode_fill(pane_id, fill);
+        // The frozen pane stops update-driven redraws, so the COPY
+        // indicator needs an explicit repaint to appear at entry.
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
     }
 
     /// Leave copy mode on a pane, releasing the daemon's pin. A pane that
     /// was not in copy mode sends nothing.
     fn exit_copy_mode(&mut self, pane_id: u32) {
+        // Ahead of the early return: a pane can leave copy mode by a
+        // path that already discarded the view state, and a yank left
+        // pending would complete against a session the user has ended.
+        self.pending_yanks.retire(pane_id);
         if !self
             .panes
             .get_mut(&pane_id)
@@ -908,6 +961,147 @@ impl App {
         };
         if let Some(view) = self.panes.get_mut(&pane_id) {
             view.record_copy_mode_fill(serial, fill);
+        }
+    }
+
+    /// Run one key press against the copy-mode table. Copy mode is
+    /// modal, so every press reaching here is consumed whatever the
+    /// table says; nothing is forwarded to the PTY.
+    fn handle_copy_mode_key(&mut self, press: copy_keys::CopyPress) {
+        let pane_id = self.focused_pane;
+        let pending = self
+            .panes
+            .get(&pane_id)
+            .and_then(PaneView::copy_mode_pending_prefix);
+        let (next, command) = copy_keys::advance_copy_key(pending, press);
+        if pending != next {
+            if let Some(view) = self.panes.get_mut(&pane_id) {
+                view.set_copy_mode_pending_prefix(next);
+            }
+        }
+        if let Some(command) = command {
+            self.run_copy_mode_command(pane_id, command);
+        } else if next.is_none() && press != copy_keys::CopyPress::ModifierOnly {
+            // A held modifier is not a key press to report, and it
+            // arrives on every chord.
+            debug!(pane_id, ?press, "copy mode consumed a key with no binding");
+        }
+    }
+
+    /// Execute a resolved copy-mode command.
+    fn run_copy_mode_command(&mut self, pane_id: u32, command: copy_keys::CopyCommand) {
+        use copy_keys::CopyCommand;
+        match command {
+            CopyCommand::Move(motion) => {
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.move_copy_mode_cursor(motion);
+                }
+                // Spec-0008 prefetches on the cursor entering the edge
+                // quarter of the cache, not only after a fill lands.
+                self.prefetch_copy_mode(pane_id);
+                self.request_redraw();
+            }
+            CopyCommand::ToggleSelection(ty) => {
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.toggle_copy_mode_selection(ty);
+                }
+                self.request_redraw();
+            }
+            CopyCommand::Yank => self.yank_copy_mode_selection(pane_id),
+            // Escape drops the selection if there is one and leaves copy
+            // mode otherwise (Spec-0008); the clear reports which it was.
+            CopyCommand::ClearOrExit => {
+                if self
+                    .panes
+                    .get_mut(&pane_id)
+                    .is_some_and(PaneView::clear_copy_mode_selection)
+                {
+                    self.request_redraw();
+                } else {
+                    self.exit_copy_mode(pane_id);
+                }
+            }
+            CopyCommand::Exit => self.exit_copy_mode(pane_id),
+            CopyCommand::Search => {
+                debug!(pane_id, "copy mode search is not wired yet (TREK-114)");
+            }
+        }
+    }
+
+    /// Ask the daemon to resolve the selection into text. A `y` with
+    /// nothing selected consumes the key and does nothing.
+    fn yank_copy_mode_selection(&mut self, pane_id: u32) {
+        let Some(range) = self
+            .panes
+            .get(&pane_id)
+            .and_then(PaneView::copy_mode_yank_range)
+        else {
+            return;
+        };
+        let msg = YankSelection {
+            pane_id,
+            start_row: range.start_row,
+            start_col: range.start_col,
+            end_row: range.end_row,
+            end_col: range.end_col,
+            selection_type: range.ty,
+        };
+        let Some(serial) =
+            self.send_request_serial(MSG_YANK_SELECTION, msg.encode(), "YankSelection")
+        else {
+            warn!(pane_id, "yank not sent; staying in copy mode");
+            return;
+        };
+        self.pending_yanks.record(pane_id, serial);
+    }
+
+    /// Land the yanked text on the clipboard and leave copy mode
+    /// (Spec-0008 Yank). The text is written whatever it says, empty
+    /// included: the daemon resolved the range the user selected, and
+    /// leaving the clipboard alone would have the next paste deliver
+    /// something older.
+    ///
+    /// A clipboard that refuses the write keeps the pane in copy mode
+    /// with its selection, so `y` can be pressed again.
+    fn finish_yank(&mut self, serial: u32, text: &str) {
+        let YankOutcome::Retire(pane_id) = self.pending_yanks.resolve(serial) else {
+            warn!(serial, "yank response answers no outstanding yank");
+            return;
+        };
+        self.pending_yanks.retire(pane_id);
+        if text.is_empty() {
+            debug!(pane_id, "the yanked range resolved to no text");
+        }
+        let copied = write_clipboard(text);
+        let in_copy_mode = self.panes.get(&pane_id).is_some_and(PaneView::is_copy_mode);
+        match yank_disposition(copied, in_copy_mode) {
+            YankDisposition::Exit => self.exit_copy_mode(pane_id),
+            YankDisposition::Done => {
+                debug!(pane_id, "yank landed after the pane left copy mode");
+            }
+            YankDisposition::HoldAndRing => {
+                warn!(pane_id, serial, "yank not copied; staying in copy mode");
+                self.ring_bell();
+            }
+            YankDisposition::Failed => {
+                warn!(
+                    pane_id,
+                    serial, "yank not copied; the pane had already left copy mode"
+                );
+            }
+        }
+    }
+
+    /// Ring the bell for a copy-mode failure the user has no other sign
+    /// of: a key that looks dead is otherwise reported as a broken
+    /// keyboard.
+    fn ring_bell(&self) {
+        let _ = self.proxy.send_event(UserEvent::Bell);
+    }
+
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 
@@ -1435,6 +1629,10 @@ impl ApplicationHandler<UserEvent> for App {
                 let ctx = input::DispatchContext {
                     registry: &self.keybind_registry,
                     table: self.active_key_table.as_ref(),
+                    // Derived per keypress rather than stored, so the
+                    // active table follows focus for free: copy-mode
+                    // state lives on the pane (Spec-0008).
+                    copy_mode: self.focused_view().is_some_and(PaneView::is_copy_mode),
                     leader: self.config.leader.as_ref(),
                     leader_pending: self.leader_pending.is_some(),
                 };
@@ -1463,11 +1661,28 @@ impl ApplicationHandler<UserEvent> for App {
                         // Both the leader key and this key go to the
                         // application (ADR-0011); flush the buffer and
                         // fall through to normal forwarding below.
-                        if let Some(pending) = self.leader_pending.take() {
-                            if let Some(bytes) = pending.buffered {
-                                self.send_key_bytes(bytes, event_loop);
-                            }
+                        if !self.flush_leader_pending() {
+                            event_loop.exit();
                         }
+                    }
+                    input::KeyDispatch::LeaderMissDrop => {
+                        // The flush drops the buffered key for the same
+                        // reason this key is not forwarded below.
+                        if !self.flush_leader_pending() {
+                            event_loop.exit();
+                        }
+                        self.reset_blink();
+                        return;
+                    }
+                    input::KeyDispatch::CopyMode => {
+                        let press = copy_keys::copy_press(
+                            self.modifiers.state(),
+                            &event.logical_key,
+                            &chord_key,
+                        );
+                        self.handle_copy_mode_key(press);
+                        self.reset_blink();
+                        return;
                     }
                     input::KeyDispatch::TableAction(idx) => {
                         self.dispatch_table_action_at(idx);
@@ -1643,63 +1858,61 @@ impl ApplicationHandler<UserEvent> for App {
                     _ => 0,
                 };
                 let btn_bit = 1u8 << btn;
+                let pressed = state == ElementState::Pressed;
                 let shift = self.modifiers.state().shift_key();
+                let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
+                // Two reasons to keep a press from the PTY, one mask: the
+                // release pairs with the press it belongs to, so neither
+                // reason has to still hold when the button comes up.
+                let swallow_press = shift || copy_mode;
 
-                match state {
-                    ElementState::Pressed if shift => {
-                        // Shift bypass: suppress press and track for release.
-                        self.shift_bypassed_buttons |= btn_bit;
-
-                        // Start selection on Shift+left click.
-                        if btn == 0 {
-                            self.start_selection();
-                        }
-                    }
-                    ElementState::Released if self.shift_bypassed_buttons & btn_bit != 0 => {
-                        // Suppress release for a Shift-bypassed press.
-                        self.shift_bypassed_buttons &= !btn_bit;
-                        if btn == 0 {
-                            self.mouse_pressed = false;
-                        }
-                    }
-                    _ => {
-                        // Clear selection on non-shift click.
-                        if state == ElementState::Pressed && btn == 0 {
-                            let cleared = self
-                                .focused_view_mut()
-                                .is_some_and(|view| view.selection.take().is_some());
-                            if cleared {
-                                self.sync_selection_a11y(self.focused_pane);
-                                if let Some(w) = &self.window {
-                                    w.request_redraw();
-                                }
+                // A left press either starts a selection (Shift) or drops
+                // the one on screen, whatever happens to the event after.
+                if pressed && btn == 0 {
+                    if shift {
+                        self.start_selection();
+                    } else {
+                        let cleared = self
+                            .focused_view_mut()
+                            .is_some_and(|view| view.selection.take().is_some());
+                        if cleared {
+                            self.sync_selection_a11y(self.focused_pane);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
                             }
                         }
-                        if let Some(daemon) = &mut self.daemon {
-                            let (x, y) = self.last_mouse_cell;
-                            let event_type = match state {
-                                ElementState::Pressed => 0,
-                                ElementState::Released => 1,
-                            };
-                            let msg = MouseInput {
-                                pane_id: self.focused_pane,
-                                event_type,
-                                x,
-                                y,
-                                modifiers: input::encode_mouse_modifiers(self.modifiers),
-                                button: btn,
-                            };
-                            match msg.to_frame() {
-                                Ok(frame) => {
-                                    if let Err(e) = daemon.send_frame(&frame) {
-                                        error!(error = %e, "daemon write failed");
-                                        self.daemon = None;
-                                        event_loop.exit();
-                                    }
-                                }
-                                Err(e) => error!(error = %e, "failed to encode mouse input"),
+                    }
+                }
+
+                let pass =
+                    button_passthrough(pressed, swallow_press, self.suppressed_buttons, btn_bit);
+                self.suppressed_buttons = pass.suppressed;
+                // A swallowed release ends the drag it belongs to; only a
+                // Shift press ever starts one, so this cannot end a drag
+                // some other suppression owns.
+                if !pressed && !pass.forward && btn == 0 {
+                    self.mouse_pressed = false;
+                }
+                if let Some(daemon) = self.daemon.as_mut().filter(|_| pass.forward) {
+                    let (x, y) = self.last_mouse_cell;
+                    let event_type = u8::from(!pressed);
+                    let msg = MouseInput {
+                        pane_id: self.focused_pane,
+                        event_type,
+                        x,
+                        y,
+                        modifiers: input::encode_mouse_modifiers(self.modifiers),
+                        button: btn,
+                    };
+                    match msg.to_frame() {
+                        Ok(frame) => {
+                            if let Err(e) = daemon.send_frame(&frame) {
+                                error!(error = %e, "daemon write failed");
+                                self.daemon = None;
+                                event_loop.exit();
                             }
                         }
+                        Err(e) => error!(error = %e, "failed to encode mouse input"),
                     }
                 }
             }
@@ -1730,9 +1943,13 @@ impl ApplicationHandler<UserEvent> for App {
                 } else {
                     -scroll_lines
                 };
+                // Only the alt-screen branch leaks: it scrolls a hidden
+                // TUI under a frozen view. Host scroll keeps forwarding
+                // because it visibly leaves copy mode (TREK-114).
+                let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
                 if self.viewport_offset() > 0 || shift || !alt_screen {
                     self.scroll_viewport(self.focused_pane, delta);
-                } else if let Some(daemon) = &mut self.daemon {
+                } else if let Some(daemon) = self.daemon.as_mut().filter(|_| !copy_mode) {
                     let (x, y) = self.last_mouse_cell;
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
                     let mods = input::encode_mouse_modifiers(self.modifiers);
@@ -2113,6 +2330,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // The a11y node prunes with the follow-up layout
                     // sync (sync_layout retains only in-layout panes).
                     self.panes.remove(&pane_id);
+                    self.pending_yanks.retire(pane_id);
                 } else {
                     warn!(serial, "ClosePaneResponse with no pending close");
                 }
@@ -2138,6 +2356,27 @@ impl ApplicationHandler<UserEvent> for App {
                 // after, so the same missing pane fails that fill too, at
                 // a serial that names the pane exactly.
                 self.handle_failed_copy_mode_fill(serial, code);
+                // A dead yank has to be retired or the next reply would
+                // be refused as answering a superseded request, leaving
+                // `y` permanently inert.
+                if let YankOutcome::Retire(pane_id) = self.pending_yanks.resolve(serial) {
+                    warn!(
+                        serial,
+                        pane_id,
+                        ?code,
+                        "yank rejected; staying in copy mode"
+                    );
+                    self.pending_yanks.retire(pane_id);
+                    // The reader thread already rang for the codes it
+                    // covers; ringing again announces the same rejection
+                    // twice to a screen reader.
+                    if !daemon_conn::error_rings_bell(code) {
+                        self.ring_bell();
+                    }
+                }
+            }
+            UserEvent::YankResponse { serial, text } => {
+                self.finish_yank(serial, &text);
             }
             UserEvent::ConfigReloaded(cr) => {
                 self.handle_config_reload(*cr);
@@ -2157,10 +2396,8 @@ impl ApplicationHandler<UserEvent> for App {
             {
                 // The follow-up window closed: the leader key was a
                 // plain keypress after all (ADR-0011).
-                if let Some(pending) = self.leader_pending.take() {
-                    if let Some(bytes) = pending.buffered {
-                        self.send_key_bytes(bytes, event_loop);
-                    }
+                if !self.flush_leader_pending() {
+                    event_loop.exit();
                 }
             }
             if self.blink_deadline.is_some_and(|d| now >= d) {
@@ -2234,6 +2471,28 @@ impl App {
     fn send_key_bytes(&mut self, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
         if !self.try_send_key_bytes(bytes) {
             event_loop.exit();
+        }
+    }
+
+    /// Settle a pending leader press: its buffered key goes to the PTY
+    /// (ADR-0011), or is dropped when the pane is in copy mode, which
+    /// forwards nothing (Spec-0008). Every path that ends the follow-up
+    /// window routes here so none of them can type behind a modal
+    /// reader; copy mode is read now, not when the leader armed.
+    ///
+    /// Returns `false` when the daemon write failed.
+    fn flush_leader_pending(&mut self) -> bool {
+        let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
+        match plan_leader_flush(
+            self.leader_pending.take().and_then(|p| p.buffered),
+            copy_mode,
+        ) {
+            LeaderFlush::Send(bytes) => self.try_send_key_bytes(bytes),
+            LeaderFlush::Drop => {
+                debug!("copy mode dropped a buffered leader key");
+                true
+            }
+            LeaderFlush::Nothing => true,
         }
     }
 
@@ -2430,15 +2689,8 @@ impl App {
                     let text = view
                         .grid()
                         .extract_selection_text(sel, view.viewport_offset());
-                    if !text.is_empty() {
-                        match arboard::Clipboard::new() {
-                            Ok(mut cb) => {
-                                if let Err(e) = cb.set_text(&text) {
-                                    warn!(error = %e, "clipboard set failed");
-                                }
-                            }
-                            Err(e) => warn!(error = %e, "clipboard init failed"),
-                        }
+                    if !text.is_empty() && !write_clipboard(&text) {
+                        self.ring_bell();
                     }
                 }
                 true
@@ -2581,6 +2833,10 @@ impl App {
                 }
                 true
             }
+            ActionDesc::EnterCopyMode => {
+                self.enter_copy_mode(self.focused_pane);
+                true
+            }
             ActionDesc::ShowCommandPalette => {
                 self.palette
                     .open(&self.action_registry, self.action_context());
@@ -2608,6 +2864,7 @@ impl App {
             can_focus_right: can(FocusDirection::Right),
             can_focus_up: can(FocusDirection::Up),
             can_focus_down: can(FocusDirection::Down),
+            copy_mode_supported: copy_mode_supported(self.server_minor),
         }
     }
 
@@ -2629,6 +2886,7 @@ impl App {
             ActionId::ToggleFullscreen => ActionDesc::ToggleFullscreen,
             ActionId::ShowCommandPalette => ActionDesc::ShowCommandPalette,
             ActionId::ReloadConfig => ActionDesc::ReloadConfig,
+            ActionId::EnterCopyMode => ActionDesc::EnterCopyMode,
         }
     }
 
@@ -3288,11 +3546,9 @@ impl App {
         // A pending leader references the old leader config; the file
         // watcher can fire mid-wait, so flush the buffered key to the
         // PTY rather than losing the user's keystroke.
-        if let Some(pending) = self.leader_pending.take() {
+        if self.leader_pending.is_some() {
             tracing::debug!("config reload with a leader press pending; flushing its key");
-            if let Some(bytes) = pending.buffered {
-                self.try_send_key_bytes(bytes);
-            }
+            self.flush_leader_pending();
         }
         self.lua_vm = cr.lua;
 

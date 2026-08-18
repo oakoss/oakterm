@@ -239,6 +239,8 @@ All cursor movement is local to the GUI. No IPC per keystroke.
 - **Prefetch:** When the cursor enters the top or bottom 25% of the cache window, the GUI starts fetching the next chunk in the background to hide latency.
 - Word boundaries for `w`/`b`/`e` are defined as transitions between alphanumeric/underscore characters and everything else (matching vim's `iskeyword` default).
 
+**As built (TREK-112).** `gg` and `Ctrl+b` clamp to the oldest row the cache currently holds rather than jumping to the true top of scrollback; reaching rows the GUI has not fetched needs a fetch-then-jump, which is deferred to a follow-up task. Word motions stop at the same edge for the same reason: they resolve against text the GUI holds, so an unfetched row ends the scan.
+
 ### Selection
 
 - Starting a selection sets the anchor at the current cursor position.
