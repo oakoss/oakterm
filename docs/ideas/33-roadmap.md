@@ -10,7 +10,7 @@ tags: ['roadmap', 'mvp', 'phases', 'priorities']
 
 What gets built first and why.
 
-**Status (2026-07-01):** Phase 0 complete. Phase 1 (multiplexer) in progress.
+**Status (2026-08-17):** Phase 0 complete, bar two deliverables its list still owes — bundled themes and wide-char width handling — both folded into EPIC-13. Phase 1 (multiplexer) in progress: tabs, splits, and the copy-mode core are shipped. After copy mode (EPIC-10), a credible-daily-driver hardening push (EPIC-13: emulation correctness, bundled themes, GUI↔daemon reconnect, install path) runs ahead of the remaining chrome and session-persistence epics, picking up the [distribution](37-distribution.md) work the phase lists never scheduled.
 
 ## Guiding Principle
 
