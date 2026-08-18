@@ -53,3 +53,4 @@ Copy [0000-template.md](0000-template.md) and renumber.
 | [0022](0022-agent-integration-protocol.md)   | Agent Integration Protocol      | accepted | core, agents                          |
 | [0023](0023-agent-state-vocabulary.md)       | Agent State Vocabulary          | accepted | core, agents                          |
 | [0024](0024-agent-state-sources.md)          | Agent State Sources             | accepted | core, agents, security                |
+| [0025](0025-copy-mode-pin-anchor.md)         | Copy-Mode Pin Anchor            | accepted | core                                  |

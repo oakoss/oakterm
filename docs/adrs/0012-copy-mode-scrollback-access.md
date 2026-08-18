@@ -101,7 +101,7 @@ New messages for copy mode in the 0x97-0x9F range (pane management, per ADR-0010
 
 ### Viewport pinning
 
-When the daemon receives `EnterCopyMode`, it records the pane's current viewport offset as the pinned position. The VT parser continues processing PTY output normally (the child process must not block on a full buffer), and new lines scroll into scrollback as usual. But the copy-mode viewport stays fixed at the pinned offset. The `i64` row indices cached by the GUI remain stable because the viewport does not move.
+When the daemon receives `EnterCopyMode`, it pins an absolute scrollback base for the requesting client — the client-echoed anchor per [ADR-0025](0025-copy-mode-pin-anchor.md), which supersedes this ADR's original phrasing that the daemon "records the pane's current viewport offset" (the offset is client-local and never authoritative, Spec-0008). The VT parser continues processing PTY output normally (the child process must not block on a full buffer), and new lines scroll into scrollback as usual. The `i64` row indices cached by the GUI remain stable because they are relative to the pinned base, which does not move.
 
 On `ExitCopyMode`, the daemon discards the pinned offset and snaps the viewport to follow live output. Any rows that scrolled past during copy mode are now in scrollback.
 
