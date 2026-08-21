@@ -13,6 +13,7 @@ pub(crate) const OAKTERM_LUA_STUB: &str = r#"---@meta _
 ---@alias oakterm.WindowDecorations "full"|"none"
 ---@alias oakterm.UpdateCheck "off"|"check"
 ---@alias oakterm.StatusBarPosition "bottom"|"top"
+---@alias oakterm.CopyModeKeybinds "vim"|"emacs"|"basic"
 
 ---@class oakterm.Leader
 ---@field key string Leader chord (e.g. "ctrl+b")
@@ -150,6 +151,7 @@ function ActionModule.enter_copy_mode() end
 ---@field leader oakterm.Leader|nil tmux-style leader key for leader+... chords (default: nil)
 ---@field status_bar boolean Show the status bar (default: true)
 ---@field status_bar_position oakterm.StatusBarPosition Status bar edge (default: "bottom")
+---@field copy_mode_keybinds oakterm.CopyModeKeybinds Copy mode keybind preset (default: "vim")
 ---@field check_for_updates oakterm.UpdateCheck Update check policy (default: "off")
 ---@field text_blending oakterm.TextBlending Text blending mode for color accuracy (default: "linear_corrected")
 ---@field text_gamma number Text gamma compensation, higher = thicker text (default: 1.7 macOS, 1.0 Linux)
@@ -239,6 +241,7 @@ pub(crate) const CONFIG_TEMPLATE: &str = r#"-- OakTerm configuration
 -- oakterm.config.check_for_updates = "off"  -- "off", "check"
 
 -- Keybindings
+-- oakterm.config.copy_mode_keybinds = "vim" -- "vim", "emacs", "basic"
 -- oakterm.config.oak_mod = "ctrl+shift" -- modifier for oak_mod+... chords
 -- oakterm.config.leader = { key = "ctrl+b", timeout = 1000 } -- for leader+... chords
 -- oakterm.keybind("oak_mod+t", oakterm.action.new_tab())

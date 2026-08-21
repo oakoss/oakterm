@@ -22,6 +22,16 @@ use tracing::warn;
 /// beside it would only add a conversion that can drift.
 pub(crate) use oakterm_protocol::message::CopySelectionType;
 
+/// What a motion does to the selection, carried on the command so the
+/// preset tables own the policy and the dispatcher stays exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectionEffect {
+    Keep,
+    /// Anchor a character selection at the cursor if none is active.
+    Extend,
+    Clear,
+}
+
 /// Per-request row cap the daemon enforces (Spec-0001 `GetScrollback`).
 const MAX_ROWS_PER_REQUEST: u32 = 4096;
 
@@ -353,14 +363,29 @@ impl CopyModeState {
                     selection.ty = ty;
                 }
             }
-            None => {
-                self.selection = Some(CopySelection {
-                    ty,
-                    anchor_row: self.cursor_row,
-                    anchor_col: self.cursor_col,
-                });
-            }
+            None => self.anchor_selection(ty),
         }
+    }
+
+    /// Apply a motion's selection effect before the cursor moves.
+    pub(crate) fn apply_selection_effect(&mut self, effect: SelectionEffect) {
+        match effect {
+            SelectionEffect::Keep => {}
+            SelectionEffect::Extend => {
+                if self.selection.is_none() {
+                    self.anchor_selection(CopySelectionType::Character);
+                }
+            }
+            SelectionEffect::Clear => self.selection = None,
+        }
+    }
+
+    fn anchor_selection(&mut self, ty: CopySelectionType) {
+        self.selection = Some(CopySelection {
+            ty,
+            anchor_row: self.cursor_row,
+            anchor_col: self.cursor_col,
+        });
     }
 
     /// Drop the selection, reporting whether there was one. Escape uses
@@ -527,7 +552,8 @@ impl CopyModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CopyModeState, CopySelectionType, FillFailure, FillRequest, ViewportCache, YankRange,
+        CopyModeState, CopySelectionType, FillFailure, FillRequest, SelectionEffect, ViewportCache,
+        YankRange,
     };
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
@@ -1128,6 +1154,44 @@ mod tests {
         state.toggle_selection(CopySelectionType::Character);
         let range = state.yank_range().expect("a fresh selection");
         assert_eq!((range.start_row, range.start_col), (2, 7));
+    }
+
+    /// Shift+arrow in the basic preset extends before each move: the
+    /// first press anchors, later presses must not re-anchor.
+    #[test]
+    fn extend_anchors_once_and_keeps_the_anchor_after() {
+        let mut state = CopyModeState::new(80, 8, 0);
+        state.set_cursor(2, 3);
+
+        state.apply_selection_effect(SelectionEffect::Extend);
+        state.set_cursor(4, 6);
+        state.apply_selection_effect(SelectionEffect::Extend);
+
+        let range = state.yank_range().expect("selecting");
+        assert_eq!(range.ty, CopySelectionType::Character);
+        assert_eq!(
+            (range.start_row, range.start_col),
+            (2, 3),
+            "the second extend keeps the original anchor"
+        );
+        assert_eq!((range.end_row, range.end_col), (4, 6));
+    }
+
+    /// The three effects in one pass: keep leaves a selection alone,
+    /// clear drops it, and keep never anchors one.
+    #[test]
+    fn keep_and_clear_effects_leave_and_drop_the_selection() {
+        let mut state = CopyModeState::new(80, 8, 0);
+
+        state.apply_selection_effect(SelectionEffect::Keep);
+        assert_eq!(state.yank_range(), None, "keep never anchors");
+
+        state.apply_selection_effect(SelectionEffect::Extend);
+        state.apply_selection_effect(SelectionEffect::Keep);
+        assert!(state.yank_range().is_some(), "keep leaves it alone");
+
+        state.apply_selection_effect(SelectionEffect::Clear);
+        assert_eq!(state.yank_range(), None);
     }
 
     #[test]

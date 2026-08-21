@@ -162,6 +162,40 @@ impl StatusBarPosition {
     pub(crate) const ALL: &[&str] = &["bottom", "top"];
 }
 
+/// Copy-mode keybind preset (Spec-0008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyModePreset {
+    #[default]
+    Vim,
+    Emacs,
+    Basic,
+}
+
+impl CopyModePreset {
+    /// Parse from a Lua config string.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "vim" => Some(Self::Vim),
+            "emacs" => Some(Self::Emacs),
+            "basic" => Some(Self::Basic),
+            _ => None,
+        }
+    }
+
+    /// Config string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Vim => "vim",
+            Self::Emacs => "emacs",
+            Self::Basic => "basic",
+        }
+    }
+
+    pub(crate) const ALL: &[&str] = &["vim", "emacs", "basic"];
+}
+
 /// tmux-style leader key (ADR-0011): `oakterm.config.leader =
 /// { key = "ctrl+b", timeout = 1000 }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +252,7 @@ pub struct ConfigValues {
     pub leader: Option<LeaderKey>,
     pub status_bar: bool,
     pub status_bar_position: StatusBarPosition,
+    pub copy_mode_keybinds: CopyModePreset,
     pub check_for_updates: UpdateCheck,
     pub text_blending: TextBlending,
     /// Text gamma compensation exponent. Higher = thicker text.
@@ -246,6 +281,7 @@ impl Default for ConfigValues {
             leader: None,
             status_bar: true,
             status_bar_position: StatusBarPosition::default(),
+            copy_mode_keybinds: CopyModePreset::default(),
             check_for_updates: UpdateCheck::default(),
             text_blending: TextBlending::default(),
             text_gamma: if cfg!(target_os = "macos") { 1.7 } else { 1.0 },
@@ -352,6 +388,10 @@ pub(crate) static SCHEMA: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         name: "status_bar_position",
         validate: validate_status_bar_position,
+    },
+    ConfigKeyDef {
+        name: "copy_mode_keybinds",
+        validate: validate_copy_mode_keybinds,
     },
     ConfigKeyDef {
         name: "check_for_updates",
@@ -542,6 +582,19 @@ fn validate_status_bar_position(_lua: &Lua, value: &Value) -> mlua::Result<()> {
             "invalid value '{}' (expected: {})",
             s,
             StatusBarPosition::ALL.join(", ")
+        )))
+    }
+}
+
+fn validate_copy_mode_keybinds(_lua: &Lua, value: &Value) -> mlua::Result<()> {
+    let s = as_str(value)?;
+    if CopyModePreset::from_config_str(&s).is_some() {
+        Ok(())
+    } else {
+        Err(mlua::Error::RuntimeError(format!(
+            "invalid value '{}' (expected: {})",
+            s,
+            CopyModePreset::ALL.join(", ")
         )))
     }
 }
@@ -762,6 +815,14 @@ mod tests {
     }
 
     #[test]
+    fn copy_mode_preset_round_trip() {
+        for s in CopyModePreset::ALL {
+            let preset = CopyModePreset::from_config_str(s).unwrap();
+            assert_eq!(preset.as_str(), *s);
+        }
+    }
+
+    #[test]
     fn window_decorations_round_trip() {
         for s in WindowDecorations::ALL {
             let d = WindowDecorations::from_config_str(s).unwrap();
@@ -790,7 +851,7 @@ mod tests {
         // Safety net: if a config key is added to ConfigValues, add it to SCHEMA too.
         assert_eq!(
             SCHEMA.len(),
-            21,
+            22,
             "SCHEMA must match ConfigValues field count"
         );
     }

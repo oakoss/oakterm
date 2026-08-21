@@ -175,10 +175,10 @@ oakterm.config.oak_mod = "ctrl+shift"       -- Linux default; "super" on macOS (
 oakterm.config.leader = nil                  -- optional: { key = "ctrl+b", timeout = 1000 }
 oakterm.config.status_bar = true
 oakterm.config.status_bar_position = "bottom" -- "top" or "bottom"
+oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic" (Spec-0008)
 
 -- NOT YET IMPLEMENTED. The current runtime treats unknown keys as hard errors,
--- so setting either key below raises a config error until its feature lands.
-oakterm.config.copy_mode_keybinds = "vim"    -- "vim", "emacs", or "basic" (ships with copy mode, TREK-112/113)
+-- so setting the key below raises a config error until its feature lands.
 oakterm.config.restartable_commands = {}     -- list of command prefixes to restore on session load (Spec-0010)
 ```
 

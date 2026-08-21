@@ -5,8 +5,8 @@
 use crate::event::{EVENT_REGISTRY_KEY, EventRegistry, KNOWN_EVENTS};
 use crate::keybind::{Action, KeyChord, KeybindRegistry};
 use crate::schema::{
-    self, ConfigValues, CursorStyle, Padding, StatusBarPosition, TextBlending, UpdateCheck,
-    WindowDecorations,
+    self, ConfigValues, CopyModePreset, CursorStyle, Padding, StatusBarPosition, TextBlending,
+    UpdateCheck, WindowDecorations,
 };
 use mlua::{Function, Lua, Table, Value};
 
@@ -694,6 +694,19 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         None => defaults.status_bar_position,
     };
 
+    let copy_mode_keybinds = match backing.get::<Option<mlua::LuaString>>("copy_mode_keybinds")? {
+        Some(s) => {
+            let s = s.to_str()?;
+            CopyModePreset::from_config_str(&s).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "invalid copy_mode_keybinds '{s}' (expected: {})",
+                    CopyModePreset::ALL.join(", ")
+                ))
+            })?
+        }
+        None => defaults.copy_mode_keybinds,
+    };
+
     let check_for_updates = match backing.get::<Option<mlua::LuaString>>("check_for_updates")? {
         Some(s) => {
             let s = s.to_str()?;
@@ -743,6 +756,7 @@ pub fn extract_config(lua: &Lua) -> mlua::Result<ConfigValues> {
         leader,
         status_bar,
         status_bar_position,
+        copy_mode_keybinds,
         check_for_updates,
         text_blending,
         text_gamma,
@@ -1224,6 +1238,40 @@ mod tests {
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("bottom, top"), "got: {msg}");
+    }
+
+    #[test]
+    fn copy_mode_keybinds_defaults_to_vim() {
+        let lua = setup();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.copy_mode_keybinds, CopyModePreset::Vim);
+    }
+
+    #[test]
+    fn set_copy_mode_keybinds() {
+        let lua = setup();
+        lua.load(r#"oakterm.config.copy_mode_keybinds = "emacs""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.copy_mode_keybinds, CopyModePreset::Emacs);
+
+        lua.load(r#"oakterm.config.copy_mode_keybinds = "basic""#)
+            .exec()
+            .unwrap();
+        let cfg = extract_config(&lua).unwrap();
+        assert_eq!(cfg.copy_mode_keybinds, CopyModePreset::Basic);
+    }
+
+    #[test]
+    fn set_invalid_copy_mode_keybinds() {
+        let lua = setup();
+        let err = lua
+            .load(r#"oakterm.config.copy_mode_keybinds = "kakoune""#)
+            .exec();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("vim, emacs, basic"), "got: {msg}");
     }
 
     #[test]

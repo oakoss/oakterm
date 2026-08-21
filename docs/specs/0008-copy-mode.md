@@ -41,9 +41,6 @@ struct CopyModeState {
 
     /// Active search state, if any.
     search: Option<SearchState>,
-
-    /// Which keybind preset is active.
-    preset: CopyModePreset,
 }
 
 struct CopySelection {
@@ -108,17 +105,15 @@ enum SearchDirection {
     Forward,
     Backward,
 }
-
-enum CopyModePreset {
-    Vim,
-    Emacs,
-    Basic,
-}
 ```
+
+The preset enum (`Vim`, `Emacs`, `Basic`) lives with the config surface as the value of `copy_mode_keybinds` (Spec-0005), not in per-pane state.
 
 ### Key Tables
 
-Copy mode activates a key table (ADR-0011). Unmatched keys are dropped, not forwarded to the PTY.
+Copy mode activates a key table (ADR-0011). Unmatched keys are dropped, not forwarded to the PTY. The active preset is `oakterm.config.copy_mode_keybinds` (Spec-0005), read at each key press rather than frozen into per-pane state at entry, so a config reload switches tables immediately.
+
+A configured leader chord outranks every preset row it collides with — ADR-0011 resolves the leader layer before the copy-mode table. With the template's suggested `leader = { key = "ctrl+b" }`, the vim preset's `Ctrl+b` (page up) and the emacs preset's `Ctrl+b` (cursor backward) arm the leader instead.
 
 #### Vim Preset (default)
 
@@ -153,38 +148,46 @@ Copy mode activates a key table (ADR-0011). Unmatched keys are dropped, not forw
 
 #### Emacs Preset
 
-| Key          | Action                                      |
-| ------------ | ------------------------------------------- |
-| `Ctrl+n`     | Cursor down                                 |
-| `Ctrl+p`     | Cursor up                                   |
-| `Ctrl+f`     | Cursor forward one character                |
-| `Ctrl+b`     | Cursor backward one character               |
-| `Alt+f`      | Cursor to next word                         |
-| `Alt+b`      | Cursor to previous word                     |
-| `Ctrl+a`     | Cursor to start of line                     |
-| `Ctrl+e`     | Cursor to end of line                       |
-| `Alt+<`      | Cursor to top of scrollback                 |
-| `Alt+>`      | Cursor to bottom                            |
-| `Ctrl+v`     | Page down                                   |
-| `Alt+v`      | Page up                                     |
-| `Ctrl+Space` | Start/toggle selection                      |
-| `Alt+w`      | Yank selection to clipboard, exit copy mode |
-| `Ctrl+g`     | Exit copy mode                              |
-| `Ctrl+s`     | Start forward search                        |
-| `Ctrl+r`     | Start backward search                       |
+| Key          | Action                                                |
+| ------------ | ----------------------------------------------------- |
+| `Ctrl+n`     | Cursor down                                           |
+| `Ctrl+p`     | Cursor up                                             |
+| `Ctrl+f`     | Cursor forward one character                          |
+| `Ctrl+b`     | Cursor backward one character                         |
+| `Alt+f`      | Cursor to next word end                               |
+| `Alt+b`      | Cursor to previous word start                         |
+| `Ctrl+a`     | Cursor to start of line                               |
+| `Ctrl+e`     | Cursor to end of line                                 |
+| `Alt+<`      | Cursor to top of scrollback                           |
+| `Alt+>`      | Cursor to bottom                                      |
+| `Ctrl+v`     | Page down                                             |
+| `Alt+v`      | Page up                                               |
+| `Ctrl+Space` | Start/toggle selection                                |
+| `Alt+w`      | Yank selection to clipboard, exit copy mode           |
+| `Ctrl+g`     | Exit copy mode                                        |
+| `Escape`     | Exit copy mode (clear selection if active, else exit) |
+| `Ctrl+s`     | Start forward search                                  |
+| `Ctrl+r`     | Start backward search                                 |
+
+`Alt+f` lands on the last character of the word, matching tmux's emacs
+copy mode (`next-word-end`) rather than emacs's point-after-word. `Escape`
+follows the vim row's clear-then-exit shape so every preset keeps a
+universal way out.
 
 #### Basic Preset
 
-| Key                                                      | Action                                      |
-| -------------------------------------------------------- | ------------------------------------------- |
-| `Up` / `Down` / `Left` / `Right`                         | Cursor movement                             |
-| `Page Up` / `Page Down`                                  | Page movement                               |
-| `Home`                                                   | Top of scrollback                           |
-| `End`                                                    | Bottom                                      |
-| `Shift+Up` / `Shift+Down` / `Shift+Left` / `Shift+Right` | Extend selection                            |
-| `Ctrl+c`                                                 | Copy selection to clipboard, exit copy mode |
-| `Escape`                                                 | Exit copy mode                              |
-| `Ctrl+f`                                                 | Start search                                |
+| Key                                                      | Action                                                |
+| -------------------------------------------------------- | ----------------------------------------------------- |
+| `Up` / `Down` / `Left` / `Right`                         | Cursor movement                                       |
+| `Page Up` / `Page Down`                                  | Page movement                                         |
+| `Home`                                                   | Top of scrollback                                     |
+| `End`                                                    | Bottom                                                |
+| `Shift+Up` / `Shift+Down` / `Shift+Left` / `Shift+Right` | Extend selection                                      |
+| `Ctrl+c`                                                 | Copy selection to clipboard, exit copy mode           |
+| `Escape`                                                 | Exit copy mode (clear selection if active, else exit) |
+| `Ctrl+f`                                                 | Start search                                          |
+
+Unshifted movement clears an active selection before moving; any shifted movement extends one, anchoring at the cursor if none is active. This is the GUI convention the preset mirrors — a plain arrow deselects, `Shift+Page Down` selects a page from a bare caret.
 
 ### Protocol Messages
 

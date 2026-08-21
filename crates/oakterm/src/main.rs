@@ -973,7 +973,8 @@ impl App {
             .panes
             .get(&pane_id)
             .and_then(PaneView::copy_mode_pending_prefix);
-        let (next, command) = copy_keys::advance_copy_key(pending, press);
+        let (next, command) =
+            copy_keys::advance_copy_key(self.config.copy_mode_keybinds, pending, press);
         if pending != next
             && let Some(view) = self.panes.get_mut(&pane_id)
         {
@@ -992,9 +993,9 @@ impl App {
     fn run_copy_mode_command(&mut self, pane_id: u32, command: copy_keys::CopyCommand) {
         use copy_keys::CopyCommand;
         match command {
-            CopyCommand::Move(motion) => {
+            CopyCommand::Move { motion, selection } => {
                 if let Some(view) = self.panes.get_mut(&pane_id) {
-                    view.move_copy_mode_cursor(motion);
+                    view.move_copy_mode_cursor(motion, selection);
                 }
                 // Spec-0008 prefetches on the cursor entering the edge
                 // quarter of the cache, not only after a fill lands.
