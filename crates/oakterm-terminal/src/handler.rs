@@ -909,9 +909,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                 }
             }
             vte::ansi::TabulationClearMode::All => {
-                for stop in &mut g.tab_stops {
-                    *stop = false;
-                }
+                g.tab_stops.fill(false);
             }
         }
     }
