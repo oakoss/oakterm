@@ -1,25 +1,28 @@
 output:
   - failure
   - execution_out
+  # Without this, a glob matching nothing looks identical to a check that passed.
+  - skips
 
 pre-commit:
   commands:
     cargo-fmt:
-      glob: '**/*.rs'
+      # Lefthook globs have no path separator: '*' crosses '/', so this matches at any depth.
+      glob: '*.rs'
       run: cargo fmt --all
       stage_fixed: true
     lint-md:
-      glob: '**/*.md'
+      glob: '*.md'
       run: markdownlint-cli2 --fix {staged_files}
       stage_fixed: true
     format:
-      glob: '**/*.{md,json,yaml,yml}'
+      glob: '*.{md,json,yaml,yml}'
       run: prettier --write {staged_files}
       stage_fixed: true
 
 commit-msg:
   commands:
     conventional-commit:
-      run: cog verify --file {1}
+      run: cog verify --ignore-merge-commits --ignore-fixup-commits --file {1}
     no-trek-in-subject:
       run: "! head -1 {1} | grep -qE '\\(TREK-[0-9]+' && echo 'ok' || (echo 'error: TREK-XX belongs in the commit footer, not the subject line' && exit 1)"
