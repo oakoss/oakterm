@@ -1,7 +1,0 @@
-LICENSE
-target/
-Cargo.lock
-.trekker/
-.git/
-node_modules/
-*.toml

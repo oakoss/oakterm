@@ -1,10 +1,19 @@
 {
+  "editor.formatOnSave": true,
+
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer"
   },
-  "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "editor.formatOnSave": true,
-  "markdownlint.config": {},
-  "markdownlint.run": "onSave",
-  "prettier.requireConfig": true
+  "[markdown]": {
+    "editor.defaultFormatter": "rvben.rumdl"
+  },
+  "[json][jsonc][toml][yaml]": {
+    "editor.defaultFormatter": "dprint.dprint"
+  },
+
+  // Explicit so markdown linting doesn't depend on a contributor's global default.
+  "rumdl.enable": true,
+
+  // rumdl owns markdown here, so markdownlint must not also report on it.
+  "markdownlint.appliesTo": "noFiles"
 }

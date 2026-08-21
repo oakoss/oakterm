@@ -7,7 +7,7 @@ paths:
 
 ## Idea Docs (`docs/ideas/`)
 
-- Follow [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md) — YAML frontmatter, sections for Problem, Design, Configuration, Plugin API, What This Is Not
+- Follow [docs/ideas/30-conventions.md](../../docs/ideas/30-conventions.md) — YAML frontmatter, sections for Problem, Design, Configuration, Plugin API, What This Is Not
 - **Frontmatter status**: `draft → reviewing → decided → implementing → reference`
 - **Frontmatter category**: core, plugin, community-plugin, cross-cutting, research
 - An accepted ADR moves the idea doc status from `reviewing` to `decided`
@@ -17,7 +17,7 @@ paths:
 - Format: `NNNN-short-title.md`, numbered sequentially, never renumber
 - **Status**: `proposed → accepted → [superseded | deprecated]`
 - One ADR per decision. Link to the idea docs that surfaced the question.
-- Template: [docs/adrs/README.md](docs/adrs/README.md)
+- Template: [docs/adrs/README.md](../../docs/adrs/README.md)
 
 ## Specs (`docs/specs/`)
 
@@ -25,14 +25,14 @@ paths:
 - **Status**: `draft → review → accepted → implementing → complete`
 - One spec per bounded concern (API surface, wire protocol, data format)
 - Trekker tasks reference specs. Implementation builds what specs define.
-- Template: [docs/specs/README.md](docs/specs/README.md)
+- Template: [docs/specs/README.md](../../docs/specs/README.md)
 
 ## Reviews (`docs/reviews/`)
 
 - Format: `YYYY-MM-DD-HHMMSS-short-title.md`, timestamped
 - Point-in-time snapshots — findings may become stale
 - Surface corrections (fix directly), contradictions (write ADRs), missing specs
-- Template: [docs/reviews/README.md](docs/reviews/README.md)
+- Template: [docs/reviews/README.md](../../docs/reviews/README.md)
 
 ## General
 

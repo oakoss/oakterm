@@ -25,11 +25,11 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  "ISC",          # ring, untrusted, inotify, libloading
-  "Zlib",         # foldhash, slotmap
-  "BSL-1.0",      # clipboard-win, error-code
-  "CC0-1.0",      # hexf-parse, notify
-  "Unicode-3.0",  # unicode-ident (AND-ed with MIT OR Apache-2.0)
+  "ISC", # ring, untrusted, inotify, libloading
+  "Zlib", # foldhash, slotmap
+  "BSL-1.0", # clipboard-win, error-code
+  "CC0-1.0", # hexf-parse, notify
+  "Unicode-3.0", # unicode-ident (AND-ed with MIT OR Apache-2.0)
   "0BSD",
   "Unlicense",
 ]

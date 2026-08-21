@@ -1,29 +1,29 @@
 [package]
 name = "oakterm"
 version = "0.1.0"
-description = "GPU-accelerated terminal emulator"
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+description = "GPU-accelerated terminal emulator"
 
 [dependencies]
-winit = { workspace = true }
-wgpu = { workspace = true }
-arboard = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 accesskit = { workspace = true }
 accesskit_winit = { workspace = true }
-oakterm-a11y = { path = "../oakterm-a11y" }
-oakterm-renderer = { path = "../oakterm-renderer" }
-oakterm-protocol = { path = "../oakterm-protocol" }
-oakterm-config = { path = "../oakterm-config" }
-oakterm-terminal = { path = "../oakterm-terminal" }
+arboard = { workspace = true }
+chrono = { workspace = true }
 notify = { workspace = true }
 notify-debouncer-full = { workspace = true }
+oakterm-a11y = { path = "../oakterm-a11y" }
+oakterm-config = { path = "../oakterm-config" }
+oakterm-protocol = { path = "../oakterm-protocol" }
+oakterm-renderer = { path = "../oakterm-renderer" }
+oakterm-terminal = { path = "../oakterm-terminal" }
 pollster = { workspace = true }
-chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

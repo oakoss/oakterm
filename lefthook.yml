@@ -5,19 +5,22 @@ output:
   - skips
 
 pre-commit:
+  # One writer per file type (rustfmt owns .rs, rumdl owns .md, dprint the
+  # rest), so parallel is safe.
+  parallel: true
   commands:
     cargo-fmt:
       # Lefthook globs have no path separator: '*' crosses '/', so this matches at any depth.
       glob: '*.rs'
       run: cargo fmt --all
       stage_fixed: true
-    lint-md:
+    fmt-md:
       glob: '*.md'
-      run: markdownlint-cli2 --fix {staged_files}
+      run: rumdl fmt {staged_files}
       stage_fixed: true
-    format:
-      glob: '*.{md,json,yaml,yml}'
-      run: prettier --write {staged_files}
+    fmt-data:
+      glob: '*.{json,toml,yaml,yml}'
+      run: dprint fmt --allow-no-files {staged_files}
       stage_fixed: true
 
 commit-msg:

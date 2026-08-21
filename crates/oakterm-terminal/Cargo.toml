@@ -1,11 +1,11 @@
 [package]
 name = "oakterm-terminal"
 version = "0.1.0"
-description = "VT parser, screen buffer, and terminal state"
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+description = "VT parser, screen buffer, and terminal state"
 
 [features]
 # Writer-thread stall hook, for tests in downstream crates that need a
