@@ -125,10 +125,10 @@ impl<S: SegmentStorage> ArchiveCore<S> {
     /// Disk-space check, rate-limited to once per second — flushes can run
     /// thousands of times per second under sustained scrolling.
     fn disk_space_ok(&mut self) -> bool {
-        if let Some(last) = self.last_disk_check {
-            if last.elapsed() < std::time::Duration::from_secs(1) {
-                return !self.archiving_paused;
-            }
+        if let Some(last) = self.last_disk_check
+            && last.elapsed() < std::time::Duration::from_secs(1)
+        {
+            return !self.archiving_paused;
         }
         self.last_disk_check = Some(std::time::Instant::now());
         self.storage.has_enough_space(&self.session_dir)
@@ -296,10 +296,10 @@ impl<S: SegmentStorage> ArchiveCore<S> {
             // first_row_index is stamped at finalize, so close it before
             // advancing the index base. Failure routes through
             // discard_failed_segment, which accounts and pauses.
-            if self.active.is_some() {
-                if let Err(e) = self.finalize_active_segment() {
-                    tracing::warn!(error = %e, "seal before pause failed");
-                }
+            if self.active.is_some()
+                && let Err(e) = self.finalize_active_segment()
+            {
+                tracing::warn!(error = %e, "seal before pause failed");
             }
             let lost = self.pending_rows.len() as u64;
             self.lose_unfinalized(lost);

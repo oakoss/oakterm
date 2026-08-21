@@ -177,10 +177,10 @@ impl Daemon {
         // block on ServerHello until the process exits, seeing a raw reset
         // instead of the "daemon not running" path it already handles.
         drop(listener);
-        if let Err(e) = std::fs::remove_file(&self.socket_path) {
-            if e.kind() != io::ErrorKind::NotFound {
-                warn!(error = %e, "failed to remove socket during shutdown");
-            }
+        if let Err(e) = std::fs::remove_file(&self.socket_path)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            warn!(error = %e, "failed to remove socket during shutdown");
         }
 
         if drain_clients {
@@ -205,12 +205,11 @@ impl Daemon {
                 if let Err(e) = archive.shutdown() {
                     warn!(error = %e, "archive shutdown failed");
                 }
-                if let Some(p) = parent {
-                    if let Err(e) = std::fs::remove_dir(&p) {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            warn!(error = %e, path = %p.display(), "failed to remove session directory");
-                        }
-                    }
+                if let Some(p) = parent
+                    && let Err(e) = std::fs::remove_dir(&p)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(error = %e, path = %p.display(), "failed to remove session directory");
                 }
             }
         }
@@ -267,10 +266,10 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.socket_path) {
-            if e.kind() != io::ErrorKind::NotFound {
-                warn!(error = %e, path = %self.socket_path.display(), "failed to remove socket on drop");
-            }
+        if let Err(e) = std::fs::remove_file(&self.socket_path)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            warn!(error = %e, path = %self.socket_path.display(), "failed to remove socket on drop");
         }
     }
 }
@@ -420,10 +419,10 @@ async fn dispatch_incoming(
         if frame.msg_type == MSG_REQUEST_SHUTDOWN {
             match request_shutdown(conn_id, &frame, panes, shutdown).await {
                 ShutdownOutcome::Accepted { ack } => {
-                    if let Some(ack) = ack {
-                        if io.write(ack).await.is_err() {
-                            return ControlFlow::Break(());
-                        }
+                    if let Some(ack) = ack
+                        && io.write(ack).await.is_err()
+                    {
+                        return ControlFlow::Break(());
                     }
                     // Pipelined frames after an accepted shutdown would
                     // mutate state the saved session no longer reflects; drop
@@ -431,10 +430,10 @@ async fn dispatch_incoming(
                     return ControlFlow::Continue(());
                 }
                 ShutdownOutcome::Declined { response } => {
-                    if let Some(response) = response {
-                        if io.write(response).await.is_err() {
-                            return ControlFlow::Break(());
-                        }
+                    if let Some(response) = response
+                        && io.write(response).await.is_err()
+                    {
+                        return ControlFlow::Break(());
                     }
                     continue;
                 }
@@ -590,14 +589,14 @@ async fn send_dirty_notifications(
             continue;
         }
         // PaneExited (once per pane).
-        if !pane_exit_sent.contains(&id) {
-            if let PtyState::Exited { exit_code } = pane.pty_state {
-                pane_exit_sent.insert(id);
-                exit_msgs.push(PaneExited {
-                    pane_id: id,
-                    exit_code,
-                });
-            }
+        if !pane_exit_sent.contains(&id)
+            && let PtyState::Exited { exit_code } = pane.pty_state
+        {
+            pane_exit_sent.insert(id);
+            exit_msgs.push(PaneExited {
+                pane_id: id,
+                exit_code,
+            });
         }
         // Title/bell flags are per-grid, not per-client. First client to
         // wake clears them; others miss the event. Phase 1 needs per-client

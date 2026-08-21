@@ -147,7 +147,7 @@ pub fn serialize_seek_table(entries: &[SeekTableEntry]) -> Vec<u8> {
 ///
 /// Cannot panic: the size check ensures each chunk is exactly 28 bytes.
 pub fn deserialize_seek_table(data: &[u8]) -> io::Result<Vec<SeekTableEntry>> {
-    if data.len() % SEEK_ENTRY_SIZE != 0 {
+    if !data.len().is_multiple_of(SEEK_ENTRY_SIZE) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -157,7 +157,7 @@ pub fn deserialize_seek_table(data: &[u8]) -> io::Result<Vec<SeekTableEntry>> {
         ));
     }
     let mut entries = Vec::with_capacity(data.len() / SEEK_ENTRY_SIZE);
-    for chunk in data.chunks_exact(SEEK_ENTRY_SIZE) {
+    for chunk in data.as_chunks::<SEEK_ENTRY_SIZE>().0 {
         // chunks_exact guarantees 28 bytes; array conversions are infallible.
         let u64_at =
             |off| u64::from_le_bytes(chunk[off..off + 8].try_into().expect("28-byte chunk"));

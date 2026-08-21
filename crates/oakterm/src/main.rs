@@ -974,10 +974,10 @@ impl App {
             .get(&pane_id)
             .and_then(PaneView::copy_mode_pending_prefix);
         let (next, command) = copy_keys::advance_copy_key(pending, press);
-        if pending != next {
-            if let Some(view) = self.panes.get_mut(&pane_id) {
-                view.set_copy_mode_pending_prefix(next);
-            }
+        if pending != next
+            && let Some(view) = self.panes.get_mut(&pane_id)
+        {
+            view.set_copy_mode_pending_prefix(next);
         }
         if let Some(command) = command {
             self.run_copy_mode_command(pane_id, command);
@@ -1211,21 +1211,21 @@ impl App {
         match self.click_count {
             2 => {
                 // Semantic (word) selection.
-                if let Some(view) = self.focused_view_mut() {
-                    if row < view.grid().rows {
-                        let text: Vec<char> = view.grid().row_text(row).chars().collect();
-                        // Click past end of text: no word to select.
-                        if (col as usize) < text.len() {
-                            let (start_col, end_col) = word_boundaries(&text, col);
-                            let mut sel = Selection::new(
-                                SelectionType::Semantic,
-                                sel_row,
-                                start_col,
-                                AnchorSide::Left,
-                            );
-                            sel.update(sel_row, end_col, AnchorSide::Right);
-                            view.selection = Some(sel);
-                        }
+                if let Some(view) = self.focused_view_mut()
+                    && row < view.grid().rows
+                {
+                    let text: Vec<char> = view.grid().row_text(row).chars().collect();
+                    // Click past end of text: no word to select.
+                    if (col as usize) < text.len() {
+                        let (start_col, end_col) = word_boundaries(&text, col);
+                        let mut sel = Selection::new(
+                            SelectionType::Semantic,
+                            sel_row,
+                            start_col,
+                            AnchorSide::Left,
+                        );
+                        sel.update(sel_row, end_col, AnchorSide::Right);
+                        view.selection = Some(sel);
                     }
                 }
             }
@@ -1494,18 +1494,18 @@ impl ApplicationHandler<UserEvent> for App {
         self.action_registry = oakterm_config::ActionRegistry::core(&self.keybind_registry);
         self.lua_vm = cr.lua;
         // Fire config.loaded event for initial load.
-        if self.config_error.is_none() {
-            if let Some(lua) = &self.lua_vm {
-                for result in self.event_registry.fire(lua, "config.loaded", &[]) {
-                    match result {
-                        oakterm_config::HandlerResult::Error(e) => {
-                            warn!(error = %e, "config.loaded handler error");
-                        }
-                        oakterm_config::HandlerResult::Timeout => {
-                            warn!("config.loaded handler timed out (100ms limit)");
-                        }
-                        _ => {}
+        if self.config_error.is_none()
+            && let Some(lua) = &self.lua_vm
+        {
+            for result in self.event_registry.fire(lua, "config.loaded", &[]) {
+                match result {
+                    oakterm_config::HandlerResult::Error(e) => {
+                        warn!(error = %e, "config.loaded handler error");
                     }
+                    oakterm_config::HandlerResult::Timeout => {
+                        warn!("config.loaded handler timed out (100ms limit)");
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1527,10 +1527,10 @@ impl ApplicationHandler<UserEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(daemon) = &mut self.daemon {
-                    if let Ok(frame) = Frame::new(MSG_DETACH, 0, vec![]) {
-                        let _ = daemon.send_frame(&frame); // Best-effort on exit.
-                    }
+                if let Some(daemon) = &mut self.daemon
+                    && let Ok(frame) = Frame::new(MSG_DETACH, 0, vec![])
+                {
+                    let _ = daemon.send_frame(&frame); // Best-effort on exit.
                 }
                 event_loop.exit();
             }
@@ -1820,10 +1820,9 @@ impl ApplicationHandler<UserEvent> for App {
                 {
                     if button == winit::event::MouseButton::Left
                         && self.last_mouse_pixel.1 < f64::from(self.tab_bar_px())
+                        && let Some(tab_id) = self.tab_at_pixel(self.last_mouse_pixel.0)
                     {
-                        if let Some(tab_id) = self.tab_at_pixel(self.last_mouse_pixel.0) {
-                            self.switch_tab(tab_id);
-                        }
+                        self.switch_tab(tab_id);
                     }
                     self.chrome_pressed_buttons |= bar_bit;
                     return;
@@ -2025,10 +2024,9 @@ impl ApplicationHandler<UserEvent> for App {
                     if self
                         .layout
                         .pane_is_visible(update.pane_id, self.focused_pane)
+                        && let Some(w) = &self.window
                     {
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
+                        w.request_redraw();
                     }
                 }
 
@@ -2119,13 +2117,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(view) = self.panes.get_mut(&pane_id) {
                     view.title.clone_from(&title);
                 }
-                if pane_id == self.focused_pane {
-                    if let Some(w) = &self.window {
-                        let display = if title.is_empty() { "oakterm" } else { &title };
-                        w.set_title(display);
-                        // The status bar shows the focused pane's title.
-                        w.request_redraw();
-                    }
+                if pane_id == self.focused_pane
+                    && let Some(w) = &self.window
+                {
+                    let display = if title.is_empty() { "oakterm" } else { &title };
+                    w.set_title(display);
+                    // The status bar shows the focused pane's title.
+                    w.request_redraw();
                 }
                 // Unnamed tab labels mirror pane titles; re-ask the daemon
                 // (its naming rule is authoritative) while the bar shows.
@@ -2452,11 +2450,11 @@ impl App {
         // Performable gate (ADR-0011): an action that cannot run in the
         // current context releases the key to the PTY instead of
         // consuming it (Ghostty's `performable:` semantics, per-action).
-        if let Some(id) = oakterm_config::action_id_of(action) {
-            if !id.is_performable(self.action_context()) {
-                tracing::debug!(action = ?id, "keybind not performable here; key released to PTY");
-                return false;
-            }
+        if let Some(id) = oakterm_config::action_id_of(action)
+            && !id.is_performable(self.action_context())
+        {
+            tracing::debug!(action = ?id, "keybind not performable here; key released to PTY");
+            return false;
         }
         let action_desc = match desc_of_action(action) {
             DescOutcome::Desc(d) => d,
@@ -2530,11 +2528,11 @@ impl App {
             );
             return;
         };
-        if let Some(id) = oakterm_config::action_id_of(action) {
-            if !id.is_performable(self.action_context()) {
-                tracing::debug!(action = ?id, "leader action not performable here; consumed");
-                return;
-            }
+        if let Some(id) = oakterm_config::action_id_of(action)
+            && !id.is_performable(self.action_context())
+        {
+            tracing::debug!(action = ?id, "leader action not performable here; consumed");
+            return;
         }
         let action_desc = match desc_of_action(action) {
             DescOutcome::Desc(d) => d,
@@ -3134,10 +3132,8 @@ impl App {
                 false
             }
         };
-        if sent {
-            if let Some(view) = self.panes.get_mut(&pane_id) {
-                view.last_sent_dims = dims;
-            }
+        if sent && let Some(view) = self.panes.get_mut(&pane_id) {
+            view.last_sent_dims = dims;
         }
         sent
     }
@@ -3347,16 +3343,16 @@ impl App {
         // single-pane path below sizes to the whole window.
         if self.layout.has_tree() {
             let content = self.content_rect();
-            if let Some(c) = &content {
-                if c.width == 0 || c.height == 0 {
-                    // Grid sizing floors at 1x1, so panes silently stop
-                    // painting without this trace of why.
-                    warn!(
-                        width = c.width,
-                        height = c.height,
-                        "content area collapsed; window smaller than padding + chrome"
-                    );
-                }
+            if let Some(c) = &content
+                && (c.width == 0 || c.height == 0)
+            {
+                // Grid sizing floors at 1x1, so panes silently stop
+                // painting without this trace of why.
+                warn!(
+                    width = c.width,
+                    height = c.height,
+                    "content area collapsed; window smaller than padding + chrome"
+                );
             }
             self.layout.recompute(content);
             if self.layout.active_geometry().is_some() {
@@ -3556,104 +3552,96 @@ impl App {
             debug!("config reloaded successfully");
         }
 
-        if font_changed {
-            if let Some(window) = &self.window {
-                #[allow(clippy::cast_possible_truncation)]
-                #[allow(clippy::cast_possible_truncation)]
-                let font_size_pt = self.config.font_size as f32;
-                #[allow(clippy::cast_possible_truncation)]
-                let font_size = font_size_pt * window.scale_factor() as f32;
+        if font_changed && let Some(window) = &self.window {
+            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation)]
+            let font_size_pt = self.config.font_size as f32;
+            #[allow(clippy::cast_possible_truncation)]
+            let font_size = font_size_pt * window.scale_factor() as f32;
 
-                let font_state = match try_init_font(&self.config, font_size) {
-                    Ok(fs) => fs,
-                    Err(e) => {
-                        warn!(error = %e, "config reload: font init failed");
-                        self.config_error = Some(e);
-                        return;
-                    }
-                };
+            let font_state = match try_init_font(&self.config, font_size) {
+                Ok(fs) => fs,
+                Err(e) => {
+                    warn!(error = %e, "config reload: font init failed");
+                    self.config_error = Some(e);
+                    return;
+                }
+            };
 
-                // self.font still holds the old metrics; use font_state's.
-                let tab_px =
-                    tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
-                let status_px = status_bar::status_bar_height(
-                    self.config.status_bar,
-                    Some(font_state.metrics()),
+            // self.font still holds the old metrics; use font_state's.
+            let tab_px =
+                tab_bar::tab_bar_height(self.tabs.bar_visible(), Some(font_state.metrics()));
+            let status_px =
+                status_bar::status_bar_height(self.config.status_bar, Some(font_state.metrics()));
+            let (top_px, bottom_px) =
+                chrome_split(tab_px, status_px, self.config.status_bar_position);
+            let mut copy_mode_exited = false;
+            let pending_resize = if let (Some(gpu), Some(view)) =
+                (&self.gpu, self.panes.get_mut(&self.focused_pane))
+            {
+                let phys = PhysicalSize::new(gpu.config.width, gpu.config.height);
+                let (cols, rows) = window_to_grid_dims(
+                    phys,
+                    font_state.metrics(),
+                    &self.config.padding,
+                    top_px,
+                    bottom_px,
                 );
-                let (top_px, bottom_px) =
-                    chrome_split(tab_px, status_px, self.config.status_bar_position);
-                let mut copy_mode_exited = false;
-                let pending_resize = if let (Some(gpu), Some(view)) =
-                    (&self.gpu, self.panes.get_mut(&self.focused_pane))
-                {
-                    let phys = PhysicalSize::new(gpu.config.width, gpu.config.height);
-                    let (cols, rows) = window_to_grid_dims(
-                        phys,
-                        font_state.metrics(),
-                        &self.config.padding,
-                        top_px,
-                        bottom_px,
-                    );
-                    let cols = cols.max(1);
-                    let rows = rows.max(1);
-                    copy_mode_exited = view.resize(cols, rows);
+                let cols = cols.max(1);
+                let rows = rows.max(1);
+                copy_mode_exited = view.resize(cols, rows);
 
-                    // Row bounds derive from cell dimensions; rebuild the
-                    // a11y tree at the new metrics.
-                    match self.a11y_state.lock() {
-                        Ok(mut model) => {
-                            if let Some(m) = model.as_mut() {
-                                m.set_cell_dims(a11y_bridge::cell_dims(Some(font_state.metrics())));
-                            }
+                // Row bounds derive from cell dimensions; rebuild the
+                // a11y tree at the new metrics.
+                match self.a11y_state.lock() {
+                    Ok(mut model) => {
+                        if let Some(m) = model.as_mut() {
+                            m.set_cell_dims(a11y_bridge::cell_dims(Some(font_state.metrics())));
                         }
-                        Err(e) => warn!(error = %e, "a11y: mutex poisoned on font change"),
                     }
-                    let full_tree = a11y_bridge::apply(
-                        &self.a11y_state,
-                        self.focused_pane,
-                        view,
-                        A11yEvent::Resize,
-                    );
-                    if let (Some(adapter), Some(full_tree)) = (&mut self.accesskit, full_tree) {
-                        adapter.update_if_active(|| full_tree);
-                    }
-
-                    Some(window_resize(self.focused_pane, (cols, rows), phys))
-                } else {
-                    // The renderer adopts the new metrics below; without a
-                    // grid resize the a11y model and daemon keep the old
-                    // geometry.
-                    warn!("config reload: font changed but gpu/view unavailable");
-                    None
-                };
-                let focused = self.focused_pane;
-                self.release_copy_mode_pin(focused, copy_mode_exited);
-                if let Some(msg) = pending_resize {
-                    self.send_resize(msg);
+                    Err(e) => warn!(error = %e, "a11y: mutex poisoned on font change"),
+                }
+                let full_tree = a11y_bridge::apply(
+                    &self.a11y_state,
+                    self.focused_pane,
+                    view,
+                    A11yEvent::Resize,
+                );
+                if let (Some(adapter), Some(full_tree)) = (&mut self.accesskit, full_tree) {
+                    adapter.update_if_active(|| full_tree);
                 }
 
-                self.font = Some(font_state);
+                Some(window_resize(self.focused_pane, (cols, rows), phys))
+            } else {
+                // The renderer adopts the new metrics below; without a
+                // grid resize the a11y model and daemon keep the old
+                // geometry.
+                warn!("config reload: font changed but gpu/view unavailable");
+                None
+            };
+            let focused = self.focused_pane;
+            self.release_copy_mode_pin(focused, copy_mode_exited);
+            if let Some(msg) = pending_resize {
+                self.send_resize(msg);
             }
+
+            self.font = Some(font_state);
         }
 
         // Recreate GPU pipeline if blending mode changed (baked into shader).
-        if blending_changed {
-            if let Some(gpu) = &mut self.gpu {
-                let blending_mode = match self.config.text_blending {
-                    oakterm_config::TextBlending::Linear => {
-                        oakterm_renderer::shaders::BLENDING_LINEAR
-                    }
-                    oakterm_config::TextBlending::LinearCorrected => {
-                        oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED
-                    }
-                };
-                gpu.pipeline = oakterm_renderer::pipeline::RenderPipeline::new(
-                    &gpu.device,
-                    gpu.config.format,
-                    blending_mode,
-                    gpu.p3_active,
-                );
-            }
+        if blending_changed && let Some(gpu) = &mut self.gpu {
+            let blending_mode = match self.config.text_blending {
+                oakterm_config::TextBlending::Linear => oakterm_renderer::shaders::BLENDING_LINEAR,
+                oakterm_config::TextBlending::LinearCorrected => {
+                    oakterm_renderer::shaders::BLENDING_LINEAR_CORRECTED
+                }
+            };
+            gpu.pipeline = oakterm_renderer::pipeline::RenderPipeline::new(
+                &gpu.device,
+                gpu.config.format,
+                blending_mode,
+                gpu.p3_active,
+            );
         }
 
         // Status bar changes move the content area. Runs after the font

@@ -28,10 +28,10 @@ fn push_rows(hot: &mut HotBuffer, archive: Option<&mut ArchiveManager>, template
     let mut archive = archive;
     for _ in 0..ROWS_PER_ITER {
         let pruned = hot.push(template.clone());
-        if !pruned.is_empty() {
-            if let Some(mgr) = archive.as_deref_mut() {
-                mgr.archive_rows(pruned).expect("archive_rows");
-            }
+        if !pruned.is_empty()
+            && let Some(mgr) = archive.as_deref_mut()
+        {
+            mgr.archive_rows(pruned).expect("archive_rows");
         }
     }
 }

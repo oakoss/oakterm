@@ -233,11 +233,11 @@ impl Cell {
     }
 
     pub fn clear_graphemes(&mut self) {
-        if let Some(e) = &mut self.extra {
-            if !e.graphemes.is_empty() {
-                e.graphemes.clear();
-                self.drop_extra_if_empty();
-            }
+        if let Some(e) = &mut self.extra
+            && !e.graphemes.is_empty()
+        {
+            e.graphemes.clear();
+            self.drop_extra_if_empty();
         }
     }
 
@@ -257,10 +257,12 @@ impl Cell {
     }
 
     fn drop_extra_if_empty(&mut self) {
-        if let Some(e) = &self.extra {
-            if e.graphemes.is_empty() && e.underline_color.is_none() && e.hyperlink.is_none() {
-                self.extra = None;
-            }
+        if let Some(e) = &self.extra
+            && e.graphemes.is_empty()
+            && e.underline_color.is_none()
+            && e.hyperlink.is_none()
+        {
+            self.extra = None;
         }
     }
 }

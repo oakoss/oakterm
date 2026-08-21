@@ -148,10 +148,10 @@ impl ViewportCache {
             return false;
         }
         let served_end = served_start.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
-        if let (Some(start), Some(end)) = (self.start(), self.end()) {
-            if served_start > end || served_end < start {
-                return false;
-            }
+        if let (Some(start), Some(end)) = (self.start(), self.end())
+            && (served_start > end || served_end < start)
+        {
+            return false;
         }
         for (i, row) in rows.into_iter().enumerate() {
             let index = i64::try_from(i).unwrap_or(i64::MAX);

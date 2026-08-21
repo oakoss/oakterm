@@ -6,10 +6,10 @@ use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 /// Convert a winit key event to PTY bytes.
 #[must_use]
 pub(crate) fn key_to_bytes(key: &Key, text: Option<&str>) -> Option<Vec<u8>> {
-    if let Some(t) = text {
-        if !t.is_empty() {
-            return Some(t.as_bytes().to_vec());
-        }
+    if let Some(t) = text
+        && !t.is_empty()
+    {
+        return Some(t.as_bytes().to_vec());
     }
 
     if let Key::Named(named) = key {
@@ -189,12 +189,14 @@ pub(crate) fn palette_key_effect(
         Key::Character(s) if mods.control_key() && s.as_str() == "p" => PaletteKeyEffect::MoveUp,
         Key::Character(s) if mods.control_key() && s.as_str() == "n" => PaletteKeyEffect::MoveDown,
         _ => {
-            if !mods.control_key() && !mods.super_key() && !mods.alt_key() {
-                if let Some(text) = text {
-                    let printable: String = text.chars().filter(|c| !c.is_control()).collect();
-                    if !printable.is_empty() {
-                        return PaletteKeyEffect::Input(printable);
-                    }
+            if !mods.control_key()
+                && !mods.super_key()
+                && !mods.alt_key()
+                && let Some(text) = text
+            {
+                let printable: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !printable.is_empty() {
+                    return PaletteKeyEffect::Input(printable);
                 }
             }
             PaletteKeyEffect::Ignore
@@ -273,10 +275,10 @@ pub(crate) fn resolve_key(
         return either(&|c| ctx.registry.lookup_leader_index(c))
             .map_or(miss, KeyDispatch::LeaderAction);
     }
-    if let Some(lk) = ctx.leader {
-        if logical == Some(&lk.chord) || physical == Some(&lk.chord) {
-            return KeyDispatch::LeaderArm(lk.timeout_ms);
-        }
+    if let Some(lk) = ctx.leader
+        && (logical == Some(&lk.chord) || physical == Some(&lk.chord))
+    {
+        return KeyDispatch::LeaderArm(lk.timeout_ms);
     }
     if ctx.copy_mode {
         return KeyDispatch::CopyMode;

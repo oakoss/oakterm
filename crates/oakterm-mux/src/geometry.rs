@@ -217,14 +217,13 @@ pub(crate) fn locate_split_site(
         let LayoutNode::Container(c) = node else {
             return SplitSite::Halve { path };
         };
-        if c.direction == direction {
-            if let Some(target_pos) = c
+        if c.direction == direction
+            && let Some(target_pos) = c
                 .children
                 .iter()
                 .position(|ch| matches!(ch.node, LayoutNode::Leaf(id) if id == target))
-            {
-                return SplitSite::Sibling { path, target_pos };
-            }
+        {
+            return SplitSite::Sibling { path, target_pos };
         }
         let next = c
             .children

@@ -91,16 +91,16 @@ pub(crate) fn connect_to_daemon(
     }
 
     // We hold the lock and no daemon is running. Clean up stale socket.
-    if let Err(e) = std::fs::remove_file(&socket_path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            return Err(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "failed to remove stale socket at {}: {e}",
-                    socket_path.display()
-                ),
-            ));
-        }
+    if let Err(e) = std::fs::remove_file(&socket_path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "failed to remove stale socket at {}: {e}",
+                socket_path.display()
+            ),
+        ));
     }
 
     let child = spawn_daemon(&socket_path)?;
@@ -410,15 +410,14 @@ fn daemon_reader(
                         let _ = proxy.send_event(UserEvent::RenderUpdate(Box::new(update)));
                         if let UpdateOutcome::SendFollowUp(since_seqno) =
                             state.on_render_update(pane_id, seqno)
+                            && let Err(e) = send_get_render_update(pane_id, since_seqno, writer)
                         {
-                            if let Err(e) = send_get_render_update(pane_id, since_seqno, writer) {
-                                // Same phantom-in_flight caveat as the
-                                // DirtyNotify arm above; safe only because we
-                                // break.
-                                error!(error = %e, "daemon write error");
-                                notify_disconnected(proxy);
-                                break;
-                            }
+                            // Same phantom-in_flight caveat as the
+                            // DirtyNotify arm above; safe only because we
+                            // break.
+                            error!(error = %e, "daemon write error");
+                            notify_disconnected(proxy);
+                            break;
                         }
                     }
                     Err(e) => {

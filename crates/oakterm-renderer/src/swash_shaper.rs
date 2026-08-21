@@ -479,10 +479,10 @@ mod tests {
             return;
         };
         let db = font::system_font_db();
-        if let Ok((_m, data)) = font::load_default_metrics(&db, 14.0) {
-            if let Some(fb) = shaper.load_font(data, 0, 14.0) {
-                shaper.set_fallback_chain(vec![fb]);
-            }
+        if let Ok((_m, data)) = font::load_default_metrics(&db, 14.0)
+            && let Some(fb) = shaper.load_font(data, 0, 14.0)
+        {
+            shaper.set_fallback_chain(vec![fb]);
         }
         let run = TextRun {
             text: "\u{10FFFD}",
