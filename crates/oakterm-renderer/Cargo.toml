@@ -1,21 +1,21 @@
 [package]
 name = "oakterm-renderer"
 version = "0.1.0"
-description = "GPU renderer with wgpu and glyph atlas"
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+description = "GPU renderer with wgpu and glyph atlas"
 
 [dependencies]
-wgpu = { workspace = true }
-ttf-parser = { workspace = true }
-fontdb = { workspace = true }
-swash = { workspace = true }
-etagere = { workspace = true }
-lru = { workspace = true }
 bytemuck = { workspace = true }
+etagere = { workspace = true }
+fontdb = { workspace = true }
+lru = { workspace = true }
+swash = { workspace = true }
 tracing = { workspace = true }
+ttf-parser = { workspace = true }
+wgpu = { workspace = true }
 
 [features]
 gpu-tests = []

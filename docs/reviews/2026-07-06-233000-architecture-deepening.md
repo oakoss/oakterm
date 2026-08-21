@@ -114,9 +114,10 @@ The boilerplate is the part that varies subtly (which error code, which log
 message), so it cannot be skimmed.
 
 **Deepen:** a `Message` trait (`const MSG_TYPE` + decode/encode) plus two
-combinators in `requests/mod.rs` — `respond::<Req,Resp>(frame, |req| -> Result<Resp,
-ErrorCode>)` absorbing decode+encode, and `with_live_pane(frame, panes, |guard,
-req| …)` absorbing the lock. Handlers shrink to their domain line.
+combinators in `requests/mod.rs` —
+`respond::<Req,Resp>(frame, |req| -> Result<Resp, ErrorCode>)` absorbing
+decode+encode, and `with_live_pane(frame, panes, |guard, req| …)` absorbing the
+lock. Handlers shrink to their domain line.
 
 **Challenge to the recorded "dispatch registry" note:** the `requests/mod.rs`
 dispatch `match` is already deep and flat — a runtime registry would trade

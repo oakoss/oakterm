@@ -1,19 +1,18 @@
 [tools]
 rust = "stable"
-node = "25.9.0"
-"npm:prettier" = "3.9.6"
-"npm:markdownlint-cli2" = "0.23.2"
 lefthook = "2.1.10"
+dprint = "0.56.0"
+rumdl = "0.2.58"
 "cargo:cocogitto" = "7"
 "cargo:cargo-deny" = "0.19"
 
 [tasks.fmt]
 description = "Format all non-Rust files"
-run = "prettier -uwl ."
+run = ["dprint fmt", "rumdl fmt ."]
 
 [tasks."fmt:check"]
 description = "Check formatting"
-run = "prettier -uc ."
+run = "dprint check"
 
 [tasks.lint]
 description = "Run all linters"
@@ -21,11 +20,7 @@ depends = ["lint:md"]
 
 [tasks."lint:md"]
 description = "Lint markdown files"
-run = "markdownlint-cli2 '**/*.md' '#node_modules'"
-
-[tasks."lint:md:fix"]
-description = "Lint and fix markdown files"
-run = "markdownlint-cli2 --fix '**/*.md' '#node_modules'"
+run = "rumdl check ."
 
 [tasks."cargo:fmt"]
 description = "Format Rust code"
@@ -73,4 +68,10 @@ depends = ["cargo:deny"]
 
 [tasks.check]
 description = "Run all checks (format + lint + Rust)"
-depends = ["fmt:check", "lint", "cargo:fmt:check", "cargo:clippy", "cargo:check"]
+depends = [
+  "fmt:check",
+  "lint",
+  "cargo:fmt:check",
+  "cargo:clippy",
+  "cargo:check",
+]

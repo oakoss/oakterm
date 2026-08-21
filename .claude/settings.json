@@ -30,7 +30,7 @@
           {
             "type": "command",
             "if": "Edit(**.md)|Write(**.md)|Edit(**.toml)|Write(**.toml)|Edit(**.yml)|Write(**.yml)|Edit(**.yaml)|Write(**.yaml)|Edit(**.json)|Write(**.json)",
-            "command": ".claude/hooks/prettier-fmt.sh"
+            "command": ".claude/hooks/fmt-file.sh"
           }
         ]
       }

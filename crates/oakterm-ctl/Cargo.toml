@@ -1,15 +1,15 @@
 [package]
 name = "oakterm-ctl"
 version = "0.1.0"
-description = "OakTerm CLI control tool"
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+description = "OakTerm CLI control tool"
 
 [dependencies]
-oakterm-protocol = { path = "../oakterm-protocol" }
 clap = { version = "4.6.6", features = ["derive"] }
+oakterm-protocol = { path = "../oakterm-protocol" }
 serde_json = { workspace = true }
 
 [lints]
