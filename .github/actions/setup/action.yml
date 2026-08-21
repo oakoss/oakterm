@@ -21,7 +21,10 @@ runs:
         rustc --version
         cargo clippy --version
 
-    # rust-cache keys on the rustc it sees, so a pin bump invalidates cleanly,
-    # and it never caches ~/.cargo/bin — which mise's rust install now owns.
+    # rust-cache keys on the rustc it sees, so a pin bump invalidates cleanly.
+    # cache-bin defaults to true, which caches and cleans ~/.cargo/bin — the
+    # directory mise's rust install owns — so it must stay off.
     - name: Cache cargo
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        cache-bin: 'false'
