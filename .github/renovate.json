@@ -18,5 +18,14 @@
   "platformAutomerge": true,
   "platformCommit": "enabled",
   "commitBody": "",
-  "prConcurrentLimit": 5
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    {
+      "description": "The Rust pin exists so a new clippy release never reaches main without a reviewed commit; automerging the pin would reintroduce exactly that. The mise manager sets packageName to a bare 'rust'.",
+      "matchManagers": ["mise"],
+      "matchPackageNames": ["rust"],
+      "groupName": null,
+      "automerge": false
+    }
+  ]
 }

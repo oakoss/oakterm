@@ -4,25 +4,24 @@ description: Install mise and project toolchain
 runs:
   using: composite
   steps:
+    # mise installs the Rust toolchain pinned in .mise.toml, components
+    # included. A second toolchain action here would leave which `cargo` runs
+    # dependent on PATH ordering.
     - name: Install mise
-      uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+      uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       with:
         install: true
         cache: true
 
-    - name: Setup Rust
-      uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      with:
-        components: clippy, rustfmt
+    - name: Toolchain provenance
+      shell: bash
+      run: |
+        echo "cargo -> $(command -v cargo)"
+        cargo --version
+        rustc --version
+        cargo clippy --version
 
+    # rust-cache keys on the rustc it sees, so a pin bump invalidates cleanly,
+    # and it never caches ~/.cargo/bin — which mise's rust install now owns.
     - name: Cache cargo
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/
-          ~/.cargo/git/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
