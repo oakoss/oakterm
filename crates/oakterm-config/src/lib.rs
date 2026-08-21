@@ -24,8 +24,8 @@ pub use keybind::{
 pub use mlua::{self, Lua};
 pub use proxy::{extract_config, register_config_table};
 pub use schema::{
-    ConfigValues, CursorStyle, LeaderKey, Padding, StatusBarPosition, TextBlending, UpdateCheck,
-    WindowDecorations,
+    ConfigValues, CopyModePreset, CursorStyle, LeaderKey, Padding, StatusBarPosition, TextBlending,
+    UpdateCheck, WindowDecorations,
 };
 
 use mlua::{HookTriggers, LuaOptions, StdLib, Value, VmState};

@@ -4,7 +4,8 @@
 
 use crate::copy_keys::{Motion, PendingPrefix};
 use crate::copy_mode::{
-    CopyModeState, CopySelectionType, FillFailure, FillRequest, ViewportCache, YankRange,
+    CopyModeState, CopySelectionType, FillFailure, FillRequest, SelectionEffect, ViewportCache,
+    YankRange,
 };
 use crate::copy_motion::{RowText, resolve};
 use crate::render_grid::ClientGrid;
@@ -281,11 +282,15 @@ impl PaneView {
     }
 
     /// Apply a copy-mode motion, resolved against the cached scrollback
-    /// rows and the frozen page. A no-op outside copy mode.
-    pub(crate) fn move_copy_mode_cursor(&mut self, motion: Motion) {
-        let Some(state) = &self.copy_mode else {
+    /// rows and the frozen page. The selection effect applies first, so
+    /// `Extend` anchors at the pre-move cursor — taking both here keeps
+    /// that ordering out of the caller's hands. A no-op outside copy
+    /// mode.
+    pub(crate) fn move_copy_mode_cursor(&mut self, motion: Motion, effect: SelectionEffect) {
+        let Some(state) = &mut self.copy_mode else {
             return;
         };
+        state.apply_selection_effect(effect);
         let rows = PaneRows {
             cache: state.cache(),
             grid: &self.grid,
@@ -422,7 +427,7 @@ fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
 mod tests {
     use super::{PaneView, ScrollbackClampOutcome, clamp_viewport};
     use crate::copy_keys::{Motion, PendingPrefix};
-    use crate::copy_mode::{CopyModeState, CopySelectionType, FillRequest};
+    use crate::copy_mode::{CopyModeState, CopySelectionType, FillRequest, SelectionEffect};
     use crate::render_grid::ClientGrid;
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
@@ -823,10 +828,10 @@ mod tests {
         view.enter_copy_mode();
         view.set_copy_mode_cursor(3, 0);
 
-        view.move_copy_mode_cursor(Motion::WordForward);
+        view.move_copy_mode_cursor(Motion::WordForward, SelectionEffect::Keep);
         assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((3, 6)));
 
-        view.move_copy_mode_cursor(Motion::LineEnd);
+        view.move_copy_mode_cursor(Motion::LineEnd, SelectionEffect::Keep);
         assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((3, 9)));
     }
 
@@ -848,7 +853,7 @@ mod tests {
         assert!(view.apply_copy_mode_scrollback(1, &data));
 
         view.set_copy_mode_cursor(-8, 0);
-        view.move_copy_mode_cursor(Motion::WordForward);
+        view.move_copy_mode_cursor(Motion::WordForward, SelectionEffect::Keep);
         assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((-8, 4)));
     }
 
@@ -881,7 +886,7 @@ mod tests {
         assert!(view.apply_copy_mode_scrollback(1, &data));
 
         view.set_copy_mode_cursor(-1, 0);
-        view.move_copy_mode_cursor(Motion::WordForward);
+        view.move_copy_mode_cursor(Motion::WordForward, SelectionEffect::Keep);
 
         assert_eq!(
             view.copy_mode().map(CopyModeState::cursor),
@@ -911,7 +916,7 @@ mod tests {
         );
 
         for _ in 0..7 {
-            view.move_copy_mode_cursor(Motion::HalfPageUp);
+            view.move_copy_mode_cursor(Motion::HalfPageUp, SelectionEffect::Keep);
         }
 
         assert_eq!(
@@ -936,11 +941,11 @@ mod tests {
         view.enter_copy_mode();
 
         view.set_copy_mode_cursor(0, 0);
-        view.move_copy_mode_cursor(Motion::PageUp);
+        view.move_copy_mode_cursor(Motion::PageUp, SelectionEffect::Keep);
         assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((0, 0)));
 
-        view.move_copy_mode_cursor(Motion::Bottom);
-        view.move_copy_mode_cursor(Motion::PageDown);
+        view.move_copy_mode_cursor(Motion::Bottom, SelectionEffect::Keep);
+        view.move_copy_mode_cursor(Motion::PageDown, SelectionEffect::Keep);
         assert_eq!(view.copy_mode().map(CopyModeState::cursor), Some((7, 0)));
     }
 
@@ -950,7 +955,7 @@ mod tests {
     fn copy_mode_commands_are_inert_outside_copy_mode() {
         let mut view = PaneView::new(ClientGrid::new(16, 8));
 
-        view.move_copy_mode_cursor(Motion::Down);
+        view.move_copy_mode_cursor(Motion::Down, SelectionEffect::Extend);
         view.toggle_copy_mode_selection(CopySelectionType::Character);
         view.set_copy_mode_pending_prefix(Some(PendingPrefix::G));
 
@@ -958,6 +963,21 @@ mod tests {
         assert_eq!(view.copy_mode_yank_range(), None);
         assert_eq!(view.copy_mode_pending_prefix(), None);
         assert!(!view.clear_copy_mode_selection());
+    }
+
+    /// `Extend` anchors before the motion resolves: the selection starts
+    /// at the pre-move cursor, not wherever the move lands.
+    #[test]
+    fn an_extending_move_anchors_at_the_pre_move_cursor() {
+        let mut view = PaneView::new(ClientGrid::new(16, 8));
+        view.enter_copy_mode();
+        view.set_copy_mode_cursor(3, 2);
+
+        view.move_copy_mode_cursor(Motion::Right, SelectionEffect::Extend);
+
+        let range = view.copy_mode_yank_range().expect("selecting");
+        assert_eq!((range.start_row, range.start_col), (3, 2));
+        assert_eq!((range.end_row, range.end_col), (3, 3));
     }
 
     /// Copy-mode state is per-pane, so a `g` armed on one pane cannot
