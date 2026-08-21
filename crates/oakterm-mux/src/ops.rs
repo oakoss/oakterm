@@ -266,10 +266,10 @@ fn remove_leaf(c: &mut Container, target: PaneId) -> LeafRemoval {
         return LeafRemoval::Removed { hint };
     }
     for child in &mut c.children {
-        if let LayoutNode::Container(inner) = &mut child.node {
-            if let LeafRemoval::Removed { hint } = remove_leaf(inner, target) {
-                return LeafRemoval::Removed { hint };
-            }
+        if let LayoutNode::Container(inner) = &mut child.node
+            && let LeafRemoval::Removed { hint } = remove_leaf(inner, target)
+        {
+            return LeafRemoval::Removed { hint };
         }
     }
     LeafRemoval::NotFound
@@ -1010,7 +1010,7 @@ mod tests {
             let op = lcg(&mut rng) % 3;
             if op == 0 && live.len() < 64 {
                 let target = live[lcg(&mut rng) as usize % live.len()];
-                let dir = if lcg(&mut rng) % 2 == 0 {
+                let dir = if lcg(&mut rng).is_multiple_of(2) {
                     Horizontal
                 } else {
                     Vertical

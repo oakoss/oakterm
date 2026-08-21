@@ -624,10 +624,10 @@ impl KeybindRegistry {
             .drain(..)
             .chain(self.leader_bindings.bindings.drain(..));
         for (_, action) in drained {
-            if let Action::Callback(key) = action {
-                if let Err(e) = lua.remove_registry_value(key) {
-                    tracing::warn!(error = %e, "failed to clean up keybind callback");
-                }
+            if let Action::Callback(key) = action
+                && let Err(e) = lua.remove_registry_value(key)
+            {
+                tracing::warn!(error = %e, "failed to clean up keybind callback");
             }
         }
     }

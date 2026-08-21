@@ -274,17 +274,17 @@ impl ClientGrid {
         }
 
         // Bottom portion: live snapshot rows (if partial scroll).
-        if sb_display_rows < rows {
-            if let Some(snap) = &self.live_snapshot {
-                let live_start = 0;
-                let live_count = rows - sb_display_rows;
-                for i in 0..live_count {
-                    let src_idx = (live_start + i) * cols;
-                    let dst_idx = (sb_display_rows + i) * cols;
-                    if src_idx + cols <= snap.cells.len() && dst_idx + cols <= self.cells.len() {
-                        self.cells[dst_idx..dst_idx + cols]
-                            .clone_from_slice(&snap.cells[src_idx..src_idx + cols]);
-                    }
+        if sb_display_rows < rows
+            && let Some(snap) = &self.live_snapshot
+        {
+            let live_start = 0;
+            let live_count = rows - sb_display_rows;
+            for i in 0..live_count {
+                let src_idx = (live_start + i) * cols;
+                let dst_idx = (sb_display_rows + i) * cols;
+                if src_idx + cols <= snap.cells.len() && dst_idx + cols <= self.cells.len() {
+                    self.cells[dst_idx..dst_idx + cols]
+                        .clone_from_slice(&snap.cells[src_idx..src_idx + cols]);
                 }
             }
         }
@@ -597,49 +597,49 @@ impl ClientGrid {
 
         // Emit a sub-cell cursor quad for underline or bar styles.
         let cursor_shape = cursor_shape_from_wire(self.cursor_style);
-        if cursor_shape != 0 {
-            if let Some(_cursor_idx) = cursor_idx {
-                let cx = f32::from(self.cursor_x) * metrics.cell_width + pad_left;
-                let cy = f32::from(self.cursor_y) * metrics.cell_height + pad_top;
+        if cursor_shape != 0
+            && let Some(_cursor_idx) = cursor_idx
+        {
+            let cx = f32::from(self.cursor_x) * metrics.cell_width + pad_left;
+            let cy = f32::from(self.cursor_y) * metrics.cell_height + pad_top;
 
-                // Use the cell's fg color for the cursor line.
-                let cell_idx = usize::from(self.cursor_y) * usize::from(self.cols)
-                    + usize::from(self.cursor_x);
-                let cursor_fg = if cell_idx < self.cells.len() {
-                    self.cells[cell_idx].fg
-                } else {
-                    [255, 255, 255]
-                };
-                let fg = [
-                    f32::from(cursor_fg[0]) / 255.0,
-                    f32::from(cursor_fg[1]) / 255.0,
-                    f32::from(cursor_fg[2]) / 255.0,
-                    1.0,
-                ];
+            // Use the cell's fg color for the cursor line.
+            let cell_idx =
+                usize::from(self.cursor_y) * usize::from(self.cols) + usize::from(self.cursor_x);
+            let cursor_fg = if cell_idx < self.cells.len() {
+                self.cells[cell_idx].fg
+            } else {
+                [255, 255, 255]
+            };
+            let fg = [
+                f32::from(cursor_fg[0]) / 255.0,
+                f32::from(cursor_fg[1]) / 255.0,
+                f32::from(cursor_fg[2]) / 255.0,
+                1.0,
+            ];
 
-                let (pos, size) = if cursor_shape == 1 {
-                    // Underline: thin line at cell bottom.
-                    (
-                        [cx, cy + metrics.cell_height - 2.0],
-                        [metrics.cell_width, 2.0],
-                    )
-                } else {
-                    // Bar: thin line at cell left edge.
-                    ([cx, cy], [2.0, metrics.cell_height])
-                };
+            let (pos, size) = if cursor_shape == 1 {
+                // Underline: thin line at cell bottom.
+                (
+                    [cx, cy + metrics.cell_height - 2.0],
+                    [metrics.cell_width, 2.0],
+                )
+            } else {
+                // Bar: thin line at cell left edge.
+                ([cx, cy], [2.0, metrics.cell_height])
+            };
 
-                // UV is unused — the bg_luminance sentinel causes the shader
-                // to output solid fg_color before sampling the atlas.
-                glyphs.push(GlyphVertex {
-                    pos,
-                    size,
-                    uv_origin: [0.0, 0.0],
-                    fg_color: fg,
-                    bg_luminance: -1.0,
-                    is_color: 0.0,
-                    pad: [0.0; 2],
-                });
-            }
+            // UV is unused — the bg_luminance sentinel causes the shader
+            // to output solid fg_color before sampling the atlas.
+            glyphs.push(GlyphVertex {
+                pos,
+                size,
+                uv_origin: [0.0, 0.0],
+                fg_color: fg,
+                bg_luminance: -1.0,
+                is_color: 0.0,
+                pad: [0.0; 2],
+            });
         }
 
         atlas.clear_in_use();

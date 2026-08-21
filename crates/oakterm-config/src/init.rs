@@ -72,10 +72,10 @@ fn write_stubs(config_dir: &Path) -> io::Result<bool> {
     let stub_path = types_dir.join("oakterm.lua");
 
     // Skip write if content is identical (avoids unnecessary mtime changes).
-    if let Ok(existing) = std::fs::read_to_string(&stub_path) {
-        if existing == stubs::OAKTERM_LUA_STUB {
-            return Ok(false);
-        }
+    if let Ok(existing) = std::fs::read_to_string(&stub_path)
+        && existing == stubs::OAKTERM_LUA_STUB
+    {
+        return Ok(false);
     }
 
     atomic_write(&stub_path, stubs::OAKTERM_LUA_STUB)?;

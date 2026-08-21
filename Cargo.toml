@@ -18,7 +18,10 @@ members = [
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/oakoss/oakterm"
-rust-version = "1.85"
+# Equals .mise.toml's rust pin: one supported version, floor == ceiling. An
+# older toolchain gets `requires rustc 1.98.0` instead of a failure deep in a
+# dependency. Moving the pin moves this too.
+rust-version = "1.98.0"
 
 [workspace.dependencies]
 # Clipboard

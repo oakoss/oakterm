@@ -158,10 +158,10 @@ impl Tab {
     /// [`LayoutError::PaneNotFound`] if `target` is not in the tree.
     pub(crate) fn close_pane(&mut self, target: PaneId) -> Result<CloseOutcome, LayoutError> {
         let outcome = self.layout.close(target)?;
-        if let CloseOutcome::Removed { focus_hint } = outcome {
-            if self.focused_pane == target {
-                self.focused_pane = focus_hint;
-            }
+        if let CloseOutcome::Removed { focus_hint } = outcome
+            && self.focused_pane == target
+        {
+            self.focused_pane = focus_hint;
         }
         Ok(outcome)
     }

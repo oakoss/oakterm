@@ -506,12 +506,11 @@ impl ScreenSet {
     /// Push a row to the hot buffer, archiving any pruned rows to disk.
     pub fn push_to_scrollback(&mut self, row: Row) {
         let pruned = self.scrollback.push(row);
-        if !pruned.is_empty() {
-            if let Some(archive) = &mut self.archive {
-                if let Err(e) = archive.archive_rows(pruned) {
-                    tracing::warn!(error = %e, "failed to archive pruned rows");
-                }
-            }
+        if !pruned.is_empty()
+            && let Some(archive) = &mut self.archive
+            && let Err(e) = archive.archive_rows(pruned)
+        {
+            tracing::warn!(error = %e, "failed to archive pruned rows");
         }
     }
 

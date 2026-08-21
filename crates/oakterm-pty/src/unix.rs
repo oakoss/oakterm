@@ -273,17 +273,17 @@ fn spawn_child(spec: CommandSpec, slave: OwnedFd) -> io::Result<Child> {
 /// is checked with `access(X_OK)`; non-executable candidates fall through with
 /// a `WARN` log so users can diagnose without strace.
 fn resolve_default_shell() -> PathBuf {
-    if let Ok(env_shell) = std::env::var("SHELL") {
-        if !env_shell.is_empty() {
-            let env_path = Path::new(&env_shell);
-            if is_executable(env_path) {
-                return PathBuf::from(env_shell);
-            }
-            warn!(
-                shell = %env_shell,
-                "$SHELL is not executable, falling back to passwd entry"
-            );
+    if let Ok(env_shell) = std::env::var("SHELL")
+        && !env_shell.is_empty()
+    {
+        let env_path = Path::new(&env_shell);
+        if is_executable(env_path) {
+            return PathBuf::from(env_shell);
         }
+        warn!(
+            shell = %env_shell,
+            "$SHELL is not executable, falling back to passwd entry"
+        );
     }
 
     if let Some(passwd_shell) = passwd_shell() {

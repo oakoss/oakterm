@@ -824,10 +824,10 @@ async fn poll_for_pid(stream: &mut UnixStream, codec: &mut FrameCodec, target_pa
         let resp = read_response_with_serial(stream, codec, serial).await;
         assert_eq!(resp.msg_type, MSG_LIST_PANES_RESPONSE);
         let list = ListPanesResponse::decode(&resp.payload).expect("decode ListPanesResponse");
-        if let Some(info) = list.panes.iter().find(|p| p.pane_id == target_pane) {
-            if info.pid != 0 {
-                return info.pid;
-            }
+        if let Some(info) = list.panes.iter().find(|p| p.pane_id == target_pane)
+            && info.pid != 0
+        {
+            return info.pid;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -1639,10 +1639,10 @@ async fn poll_tab_name(stream: &mut UnixStream, codec: &mut FrameCodec, tab_id: 
     while std::time::Instant::now() < deadline {
         serial += 1;
         let tabs = list_tabs_ok(stream, codec, serial).await;
-        if let Some(t) = tabs.tabs.iter().find(|t| t.tab_id == tab_id) {
-            if !t.name.is_empty() {
-                return t.name.clone();
-            }
+        if let Some(t) = tabs.tabs.iter().find(|t| t.tab_id == tab_id)
+            && !t.name.is_empty()
+        {
+            return t.name.clone();
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }

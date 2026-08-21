@@ -194,10 +194,10 @@ pub fn config_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join("oakterm");
     }
-    if cfg!(windows) {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return PathBuf::from(appdata).join("oakterm");
-        }
+    if cfg!(windows)
+        && let Ok(appdata) = std::env::var("APPDATA")
+    {
+        return PathBuf::from(appdata).join("oakterm");
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home).join(".config").join("oakterm");
@@ -260,10 +260,10 @@ pub fn load_config_from(path: &Path) -> ConfigResult {
     // KeybindRegistry::with_defaults(); user binds override them there.
 
     // Install sandboxed require() for multi-file configs.
-    if let Some(parent) = path.parent() {
-        if let Err(e) = install_require(&lua, parent) {
-            tracing::warn!(error = %e, "failed to install require()");
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = install_require(&lua, parent)
+    {
+        tracing::warn!(error = %e, "failed to install require()");
     }
 
     if let Err(e) = lua.load(&source).set_name(path.to_string_lossy()).exec() {
@@ -346,11 +346,11 @@ fn install_require(lua: &Lua, config_dir: &Path) -> mlua::Result<()> {
         let cache: mlua::Table = lua.named_registry_value(MODULE_CACHE_KEY)?;
         let sentinel: mlua::Table = lua.named_registry_value(CIRCULAR_SENTINEL_KEY)?;
         if let Some(cached) = cache.get::<Option<Value>>(name_str.as_ref())? {
-            if let Value::Table(ref t) = cached {
-                if t == &sentinel {
-                    // Circular require: return true as placeholder.
-                    return Ok(Value::Boolean(true));
-                }
+            if let Value::Table(ref t) = cached
+                && t == &sentinel
+            {
+                // Circular require: return true as placeholder.
+                return Ok(Value::Boolean(true));
             }
             return Ok(cached);
         }

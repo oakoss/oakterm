@@ -209,10 +209,10 @@ impl LayoutNode {
         }
 
         for child in &c.children {
-            if let LayoutNode::Container(inner) = &child.node {
-                if inner.direction == c.direction {
-                    return Err(InvariantViolation::SameDirectionNesting);
-                }
+            if let LayoutNode::Container(inner) = &child.node
+                && inner.direction == c.direction
+            {
+                return Err(InvariantViolation::SameDirectionNesting);
             }
             child.node.validate()?;
         }

@@ -116,19 +116,19 @@ impl App {
         // The palette assembles after everything else so its panel covers
         // pane content and split borders; it also drops the pane glyphs
         // beneath it (text has no z-order).
-        if self.palette.is_visible() {
-            if let Some(font) = &mut self.font {
-                let mut overlay = FrameAssembly {
-                    glyphs: std::mem::take(&mut glyph_instances),
-                    ..Default::default()
-                };
-                // Full top chrome, so the palette clears a top status bar.
-                assemble_palette(font, &self.palette, viewport, top_chrome, &mut overlay);
-                gpu.upload_glyphs(font.atlas(), &overlay.uploads);
-                gpu.upload_color_glyphs(font.color_atlas(), &overlay.color_uploads);
-                bg_sections.extend(overlay.bg_sections);
-                glyph_instances = overlay.glyphs;
-            }
+        if self.palette.is_visible()
+            && let Some(font) = &mut self.font
+        {
+            let mut overlay = FrameAssembly {
+                glyphs: std::mem::take(&mut glyph_instances),
+                ..Default::default()
+            };
+            // Full top chrome, so the palette clears a top status bar.
+            assemble_palette(font, &self.palette, viewport, top_chrome, &mut overlay);
+            gpu.upload_glyphs(font.atlas(), &overlay.uploads);
+            gpu.upload_color_glyphs(font.color_atlas(), &overlay.color_uploads);
+            bg_sections.extend(overlay.bg_sections);
+            glyph_instances = overlay.glyphs;
         }
 
         let uniforms = text_uniforms(self.font.as_ref(), self.config.text_gamma, viewport);

@@ -38,10 +38,10 @@ pub(super) async fn key_input(
     };
     match &pane.pty_state {
         PtyState::Running { fd, .. } => {
-            if !msg.key_data.is_empty() {
-                if let Err(e) = rustix::io::write(fd, &msg.key_data) {
-                    warn!(conn_id, error = %e, "PTY write failed");
-                }
+            if !msg.key_data.is_empty()
+                && let Err(e) = rustix::io::write(fd, &msg.key_data)
+            {
+                warn!(conn_id, error = %e, "PTY write failed");
             }
         }
         PtyState::Exited { .. } | PtyState::Failed(_) => {
@@ -100,10 +100,10 @@ pub(super) async fn mouse_input(
 
         if should_send {
             let seq = encode_mouse_sgr(&msg, sgr);
-            if !seq.is_empty() {
-                if let Err(e) = rustix::io::write(fd, seq.as_bytes()) {
-                    warn!(conn_id, error = %e, "PTY mouse write failed");
-                }
+            if !seq.is_empty()
+                && let Err(e) = rustix::io::write(fd, seq.as_bytes())
+            {
+                warn!(conn_id, error = %e, "PTY mouse write failed");
             }
         } else if (msg.event_type == 3 || msg.event_type == 4) && on_alt && alt_scroll {
             let arrow: &[u8] = match (msg.event_type, decckm) {

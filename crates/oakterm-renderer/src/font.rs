@@ -93,10 +93,10 @@ pub fn load_default_metrics(
             style: fontdb::Style::Normal,
         };
 
-        if let Some(id) = db.query(&query) {
-            if let Some((data, metrics)) = load_face(db, id, font_size) {
-                return Ok((metrics, data));
-            }
+        if let Some(id) = db.query(&query)
+            && let Some((data, metrics)) = load_face(db, id, font_size)
+        {
+            return Ok((metrics, data));
         }
     }
 
@@ -108,10 +108,10 @@ pub fn load_default_metrics(
         style: fontdb::Style::Normal,
     };
 
-    if let Some(id) = db.query(&query) {
-        if let Some((data, metrics)) = load_face(db, id, font_size) {
-            return Ok((metrics, data));
-        }
+    if let Some(id) = db.query(&query)
+        && let Some((data, metrics)) = load_face(db, id, font_size)
+    {
+        return Ok((metrics, data));
     }
 
     Err(io::Error::new(
@@ -191,15 +191,15 @@ pub fn load_default_variants(db: &fontdb::Database, font_size: f32) -> io::Resul
                 stretch: fontdb::Stretch::Normal,
                 style: fontdb::Style::Normal,
             };
-            if let Some(id) = db.query(&query) {
-                if let Some(face_info) = db.face(id) {
-                    let family_name = face_info
-                        .families
-                        .first()
-                        .map_or_else(String::new, |(name, _)| name.clone());
-                    if let Some(result) = load_face(db, id, font_size) {
-                        found = Some((family_name, result));
-                    }
+            if let Some(id) = db.query(&query)
+                && let Some(face_info) = db.face(id)
+            {
+                let family_name = face_info
+                    .families
+                    .first()
+                    .map_or_else(String::new, |(name, _)| name.clone());
+                if let Some(result) = load_face(db, id, font_size) {
+                    found = Some((family_name, result));
                 }
             }
         }
