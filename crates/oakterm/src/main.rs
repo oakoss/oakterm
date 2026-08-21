@@ -3554,7 +3554,6 @@ impl App {
 
         if font_changed && let Some(window) = &self.window {
             #[allow(clippy::cast_possible_truncation)]
-            #[allow(clippy::cast_possible_truncation)]
             let font_size_pt = self.config.font_size as f32;
             #[allow(clippy::cast_possible_truncation)]
             let font_size = font_size_pt * window.scale_factor() as f32;
