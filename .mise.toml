@@ -4,9 +4,9 @@
 # per-machine and per-install-date, which diverges local from CI. renovate.json
 # keeps this pin out of automerge so every move is reviewed.
 rust = { version = "1.98.0", components = "clippy,rustfmt" }
-lefthook = "2.1.10"
-dprint = "0.56.0"
-rumdl = "0.2.58"
+lefthook = "2.1.11"
+dprint = "0.56.1"
+rumdl = "0.2.60"
 "cargo:cocogitto" = "7"
 "cargo:cargo-deny" = "0.19"
 
