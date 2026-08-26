@@ -208,9 +208,10 @@ Copy mode uses these wire protocol messages (see Spec-0001 for framing):
 | `0x99`   | YankSelection       | C→D       | Request  | `pane_id: u32`, `start_row: i64`, `start_col: u16`, `end_row: i64`, `end_col: u16`, `selection_type: u8` (0=character, 1=line, 2=block) |
 | `0x9A`   | YankResponse        | D→C       | Response | `text_len: u32`, `text: UTF-8`                                                                                                          |
 
+`GetScrollback` (0x73) keeps its payload; `ScrollbackData` (0x74) gains `base: u64`, the history length the served rows were resolved against — a pinned client discards a fill whose `base` differs from its acknowledged pin (ADR-0025 clause 5).
+
 Existing messages reused without modification to their payloads:
 
-- `GetScrollback` (0x73) / `ScrollbackData` (0x74): viewport cache fills.
 - `FindPrompt` (0x75) / `PromptPosition` (0x76): prompt jumps.
 - `SearchScrollback` (0x77) / `SearchResults` (0x78) / `SearchNext` (0x79) / `SearchPrev` (0x7A) / `SearchClose` (0x7B): search operations.
 

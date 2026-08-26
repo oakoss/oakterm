@@ -96,8 +96,12 @@ pub(super) async fn find_prompt(
 /// results too.
 fn pin_row_limit(pane: &crate::pane::PaneState, conn_id: u64) -> Option<usize> {
     let &pin = pane.copy_mode_pins.get(&conn_id)?;
-    let first = pane.screens.scrollback().first_index();
-    Some(usize::try_from(pin.saturating_sub(first)).unwrap_or(usize::MAX))
+    Some(row_limit_for(pin, pane.screens.scrollback().first_index()))
+}
+
+/// Hot-buffer index of pin-space row 0 (ADR-0025 clause 8).
+fn row_limit_for(pin: u64, first_index: u64) -> usize {
+    usize::try_from(pin.saturating_sub(first_index)).unwrap_or(usize::MAX)
 }
 
 /// Step the shared nav cursor past matches this pinned client must not
@@ -314,9 +318,7 @@ fn build_search_response(
             // held (ADR-0025 clause 8), the live present otherwise. The
             // filtering is per-response: the engine is pane-wide shared
             // state, and clamping it would shrink other clients' results.
-            let limit = pin.map(|p| {
-                usize::try_from(p.saturating_sub(buf.first_index())).unwrap_or(usize::MAX)
-            });
+            let limit = pin.map(|p| row_limit_for(p, buf.first_index()));
             let total = match limit {
                 Some(limit) => engine.matches().iter().filter(|m| m.row < limit).count(),
                 None => engine.match_count(),
@@ -473,7 +475,6 @@ mod tests {
         );
     }
 
-    /// Push rows into a buffer, marking specific indices as `PromptStart`.
     /// The search family refuses reads while an invalidation push is
     /// outstanding, like scrollback and yank (ADR-0025 clause 5).
     #[tokio::test]
@@ -663,6 +664,7 @@ mod tests {
         );
     }
 
+    /// Push rows into a buffer, marking specific indices as `PromptStart`.
     fn buffer_with_prompts(total: usize, prompt_indices: &[usize]) -> HotBuffer {
         let mut buf = HotBuffer::new(10 * 1024 * 1024);
         for i in 0..total {
