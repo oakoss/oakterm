@@ -87,8 +87,8 @@ What we took from each terminal and tool — and what we deliberately left out.
 
 ### Wave
 
-**Took:** Proves users want inline file previews and that a terminal can embed non-terminal content in panes
-**Left:** Drag-and-drop workspace model, built-in editor, too many concerns in one app
+**Took:** Proves users want inline file previews and that a terminal can embed non-terminal content in panes. `wsh` CLI verb space validates the [`oakterm ctl` design](32-agent-control-api.md) and names verbs it lacks. Durable sessions validate the remote reattach model ([remote access](29-remote-access.md)). Sysinfo and process-viewer widgets prove demand for the process dashboard. Apache-2.0, so mechanisms are borrowable, unlike Warp's AGPL.
+**Left:** Drag-and-drop workspace model, built-in editor, too many concerns in one app. Electron + xterm.js stack — VT parsing in the renderer, reported high memory usage, TUI redraw glitches from missing synchronized-output support. Go→TS codegen keeping client and server in build-time lockstep instead of a versioned wire format. Block-first paradigm. Alt-screen content unreachable after TUI exit ([wavetermdev/waveterm#2837](https://github.com/wavetermdev/waveterm/issues/2837)) — the problem class our copy-mode work solves.
 
 ### Tamux
 
