@@ -238,6 +238,8 @@ The remote connection is too deep to be a plugin:
 
 ## Prior Art
 
+Wave's [durable sessions](https://docs.waveterm.dev/durable-sessions) (v0.14) are the closest shipped implementation of this doc's model from the opposite direction: a lightweight Go job manager on the remote host keeps the shell and its children alive independently of the client, buffers output over a Unix domain socket, and reattaches after network drops, sleep, or app restart. Version-check and launch of the remote helper share one SSH session on the steady-state path; an install round trip is added only when the helper is older than the client. Wave prompts before installing by default (`conn:askbeforewshinstall`) and offers an opt-in to silent install across all connections; worth matching, with per-host rather than global consent.
+
 Remote steering of long-running agent sessions is the strongest converged demand in the 2026 agent-tooling wave: Zeron ships a single binary with headed/headless modes and phone clients that watch and steer desktop sessions; ZCode's Bot Channel monitors Goals from WeChat/Telegram; Orca ships a mobile companion app. Zeron's mobile clients are monitor-first with opt-in interaction — the same default as `remote_allow_interactive = false` here. Zeron reached this architecture by rewriting an Electron app from scratch; oakterm's daemon/client split provides it natively. See the [Agent Tooling Landscape Audit](../reviews/2026-08-16-215731-agent-tooling-landscape-audit.md).
 
 ## Related Docs

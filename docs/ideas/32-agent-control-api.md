@@ -268,6 +268,13 @@ oakterm ctl pane create --floating --command "docker compose up" --title "Docker
 oakterm ctl notify "Dev environment ready"
 ```
 
+## Prior Art
+
+**[Wave](https://docs.waveterm.dev/wsh-reference)** — its `wsh` CLI is the same design shipped: a single verb space letting shell scripts and agents drive GUI state over the daemon socket with no protocol knowledge (`setmeta`, `notify`, `badge`, `run`, `termscrollback`). Its [Claude Code integration](https://docs.waveterm.dev/claude-code) is lifecycle hooks calling `wsh badge` — a plain CLI covering agent integration without MCP. Two verbs it has that this surface lacks, both candidates:
+
+- `getvar`/`setvar` — persistent key-value variables scoped to block, tab, workspace, or client-wide, giving scripts cross-session state without a dotfile
+- `secret` — OS-keychain-backed credential storage (get/set/list/delete), so scripts never keep tokens in plaintext
+
 ## What This Is Not
 
 - Not an MCP server — it's a CLI. No protocol beyond "run a command, get output."
