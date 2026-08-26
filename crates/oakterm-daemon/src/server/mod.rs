@@ -9,8 +9,8 @@ use crate::session::default_state_dir;
 use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec, HEADER_SIZE};
 use oakterm_protocol::message::{
-    Bell, ClientHello, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DIRTY_NOTIFY, MSG_REQUEST_SHUTDOWN,
-    PaneExited, ServerHello, Shutdown, ShutdownReason, TitleChanged,
+    Bell, ClientHello, CopyModeInvalidated, HandshakeStatus, MSG_CLIENT_HELLO, MSG_DIRTY_NOTIFY,
+    MSG_REQUEST_SHUTDOWN, PaneExited, ServerHello, Shutdown, ShutdownReason, TitleChanged,
 };
 use oakterm_protocol::render::DirtyNotify;
 use oakterm_protocol::socket::socket_path;
@@ -567,33 +567,45 @@ async fn perform_handshake(conn_id: u64, mut io: FrameIo<'_>) -> io::Result<()> 
     io.write(response).await
 }
 
-/// Collect and push this client's per-pane notifications after a dirty
-/// wake (`PaneExited`, `TitleChanged`, `Bell`, `DirtyNotify`), one pane
-/// lock at a time. Returns `Break` when a frame write fails and the caller
-/// should close the connection.
-async fn send_dirty_notifications(
+/// One connection's batch of pending notifications, gathered under the
+/// pane locks so the write loop in `send_dirty_notifications` runs
+/// lock-free.
+#[derive(Default)]
+struct PendingNotifications {
+    exit_msgs: Vec<PaneExited>,
+    title_msgs: Vec<TitleChanged>,
+    bell_msgs: Vec<Bell>,
+    invalidated_msgs: Vec<CopyModeInvalidated>,
+    dirty_pane_ids: Vec<u32>,
+}
+
+async fn collect_notifications(
     conn_id: u64,
-    mut io: FrameIo<'_>,
     panes: &Arc<Mutex<PaneManager>>,
     pane_exit_sent: &mut HashSet<u32>,
     last_seen: &mut HashMap<u32, u64>,
-) -> ControlFlow<()> {
-    let mut exit_msgs = Vec::new();
-    let mut title_msgs = Vec::new();
-    let mut bell_msgs = Vec::new();
-    let mut dirty_pane_ids = Vec::new();
+) -> PendingNotifications {
+    let mut pending = PendingNotifications::default();
     let pane_list: Vec<(u32, SharedPane)> = panes.lock().await.snapshot();
     for (id, pane) in pane_list {
         let mut pane = pane.lock().await;
         if pane.closed {
             continue;
         }
+        // Per-client by construction (ADR-0025): drains only this
+        // connection's entry, so another client's wake cannot eat it the
+        // way the shared bell/title flags can.
+        if pane.take_pending_pin_invalidation(conn_id) {
+            pending
+                .invalidated_msgs
+                .push(CopyModeInvalidated { pane_id: id });
+        }
         // PaneExited (once per pane).
         if !pane_exit_sent.contains(&id)
             && let PtyState::Exited { exit_code } = pane.pty_state
         {
             pane_exit_sent.insert(id);
-            exit_msgs.push(PaneExited {
+            pending.exit_msgs.push(PaneExited {
                 pane_id: id,
                 exit_code,
             });
@@ -604,22 +616,43 @@ async fn send_dirty_notifications(
         let g = pane.screens.active_grid_mut();
         if g.title_dirty {
             g.title_dirty = false;
-            title_msgs.push(TitleChanged {
+            pending.title_msgs.push(TitleChanged {
                 pane_id: id,
                 title: g.title.clone().unwrap_or_default(),
             });
         }
         if g.bell_pending {
             g.bell_pending = false;
-            bell_msgs.push(Bell { pane_id: id });
+            pending.bell_msgs.push(Bell { pane_id: id });
         }
         // Only notify if this pane's seqno advanced since last seen.
         let prev = last_seen.entry(id).or_insert(0);
         if pane.dirty_seqno > *prev {
             *prev = pane.dirty_seqno;
-            dirty_pane_ids.push(id);
+            pending.dirty_pane_ids.push(id);
         }
     }
+    pending
+}
+
+/// Push this client's per-pane notifications after a dirty wake
+/// (`PaneExited`, `TitleChanged`, `Bell`, `CopyModeInvalidated`,
+/// `DirtyNotify`), collected by `collect_notifications`. Returns `Break`
+/// when a frame write fails and the caller should close the connection.
+async fn send_dirty_notifications(
+    conn_id: u64,
+    mut io: FrameIo<'_>,
+    panes: &Arc<Mutex<PaneManager>>,
+    pane_exit_sent: &mut HashSet<u32>,
+    last_seen: &mut HashMap<u32, u64>,
+) -> ControlFlow<()> {
+    let PendingNotifications {
+        exit_msgs,
+        title_msgs,
+        bell_msgs,
+        invalidated_msgs,
+        dirty_pane_ids,
+    } = collect_notifications(conn_id, panes, pane_exit_sent, last_seen).await;
 
     for msg in exit_msgs {
         debug!(
@@ -658,6 +691,29 @@ async fn send_dirty_notifications(
                 }
             }
             Err(e) => warn!(conn_id, error = %e, "failed to encode Bell frame"),
+        }
+    }
+    for msg in invalidated_msgs {
+        debug!(
+            conn_id,
+            pane_id = msg.pane_id,
+            "sending CopyModeInvalidated after resize dropped this client's pin"
+        );
+        match msg.to_frame() {
+            Ok(f) => {
+                if io.write(f).await.is_err() {
+                    return ControlFlow::Break(());
+                }
+            }
+            Err(e) => {
+                // Unlike a lost bell, a lost invalidation leaves the
+                // client filling against a dead pin; requeue for the
+                // next wake instead of warning past it.
+                warn!(conn_id, error = %e, "failed to encode CopyModeInvalidated; requeueing");
+                if let Some(mut pane) = lock_live_pane(panes, msg.pane_id).await {
+                    pane.requeue_pin_invalidation(conn_id);
+                }
+            }
         }
     }
 
@@ -705,7 +761,7 @@ fn archive_base_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oakterm_protocol::message::{ClientType, CopyMode};
+    use oakterm_protocol::message::{ClientType, EnterCopyMode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_util::codec::Encoder;
 
@@ -761,7 +817,9 @@ mod tests {
             let mut buf = BytesMut::new();
             codec
                 .encode(
-                    CopyMode { pane_id }.to_enter_frame().expect("enter"),
+                    EnterCopyMode { pane_id, base: 0 }
+                        .to_frame(1)
+                        .expect("enter"),
                     &mut buf,
                 )
                 .expect("encode enter");

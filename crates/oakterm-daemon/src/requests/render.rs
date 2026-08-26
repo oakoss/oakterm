@@ -34,6 +34,7 @@ pub(super) async fn get_render_update(
         );
     };
     let alt_screen = pane.screens.active_screen() == ScreenId::Alternate;
+    let history_len = pane.history_len();
     let g = pane.screens.active_grid();
     // If since_seqno > g.seqno, the client is tracking a seqno from
     // a different grid (e.g., the alternate buffer before switching
@@ -76,6 +77,10 @@ pub(super) async fn get_render_update(
         bg_b,
         bracketed_paste: g.modes.get(2004),
         alt_screen,
+        // Zero until TREK-236 populates the input-mode state (Spec-0011).
+        input_flags: 0,
+        kitty_kbd_flags: 0,
+        history_len,
         dirty_rows,
     };
 
@@ -101,5 +106,45 @@ pub(super) async fn get_render_update(
                 "RenderUpdate encode error",
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pane::PaneManager;
+    use oakterm_terminal::grid::row::Row;
+
+    /// The reply carries the pane's history length (ADR-0025 clause 1).
+    /// A regression to zero would be accepted as a valid base and pin
+    /// every fill and yank at the top of history — silently.
+    #[tokio::test]
+    async fn a_render_update_reply_carries_the_history_length() {
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = crate::pane::lock_live_pane(&panes, pane_id)
+                .await
+                .expect("pane");
+            for _ in 0..3 {
+                pane.screens.push_to_scrollback(Row::new(80));
+            }
+        }
+
+        let req = GetRenderUpdate {
+            pane_id,
+            since_seqno: 0,
+        };
+        let frame = Frame::new(0x71, 9, req.encode()).expect("frame");
+        let RequestResult::Response(reply) = get_render_update(1, &frame, &panes).await else {
+            panic!("expected a RenderUpdate response");
+        };
+        let update =
+            oakterm_protocol::render::RenderUpdate::decode(&reply.payload).expect("decode");
+        assert_eq!(update.history_len, 3);
+        assert_eq!((update.input_flags, update.kitty_kbd_flags), (0, 0));
     }
 }

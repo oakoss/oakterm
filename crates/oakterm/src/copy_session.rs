@@ -12,7 +12,15 @@ use std::collections::HashMap;
 /// pane" an invariant of the map rather than a rule every call site has
 /// to keep.
 #[derive(Debug, Default)]
-pub(crate) struct PendingYanks(HashMap<u32, u32>);
+pub(crate) struct PendingYanks(HashMap<u32, PendingYank>);
+
+#[derive(Debug)]
+struct PendingYank {
+    serial: u32,
+    /// Local half of a boundary-spanning yank (ADR-0025 clause 7),
+    /// appended after the daemon half with a joining newline.
+    tail: Option<String>,
+}
 
 /// Which pane a yank reply settles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +36,24 @@ impl PendingYanks {
     /// Note a yank sent for `pane_id`, superseding that pane's earlier
     /// request and no other pane's.
     pub(crate) fn record(&mut self, pane_id: u32, serial: u32) {
-        self.0.insert(pane_id, serial);
+        self.0.insert(pane_id, PendingYank { serial, tail: None });
+    }
+
+    /// Note a boundary-spanning yank: the daemon serves rows below 0 and
+    /// `tail` is the locally-extracted painted-page half.
+    pub(crate) fn record_stitched(&mut self, pane_id: u32, serial: u32, tail: String) {
+        self.0.insert(
+            pane_id,
+            PendingYank {
+                serial,
+                tail: Some(tail),
+            },
+        );
+    }
+
+    /// The stitch tail recorded for this pane's pending yank, consumed.
+    pub(crate) fn take_tail(&mut self, pane_id: u32) -> Option<String> {
+        self.0.get_mut(&pane_id)?.tail.take()
     }
 
     /// Which pane a reply at `serial` answers. The caller retires the
@@ -36,7 +61,7 @@ impl PendingYanks {
     pub(crate) fn resolve(&self, serial: u32) -> YankOutcome {
         self.0
             .iter()
-            .find(|&(_, &pending)| pending == serial)
+            .find(|&(_, pending)| pending.serial == serial)
             .map_or(YankOutcome::Unclaimed, |(&pane_id, _)| {
                 YankOutcome::Retire(pane_id)
             })
@@ -44,6 +69,37 @@ impl PendingYanks {
 
     pub(crate) fn retire(&mut self, pane_id: u32) {
         self.0.remove(&pane_id);
+    }
+}
+
+/// A copy-mode entry awaiting its ack (ADR-0025 clause 2), holding the
+/// initial fill until the daemon confirms the pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingEnter {
+    pub(crate) pane_id: u32,
+    pub(crate) fill: crate::copy_mode::FillRequest,
+}
+
+/// `EnterCopyMode` requests awaiting their acks, by serial. Recording an
+/// entry supersedes any older one for the same pane, so a stale ack can
+/// never release a previous session's fill into a newer session.
+#[derive(Debug, Default)]
+pub(crate) struct PendingEnters(HashMap<u32, PendingEnter>);
+
+impl PendingEnters {
+    pub(crate) fn record(
+        &mut self,
+        serial: u32,
+        pane_id: u32,
+        fill: crate::copy_mode::FillRequest,
+    ) {
+        self.0.retain(|_, pending| pending.pane_id != pane_id);
+        self.0.insert(serial, PendingEnter { pane_id, fill });
+    }
+
+    /// Claim the entry the ack (or error) at `serial` answers.
+    pub(crate) fn take(&mut self, serial: u32) -> Option<PendingEnter> {
+        self.0.remove(&serial)
     }
 }
 
@@ -106,8 +162,8 @@ pub(crate) fn plan_leader_flush(buffered: Option<Vec<u8>>, copy_mode: bool) -> L
 #[cfg(test)]
 mod tests {
     use super::{
-        LeaderFlush, PendingYanks, YankDisposition, YankOutcome, plan_leader_flush,
-        yank_disposition,
+        LeaderFlush, PendingEnter, PendingEnters, PendingYanks, YankDisposition, YankOutcome,
+        plan_leader_flush, yank_disposition,
     };
 
     /// Yanks are matched by serial and retire one pane's entry. A single
@@ -180,6 +236,50 @@ mod tests {
         assert_eq!(yank_disposition(true, false), YankDisposition::Done);
         assert_eq!(yank_disposition(false, true), YankDisposition::HoldAndRing);
         assert_eq!(yank_disposition(false, false), YankDisposition::Failed);
+    }
+
+    /// The stitch tail comes back exactly once and dies with the entry:
+    /// retirement or a superseding record must not leak it into a later
+    /// yank's join.
+    #[test]
+    fn a_stitch_tail_is_consumed_once_and_dies_with_the_entry() {
+        let mut pending = PendingYanks::default();
+        pending.record_stitched(4, 11, "tail".to_string());
+
+        assert_eq!(pending.resolve(11), YankOutcome::Retire(4));
+        assert_eq!(pending.take_tail(4), Some("tail".to_string()));
+        assert_eq!(pending.take_tail(4), None, "consumed once");
+
+        pending.record_stitched(4, 12, "next".to_string());
+        pending.record(4, 13);
+        assert_eq!(pending.take_tail(4), None, "superseding record drops it");
+
+        pending.record_stitched(4, 14, "gone".to_string());
+        pending.retire(4);
+        assert_eq!(pending.take_tail(4), None, "retirement drops it");
+    }
+
+    /// Recording an entry supersedes the pane's older one, so a stale
+    /// ack can never release a previous session's fill into a newer
+    /// session (ADR-0025 clause 2).
+    #[test]
+    fn a_new_enter_supersedes_the_panes_older_pending_entry() {
+        let fill = crate::copy_mode::FillRequest {
+            start_row: -24,
+            count: 24,
+        };
+        let mut pending = PendingEnters::default();
+        pending.record(11, 4, fill);
+        pending.record(12, 4, fill);
+        pending.record(13, 9, fill);
+
+        assert_eq!(pending.take(11), None, "superseded by serial 12");
+        assert_eq!(pending.take(12), Some(PendingEnter { pane_id: 4, fill }));
+        assert_eq!(
+            pending.take(13).map(|p| p.pane_id),
+            Some(9),
+            "other panes untouched"
+        );
     }
 
     /// Leaving copy mode retires the pane's yank, so a reply that was

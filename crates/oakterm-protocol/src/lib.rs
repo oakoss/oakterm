@@ -115,11 +115,12 @@ mod tests {
         }
     }
 
-    /// Copy mode is gated at the minor that introduced the served-start
-    /// `ScrollbackData` semantics its cache is keyed on (Spec-0001 1.4).
+    /// Copy mode is gated at the minor whose `EnterCopyMode` carries the
+    /// client's base (ADR-0025); an older daemon would silently ignore it
+    /// and pin at its own `history_len()`.
     #[test]
-    fn copy_mode_is_gated_at_the_served_start_minor() {
-        assert_eq!(COPY_MODE_MIN_MINOR, 4);
+    fn copy_mode_is_gated_at_the_anchor_minor() {
+        assert_eq!(COPY_MODE_MIN_MINOR, 5);
     }
 
     #[test]
@@ -322,6 +323,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: true,
             alt_screen: true,
+            input_flags: 0b0000_0101,
+            kitty_kbd_flags: 3,
+            history_len: 987_654,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![WireCell {
@@ -360,6 +364,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![],
         };
         let encoded = update.encode().unwrap();
@@ -529,6 +536,7 @@ mod tests {
             start_row: -10,
             has_more: false,
             total_rows: 0,
+            base: 0,
             rows: vec![],
         };
         let encoded = msg.encode().unwrap();
@@ -543,6 +551,7 @@ mod tests {
             start_row: -5,
             has_more: true,
             total_rows: 100,
+            base: 4_200,
             rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![WireCell {
@@ -895,31 +904,65 @@ mod tests {
         assert_eq!(frame.serial, 42);
     }
 
-    // --- Copy mode (0x97-0x9A) ---
+    // --- Copy mode (0x97-0x9C) ---
 
     #[test]
-    fn copy_mode_roundtrip() {
-        let msg = CopyMode { pane_id: 7 };
+    fn enter_copy_mode_roundtrip() {
+        let msg = EnterCopyMode {
+            pane_id: 7,
+            base: 12_345,
+        };
         let encoded = msg.encode();
-        assert_eq!(encoded.len(), 4);
-        assert_eq!(CopyMode::decode(&encoded).unwrap(), msg);
+        assert_eq!(encoded.len(), 12);
+        assert_eq!(EnterCopyMode::decode(&encoded).unwrap(), msg);
     }
 
+    /// Entry is a correlated request (ADR-0025); exit stays a push.
     #[test]
-    fn copy_mode_frames_carry_their_own_type() {
-        let msg = CopyMode { pane_id: 7 };
-        let enter = msg.to_enter_frame().unwrap();
-        let exit = msg.to_exit_frame().unwrap();
+    fn copy_mode_frames_carry_their_own_type_and_serial() {
+        let enter = EnterCopyMode {
+            pane_id: 7,
+            base: 3,
+        }
+        .to_frame(41)
+        .unwrap();
         assert_eq!(enter.msg_type, MSG_ENTER_COPY_MODE);
+        assert_eq!(enter.serial, 41);
+
+        let exit = ExitCopyMode { pane_id: 7 }.to_exit_frame().unwrap();
         assert_eq!(exit.msg_type, MSG_EXIT_COPY_MODE);
-        // Spec-0001: both are pushes.
-        assert_eq!(enter.serial, 0);
         assert_eq!(exit.serial, 0);
     }
 
     #[test]
-    fn copy_mode_too_short() {
-        assert!(CopyMode::decode(&[0; 3]).is_err());
+    fn enter_copy_mode_ack_roundtrip() {
+        let msg = EnterCopyModeAck {
+            pane_id: 7,
+            base: 12_345,
+        };
+        let encoded = msg.encode();
+        assert_eq!(EnterCopyModeAck::decode(&encoded).unwrap(), msg);
+        let frame = msg.to_frame(41).unwrap();
+        assert_eq!(frame.msg_type, MSG_ENTER_COPY_MODE_ACK);
+        assert_eq!(frame.serial, 41);
+    }
+
+    #[test]
+    fn copy_mode_invalidated_roundtrip() {
+        let msg = CopyModeInvalidated { pane_id: 7 };
+        let encoded = msg.encode();
+        assert_eq!(CopyModeInvalidated::decode(&encoded).unwrap(), msg);
+        let frame = msg.to_frame().unwrap();
+        assert_eq!(frame.msg_type, MSG_COPY_MODE_INVALIDATED);
+        assert_eq!(frame.serial, 0, "invalidation is a push");
+    }
+
+    #[test]
+    fn copy_mode_messages_too_short() {
+        assert!(EnterCopyMode::decode(&[0; 11]).is_err());
+        assert!(EnterCopyModeAck::decode(&[0; 11]).is_err());
+        assert!(ExitCopyMode::decode(&[0; 3]).is_err());
+        assert!(CopyModeInvalidated::decode(&[0; 3]).is_err());
     }
 
     #[test]

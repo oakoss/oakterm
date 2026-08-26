@@ -296,6 +296,9 @@ fn spawn_pty(
                     pins = dropped,
                     "spawn resize moved grid rows into scrollback; dropped copy mode pins"
                 );
+                // The queued invalidation pushes go out from each client's
+                // notification pass, which only wakes on this signal.
+                let _ = dirty_tx.send(u64::from(msg.pane_id));
             }
             let pane_id = msg.pane_id;
             drop(pane);
@@ -377,7 +380,7 @@ mod tests {
             .create(80, 24, "/bin/sleep 60".to_string(), String::new());
         {
             let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
-            assert!(pane.pin_copy_mode(7).is_none());
+            assert!(pane.pin_copy_mode(7, 0).expect("in range").is_none());
         }
 
         let (dirty_tx, _dirty_rx) = watch::channel(0u64);

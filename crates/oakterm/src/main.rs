@@ -16,7 +16,7 @@ mod render_grid;
 mod status_bar;
 mod tab_bar;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use tracing::{debug, error, info, warn};
@@ -31,13 +31,13 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::input::{KeyInput, MouseInput, Resize};
 use oakterm_protocol::message::{
-    COPY_MODE_MIN_MINOR, ClosePane, CloseTab, CopyMode, ErrorCode, FindPrompt, FocusPane,
-    GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR, LayoutTreeNode, MSG_CLOSE_PANE,
-    MSG_CLOSE_TAB, MSG_DETACH, MSG_FIND_PROMPT, MSG_FOCUS_PANE, MSG_GET_LAYOUT_TREE,
-    MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB, MSG_RESIZE_PANE,
-    MSG_SPLIT_PANE, MSG_SWITCH_TAB, MSG_YANK_SELECTION, NewTab, PromptPosition, ResizePane,
-    ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane, SwitchTab,
-    TabList, YankSelection,
+    COPY_MODE_MIN_MINOR, ClosePane, CloseTab, EnterCopyMode, ErrorCode, ExitCopyMode, FindPrompt,
+    FocusPane, GetLayoutTree, GetScrollback, LIST_TABS_MIN_MINOR, LayoutTreeNode, MSG_CLOSE_PANE,
+    MSG_CLOSE_TAB, MSG_DETACH, MSG_ENTER_COPY_MODE, MSG_FIND_PROMPT, MSG_FOCUS_PANE,
+    MSG_GET_LAYOUT_TREE, MSG_GET_RENDER_UPDATE, MSG_GET_SCROLLBACK, MSG_LIST_TABS, MSG_NEW_TAB,
+    MSG_RESIZE_PANE, MSG_SPLIT_PANE, MSG_SWITCH_TAB, MSG_YANK_SELECTION, NewTab, PromptPosition,
+    ResizePane, ScrollbackData, SearchDirection, SplitDirection as WireSplitDirection, SplitPane,
+    SwitchTab, TabList, YankSelection,
 };
 use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 
@@ -46,7 +46,8 @@ use oakterm_terminal::grid::MAX_GRID_DIMENSION;
 
 use a11y_bridge::{A11yEvent, A11yModel};
 use copy_session::{
-    LeaderFlush, PendingYanks, YankDisposition, YankOutcome, plan_leader_flush, yank_disposition,
+    LeaderFlush, PendingEnter, PendingEnters, PendingYanks, YankDisposition, YankOutcome,
+    plan_leader_flush, yank_disposition,
 };
 use daemon_conn::{DaemonWriter, connect_to_daemon};
 use frame::{FontState, try_init_font};
@@ -137,6 +138,18 @@ enum UserEvent {
     YankResponse {
         serial: u32,
         text: String,
+    },
+    /// The daemon accepted a copy-mode pin at the echoed base
+    /// (ADR-0025); cache fills may start.
+    CopyModeEntered {
+        serial: u32,
+        pane_id: u32,
+        base: u64,
+    },
+    /// A resize dropped this client's pin (ADR-0025): leave copy mode
+    /// and discard in-flight fills.
+    CopyModeInvalidated {
+        pane_id: u32,
     },
 }
 
@@ -507,8 +520,9 @@ fn route_scrollback(reply: ScrollbackReply) -> ScrollbackRoute {
     }
 }
 
-/// Whether the daemon speaks the `ScrollbackData` semantics copy mode's
-/// cache is keyed on (Spec-0001 1.4).
+/// Whether the daemon speaks the anchor contract copy mode pins on
+/// (ADR-0025, Spec-0001 1.5): an older daemon would ignore the echoed
+/// `EnterCopyMode.base` and pin at its own history end.
 fn copy_mode_supported(server_minor: u16) -> bool {
     server_minor >= COPY_MODE_MIN_MINOR
 }
@@ -516,7 +530,13 @@ fn copy_mode_supported(server_minor: u16) -> bool {
 /// Whether re-issuing a failed request could succeed. A pane that no
 /// longer exists will refuse every retry.
 fn failure_is_retryable(code: Option<ErrorCode>) -> bool {
-    code != Some(ErrorCode::UnknownPane)
+    // UnknownPane and InvalidMessage are deterministic: a vanished pane
+    // stays vanished, and a pin-invalidated or malformed request is
+    // refused identically on re-ask — retrying only delays the teardown.
+    !matches!(
+        code,
+        Some(ErrorCode::UnknownPane | ErrorCode::InvalidMessage)
+    )
 }
 
 /// Find the pane owning a failed copy-mode fill and retire it there.
@@ -690,6 +710,14 @@ struct App {
     /// 1; App requests start above both so error frames attribute.
     next_serial: u32,
     pending_yanks: PendingYanks,
+    /// `EnterCopyMode` requests awaiting their acks: the initial cache
+    /// fill is held here until the daemon confirms the pin (ADR-0025
+    /// clause 2), superseded per pane so a stale ack cannot fill a newer
+    /// session.
+    pending_copy_enters: PendingEnters,
+    /// Panes whose copy-mode entry waits on a single-instant scrollback
+    /// page: retried once when the refetched page lands.
+    copy_entry_retry: HashSet<u32>,
 }
 
 impl App {
@@ -740,6 +768,8 @@ impl App {
             hovered_border: None,
             border_drag: None,
             pending_yanks: PendingYanks::default(),
+            pending_copy_enters: PendingEnters::default(),
+            copy_entry_retry: HashSet::new(),
             next_serial: 10,
         }
     }
@@ -798,49 +828,78 @@ impl App {
         self.send_request(MSG_FIND_PROMPT, req.encode(), "FindPrompt");
     }
 
-    /// Enter copy mode on a pane: pin the daemon's viewport, freeze the
-    /// local view, and fill the cache (Spec-0008 entry).
+    /// Enter copy mode on a pane: freeze the local view, snapshot the
+    /// painted cells, and request the pin at the echoed base (ADR-0025).
+    /// The initial cache fill is held until the ack lands.
     ///
-    /// `EnterCopyMode` is a push the daemon never acknowledges, so the
-    /// fill that follows doubles as the confirmation — its reply can only
-    /// arrive for a pane that existed when the pin was taken.
-    ///
-    /// Refused against a pre-1.4 daemon, whose echoed `start_row` would
-    /// key a clamped window onto the wrong rows indistinguishably from a
-    /// correct one. No copy mode beats silently yanking the wrong text.
+    /// Refused on the alternate screen (clause 9), and against a pre-1.5
+    /// daemon, whose tolerant decode would silently ignore the echoed
+    /// base and pin at its own history end — the race the anchor
+    /// contract closes. No copy mode beats silently yanking the wrong
+    /// text.
     fn enter_copy_mode(&mut self, pane_id: u32) {
         if !copy_mode_supported(self.server_minor) {
             warn!(
                 server_minor = self.server_minor,
-                pane_id, "daemon predates copy mode's scrollback semantics; refusing to enter"
+                pane_id, "daemon predates the copy-mode anchor contract; refusing to enter"
             );
             return;
         }
-        let Some(view) = self.panes.get_mut(&pane_id) else {
+        let Some(view) = self.panes.get(&pane_id) else {
+            self.copy_entry_retry.remove(&pane_id);
             warn!(pane_id, "copy mode requested for an untracked pane");
+            return;
+        };
+        // ADR-0025 clause 9: splicing primary history beneath alt
+        // content has no coherent display.
+        if view.grid().alt_screen {
+            self.copy_entry_retry.remove(&pane_id);
+            debug!(pane_id, "copy mode refused on the alternate screen");
+            self.ring_bell();
+            return;
+        }
+        let refetch_can_help = view.viewport_offset() > 0;
+        let Some(base) = view.copy_mode_entry_base() else {
+            // A partial page spanning two instants: refetch it and retry
+            // once when the single-instant page lands (ADR-0025 clause 3).
+            // At offset 0 the missing base is the first RenderUpdate, which
+            // no scrollback refetch can supply.
+            if !refetch_can_help || self.copy_entry_retry.remove(&pane_id) {
+                self.copy_entry_retry.remove(&pane_id);
+                warn!(
+                    pane_id,
+                    "no single-instant base for the painted page; giving up"
+                );
+                self.ring_bell();
+            } else {
+                debug!(pane_id, "painted page spans two instants; refetching");
+                self.copy_entry_retry.insert(pane_id);
+                self.request_scrollback(pane_id);
+            }
+            return;
+        };
+        self.copy_entry_retry.remove(&pane_id);
+        let Some(view) = self.panes.get_mut(&pane_id) else {
             return;
         };
         let fill = view.enter_copy_mode();
         // A re-entry is a fresh session with fresh row indices, so a
         // yank still in flight from the old one must not land on it.
         self.pending_yanks.retire(pane_id);
-        let sent = match (CopyMode { pane_id }).to_enter_frame() {
-            Ok(frame) => self.send_or_disconnect(&frame, "EnterCopyMode"),
-            Err(e) => {
-                error!(error = %e, "failed to create EnterCopyMode frame");
-                false
-            }
-        };
-        if !sent {
+        let msg = EnterCopyMode { pane_id, base };
+        let Some(serial) =
+            self.send_request_serial(MSG_ENTER_COPY_MODE, msg.encode(), "EnterCopyMode")
+        else {
             // The pin was never asked for, so drop the local state
             // without an `ExitCopyMode` the daemon has nothing to match.
             if let Some(view) = self.panes.get_mut(&pane_id) {
                 view.exit_copy_mode();
             }
             return;
-        }
-        debug!(pane_id, "copy mode entered; filling viewport cache");
-        self.send_copy_mode_fill(pane_id, fill);
+        };
+        // No fills until the ack (ADR-0025 clause 2).
+        self.pending_copy_enters.record(serial, pane_id, fill);
+        debug!(pane_id, base, serial, "copy mode entry requested");
         // The frozen pane stops update-driven redraws, so the COPY
         // indicator needs an explicit repaint to appear at entry.
         if let Some(w) = &self.window {
@@ -894,10 +953,27 @@ impl App {
                     ?code,
                     "copy mode cache fill failed again; leaving copy mode"
                 );
+                // The teardown itself destroys the invalidation push's
+                // announcement path, so this arm owes a bell — unless
+                // the reader thread already rang for this code.
+                if !daemon_conn::error_rings_bell(code) {
+                    self.ring_bell();
+                }
                 if retryable {
                     self.exit_copy_mode(pane_id);
-                } else if let Some(view) = self.panes.get_mut(&pane_id) {
-                    view.exit_copy_mode();
+                } else {
+                    // A deterministic refusal usually means the pin is
+                    // already gone daemon-side, but the exit still clears
+                    // the daemon's sent-invalidation entry; without it,
+                    // this client's later reads on the pane stay refused.
+                    self.pending_yanks.retire(pane_id);
+                    if let Some(view) = self.panes.get_mut(&pane_id) {
+                        view.exit_copy_mode();
+                    }
+                    self.send_exit_copy_mode(pane_id);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
                 }
             }
         }
@@ -936,7 +1012,7 @@ impl App {
     /// Release a daemon pin without touching client state, for the paths
     /// that already discarded it (resize, a rejected entry).
     fn send_exit_copy_mode(&mut self, pane_id: u32) {
-        match (CopyMode { pane_id }).to_exit_frame() {
+        match (ExitCopyMode { pane_id }).to_exit_frame() {
             Ok(frame) => {
                 if self.send_or_disconnect(&frame, "ExitCopyMode") {
                     debug!(pane_id, "copy mode exited; viewport unpinned");
@@ -1032,12 +1108,26 @@ impl App {
     /// Ask the daemon to resolve the selection into text. A `y` with
     /// nothing selected consumes the key and does nothing.
     fn yank_copy_mode_selection(&mut self, pane_id: u32) {
-        let Some(range) = self
+        let Some(plan) = self
             .panes
             .get(&pane_id)
-            .and_then(PaneView::copy_mode_yank_range)
+            .and_then(PaneView::copy_mode_yank_plan)
         else {
             return;
+        };
+        let (range, tail) = match plan {
+            copy_mode::YankPlan::Daemon(range) => (range, None),
+            copy_mode::YankPlan::Stitched { daemon, local } => {
+                // The split invariant lives in yank_plan's sole producer;
+                // a second producer or refactored arithmetic that ships
+                // grid rows to the daemon's live resolver must fail loud.
+                debug_assert!(daemon.start_row < 0 && daemon.end_row == -1);
+                (daemon, Some(local))
+            }
+            copy_mode::YankPlan::Local(text) => {
+                self.complete_local_yank(pane_id, &text);
+                return;
+            }
         };
         let msg = YankSelection {
             pane_id,
@@ -1053,7 +1143,24 @@ impl App {
             warn!(pane_id, "yank not sent; staying in copy mode");
             return;
         };
-        self.pending_yanks.record(pane_id, serial);
+        match tail {
+            Some(tail) => self.pending_yanks.record_stitched(pane_id, serial, tail),
+            None => self.pending_yanks.record(pane_id, serial),
+        }
+    }
+
+    /// Land a painted-page-only yank: clipboard write and exit, with the
+    /// same dispositions as a daemon-answered one.
+    fn complete_local_yank(&mut self, pane_id: u32, text: &str) {
+        let copied = write_clipboard(text);
+        match yank_disposition(copied, true) {
+            YankDisposition::Exit => self.exit_copy_mode(pane_id),
+            YankDisposition::HoldAndRing => {
+                warn!(pane_id, "local yank not copied; staying in copy mode");
+                self.ring_bell();
+            }
+            YankDisposition::Done | YankDisposition::Failed => {}
+        }
     }
 
     /// Land the yanked text on the clipboard and leave copy mode
@@ -1069,6 +1176,13 @@ impl App {
             warn!(serial, "yank response answers no outstanding yank");
             return;
         };
+        // The daemon half joins its local tail with the same row
+        // separator the daemon uses (ADR-0025 clause 7).
+        let stitched = self
+            .pending_yanks
+            .take_tail(pane_id)
+            .map(|tail| format!("{text}\n{tail}"));
+        let text = stitched.as_deref().unwrap_or(text);
         self.pending_yanks.retire(pane_id);
         if text.is_empty() {
             debug!(pane_id, "the yanked range resolved to no text");
@@ -2074,7 +2188,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let mut a11y_scrollback_update: Option<accesskit::TreeUpdate> = None;
                     let scroll_indicator = self.config.scroll_indicator;
                     if let Some(view) = self.panes.get_mut(&pane_id) {
-                        view.apply_scrollback(&data.rows, scroll_indicator);
+                        view.apply_scrollback(&data.rows, data.base, scroll_indicator);
                         a11y_scrollback_update = a11y_bridge::apply(
                             &self.a11y_state,
                             pane_id,
@@ -2092,6 +2206,12 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
+                }
+                // A copy-mode entry deferred on a two-instant page
+                // retries now that a fresh page has painted; the entry
+                // path clears or converts the marker itself.
+                if self.copy_entry_retry.contains(&pane_id) {
+                    self.enter_copy_mode(pane_id);
                 }
             }
             UserEvent::PromptPosition(pos) => {
@@ -2350,11 +2470,48 @@ impl ApplicationHandler<UserEvent> for App {
                 // means every pending close at or below it was answered
                 // (this error or an earlier response).
                 self.pending_pane_closes.retain(|p| p.serial > serial);
-                // A rejected `EnterCopyMode` needs no handling of its
-                // own: the entry sequence sends its cache fill straight
-                // after, so the same missing pane fails that fill too, at
-                // a serial that names the pane exactly.
+                // A rejected `EnterCopyMode` (out-of-range base, unknown
+                // pane) abandons entry: the pin was refused, so the local
+                // state is dropped with no `ExitCopyMode` owed. The user
+                // may retry after the next painted update (ADR-0025).
+                if let Some(PendingEnter { pane_id, .. }) = self.pending_copy_enters.take(serial) {
+                    warn!(pane_id, serial, ?code, "copy mode entry refused");
+                    if let Some(view) = self.panes.get_mut(&pane_id) {
+                        view.exit_copy_mode();
+                    }
+                    // An undecodable ack reaches this path too, and there
+                    // the daemon DID pin; the exit is a no-op against a
+                    // genuinely refused pin, so send it unconditionally.
+                    self.send_exit_copy_mode(pane_id);
+                    if !daemon_conn::error_rings_bell(code) {
+                        self.ring_bell();
+                    }
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
                 self.handle_failed_copy_mode_fill(serial, code);
+                // A failed refetch for a deferred entry would otherwise
+                // strand the retry marker: the keypress dies silently and
+                // the NEXT press falsely lands on the giving-up branch.
+                let stranded: Vec<u32> = self
+                    .copy_entry_retry
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.panes
+                            .get(id)
+                            .is_some_and(|view| view.claims_scrollback(serial))
+                    })
+                    .collect();
+                for pane_id in stranded {
+                    self.copy_entry_retry.remove(&pane_id);
+                    warn!(
+                        pane_id,
+                        serial, "entry refetch failed; abandoning copy-mode entry"
+                    );
+                    self.ring_bell();
+                }
                 // A dead yank has to be retired or the next reply would
                 // be refused as answering a superseded request, leaving
                 // `y` permanently inert.
@@ -2376,6 +2533,81 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::YankResponse { serial, text } => {
                 self.finish_yank(serial, &text);
+            }
+            UserEvent::CopyModeEntered {
+                serial,
+                pane_id,
+                base,
+            } => {
+                let Some(PendingEnter {
+                    pane_id: expected_pane,
+                    fill,
+                }) = self.pending_copy_enters.take(serial)
+                else {
+                    debug!(serial, pane_id, "ack answers no pending copy-mode entry");
+                    return;
+                };
+                if expected_pane != pane_id {
+                    // A daemon this confused cannot be trusted with
+                    // either session; a frozen half-entered pane is
+                    // worse than a clean exit on both.
+                    warn!(
+                        serial,
+                        pane_id, expected_pane, "copy-mode ack names the wrong pane; tearing down"
+                    );
+                    for id in [expected_pane, pane_id] {
+                        self.pending_yanks.retire(id);
+                        if let Some(view) = self.panes.get_mut(&id) {
+                            view.exit_copy_mode();
+                        }
+                        self.send_exit_copy_mode(id);
+                    }
+                    self.ring_bell();
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+                // A scroll, resize, or invalidation push may have torn
+                // the state down while the ack was in flight. Most of
+                // those paths already sent the exit, but an invalidation
+                // that raced this very re-entry did not — it believed the
+                // daemon held no pin. The exit is a tolerated no-op when
+                // one was already sent, so release unconditionally.
+                if !self.panes.get(&pane_id).is_some_and(PaneView::is_copy_mode) {
+                    debug!(
+                        pane_id,
+                        "ack landed after copy mode ended; releasing the pin"
+                    );
+                    self.send_exit_copy_mode(pane_id);
+                    return;
+                }
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.set_copy_mode_pinned_base(base);
+                }
+                debug!(pane_id, base, "copy mode pinned; filling viewport cache");
+                self.send_copy_mode_fill(pane_id, fill);
+            }
+            UserEvent::CopyModeInvalidated { pane_id } => {
+                // Another client's resize dropped this pin (ADR-0025
+                // clause 5): tear down the local state, fills in flight
+                // included. The exit is what clears the daemon's
+                // sent-invalidation entry — until it lands, the daemon
+                // refuses this client's reads on the pane — and it also
+                // releases the fresh pin when the push raced a re-entry.
+                self.pending_yanks.retire(pane_id);
+                if self
+                    .panes
+                    .get_mut(&pane_id)
+                    .is_some_and(PaneView::exit_copy_mode)
+                {
+                    warn!(pane_id, "copy mode ended: a resize invalidated the pin");
+                    self.ring_bell();
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+                self.send_exit_copy_mode(pane_id);
             }
             UserEvent::ConfigReloaded(cr) => {
                 self.handle_config_reload(*cr);
@@ -4327,21 +4559,24 @@ mod tests {
         assert!(matches!(route, ScrollbackRoute::Drop(_)));
     }
 
-    /// Copy mode's cache keys rows off `ScrollbackData.start_row` meaning
-    /// the SERVED start, which only a 1.4 daemon reports.
+    /// Copy mode requires the anchor contract's minor (ADR-0025): a 1.4
+    /// daemon would silently ignore `EnterCopyMode.base` and pin at its
+    /// own history end — the race the contract closes.
     #[test]
-    fn copy_mode_requires_the_served_start_protocol() {
+    fn copy_mode_requires_the_anchor_protocol() {
         assert!(!copy_mode_supported(0));
-        assert!(!copy_mode_supported(3), "pre-1.4 echoes the request");
-        assert!(copy_mode_supported(4));
-        assert!(copy_mode_supported(5), "later daemons still qualify");
+        assert!(!copy_mode_supported(4), "pre-1.5 ignores the echoed base");
+        assert!(copy_mode_supported(5));
+        assert!(copy_mode_supported(6), "later daemons still qualify");
     }
 
-    /// A pane that no longer exists refuses every retry, so re-issuing
-    /// against it would spin; everything else is worth one more attempt.
+    /// A vanished pane and an invalidated pin refuse every retry
+    /// identically — `InvalidMessage` is what the daemon answers for a
+    /// pin-invalidated read — so re-asking only delays the teardown.
     #[test]
-    fn only_a_missing_pane_makes_a_failure_unretryable() {
+    fn a_vanished_pane_or_an_invalidated_pin_is_unretryable() {
         assert!(!failure_is_retryable(Some(ErrorCode::UnknownPane)));
+        assert!(!failure_is_retryable(Some(ErrorCode::InvalidMessage)));
         assert!(failure_is_retryable(Some(ErrorCode::InternalError)));
         assert!(failure_is_retryable(Some(ErrorCode::PaneExited)));
         assert!(failure_is_retryable(None));

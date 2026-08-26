@@ -66,19 +66,39 @@ pub(super) async fn get_scrollback(
             "malformed GetScrollback",
         );
     };
-    let Some(snapshot) = snapshot_under_lock(conn_id, &req, panes).await else {
-        return make_error_response(
-            conn_id,
-            frame.serial,
-            ErrorCode::UnknownPane,
-            "unknown pane",
-        );
+    let snapshot = match snapshot_under_lock(conn_id, &req, panes).await {
+        Ok(snapshot) => snapshot,
+        Err(ScrollbackRefusal::UnknownPane) => {
+            return make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::UnknownPane,
+                "unknown pane",
+            );
+        }
+        Err(ScrollbackRefusal::PinInvalidated) => {
+            // The undelivered CopyModeInvalidated says which coordinates
+            // this client is still using; serving the live fallback here
+            // would file shifted rows into its pin-space cache.
+            warn!(
+                conn_id,
+                pane_id = req.pane_id,
+                "scrollback read refused: pin invalidated by a resize"
+            );
+            return make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::InvalidMessage,
+                "copy-mode pin invalidated by a resize",
+            );
+        }
     };
     let ScrollbackSnapshot {
         plan,
         access,
         palette,
         cols,
+        base,
         tail,
     } = snapshot;
 
@@ -113,6 +133,7 @@ pub(super) async fn get_scrollback(
         start_row: plan.served_start_row,
         has_more: plan.has_more,
         total_rows: plan.total_rows,
+        base,
         rows,
     };
 
@@ -155,33 +176,44 @@ struct ScrollbackSnapshot {
     access: ArchiveAccess,
     palette: [Rgb; 256],
     cols: usize,
+    /// History length the plan's rows were resolved against, carried
+    /// onto the wire as `ScrollbackData.base` (ADR-0025).
+    base: u64,
     /// Blanks for the pruned-without-an-archive gap, then hot buffer rows
     /// — everything after the archived portion of the window.
     tail: Vec<DirtyRow>,
+}
+
+/// Why a scrollback read was refused before planning.
+enum ScrollbackRefusal {
+    UnknownPane,
+    PinInvalidated,
 }
 
 async fn snapshot_under_lock(
     conn_id: u64,
     req: &GetScrollback,
     panes: &Arc<Mutex<PaneManager>>,
-) -> Option<ScrollbackSnapshot> {
-    let pane = lock_live_pane(panes, req.pane_id).await?;
+) -> Result<ScrollbackSnapshot, ScrollbackRefusal> {
+    let pane = lock_live_pane(panes, req.pane_id)
+        .await
+        .ok_or(ScrollbackRefusal::UnknownPane)?;
+    if pane.pin_invalidation_pending(conn_id) {
+        return Err(ScrollbackRefusal::PinInvalidated);
+    }
     let layout = HistoryLayout::of(&pane);
-    let plan = plan_scrollback_read(
-        &layout,
-        pane.copy_mode_base(conn_id),
-        req.start_row,
-        req.count,
-    );
+    let base = pane.copy_mode_base(conn_id);
+    let plan = plan_scrollback_read(&layout, base, req.start_row, req.count);
     let grid = pane.screens.active_grid();
     let palette = grid.palette;
     let cols = usize::from(grid.cols);
-    Some(ScrollbackSnapshot {
+    Ok(ScrollbackSnapshot {
         tail: build_tail_rows(conn_id, req.pane_id, &pane, &plan, cols, &palette),
         access: ArchiveAccess::of(&pane),
         plan,
         palette,
         cols,
+        base,
     })
 }
 
@@ -471,6 +503,96 @@ pub(super) mod tests {
         let layout = layout(archived_rows, hot_len);
         let base = layout.pushed;
         plan_scrollback_read(&layout, base, start_row, count)
+    }
+
+    /// The reply carries the base it was resolved against (ADR-0025
+    /// clause 1): the live end unpinned, the pin when one is held. The
+    /// client's wrong-base discard hangs on this field being truthful.
+    #[tokio::test]
+    async fn a_scrollback_reply_carries_its_serve_time_base() {
+        use crate::pane::PaneManager;
+        use oakterm_terminal::grid::row::Row;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = std::sync::Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = crate::pane::lock_live_pane(&panes, pane_id)
+                .await
+                .expect("pane");
+            for _ in 0..4 {
+                pane.screens.push_to_scrollback(Row::new(80));
+            }
+        }
+
+        let req = GetScrollback {
+            pane_id,
+            start_row: -2,
+            count: 2,
+        };
+        let frame = Frame::new(0x73, 9, req.encode()).expect("frame");
+        let RequestResult::Response(reply) = get_scrollback(1, &frame, &panes).await else {
+            panic!("expected ScrollbackData");
+        };
+        let data = ScrollbackData::decode(&reply.payload).expect("decode");
+        assert_eq!(data.base, 4, "unpinned resolves against the live end");
+
+        {
+            let mut pane = crate::pane::lock_live_pane(&panes, pane_id)
+                .await
+                .expect("pane");
+            pane.pin_copy_mode(1, 4).expect("in range");
+            pane.screens.push_to_scrollback(Row::new(80));
+        }
+        let frame = Frame::new(0x73, 10, req.encode()).expect("frame");
+        let RequestResult::Response(reply) = get_scrollback(1, &frame, &panes).await else {
+            panic!("expected ScrollbackData");
+        };
+        let data = ScrollbackData::decode(&reply.payload).expect("decode");
+        assert_eq!(
+            data.base, 4,
+            "pinned holds the acked base as output arrives"
+        );
+    }
+
+    /// A read from a client whose pin died with an undelivered push is
+    /// refused rather than resolved live (ADR-0025 clause 5).
+    #[tokio::test]
+    async fn a_fill_with_an_undelivered_invalidation_is_refused() {
+        use crate::pane::PaneManager;
+        use oakterm_terminal::grid::row::Row;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = std::sync::Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = crate::pane::lock_live_pane(&panes, pane_id)
+                .await
+                .expect("pane");
+            pane.screens.push_to_scrollback(Row::new(80));
+            pane.pin_copy_mode(1, 1).expect("in range");
+            pane.screens.push_to_scrollback(Row::new(80));
+            assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+        }
+
+        let req = GetScrollback {
+            pane_id,
+            start_row: -1,
+            count: 1,
+        };
+        let frame = Frame::new(0x73, 11, req.encode()).expect("frame");
+        let RequestResult::Response(reply) = get_scrollback(1, &frame, &panes).await else {
+            panic!("expected an error response");
+        };
+        assert_eq!(reply.msg_type, oakterm_protocol::message::MSG_ERROR);
+        let err = ErrorMessage::decode(&reply.payload).expect("decode");
+        assert_eq!(err.code, ErrorCode::InvalidMessage as u32);
     }
 
     /// A pinned client keeps the origin it entered copy mode with, so the

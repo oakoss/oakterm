@@ -35,15 +35,40 @@ pub(super) async fn find_prompt(
             "unknown pane",
         );
     };
+    if pane.pin_invalidation_pending(conn_id) {
+        warn!(
+            conn_id,
+            pane_id = req.pane_id,
+            "prompt search refused: pin invalidated by a resize"
+        );
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::InvalidMessage,
+            "copy-mode pin invalidated by a resize",
+        );
+    }
     // Spec-0001: FindPrompt shares GetScrollback's coordinate space, so it
     // must resolve against the same origin — the copy-mode pin when the
     // client has one, or the live present otherwise.
+    let pinned = pane.copy_mode_pins.contains_key(&conn_id);
+    // While pinned, results never name rows the frozen page does not
+    // show (ADR-0025 clause 8). An Older search starting on the painted
+    // page clamps its start to row 0, so ineligible prompts at or above
+    // 0 are skipped over rather than hiding older eligible ones; a Newer
+    // search's nearest hit at or above 0 correctly means "none".
+    let from_offset = if pinned && req.direction == SearchDirection::Older {
+        req.from_offset.min(0)
+    } else {
+        req.from_offset
+    };
     let found_offset = find_prompt_in_buffer(
         pane.screens.scrollback(),
         pane.copy_mode_base(conn_id),
-        req.from_offset,
+        from_offset,
         req.direction,
-    );
+    )
+    .filter(|&offset| !pinned || offset < 0);
     let response = PromptPosition {
         pane_id: req.pane_id,
         offset: found_offset,
@@ -59,6 +84,38 @@ pub(super) async fn find_prompt(
                 ErrorCode::InternalError,
                 "PromptPosition frame error",
             )
+        }
+    }
+}
+
+/// Hot-buffer index of pin-space row 0 for a pinned client: matches at
+/// or above it belong to the frozen page and are never reported to that
+/// client (ADR-0025 clause 8). `None` when unpinned. Computed rather
+/// than applied to the engine — the engine is pane-wide shared state,
+/// and destructively clamping it would shrink every other client's
+/// results too.
+fn pin_row_limit(pane: &crate::pane::PaneState, conn_id: u64) -> Option<usize> {
+    let &pin = pane.copy_mode_pins.get(&conn_id)?;
+    let first = pane.screens.scrollback().first_index();
+    Some(usize::try_from(pin.saturating_sub(first)).unwrap_or(usize::MAX))
+}
+
+/// Step the shared nav cursor past matches this pinned client must not
+/// see, bounded by one full wrap. The cursor is inherently shared nav
+/// state; the match set itself is left intact.
+fn skip_ineligible_matches(
+    engine: &mut oakterm_terminal::search::SearchEngine,
+    limit: usize,
+    forward: bool,
+) {
+    for _ in 0..engine.match_count() {
+        if engine.active_match().is_none_or(|m| m.row < limit) {
+            return;
+        }
+        if forward {
+            engine.next();
+        } else {
+            engine.prev();
         }
     }
 }
@@ -103,9 +160,28 @@ pub(super) async fn search_scrollback(
             "unknown pane",
         );
     };
+    if pane.pin_invalidation_pending(conn_id) {
+        warn!(
+            conn_id,
+            pane_id = req.pane_id,
+            "search refused: pin invalidated by a resize"
+        );
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::InvalidMessage,
+            "copy-mode pin invalidated by a resize",
+        );
+    }
     pane.screens.set_search(engine);
     pane.screens.run_search();
-    build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
+    build_search_response(
+        conn_id,
+        &pane.screens,
+        pane.copy_mode_pins.get(&conn_id).copied(),
+        req.pane_id,
+        frame.serial,
+    )
 }
 
 pub(super) async fn search_next(
@@ -130,12 +206,35 @@ pub(super) async fn search_next(
             "unknown pane",
         );
     };
+    if pane.pin_invalidation_pending(conn_id) {
+        warn!(
+            conn_id,
+            pane_id = req.pane_id,
+            "search refused: pin invalidated by a resize"
+        );
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::InvalidMessage,
+            "copy-mode pin invalidated by a resize",
+        );
+    }
+    let limit = pin_row_limit(&pane, conn_id);
     if let Some(engine) = pane.screens.search_mut() {
         engine.next();
+        if let Some(limit) = limit {
+            skip_ineligible_matches(engine, limit, true);
+        }
     } else {
         warn!(conn_id, "SearchNext with no active search");
     }
-    build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
+    build_search_response(
+        conn_id,
+        &pane.screens,
+        pane.copy_mode_pins.get(&conn_id).copied(),
+        req.pane_id,
+        frame.serial,
+    )
 }
 
 pub(super) async fn search_prev(
@@ -160,12 +259,35 @@ pub(super) async fn search_prev(
             "unknown pane",
         );
     };
+    if pane.pin_invalidation_pending(conn_id) {
+        warn!(
+            conn_id,
+            pane_id = req.pane_id,
+            "search refused: pin invalidated by a resize"
+        );
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::InvalidMessage,
+            "copy-mode pin invalidated by a resize",
+        );
+    }
+    let limit = pin_row_limit(&pane, conn_id);
     if let Some(engine) = pane.screens.search_mut() {
         engine.prev();
+        if let Some(limit) = limit {
+            skip_ineligible_matches(engine, limit, false);
+        }
     } else {
         warn!(conn_id, "SearchPrev with no active search");
     }
-    build_search_response(conn_id, &pane.screens, req.pane_id, frame.serial)
+    build_search_response(
+        conn_id,
+        &pane.screens,
+        pane.copy_mode_pins.get(&conn_id).copied(),
+        req.pane_id,
+        frame.serial,
+    )
 }
 
 pub(super) async fn search_close(panes: &Arc<Mutex<PaneManager>>) -> RequestResult {
@@ -181,16 +303,30 @@ pub(super) async fn search_close(panes: &Arc<Mutex<PaneManager>>) -> RequestResu
 fn build_search_response(
     conn_id: u64,
     screens: &oakterm_terminal::grid::ScreenSet,
+    pin: Option<u64>,
     pane_id: u32,
     serial: u32,
 ) -> RequestResult {
     let (total_matches, active_index, active_row_offset, capped) = match screens.search() {
         Some(engine) => {
-            let total = u32::try_from(engine.match_count()).unwrap_or(u32::MAX);
+            let buf = screens.scrollback();
+            // Counts and offsets resolve against the pin while one is
+            // held (ADR-0025 clause 8), the live present otherwise. The
+            // filtering is per-response: the engine is pane-wide shared
+            // state, and clamping it would shrink other clients' results.
+            let limit = pin.map(|p| {
+                usize::try_from(p.saturating_sub(buf.first_index())).unwrap_or(usize::MAX)
+            });
+            let total = match limit {
+                Some(limit) => engine.matches().iter().filter(|m| m.row < limit).count(),
+                None => engine.match_count(),
+            };
+            let total = u32::try_from(total).unwrap_or(u32::MAX);
             let (idx, offset) = match engine.active_match() {
-                Some(m) => {
-                    let buf_len = screens.scrollback().len();
-                    let neg_offset = m.row as i64 - buf_len as i64;
+                Some(m) if limit.is_none_or(|limit| m.row < limit) => {
+                    let end = pin.unwrap_or_else(|| buf.pushed());
+                    let abs = i128::from(buf.first_index()) + m.row as i128;
+                    let neg_offset = i64::try_from(abs - i128::from(end)).unwrap_or(i64::MIN);
                     (
                         engine
                             .active_index()
@@ -198,7 +334,9 @@ fn build_search_response(
                         neg_offset,
                     )
                 }
-                None => (None, 0),
+                // The active match sits on the frozen page; the client
+                // merges visible-page matches itself.
+                _ => (None, 0),
             };
             (total, idx, offset, engine.is_capped())
         }
@@ -276,6 +414,36 @@ mod tests {
         find_prompt_in_buffer(buf, buf.pushed(), from_offset, direction)
     }
 
+    /// The handler's Older-clamp for pinned clients (ADR-0025 clause 8):
+    /// starting the scan at pin-space row 0 skips ineligible prompts at
+    /// or above 0 rather than letting the nearest one hide an older
+    /// eligible prompt below 0.
+    #[test]
+    fn a_pinned_older_scan_skips_prompts_the_page_owns() {
+        let mut buf = buffer_with_prompts(10, &[3]);
+        let pinned_base = buf.pushed();
+        // A prompt lands after the pin, at pin-space rows >= 0.
+        for i in 0..5 {
+            let mut row = Row::new(80);
+            if i == 2 {
+                row.semantic_mark = SemanticMark::PromptStart;
+            }
+            buf.push(row);
+        }
+
+        // Unclamped from a painted-page offset, the post-pin prompt is
+        // the nearest hit — the case the handler clamps away.
+        assert_eq!(
+            find_prompt_in_buffer(&buf, pinned_base, 4, SearchDirection::Older),
+            Some(2)
+        );
+        // The handler clamps the start to 0, restoring the eligible result.
+        assert_eq!(
+            find_prompt_in_buffer(&buf, pinned_base, 0, SearchDirection::Older),
+            Some(-7)
+        );
+    }
+
     /// A pinned client's offsets must name the same rows `GetScrollback`
     /// would return for them, so `FindPrompt` resolves against the pin too.
     #[test]
@@ -306,6 +474,195 @@ mod tests {
     }
 
     /// Push rows into a buffer, marking specific indices as `PromptStart`.
+    /// The search family refuses reads while an invalidation push is
+    /// outstanding, like scrollback and yank (ADR-0025 clause 5).
+    #[tokio::test]
+    async fn a_search_with_an_undelivered_invalidation_is_refused() {
+        use crate::pane::PaneManager;
+        use oakterm_protocol::message::{ErrorMessage, MSG_ERROR, SearchFlags};
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens
+                .push_to_scrollback(oakterm_terminal::grid::row::Row::new(80));
+            pane.pin_copy_mode(1, 1).expect("in range");
+            pane.screens
+                .push_to_scrollback(oakterm_terminal::grid::row::Row::new(80));
+            assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+        }
+
+        let search = SearchScrollback {
+            pane_id,
+            query: "x".to_string(),
+            flags: SearchFlags(0),
+        };
+        let frame = Frame::new(0x77, 9, search.encode().expect("encode")).expect("frame");
+        let RequestResult::Response(reply) = search_scrollback(1, &frame, &panes).await else {
+            panic!("expected an error response");
+        };
+        assert_eq!(reply.msg_type, MSG_ERROR);
+        let err = ErrorMessage::decode(&reply.payload).expect("decode");
+        assert_eq!(err.code, ErrorCode::InvalidMessage as u32);
+    }
+
+    /// `FindPrompt` and `SearchPrev` carry the same refusal as the rest of
+    /// the read family — the two guards the spec names that had no test.
+    #[tokio::test]
+    async fn find_prompt_and_search_prev_refuse_with_an_undelivered_invalidation() {
+        use crate::pane::PaneManager;
+        use oakterm_protocol::message::{ErrorMessage, MSG_ERROR};
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.screens
+                .push_to_scrollback(oakterm_terminal::grid::row::Row::new(80));
+            pane.pin_copy_mode(1, 1).expect("in range");
+            pane.screens
+                .push_to_scrollback(oakterm_terminal::grid::row::Row::new(80));
+            assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+        }
+
+        let fp = FindPrompt {
+            pane_id,
+            from_offset: 0,
+            direction: SearchDirection::Older,
+        };
+        let frame = Frame::new(0x75, 9, fp.encode()).expect("frame");
+        let RequestResult::Response(reply) = find_prompt(1, &frame, &panes).await else {
+            panic!("expected an error response");
+        };
+        assert_eq!(reply.msg_type, MSG_ERROR);
+        let err = ErrorMessage::decode(&reply.payload).expect("decode");
+        assert_eq!(err.code, ErrorCode::InvalidMessage as u32);
+
+        let nav = SearchNav { pane_id };
+        let frame = Frame::new(0x7A, 10, nav.encode()).expect("frame");
+        let RequestResult::Response(reply) = search_prev(1, &frame, &panes).await else {
+            panic!("expected an error response");
+        };
+        assert_eq!(reply.msg_type, MSG_ERROR);
+        let err = ErrorMessage::decode(&reply.payload).expect("decode");
+        assert_eq!(err.code, ErrorCode::InvalidMessage as u32);
+    }
+
+    /// The nav skip steps a pinned client's cursor past frozen-page
+    /// matches instead of leaving it parked there reporting nothing —
+    /// bounded by one full wrap, so an all-ineligible set terminates.
+    #[tokio::test]
+    async fn nav_skips_frozen_page_matches_for_a_pinned_client() {
+        use crate::pane::PaneManager;
+        use oakterm_protocol::message::{SearchFlags, SearchResults};
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            for text in ["hit one", "hit two", "hit three"] {
+                let mut row = oakterm_terminal::grid::row::Row::new(80);
+                for (i, ch) in text.chars().enumerate() {
+                    row.cells[i].codepoint = ch;
+                }
+                pane.screens.push_to_scrollback(row);
+            }
+            // Rows 2.. are on the pinned client's frozen page.
+            pane.pin_copy_mode(1, 2).expect("in range");
+        }
+
+        let search = SearchScrollback {
+            pane_id,
+            query: "hit".to_string(),
+            flags: SearchFlags(0),
+        };
+        let frame = Frame::new(0x77, 9, search.encode().expect("encode")).expect("frame");
+        let _ = search_scrollback(1, &frame, &panes).await;
+
+        // `next` from the newest eligible match wraps over the frozen-page
+        // match back onto an eligible one rather than parking on it.
+        let nav = SearchNav { pane_id };
+        let frame = Frame::new(0x79, 10, nav.encode()).expect("frame");
+        let RequestResult::Response(reply) = search_next(1, &frame, &panes).await else {
+            panic!("expected SearchResults");
+        };
+        let results = SearchResults::decode(&reply.payload).expect("decode");
+        assert!(
+            results.active_index.is_some(),
+            "nav must land on an eligible match, not park on a frozen-page one"
+        );
+        assert!(results.active_row_offset < 0, "eligible = below the pin");
+    }
+
+    /// One pinned client's clamped search must not shrink the shared
+    /// engine: an unpinned client's follow-up nav still sees every match
+    /// (ADR-0025 clause 8 is per-response, the engine is pane-wide).
+    #[tokio::test]
+    async fn a_pinned_search_does_not_shrink_another_clients_results() {
+        use crate::pane::PaneManager;
+        use oakterm_protocol::message::{SearchFlags, SearchResults};
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = Arc::new(TokioMutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            for text in ["hit one", "miss", "hit two", "hit three"] {
+                let mut row = oakterm_terminal::grid::row::Row::new(80);
+                for (i, ch) in text.chars().enumerate() {
+                    row.cells[i].codepoint = ch;
+                }
+                pane.screens.push_to_scrollback(row);
+            }
+            // Conn 1 pinned after "hit one" and "miss": rows 2..4 are on
+            // its frozen page in pin space.
+            pane.pin_copy_mode(1, 2).expect("in range");
+        }
+
+        let search = SearchScrollback {
+            pane_id,
+            query: "hit".to_string(),
+            flags: SearchFlags(0),
+        };
+        let frame = Frame::new(0x77, 9, search.encode().expect("encode")).expect("frame");
+        let RequestResult::Response(reply) = search_scrollback(1, &frame, &panes).await else {
+            panic!("expected SearchResults");
+        };
+        let pinned = SearchResults::decode(&reply.payload).expect("decode");
+        assert_eq!(pinned.total_matches, 1, "conn 1 sees only its history");
+
+        let nav = SearchNav { pane_id };
+        let frame = Frame::new(0x79, 10, nav.encode()).expect("frame");
+        let RequestResult::Response(reply) = search_next(2, &frame, &panes).await else {
+            panic!("expected SearchResults");
+        };
+        let unpinned = SearchResults::decode(&reply.payload).expect("decode");
+        assert_eq!(
+            unpinned.total_matches, 3,
+            "the shared engine kept every match for the unpinned client"
+        );
+    }
+
     fn buffer_with_prompts(total: usize, prompt_indices: &[usize]) -> HotBuffer {
         let mut buf = HotBuffer::new(10 * 1024 * 1024);
         for i in 0..total {

@@ -797,6 +797,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: true,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![DirtyRow {
                 row_index: 0,
                 cells: vec![
@@ -860,6 +863,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![],
         };
         grid.apply_update(&update);
@@ -884,6 +890,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![DirtyRow {
                 row_index: 99,
                 cells: vec![WireCell {
@@ -1083,6 +1092,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: true,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);
@@ -1166,6 +1178,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![make_dirty_row(0, b"NEW!")],
         };
         grid.apply_update_while_scrolled(&update);

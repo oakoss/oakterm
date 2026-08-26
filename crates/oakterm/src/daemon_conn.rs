@@ -4,8 +4,9 @@
 use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ErrorCode, ErrorMessage, HandshakeStatus, LayoutTree, MSG_BELL,
-    MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB_RESPONSE, MSG_DIRTY_NOTIFY, MSG_ERROR,
+    ClientHello, ClientType, CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage,
+    HandshakeStatus, LayoutTree, MSG_BELL, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB_RESPONSE,
+    MSG_COPY_MODE_INVALIDATED, MSG_DIRTY_NOTIFY, MSG_ENTER_COPY_MODE_ACK, MSG_ERROR,
     MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION,
     MSG_RENDER_UPDATE, MSG_SCROLLBACK_DATA, MSG_SERVER_HELLO, MSG_SHUTDOWN,
     MSG_SPLIT_PANE_RESPONSE, MSG_TAB_LIST, MSG_TITLE_CHANGED, MSG_YANK_RESPONSE, NewTabResponse,
@@ -506,6 +507,8 @@ fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
                 });
             }
         },
+        MSG_ENTER_COPY_MODE_ACK => events.extend(enter_ack_events(frame)),
+        MSG_COPY_MODE_INVALIDATED => events.extend(invalidated_events(frame)),
         MSG_PROMPT_POSITION => match PromptPosition::decode(&frame.payload) {
             Ok(pos) => {
                 events.push(UserEvent::PromptPosition(pos));
@@ -565,6 +568,40 @@ fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
         _ => return None,
     }
     Some(events)
+}
+
+/// The copy-mode entry ack (ADR-0025); an undecodable one unsticks the
+/// pending entry through the ordinary failure path.
+fn enter_ack_events(frame: &Frame) -> Vec<UserEvent> {
+    match EnterCopyModeAck::decode(&frame.payload) {
+        Ok(ack) => vec![UserEvent::CopyModeEntered {
+            serial: frame.serial,
+            pane_id: ack.pane_id,
+            base: ack.base,
+        }],
+        Err(e) => {
+            error!(error = %e, "failed to decode EnterCopyModeAck");
+            vec![UserEvent::RequestFailed {
+                serial: frame.serial,
+                code: None,
+            }]
+        }
+    }
+}
+
+/// The resize-dropped-your-pin push (ADR-0025 clause 5). An undecodable
+/// one disconnects, matching the `RenderUpdate` precedent: the client
+/// would otherwise keep filling against a pin the daemon has dropped.
+fn invalidated_events(frame: &Frame) -> Vec<UserEvent> {
+    match CopyModeInvalidated::decode(&frame.payload) {
+        Ok(msg) => vec![UserEvent::CopyModeInvalidated {
+            pane_id: msg.pane_id,
+        }],
+        Err(e) => {
+            error!(error = %e, "failed to decode CopyModeInvalidated, disconnecting");
+            vec![UserEvent::Disconnected]
+        }
+    }
 }
 
 /// What an error frame reports: the failed serial, plus a bell for the
@@ -639,9 +676,71 @@ mod tests {
     use crate::UserEvent;
     use oakterm_protocol::frame::Frame;
     use oakterm_protocol::message::{
-        ErrorCode, ErrorMessage, MSG_ERROR, MSG_SCROLLBACK_DATA, MSG_YANK_RESPONSE, ScrollbackData,
+        CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage, MSG_COPY_MODE_INVALIDATED,
+        MSG_ENTER_COPY_MODE_ACK, MSG_ERROR, MSG_SCROLLBACK_DATA, MSG_YANK_RESPONSE, ScrollbackData,
         YankResponse,
     };
+
+    /// A valid ack dispatches the entry event with the frame's serial and
+    /// the ack's base; dropping it would hold the initial fill forever
+    /// and leak the daemon's pin (ADR-0025 clause 2).
+    #[test]
+    fn a_copy_mode_ack_dispatches_the_entered_event() {
+        let payload = EnterCopyModeAck {
+            pane_id: 4,
+            base: 12,
+        }
+        .encode();
+        let frame = Frame::new(MSG_ENTER_COPY_MODE_ACK, 31, payload).expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(
+            events.as_slice(),
+            [UserEvent::CopyModeEntered {
+                serial: 31,
+                pane_id: 4,
+                base: 12,
+            }]
+        ));
+    }
+
+    /// An undecodable ack unsticks the pending entry through the
+    /// ordinary failure path rather than holding it forever.
+    #[test]
+    fn an_undecodable_ack_fails_the_pending_entry() {
+        let frame = Frame::new(MSG_ENTER_COPY_MODE_ACK, 31, vec![0; 3]).expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(
+            events.as_slice(),
+            [UserEvent::RequestFailed {
+                serial: 31,
+                code: None,
+            }]
+        ));
+    }
+
+    /// A valid invalidation push dispatches the teardown event; dropping
+    /// it would leave the client filling against a dead pin forever
+    /// (ADR-0025 clause 5).
+    #[test]
+    fn a_copy_mode_invalidation_dispatches_the_teardown_event() {
+        let payload = CopyModeInvalidated { pane_id: 4 }.encode();
+        let frame = Frame::new(MSG_COPY_MODE_INVALIDATED, 0, payload).expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(
+            events.as_slice(),
+            [UserEvent::CopyModeInvalidated { pane_id: 4 }]
+        ));
+    }
+
+    /// An undecodable invalidation disconnects (the `RenderUpdate`
+    /// precedent): the stream can no longer be trusted for the state it
+    /// carries.
+    #[test]
+    fn an_undecodable_invalidation_disconnects() {
+        let frame = Frame::new(MSG_COPY_MODE_INVALIDATED, 0, vec![0; 3]).expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(events.as_slice(), [UserEvent::Disconnected]));
+    }
 
     fn yank_frame(serial: u32, text: &str) -> Frame {
         let payload = YankResponse { text: text.into() }.encode().expect("encode");
@@ -654,6 +753,7 @@ mod tests {
             start_row: -8,
             has_more: true,
             total_rows: 100,
+            base: 0,
             rows: vec![],
         }
         .encode()

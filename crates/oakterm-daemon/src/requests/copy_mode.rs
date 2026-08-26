@@ -6,7 +6,8 @@ use super::{RequestResult, make_error_response};
 use crate::pane::{PaneManager, PaneState, SharedPane, lock_live_pane};
 use oakterm_protocol::frame::{Frame, MAX_PAYLOAD};
 use oakterm_protocol::message::{
-    CopyMode, CopySelectionType, ErrorCode, YankResponse, YankSelection,
+    CopySelectionType, EnterCopyMode, EnterCopyModeAck, ErrorCode, ExitCopyMode, YankResponse,
+    YankSelection,
 };
 use oakterm_terminal::grid::row::Row;
 use oakterm_terminal::scroll::archive_manager::{ArchiveManager, ArchiveReader};
@@ -152,7 +153,7 @@ pub(super) async fn enter_copy_mode(
     frame: &Frame,
     panes: &Arc<Mutex<PaneManager>>,
 ) -> RequestResult {
-    let Ok(msg) = CopyMode::decode(&frame.payload) else {
+    let Ok(msg) = EnterCopyMode::decode(&frame.payload) else {
         warn!(conn_id, "malformed EnterCopyMode payload");
         return make_error_response(
             conn_id,
@@ -174,25 +175,63 @@ pub(super) async fn enter_copy_mode(
             "unknown pane",
         );
     };
-    let replaced = pane.pin_copy_mode(conn_id);
-    let base = pane.copy_mode_base(conn_id);
+    let replaced = match pane.pin_copy_mode(conn_id, msg.base) {
+        Ok(replaced) => replaced,
+        Err(bounds) => {
+            warn!(
+                conn_id,
+                pane_id = msg.pane_id,
+                base = msg.base,
+                watermark = bounds.watermark,
+                history_len = bounds.history_len,
+                "EnterCopyMode base out of range; pin refused"
+            );
+            return make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::InvalidMessage,
+                &format!(
+                    "copy-mode base {} outside {}..={}",
+                    msg.base, bounds.watermark, bounds.history_len
+                ),
+            );
+        }
+    };
     if let Some(previous) = replaced {
         warn!(
             conn_id,
             pane_id = msg.pane_id,
             previous,
-            base,
-            "duplicate EnterCopyMode; re-pinning at the current viewport"
+            base = msg.base,
+            "duplicate EnterCopyMode; re-pinning at the client's base"
         );
     } else {
         debug!(
             conn_id,
             pane_id = msg.pane_id,
-            base,
+            base = msg.base,
             "copy mode entered, viewport pinned"
         );
     }
-    RequestResult::NoResponse
+    let ack = EnterCopyModeAck {
+        pane_id: msg.pane_id,
+        base: msg.base,
+    };
+    match ack.to_frame(frame.serial) {
+        Ok(f) => RequestResult::Response(f),
+        Err(e) => {
+            // The client sees an error and abandons entry, so a pin left
+            // behind would never be exited.
+            pane.unpin_copy_mode(conn_id);
+            error!(conn_id, error = %e, "failed to encode EnterCopyModeAck");
+            make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::InternalError,
+                "failed to encode ack",
+            )
+        }
+    }
 }
 
 pub(super) async fn exit_copy_mode(
@@ -200,7 +239,7 @@ pub(super) async fn exit_copy_mode(
     frame: &Frame,
     panes: &Arc<Mutex<PaneManager>>,
 ) -> RequestResult {
-    let Ok(msg) = CopyMode::decode(&frame.payload) else {
+    let Ok(msg) = ExitCopyMode::decode(&frame.payload) else {
         warn!(conn_id, "malformed ExitCopyMode payload");
         return make_error_response(
             conn_id,
@@ -283,6 +322,19 @@ pub(super) async fn yank_selection(
                 "yank selection spans too many rows",
             );
         }
+        Err(YankFailure::PinInvalidated) => {
+            warn!(
+                conn_id,
+                pane_id = req.pane_id,
+                "yank refused: pin invalidated by a resize"
+            );
+            return make_error_response(
+                conn_id,
+                frame.serial,
+                ErrorCode::InvalidMessage,
+                "copy-mode pin invalidated by a resize",
+            );
+        }
         Err(YankFailure::Archive(message)) => {
             return make_error_response(conn_id, frame.serial, ErrorCode::InternalError, message);
         }
@@ -327,6 +379,9 @@ pub(super) async fn yank_selection(
 enum YankFailure {
     UnknownPane,
     TooManyRows(u64),
+    /// The client's pin was dropped by a resize whose invalidation push
+    /// is still queued; a live-resolved yank would copy the wrong rows.
+    PinInvalidated,
     Archive(&'static str),
 }
 
@@ -342,6 +397,9 @@ async fn resolve_yank(
         let pane = lock_live_pane(panes, req.pane_id)
             .await
             .ok_or(YankFailure::UnknownPane)?;
+        if pane.pin_invalidation_pending(conn_id) {
+            return Err(YankFailure::PinInvalidated);
+        }
         let grid_end = pane
             .history_len()
             .saturating_add(u64::from(pane.screens.active_grid().rows));
@@ -622,7 +680,7 @@ pub(crate) async fn release_client_pins(conn_id: u64, panes: &Arc<Mutex<PaneMana
 mod tests {
     use super::super::scrollback::tests::await_read_in_flight;
     use super::*;
-    use oakterm_protocol::message::{ErrorMessage, MSG_YANK_RESPONSE};
+    use oakterm_protocol::message::{ErrorMessage, MSG_ENTER_COPY_MODE_ACK, MSG_YANK_RESPONSE};
 
     const COLS: usize = 80;
 
@@ -777,6 +835,10 @@ mod tests {
 
     async fn push_scrollback(panes: &Arc<Mutex<PaneManager>>, pane_id: u32, lines: &[&str]) {
         let mut pane = lock_live_pane(panes, pane_id).await.expect("pane");
+        push_rows(&mut pane, lines);
+    }
+
+    fn push_rows(pane: &mut crate::pane::PaneState, lines: &[&str]) {
         for line in lines {
             pane.screens.push_to_scrollback(row_from(line, COLS));
         }
@@ -795,11 +857,29 @@ mod tests {
     }
 
     fn enter_frame(pane_id: u32) -> Frame {
-        CopyMode { pane_id }.to_enter_frame().expect("enter frame")
+        enter_frame_at(pane_id, 0)
+    }
+
+    /// Enter echoing the live history end — what a client painted at
+    /// offset 0 with no output in flight echoes back (ADR-0025).
+    async fn enter_live(conn_id: u64, pane_id: u32, panes: &Arc<Mutex<PaneManager>>) {
+        let base = lock_live_pane(panes, pane_id)
+            .await
+            .expect("pane")
+            .history_len();
+        enter_copy_mode(conn_id, &enter_frame_at(pane_id, base), panes).await;
+    }
+
+    fn enter_frame_at(pane_id: u32, base: u64) -> Frame {
+        EnterCopyMode { pane_id, base }
+            .to_frame(5)
+            .expect("enter frame")
     }
 
     fn exit_frame(pane_id: u32) -> Frame {
-        CopyMode { pane_id }.to_exit_frame().expect("exit frame")
+        ExitCopyMode { pane_id }
+            .to_exit_frame()
+            .expect("exit frame")
     }
 
     fn yank_frame(pane_id: u32, sel: YankSelection) -> Frame {
@@ -830,7 +910,7 @@ mod tests {
     async fn enter_pins_the_client_at_the_current_history_end() {
         let (panes, pane_id) = pane_with_scrollback(&["a", "b", "c"]).await;
 
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         assert_eq!(pins(&panes, pane_id).await, vec![1]);
         assert_eq!(pinned_base(&panes, pane_id, 1).await, 3);
@@ -840,9 +920,9 @@ mod tests {
     async fn each_client_pins_independently() {
         let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
 
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         push_scrollback(&panes, pane_id, &["b", "c"]).await;
-        enter_copy_mode(2, &enter_frame(pane_id), &panes).await;
+        enter_live(2, pane_id, &panes).await;
 
         assert_eq!(pins(&panes, pane_id).await, vec![1, 2]);
         assert_eq!(pinned_base(&panes, pane_id, 1).await, 1);
@@ -855,19 +935,127 @@ mod tests {
     async fn a_second_enter_repins_at_the_current_viewport() {
         let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
 
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         push_scrollback(&panes, pane_id, &["b", "c"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         assert_eq!(pinned_base(&panes, pane_id, 1).await, 3);
         assert_eq!(pins(&panes, pane_id).await, vec![1], "still one pin");
     }
 
+    /// ADR-0025: the client's echoed base is the pin, and the ack echoes
+    /// it back at the request serial.
+    #[tokio::test]
+    async fn enter_pins_at_the_echoed_base_and_acks_it() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b", "c"]).await;
+
+        let result = enter_copy_mode(1, &enter_frame_at(pane_id, 2), &panes).await;
+
+        let RequestResult::Response(frame) = result else {
+            panic!("enter must ack");
+        };
+        assert_eq!(frame.msg_type, MSG_ENTER_COPY_MODE_ACK);
+        assert_eq!(frame.serial, 5);
+        let ack = EnterCopyModeAck::decode(&frame.payload).expect("ack");
+        assert_eq!((ack.pane_id, ack.base), (pane_id, 2));
+        assert_eq!(pinned_base(&panes, pane_id, 1).await, 2);
+    }
+
+    /// Validation precedes mutation: an out-of-range base is refused with
+    /// `InvalidMessage` and leaves an existing pin untouched.
+    #[tokio::test]
+    async fn a_base_beyond_history_is_refused_and_keeps_the_old_pin() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b"]).await;
+        enter_live(1, pane_id, &panes).await;
+
+        let result = enter_copy_mode(1, &enter_frame_at(pane_id, 99), &panes).await;
+
+        assert_eq!(expect_error(result), ErrorCode::InvalidMessage);
+        assert_eq!(pinned_base(&panes, pane_id, 1).await, 2, "pin untouched");
+    }
+
+    /// A base below the resize watermark names rows a resize capture
+    /// invalidated (ADR-0025 clause 4) — refused even though it is a
+    /// history index that once existed.
+    #[tokio::test]
+    async fn a_base_below_the_resize_watermark_is_refused() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b", "c"]).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.resize_watermark = 2;
+        }
+
+        let result = enter_copy_mode(1, &enter_frame_at(pane_id, 1), &panes).await;
+
+        assert_eq!(expect_error(result), ErrorCode::InvalidMessage);
+        assert_eq!(pins(&panes, pane_id).await, Vec::<u64>::new());
+    }
+
+    /// The watermark advances on any history-advancing resize, pins or
+    /// not, and a dropped pin queues this client's invalidation push.
+    #[tokio::test]
+    async fn an_invalidating_resize_advances_the_watermark_and_queues_the_push() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b"]).await;
+        enter_live(1, pane_id, &panes).await;
+
+        let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        push_rows(&mut pane, &["c"]);
+        let before = 2;
+        assert_eq!(pane.invalidate_pins_after_resize(before), 1);
+
+        assert_eq!(pane.resize_watermark, 3);
+        assert!(pane.take_pending_pin_invalidation(1), "push queued");
+        assert!(!pane.take_pending_pin_invalidation(1), "drained once");
+        assert!(
+            !pane.take_pending_pin_invalidation(2),
+            "other clients unaffected"
+        );
+    }
+
+    /// The refusal outlives the push (ADR-0025 clause 5): claiming the
+    /// push for writing flips it to Sent rather than clearing it, so a
+    /// request buffered behind the notification pass is still refused.
+    /// Only the client's exit (or re-pin) closes the window.
+    #[tokio::test]
+    async fn the_refusal_outlives_the_delivered_push() {
+        let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
+        enter_live(1, pane_id, &panes).await;
+
+        let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        push_rows(&mut pane, &["b"]);
+        assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+
+        assert!(pane.take_pending_pin_invalidation(1), "claimed for writing");
+        assert!(
+            pane.pin_invalidation_pending(1),
+            "still refused after the push is written"
+        );
+        assert!(!pane.take_pending_pin_invalidation(1), "written once");
+
+        assert!(!pane.unpin_copy_mode(1), "no pin left to release");
+        assert!(!pane.pin_invalidation_pending(1), "the exit closes it");
+    }
+
+    /// An exit (or disconnect) drops a queued push with the pin — a
+    /// client that already left must not receive a stale invalidation.
+    #[tokio::test]
+    async fn unpinning_drops_a_queued_invalidation_push() {
+        let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
+        enter_live(1, pane_id, &panes).await;
+
+        let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        push_rows(&mut pane, &["b"]);
+        assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+        pane.unpin_copy_mode(1);
+
+        assert!(!pane.take_pending_pin_invalidation(1));
+    }
+
     #[tokio::test]
     async fn exit_unpins_only_the_exiting_client() {
         let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
-        enter_copy_mode(2, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
+        enter_live(2, pane_id, &panes).await;
 
         exit_copy_mode(1, &exit_frame(pane_id), &panes).await;
 
@@ -927,9 +1115,9 @@ mod tests {
                 pm.create(80, 24, String::new(), String::new()),
             )
         };
-        enter_copy_mode(1, &enter_frame(a), &panes).await;
-        enter_copy_mode(1, &enter_frame(b), &panes).await;
-        enter_copy_mode(2, &enter_frame(a), &panes).await;
+        enter_live(1, a, &panes).await;
+        enter_live(1, b, &panes).await;
+        enter_live(2, a, &panes).await;
 
         release_client_pins(1, &panes).await;
 
@@ -940,7 +1128,7 @@ mod tests {
     #[tokio::test]
     async fn yank_reads_across_the_hot_buffer() {
         let (panes, pane_id) = pane_with_scrollback(&["alpha", "bravo", "charlie"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-3, 0, -1, 2, CopySelectionType::Character));
         assert_eq!(
@@ -956,7 +1144,7 @@ mod tests {
             let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             pane.screens.active_grid_mut().lines[0] = row_from("on screen", COLS);
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // Row -1 is the last scrollback row, row 0 the top of the viewport.
         let frame = yank_frame(pane_id, req(-1, 0, 0, 8, CopySelectionType::Character));
@@ -969,7 +1157,7 @@ mod tests {
     #[tokio::test]
     async fn a_pinned_client_keeps_stable_row_indices_as_output_arrives() {
         let (panes, pane_id) = pane_with_scrollback(&["first", "second"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         let frame = yank_frame(pane_id, req(-2, 0, -2, 4, CopySelectionType::Character));
         let before = expect_yanked(yank_selection(1, &frame, &panes).await);
 
@@ -1029,7 +1217,7 @@ mod tests {
             assert_eq!(pane.screens.scrollback().len(), 2, "two rows pruned out");
             assert_eq!(pane.history_len(), 4);
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // Whole history: two archived rows, then two hot ones.
         let frame = yank_frame(pane_id, req(-4, 0, -1, 0, CopySelectionType::Line));
@@ -1073,7 +1261,7 @@ mod tests {
             assert!(pane.screens.archive().is_none(), "no archive attached");
         }
         cap_scrollback_rows(&panes, pane_id, 2).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-1, 0, -1, 5, CopySelectionType::Line));
         assert_eq!(
@@ -1102,7 +1290,7 @@ mod tests {
                 pane.screens.active_grid_mut().lines[row] = row_from("0123456789", COLS);
             }
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(0, 4, 999, 8, CopySelectionType::Block));
         let text = expect_yanked(yank_selection(1, &frame, &panes).await);
@@ -1116,7 +1304,7 @@ mod tests {
     #[tokio::test]
     async fn a_range_entirely_before_history_opens_to_both_row_edges() {
         let (panes, pane_id) = pane_with_scrollback(&["alpha"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-9, 3, -5, 2, CopySelectionType::Character));
         assert_eq!(
@@ -1132,7 +1320,7 @@ mod tests {
         let (panes, pane_id) = pane_with_scrollback(&["gone"]).await;
         cap_scrollback_rows(&panes, pane_id, 2).await;
         push_scrollback(&panes, pane_id, &["a", "b", "c", "keep"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // Five rows pushed, only the last two retained: rows -5..-3 are gaps.
         let frame = yank_frame(pane_id, req(-5, 0, -1, 0, CopySelectionType::Line));
@@ -1148,7 +1336,7 @@ mod tests {
     #[tokio::test]
     async fn scrollback_rows_survive_a_resize_under_a_pin() {
         let (panes, pane_id) = pane_with_scrollback(&["first", "second"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         let frame = yank_frame(pane_id, req(-2, 0, -1, 0, CopySelectionType::Line));
         let before = expect_yanked(yank_selection(1, &frame, &panes).await);
         assert_eq!(before, "first\nsecond");
@@ -1171,8 +1359,8 @@ mod tests {
     #[tokio::test]
     async fn a_resize_that_captures_rows_drops_the_pins() {
         let (panes, pane_id) = pane_with_scrollback(&["one"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
-        enter_copy_mode(2, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
+        enter_live(2, pane_id, &panes).await;
 
         let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
         let before = pane.history_len();
@@ -1209,7 +1397,7 @@ mod tests {
     #[tokio::test]
     async fn a_resize_that_moves_no_rows_keeps_the_pins() {
         let (panes, pane_id) = pane_with_scrollback(&["one"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
         let before = pane.history_len();
@@ -1217,12 +1405,73 @@ mod tests {
         pane.screens.resize_all(80, 40);
         assert_eq!(pane.invalidate_pins_after_resize(before), 0);
         assert_eq!(pane.copy_mode_pins.len(), 1);
+        assert_eq!(pane.resize_watermark, 0, "watermark moves only on advance");
+    }
+
+    /// The watermark itself is an acceptable base (ADR-0025 clause 4's
+    /// lower bound is inclusive).
+    #[tokio::test]
+    async fn a_base_at_the_watermark_is_accepted() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b", "c"]).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            pane.resize_watermark = 2;
+        }
+
+        let result = enter_copy_mode(1, &enter_frame_at(pane_id, 2), &panes).await;
+
+        assert!(matches!(result, RequestResult::Response(_)));
+        assert_eq!(pinned_base(&panes, pane_id, 1).await, 2);
+    }
+
+    /// A pin taken now supersedes an invalidation queued against the
+    /// generation it replaces — the stale push must not tear down the
+    /// fresh pin.
+    #[tokio::test]
+    async fn a_repin_drains_a_queued_invalidation() {
+        let (panes, pane_id) = pane_with_scrollback(&["a"]).await;
+        enter_live(1, pane_id, &panes).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            push_rows(&mut pane, &["b"]);
+            assert_eq!(pane.invalidate_pins_after_resize(1), 1);
+        }
+
+        enter_live(1, pane_id, &panes).await;
+
+        let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+        assert!(!pane.take_pending_pin_invalidation(1), "push superseded");
+        assert_eq!(pane.copy_mode_pins.len(), 1);
+    }
+
+    /// Reads from a client whose pin died with an undelivered push are
+    /// refused rather than resolved against the live fallback — serving
+    /// them would file shifted rows into a cache the client still trusts
+    /// (ADR-0025 clause 5).
+    #[tokio::test]
+    async fn a_yank_with_an_undelivered_invalidation_is_refused() {
+        let (panes, pane_id) = pane_with_scrollback(&["a", "b"]).await;
+        enter_live(1, pane_id, &panes).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            push_rows(&mut pane, &["c"]);
+            assert_eq!(pane.invalidate_pins_after_resize(2), 1);
+        }
+
+        let result = yank_selection(
+            1,
+            &yank_frame(pane_id, req(-1, 0, -1, 0, CopySelectionType::Line)),
+            &panes,
+        )
+        .await;
+
+        assert_eq!(expect_error(result), ErrorCode::InvalidMessage);
     }
 
     #[tokio::test]
     async fn yank_of_an_inverted_range_matches_the_forward_range() {
         let (panes, pane_id) = pane_with_scrollback(&["alpha", "bravo"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let forward = yank_frame(pane_id, req(-2, 1, -1, 3, CopySelectionType::Character));
         let inverted = yank_frame(pane_id, req(-1, 3, -2, 1, CopySelectionType::Character));
@@ -1238,7 +1487,7 @@ mod tests {
     #[tokio::test]
     async fn yank_of_a_single_cell_returns_that_cell() {
         let (panes, pane_id) = pane_with_scrollback(&["alpha"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-1, 2, -1, 2, CopySelectionType::Character));
         assert_eq!(expect_yanked(yank_selection(1, &frame, &panes).await), "p");
@@ -1247,7 +1496,7 @@ mod tests {
     #[tokio::test]
     async fn yank_past_the_bottom_of_the_grid_is_empty() {
         let (panes, pane_id) = pane_with_scrollback(&["alpha"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // The pane is 24 rows tall; rows at and past 24 do not exist.
         let frame = yank_frame(pane_id, req(30, 0, 40, 0, CopySelectionType::Line));
@@ -1261,7 +1510,7 @@ mod tests {
             let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             pane.screens.active_grid_mut().lines[0] = row_from("hello", COLS);
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(0, 0, 999, 2, CopySelectionType::Character));
         let text = expect_yanked(yank_selection(1, &frame, &panes).await);
@@ -1277,7 +1526,7 @@ mod tests {
     #[tokio::test]
     async fn a_start_before_history_opens_at_the_row_edge() {
         let (panes, pane_id) = pane_with_scrollback(&["one", "two"]).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // Start column 7 belongs to a row older than anything retained.
         let frame = yank_frame(pane_id, req(-5, 7, -1, 2, CopySelectionType::Character));
@@ -1344,7 +1593,7 @@ mod tests {
                 line.cells[5].codepoint = 'y';
             }
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         // Block covering both cells of the glyph.
         let frame = yank_frame(pane_id, req(0, 2, 1, 3, CopySelectionType::Block));
@@ -1382,7 +1631,7 @@ mod tests {
                 .shutdown()
                 .expect("shutdown");
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-4, 0, -3, 0, CopySelectionType::Line));
         assert_eq!(
@@ -1406,7 +1655,7 @@ mod tests {
             }
             assert!(pane.history_len() > MAX_YANK_ROWS);
         }
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let span = i64::try_from(MAX_YANK_ROWS).expect("cap fits i64");
         let frame = yank_frame(pane_id, req(-span - 5, 0, 0, 0, CopySelectionType::Line));
@@ -1441,7 +1690,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (panes, pane_id) =
             pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         let mut stall = {
             let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             pane.screens.archive().expect("archive").stall_next_read()
@@ -1476,7 +1725,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (panes, pane_id) =
             pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         let mut stall = {
             let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             pane.screens.archive().expect("archive").stall_next_read()
@@ -1610,7 +1859,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (panes, pane_id) =
             pane_with_archived_prefix(dir.path(), &["one", "two", "three", "four"], 2).await;
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
         let mut stall = {
             let pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             pane.screens.archive().expect("archive").stall_next_read()
@@ -1653,7 +1902,7 @@ mod tests {
             );
             pane.screens.archive().expect("archive").stall_writer()
         };
-        enter_copy_mode(1, &enter_frame(pane_id), &panes).await;
+        enter_live(1, pane_id, &panes).await;
 
         let frame = yank_frame(pane_id, req(-5, 0, -1, 0, CopySelectionType::Line));
         let answered = tokio::time::timeout(
