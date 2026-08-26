@@ -1,17 +1,18 @@
 //! Copy-mode client state (Spec-0008): the cursor and the viewport cache
 //! that backs it, in the row space the daemon pins on `EnterCopyMode`.
 //!
-//! Row 0 is the live grid's top row at entry — the daemon pins there
-//! regardless of where the client was scrolled — and negatives run into
+//! Row 0 is the daemon history end the client echoed at entry
+//! (`EnterCopyMode.base`, ADR-0025) — the top of the live grid at the
+//! instant the painted content was resolved — and negatives run into
 //! scrollback, matching `GetScrollback.start_row` and `YankSelection`
-//! rows. Rows `0..visible_rows` stay in the client's frozen grid
-//! snapshot, so the cache only ever holds negative rows: `GetScrollback`
+//! rows. Painted-page rows resolve from the entry snapshot (ADR-0025
+//! clause 6), so the cache only ever holds negative rows: `GetScrollback`
 //! never serves the live grid. A pane entered from scrollback shows rows
 //! `[-offset, -offset + visible_rows)`, which is why `viewport_top`
 //! exists rather than everything assuming 0.
 
 use crate::copy_keys::PendingPrefix;
-use crate::copy_motion::MotionBounds;
+use crate::copy_motion::{MotionBounds, RowText};
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::DirtyRow;
 use std::collections::{BTreeMap, HashMap};
@@ -206,6 +207,18 @@ pub(crate) struct YankRange {
     pub(crate) end_col: u16,
 }
 
+/// How a yank resolves under the ADR-0025 ownership split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum YankPlan {
+    /// Wholly below 0: one daemon round trip, as before.
+    Daemon(YankRange),
+    /// Wholly on the painted page: extracted locally, no round trip.
+    Local(String),
+    /// Spans the boundary: the daemon serves rows below 0, the local
+    /// half is appended after a `\n` when the response lands.
+    Stitched { daemon: YankRange, local: String },
+}
+
 /// Order a selection's endpoints. Character and line ranges normalize in
 /// reading order; a block normalizes each axis on its own, so any drag
 /// direction yields the same rectangle.
@@ -269,13 +282,26 @@ pub(crate) struct CopyModeState {
     /// Oldest row the daemon has shown it can serve, learned when a
     /// window comes back front-clamped or reports no older history.
     history_start: Option<i64>,
+    /// The painted viewport cells at entry (ADR-0025 clause 6): a
+    /// dedicated copy, not the still-mutating saved live snapshot. Row
+    /// `i` is pin-space row `viewport_top + i`. Rows at or above 0 —
+    /// and every painted-page row — resolve here, never from the daemon.
+    snapshot: Vec<Vec<char>>,
+    /// The base the daemon acked (ADR-0025 clause 2), set when the ack
+    /// lands; fills served against any other base are discarded.
+    pinned_base: Option<u64>,
 }
 
 impl CopyModeState {
     /// Seed at the bottom-left of the frozen viewport (Spec-0008 entry).
     /// `viewport_offset` is the pane's scroll offset at entry; entering
     /// live (0) seeds at `rows - 1` as the spec describes.
-    pub(crate) fn new(cols: u16, visible_rows: u16, viewport_offset: u32) -> Self {
+    pub(crate) fn new(
+        cols: u16,
+        visible_rows: u16,
+        viewport_offset: u32,
+        snapshot: Vec<Vec<char>>,
+    ) -> Self {
         let rows = u32::from(visible_rows.max(1));
         let viewport_top = -i64::from(viewport_offset);
         Self {
@@ -289,28 +315,64 @@ impl CopyModeState {
             viewport_top,
             in_flight: HashMap::new(),
             history_start: None,
+            snapshot,
+            pinned_base: None,
         }
     }
 
+    /// Record the base the daemon acked; later fills must match it.
+    pub(crate) fn set_pinned_base(&mut self, base: u64) {
+        self.pinned_base = Some(base);
+    }
+
+    /// A painted-page row from the entry snapshot, by pin-space index.
+    /// `None` outside the page or past what was captured.
+    pub(crate) fn snapshot_row(&self, row: i64) -> Option<&[char]> {
+        let idx = usize::try_from(row.checked_sub(self.viewport_top)?).ok()?;
+        self.snapshot.get(idx).map(Vec::as_slice)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_snapshot(&mut self, snapshot: Vec<Vec<char>>) {
+        self.snapshot = snapshot;
+    }
+}
+
+/// Motions resolve against the daemon-served cache for rows below the
+/// painted page and the entry snapshot on it (ADR-0025 clause 6) —
+/// cache first, because rows below 0 are daemon-authoritative even when
+/// the page also shows them.
+impl RowText for CopyModeState {
+    fn row(&self, row: i64) -> Option<Vec<char>> {
+        if let Some(chars) = self.cache.row_chars(row) {
+            return Some(chars);
+        }
+        self.snapshot_row(row).map(<[char]>::to_vec)
+    }
+}
+
+impl CopyModeState {
     pub(crate) fn cursor(&self) -> (i64, u16) {
         (self.cursor_row, self.cursor_col)
     }
 
+    #[cfg(test)]
     pub(crate) fn cache(&self) -> &ViewportCache {
         &self.cache
     }
 
     /// Daemon row shown at the top of the frozen viewport.
+    #[cfg(test)]
     pub(crate) fn viewport_top(&self) -> i64 {
         self.viewport_top
     }
 
-    /// The newest row copy mode can address: the live grid's bottom row.
-    /// Entering scrolled, the rows below the frozen page are addressable
-    /// but read as blank — `PaneRows` serves the frozen snapshot, and the
-    /// live rows behind it are deliberately not consulted.
+    /// The newest row copy mode can address: the bottom of the painted
+    /// page (ADR-0025 clause 6). Rows at or above 0 resolve from the
+    /// entry snapshot, so nothing below the page is addressable — a page
+    /// entirely in scrollback puts this below 0 by the same arithmetic.
     fn last_row(&self) -> i64 {
-        i64::from(self.visible_rows) - 1
+        self.viewport_top + i64::from(self.visible_rows) - 1
     }
 
     /// The oldest row copy mode can address: the oldest cached row, or
@@ -399,6 +461,89 @@ impl CopyModeState {
     pub(crate) fn yank_range(&self) -> Option<YankRange> {
         self.selection
             .map(|selection| normalize_range(selection, (self.cursor_row, self.cursor_col)))
+    }
+
+    /// Where the selection's text comes from (ADR-0025 clause 7): rows
+    /// below 0 are daemon-served, rows at or above 0 come from the entry
+    /// snapshot, and a selection spanning the boundary splits at −1/0 —
+    /// the daemon half open to the row edge for character and line
+    /// shapes, the true end column applied on the local half.
+    pub(crate) fn yank_plan(&self) -> Option<YankPlan> {
+        let range = self.yank_range()?;
+        if range.end_row < 0 {
+            return Some(YankPlan::Daemon(range));
+        }
+        if range.start_row >= 0 {
+            return Some(YankPlan::Local(self.extract_from_snapshot(
+                range.start_row,
+                range.start_col,
+                range.end_row,
+                range.end_col,
+                range.ty,
+            )));
+        }
+        let daemon_end_col = match range.ty {
+            CopySelectionType::Character | CopySelectionType::Line => u16::MAX,
+            CopySelectionType::Block => range.end_col,
+        };
+        let local_start_col = match range.ty {
+            CopySelectionType::Character | CopySelectionType::Line => 0,
+            CopySelectionType::Block => range.start_col,
+        };
+        Some(YankPlan::Stitched {
+            daemon: YankRange {
+                ty: range.ty,
+                start_row: range.start_row,
+                start_col: range.start_col,
+                end_row: -1,
+                end_col: daemon_end_col,
+            },
+            local: self.extract_from_snapshot(
+                0,
+                local_start_col,
+                range.end_row,
+                range.end_col,
+                range.ty,
+            ),
+        })
+    }
+
+    /// Selection text from the entry snapshot, mirroring the daemon's
+    /// format: per-row trailing spaces trimmed, rows joined with `\n`,
+    /// unshown rows contributing empty lines so line N is always row N.
+    fn extract_from_snapshot(
+        &self,
+        start_row: i64,
+        start_col: u16,
+        end_row: i64,
+        end_col: u16,
+        ty: CopySelectionType,
+    ) -> String {
+        let mut lines = Vec::new();
+        let mut row = start_row;
+        while row <= end_row {
+            let (from, to) = match ty {
+                CopySelectionType::Line => (0, u16::MAX),
+                CopySelectionType::Block => (start_col, end_col),
+                CopySelectionType::Character => {
+                    let from = if row == start_row { start_col } else { 0 };
+                    let to = if row == end_row { end_col } else { u16::MAX };
+                    (from, to)
+                }
+            };
+            let text = self.snapshot_row(row).map_or_else(String::new, |chars| {
+                let from = usize::from(from).min(chars.len());
+                let to = usize::from(to).saturating_add(1).min(chars.len());
+                chars
+                    .get(from..to)
+                    .unwrap_or(&[])
+                    .iter()
+                    .collect::<String>()
+            });
+            lines.push(text.trim_end_matches(' ').to_string());
+            row += 1;
+        }
+        lines.join("\n")
     }
 
     /// The entry fill: the frozen viewport plus one screen either side
@@ -524,6 +669,19 @@ impl CopyModeState {
         let Some(PendingFill { request, .. }) = self.in_flight.remove(&serial) else {
             return false;
         };
+        // A different base means the live fallback answered after a
+        // racing resize dropped the pin (ADR-0025 clause 5); discard and
+        // let the CopyModeInvalidated push tear the session down. No
+        // acked base yet fails closed for the same reason: every
+        // legitimate fill is issued after the ack sets it.
+        if self.pinned_base != Some(data.base) {
+            warn!(
+                pinned = ?self.pinned_base,
+                served = data.base,
+                "scrollback fill resolved against a different base; discarding"
+            );
+            return true;
+        }
         if data.start_row > request.start_row || !data.has_more {
             self.history_start = Some(data.start_row);
         }
@@ -553,7 +711,7 @@ impl CopyModeState {
 mod tests {
     use super::{
         CopyModeState, CopySelectionType, FillFailure, FillRequest, SelectionEffect, ViewportCache,
-        YankRange,
+        YankPlan, YankRange,
     };
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
@@ -595,13 +753,17 @@ mod tests {
             start_row,
             has_more,
             total_rows: 1000,
+            base: 0,
             rows: rows(tags),
         }
     }
 
     /// Fill the cache with `tags` starting at `start`, bypassing the
     /// request bookkeeping the prefetch tests exercise separately.
+    /// Fills simulate a post-ack session: `served()` builds replies at
+    /// base 0, so the acked base is pinned to match before applying.
     fn filled(state: &mut CopyModeState, start: i64, tags: &str, has_more: bool) {
+        state.set_pinned_base(0);
         let count = u32::try_from(tags.chars().count()).expect("small");
         state.record_fill(
             1,
@@ -621,7 +783,8 @@ mod tests {
     /// naming entirely different rows.
     #[test]
     fn a_clamped_window_keys_from_the_served_start() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         // Asked for rows -20..-16; only three rows of history exist, so
         // the daemon serves -3..0 instead.
         state.record_fill(
@@ -671,7 +834,8 @@ mod tests {
     /// a blanket reinterpretation of every response.
     #[test]
     fn an_unclamped_window_keys_where_it_was_requested() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.record_fill(
             7,
             FillRequest {
@@ -690,7 +854,8 @@ mod tests {
     /// filed at whatever start it happens to carry.
     #[test]
     fn a_reply_with_an_unknown_serial_is_refused() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.record_fill(
             11,
             FillRequest {
@@ -711,7 +876,8 @@ mod tests {
     /// the most recent one did.
     #[test]
     fn out_of_order_replies_file_against_their_own_request() {
-        let mut state = CopyModeState::new(80, 64, 0);
+        let mut state = CopyModeState::new(80, 64, 0, Vec::new());
+        state.set_pinned_base(0);
         state.record_fill(
             20,
             FillRequest {
@@ -742,7 +908,8 @@ mod tests {
     /// cache and no outstanding request to fill it.
     #[test]
     fn an_error_retires_the_initial_fill_and_the_retry_fills_the_cache() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -759,7 +926,8 @@ mod tests {
     /// every retry for exactly the region the cursor is moving into.
     #[test]
     fn an_error_retires_a_prefetch_so_the_window_can_be_asked_for_again() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -12, "abcdefghijkl", true);
         state.set_cursor(-11, 0);
         let fill = state.plan_prefetch().expect("boundary reached");
@@ -780,7 +948,8 @@ mod tests {
     /// leaving copy mode.
     #[test]
     fn a_second_failure_of_the_same_window_abandons_copy_mode() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -795,7 +964,8 @@ mod tests {
     /// unretryable failure abandons on the first error.
     #[test]
     fn an_unretryable_failure_abandons_without_a_retry() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.record_fill(7, state.initial_fill());
 
         assert_eq!(state.fail_fill(7, false), FillFailure::Abandon);
@@ -805,7 +975,8 @@ mod tests {
     /// a copy-mode fill that is still legitimately outstanding.
     #[test]
     fn an_error_for_another_request_leaves_copy_mode_fills_alone() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         let fill = state.initial_fill();
         state.record_fill(7, fill);
 
@@ -817,7 +988,8 @@ mod tests {
 
     #[test]
     fn prefetch_fires_at_the_top_quarter_of_the_window() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -12, "abcdefghijkl", true);
 
         state.set_cursor(-5, 0);
@@ -835,7 +1007,8 @@ mod tests {
 
     #[test]
     fn prefetch_fires_at_the_bottom_quarter_of_the_window() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -20, "abcdefgh", true);
 
         state.set_cursor(-13, 0);
@@ -853,7 +1026,8 @@ mod tests {
     /// and race two writes onto the same keys.
     #[test]
     fn prefetch_does_not_duplicate_an_in_flight_window() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -12, "abcdefghijkl", true);
         state.set_cursor(-11, 0);
 
@@ -871,7 +1045,8 @@ mod tests {
     /// other end still plans while the first fill is outstanding.
     #[test]
     fn prefetch_at_the_far_boundary_is_not_suppressed() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -20, "abcdefgh", true);
         state.set_cursor(-19, 0);
         let older = state.plan_prefetch().expect("top boundary");
@@ -891,7 +1066,8 @@ mod tests {
     /// exists, so walking into the top zone must stop asking.
     #[test]
     fn prefetch_stops_at_the_start_of_history() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", false);
 
         state.set_cursor(-8, 0);
@@ -904,7 +1080,8 @@ mod tests {
     /// whose clamped reply already taught the cache where history begins.
     #[test]
     fn prefetch_shortens_the_last_chunk_before_the_start_of_history() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.record_fill(
             1,
             FillRequest {
@@ -930,7 +1107,8 @@ mod tests {
     /// already holds; the daemon serves none of them.
     #[test]
     fn prefetch_never_reaches_past_the_pinned_viewport_top() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -4, "abcd", true);
 
         state.set_cursor(-1, 0);
@@ -941,7 +1119,7 @@ mod tests {
 
     #[test]
     fn the_cursor_seeds_at_the_bottom_left_of_the_viewport() {
-        assert_eq!(CopyModeState::new(80, 24, 0).cursor(), (23, 0));
+        assert_eq!(CopyModeState::new(80, 24, 0, Vec::new()).cursor(), (23, 0));
     }
 
     /// Entering from scrollback: the daemon pins row 0 at the live grid's
@@ -951,7 +1129,7 @@ mod tests {
     /// see. At offset 10 a 24-row pane displays rows -10..=13.
     #[test]
     fn entering_from_scrollback_seeds_the_cursor_on_a_displayed_row() {
-        let state = CopyModeState::new(80, 24, 10);
+        let state = CopyModeState::new(80, 24, 10, Vec::new());
         let (row, col) = state.cursor();
 
         assert_eq!((row, col), (13, 0), "bottom of the frozen viewport");
@@ -968,7 +1146,8 @@ mod tests {
     /// the user is already looking at.
     #[test]
     fn entering_from_scrollback_lets_the_cursor_reach_the_viewport_top() {
-        let mut state = CopyModeState::new(80, 24, 10);
+        let mut state = CopyModeState::new(80, 24, 10, Vec::new());
+        state.set_pinned_base(0);
 
         state.set_cursor(-10, 0);
         assert_eq!(state.cursor(), (-10, 0));
@@ -977,17 +1156,18 @@ mod tests {
         assert_eq!(state.cursor(), (-10, 0), "clamped at the viewport top");
     }
 
-    /// The live grid rows below the frozen viewport still exist in the
-    /// daemon's space, so the state must not clamp them away — scrolling
-    /// the view down to reach them is the renderer's job (TREK-114).
+    /// Copy mode addresses exactly the painted page (ADR-0025 clause 6):
+    /// entering scrolled by 10, the bottom addressable row is the page's
+    /// bottom, not the live grid hidden below it.
     #[test]
-    fn the_live_grid_below_a_scrolled_viewport_stays_addressable() {
-        let mut state = CopyModeState::new(80, 24, 10);
-        state.set_cursor(23, 0);
-        assert_eq!(state.cursor(), (23, 0));
+    fn rows_below_the_painted_page_are_not_addressable() {
+        let mut state = CopyModeState::new(80, 24, 10, Vec::new());
+        state.set_pinned_base(0);
+        state.set_cursor(13, 0);
+        assert_eq!(state.cursor(), (13, 0), "the page's bottom row");
 
-        state.set_cursor(24, 0);
-        assert_eq!(state.cursor(), (23, 0), "one past the last live row");
+        state.set_cursor(14, 0);
+        assert_eq!(state.cursor(), (13, 0), "one past the painted page");
     }
 
     /// The clamp spans the cache *and* the frozen viewport: clamping to
@@ -995,7 +1175,8 @@ mod tests {
     /// starts on, since the cache only ever holds negative rows.
     #[test]
     fn the_cursor_clamps_across_the_cache_and_the_viewport() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -6, "abcdef", true);
 
         state.set_cursor(-99, 2);
@@ -1013,7 +1194,8 @@ mod tests {
     /// bounds motions resolve against report the same width.
     #[test]
     fn the_cursor_column_clamps_to_the_pane_width() {
-        let mut state = CopyModeState::new(10, 4, 0);
+        let mut state = CopyModeState::new(10, 4, 0, Vec::new());
+        state.set_pinned_base(0);
 
         state.set_cursor(0, 9);
         assert_eq!(state.cursor(), (0, 9), "the last column is addressable");
@@ -1027,7 +1209,8 @@ mod tests {
     /// underflowing the clamp.
     #[test]
     fn a_zero_width_pane_pins_the_column_at_zero() {
-        let mut state = CopyModeState::new(0, 4, 0);
+        let mut state = CopyModeState::new(0, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(0, 7);
         assert_eq!(state.cursor(), (0, 0));
     }
@@ -1036,7 +1219,8 @@ mod tests {
     /// cursor stays inside the frozen viewport.
     #[test]
     fn the_cursor_clamps_to_the_viewport_with_an_empty_cache() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(-5, 0);
         assert_eq!(state.cursor(), (0, 0));
     }
@@ -1070,7 +1254,8 @@ mod tests {
     /// the path that actually runs.
     #[test]
     fn a_successful_fill_drains_its_in_flight_entry() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         let fill = FillRequest {
             start_row: -12,
             count: 12,
@@ -1094,7 +1279,8 @@ mod tests {
     /// extends rather than dragging the whole thing.
     #[test]
     fn starting_a_selection_anchors_at_the_cursor_and_extends_with_it() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-4, 2);
 
@@ -1117,7 +1303,8 @@ mod tests {
     /// moving the anchor, so `v` then `V` selects the same span by line.
     #[test]
     fn toggling_the_same_type_cancels_and_a_different_one_switches() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(1, 3);
         state.toggle_selection(CopySelectionType::Character);
         state.set_cursor(4, 6);
@@ -1140,7 +1327,8 @@ mod tests {
     /// cancels, never both.
     #[test]
     fn cycling_the_selection_types_ends_where_it_started() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         state.toggle_selection(CopySelectionType::Character);
         state.toggle_selection(CopySelectionType::Line);
         state.toggle_selection(CopySelectionType::Block);
@@ -1160,7 +1348,8 @@ mod tests {
     /// first press anchors, later presses must not re-anchor.
     #[test]
     fn extend_anchors_once_and_keeps_the_anchor_after() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(2, 3);
 
         state.apply_selection_effect(SelectionEffect::Extend);
@@ -1181,7 +1370,8 @@ mod tests {
     /// clear drops it, and keep never anchors one.
     #[test]
     fn keep_and_clear_effects_leave_and_drop_the_selection() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
 
         state.apply_selection_effect(SelectionEffect::Keep);
         assert_eq!(state.yank_range(), None, "keep never anchors");
@@ -1196,7 +1386,8 @@ mod tests {
 
     #[test]
     fn clearing_reports_whether_there_was_a_selection() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         assert!(!state.clear_selection(), "nothing to clear");
         state.toggle_selection(CopySelectionType::Character);
         assert!(state.clear_selection());
@@ -1207,7 +1398,8 @@ mod tests {
     /// forwards: character ranges order in reading order.
     #[test]
     fn a_backwards_character_selection_normalizes_in_reading_order() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-2, 5);
         state.toggle_selection(CopySelectionType::Character);
@@ -1229,7 +1421,8 @@ mod tests {
     /// comparison would get backwards.
     #[test]
     fn a_backwards_selection_inside_one_row_orders_by_column() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(3, 9);
         state.toggle_selection(CopySelectionType::Character);
         state.set_cursor(3, 1);
@@ -1242,7 +1435,8 @@ mod tests {
     /// only the block branch departs from it.
     #[test]
     fn a_backwards_line_selection_normalizes_in_reading_order() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-2, 5);
         state.toggle_selection(CopySelectionType::Line);
@@ -1266,7 +1460,8 @@ mod tests {
     /// column range.
     #[test]
     fn a_block_selection_normalizes_each_axis_independently() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-2, 9);
         state.toggle_selection(CopySelectionType::Block);
@@ -1288,7 +1483,8 @@ mod tests {
     /// both endpoints are inclusive.
     #[test]
     fn an_unmoved_selection_covers_the_anchor_cell() {
-        let mut state = CopyModeState::new(80, 8, 0);
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
         state.set_cursor(2, 4);
         state.toggle_selection(CopySelectionType::Character);
 
@@ -1429,7 +1625,8 @@ mod tests {
     /// requiring the rows between them to exist.
     #[test]
     fn a_stale_reply_leaves_the_cursor_on_a_cached_row() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         filled(&mut state, -8, "abcdefgh", true);
         state.set_cursor(-5, 0);
 
@@ -1492,7 +1689,7 @@ mod tests {
     /// window is the one screen of scrollback above it.
     #[test]
     fn the_entry_fill_stops_at_the_pinned_grid_top() {
-        let state = CopyModeState::new(80, 24, 0);
+        let state = CopyModeState::new(80, 24, 0, Vec::new());
         assert_eq!(
             state.initial_fill(),
             FillRequest {
@@ -1507,7 +1704,7 @@ mod tests {
     /// half of what is on screen without reaching into the grid.
     #[test]
     fn the_entry_fill_from_scrollback_covers_the_page_up_to_row_zero() {
-        let fill = CopyModeState::new(80, 24, 10).initial_fill();
+        let fill = CopyModeState::new(80, 24, 10, Vec::new()).initial_fill();
 
         assert_eq!(
             fill,
@@ -1523,7 +1720,7 @@ mod tests {
     /// the three screens land centred on the frozen page.
     #[test]
     fn a_deep_entry_fill_is_bounded_by_the_cache_capacity() {
-        let fill = CopyModeState::new(80, 24, 100).initial_fill();
+        let fill = CopyModeState::new(80, 24, 100, Vec::new()).initial_fill();
 
         assert_eq!(
             fill,
@@ -1545,7 +1742,7 @@ mod tests {
     #[test]
     fn no_entry_fill_ever_reaches_a_grid_row() {
         for offset in [0u32, 1, 5, 23, 24, 25, 100, 10_000] {
-            let fill = CopyModeState::new(80, 24, offset).initial_fill();
+            let fill = CopyModeState::new(80, 24, offset, Vec::new()).initial_fill();
             assert!(
                 fill.end_row() <= 0,
                 "offset {offset} asks for grid row {}",
@@ -1560,7 +1757,8 @@ mod tests {
     /// still lands at a negative key.
     #[test]
     fn an_entry_fill_after_output_caches_no_grid_rows() {
-        let mut state = CopyModeState::new(80, 4, 0);
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
         let fill = state.initial_fill();
         state.record_fill(1, fill);
 
@@ -1581,13 +1779,180 @@ mod tests {
     /// more than one response can carry.
     #[test]
     fn the_entry_fill_respects_the_per_request_row_cap() {
-        let state = CopyModeState::new(80, u16::MAX, 0);
+        let state = CopyModeState::new(80, u16::MAX, 0, Vec::new());
         assert_eq!(state.initial_fill().count, super::MAX_ROWS_PER_REQUEST);
         assert_eq!(
-            CopyModeState::new(80, u16::MAX, u32::MAX)
+            CopyModeState::new(80, u16::MAX, u32::MAX, Vec::new())
                 .initial_fill()
                 .count,
             super::MAX_ROWS_PER_REQUEST
+        );
+    }
+
+    // --- ADR-0025 ownership split ---
+
+    fn snap(rows: &[&str]) -> Vec<Vec<char>> {
+        rows.iter().map(|r| r.chars().collect()).collect()
+    }
+
+    /// Snapshot rows are keyed in pin space: entering scrolled by 2, the
+    /// page's first row is −2, and rows outside the page resolve to
+    /// nothing even when the cache misses them too.
+    #[test]
+    fn snapshot_rows_resolve_in_pin_space() {
+        let mut state = CopyModeState::new(80, 3, 2, Vec::new());
+        state.set_pinned_base(0);
+        state.set_snapshot(snap(&["top", "mid", "bot"]));
+
+        assert_eq!(state.snapshot_row(-2), Some(&['t', 'o', 'p'][..]));
+        assert_eq!(state.snapshot_row(0), Some(&['b', 'o', 't'][..]));
+        assert_eq!(state.snapshot_row(-3), None, "above the page");
+        assert_eq!(state.snapshot_row(1), None, "below the page");
+    }
+
+    /// A selection wholly on the painted page never reaches the daemon
+    /// (ADR-0025 clause 7): the text extracts locally, per-row trailing
+    /// spaces trimmed and the end column applied inclusively.
+    #[test]
+    fn a_yank_wholly_on_the_page_is_local() {
+        let mut state = CopyModeState::new(80, 3, 0, Vec::new());
+        state.set_pinned_base(0);
+        state.set_snapshot(snap(&["alpha beta ", "gamma", "delta"]));
+
+        state.set_cursor(0, 2);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(1, 2);
+
+        assert_eq!(
+            state.yank_plan(),
+            Some(YankPlan::Local("pha beta\ngam".to_string()))
+        );
+    }
+
+    /// A selection wholly in scrollback keeps the one-round-trip shape.
+    #[test]
+    fn a_yank_wholly_in_scrollback_goes_to_the_daemon() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
+        filled(&mut state, -8, "abcdefgh", true);
+        state.set_cursor(-6, 1);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(-4, 2);
+
+        let Some(YankPlan::Daemon(range)) = state.yank_plan() else {
+            panic!("expected a daemon yank");
+        };
+        assert_eq!((range.start_row, range.end_row), (-6, -4));
+    }
+
+    /// A boundary-spanning character selection splits at −1/0: the
+    /// daemon half opens to the row edge, the local half starts at
+    /// column 0 and carries the true end column (ADR-0025 clause 7).
+    #[test]
+    fn a_spanning_yank_splits_at_the_boundary() {
+        let mut state = CopyModeState::new(80, 3, 0, Vec::new());
+        state.set_pinned_base(0);
+        state.set_snapshot(snap(&["first", "second", "third"]));
+        filled(&mut state, -4, "wxyz", true);
+
+        state.set_cursor(-2, 3);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(1, 2);
+
+        let Some(YankPlan::Stitched { daemon, local }) = state.yank_plan() else {
+            panic!("expected a stitched yank");
+        };
+        assert_eq!((daemon.start_row, daemon.start_col), (-2, 3));
+        assert_eq!((daemon.end_row, daemon.end_col), (-1, u16::MAX));
+        assert_eq!(local, "first\nsec");
+    }
+
+    /// A block selection applies the same column rectangle to both
+    /// halves rather than opening the daemon half to the row edge.
+    #[test]
+    fn a_spanning_block_yank_keeps_the_rectangle_on_both_halves() {
+        let mut state = CopyModeState::new(80, 3, 0, Vec::new());
+        state.set_pinned_base(0);
+        state.set_snapshot(snap(&["first", "second", "third"]));
+        filled(&mut state, -4, "wxyz", true);
+
+        state.set_cursor(-1, 1);
+        state.toggle_selection(CopySelectionType::Block);
+        state.set_cursor(1, 3);
+
+        let Some(YankPlan::Stitched { daemon, local }) = state.yank_plan() else {
+            panic!("expected a stitched yank");
+        };
+        assert_eq!((daemon.start_col, daemon.end_col), (1, 3));
+        assert_eq!(local, "irs\neco", "the rectangle on rows 0 and 1");
+    }
+
+    /// No acked base fails closed: a fill that somehow lands before the
+    /// ack has nothing to validate against and is discarded, keeping the
+    /// clause-5 guard airtight rather than resting on distant callers.
+    #[test]
+    fn a_fill_before_the_ack_is_discarded() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.record_fill(
+            7,
+            FillRequest {
+                start_row: -4,
+                count: 4,
+            },
+        );
+
+        let claimed = state.apply_fill(7, &served(-4, "abcd", true));
+
+        assert!(claimed, "the serial is consumed");
+        assert!(state.cache().is_empty(), "nothing filed without an ack");
+    }
+
+    /// A fill answered against a different base is the live fallback
+    /// after a racing resize (ADR-0025 clause 5): the reply is claimed
+    /// but its rows are discarded, never filed into the cache.
+    #[test]
+    fn a_fill_from_a_different_base_is_discarded() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(10);
+        state.record_fill(
+            7,
+            FillRequest {
+                start_row: -4,
+                count: 4,
+            },
+        );
+
+        let claimed = state.apply_fill(
+            7,
+            &ScrollbackData {
+                pane_id: 0,
+                start_row: -4,
+                has_more: true,
+                total_rows: 12,
+                base: 12,
+                rows: vec![row('x'), row('y'), row('z'), row('w')],
+            },
+        );
+
+        assert!(claimed, "the serial is consumed");
+        assert!(state.cache().is_empty(), "wrong-base rows never filed");
+    }
+
+    /// Rows the snapshot does not hold contribute empty lines, so line N
+    /// of the result is always row N of the range (Spec-0008 gap rule).
+    #[test]
+    fn local_extraction_blank_fills_missing_rows() {
+        let mut state = CopyModeState::new(80, 2, 0, Vec::new());
+        state.set_pinned_base(0);
+        state.set_snapshot(snap(&["only"]));
+
+        state.set_cursor(0, 0);
+        state.toggle_selection(CopySelectionType::Line);
+        state.set_cursor(1, 0);
+
+        assert_eq!(
+            state.yank_plan(),
+            Some(YankPlan::Local("only\n".to_string()))
         );
     }
 }

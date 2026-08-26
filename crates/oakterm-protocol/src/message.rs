@@ -52,9 +52,11 @@ pub const MSG_FOCUS_PANE: u16 = 0x94;
 pub const MSG_LIST_PANES: u16 = 0x95;
 pub const MSG_LIST_PANES_RESPONSE: u16 = 0x96;
 
-// GUI — copy mode (Spec-0001 0x97-0x9A, Spec-0008).
+// GUI — copy mode (Spec-0001 0x97-0x9C, Spec-0008).
 pub const MSG_ENTER_COPY_MODE: u16 = 0x97;
 pub const MSG_EXIT_COPY_MODE: u16 = 0x98;
+pub const MSG_ENTER_COPY_MODE_ACK: u16 = 0x9B;
+pub const MSG_COPY_MODE_INVALIDATED: u16 = 0x9C;
 pub const MSG_YANK_SELECTION: u16 = 0x99;
 pub const MSG_YANK_RESPONSE: u16 = 0x9A;
 
@@ -88,12 +90,11 @@ pub const LIST_TABS_MIN_MINOR: u16 = 2;
 /// `RenameTab`, `RenameWorkspace`, and `CloseWorkspace` (Spec-0001 1.3).
 /// Clients gate these on the peer's advertised minor.
 pub const TAB_OPS_MIN_MINOR: u16 = 3;
-/// Protocol minor a client needs before it may enter copy mode: the
-/// first to postdate both the copy-mode messages (0x97-0x9A, cataloged
-/// without a version event) and `ScrollbackData.start_row` reporting the
-/// served start (Spec-0001 1.4). An older daemon echoes the request, so a
-/// clamped window would key the client's cache onto the wrong rows.
-pub const COPY_MODE_MIN_MINOR: u16 = 4;
+/// Minor a client gates copy mode on: the first whose `EnterCopyMode`
+/// carries the client's base (ADR-0025, Spec-0001 1.5). A 1.4 daemon's
+/// decode tolerates trailing bytes and would silently ignore `base`,
+/// pinning at its own `history_len()`.
+pub const COPY_MODE_MIN_MINOR: u16 = 5;
 
 // Control protocol (0xC8-0xDF).
 pub const MSG_CTL_COMMAND: u16 = 0xC8;
@@ -423,10 +424,11 @@ pub struct ClientHello {
 
 impl ClientHello {
     pub const VERSION_MAJOR: u16 = 1;
-    /// Minor 4 ships `ScrollbackData.start_row` reporting the start the
-    /// daemon served rather than echoing the request (Spec-0001 1.4); the
+    /// Minor 5 ships the protocol-1.5 batch (Spec-0001 1.5): the
+    /// `RenderUpdate` input-flag bytes (Spec-0011) and the ADR-0025
+    /// anchor fields plus the copy-mode entry request/ack split; the
     /// constant tracks the spec's version-history table.
-    pub const VERSION_MINOR: u16 = 4;
+    pub const VERSION_MINOR: u16 = 5;
 
     /// # Errors
     /// Returns an error if the client name exceeds u16 max length.
@@ -722,6 +724,10 @@ pub struct ScrollbackData {
     /// Total number of rows currently in the daemon's hot scrollback buffer.
     /// Lets the client clamp `viewport_offset` to a valid range.
     pub total_rows: u32,
+    /// History length `start_row` was resolved against — the base a
+    /// client echoes in `EnterCopyMode` when entering from a fully
+    /// scrolled page (ADR-0025).
+    pub base: u64,
     pub rows: Vec<crate::render::DirtyRow>,
 }
 
@@ -738,6 +744,7 @@ impl ScrollbackData {
         buf.extend_from_slice(&self.start_row.to_le_bytes());
         buf.push(u8::from(self.has_more));
         buf.extend_from_slice(&self.total_rows.to_le_bytes());
+        buf.extend_from_slice(&self.base.to_le_bytes());
         buf.extend_from_slice(&row_count.to_le_bytes());
         for row in &self.rows {
             buf.extend_from_slice(&row.encode()?);
@@ -748,7 +755,7 @@ impl ScrollbackData {
     /// # Errors
     /// Returns an error if the payload is malformed.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 21 {
+        if data.len() < 29 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "ScrollbackData too short",
@@ -760,7 +767,10 @@ impl ScrollbackData {
         ]);
         let has_more = data[12] != 0;
         let total_rows = u32::from_le_bytes([data[13], data[14], data[15], data[16]]);
-        let row_count_raw = u32::from_le_bytes([data[17], data[18], data[19], data[20]]);
+        let base = u64::from_le_bytes([
+            data[17], data[18], data[19], data[20], data[21], data[22], data[23], data[24],
+        ]);
+        let row_count_raw = u32::from_le_bytes([data[25], data[26], data[27], data[28]]);
         // Cap allocation to prevent OOM from malicious wire data.
         if row_count_raw > 10_000 {
             return Err(io::Error::new(
@@ -770,7 +780,7 @@ impl ScrollbackData {
         }
         let row_count = row_count_raw as usize;
 
-        let mut offset = 21;
+        let mut offset = 29;
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
             let (row, consumed) = crate::render::DirtyRow::decode(&data[offset..])?;
@@ -783,6 +793,7 @@ impl ScrollbackData {
             start_row,
             has_more,
             total_rows,
+            base,
             rows,
         })
     }
@@ -1428,17 +1439,102 @@ impl ListPanesResponse {
     }
 }
 
-// --- Copy mode messages (0x97-0x9A) ---
+// --- Copy mode messages (0x97-0x9C) ---
 
-/// Payload for `EnterCopyMode` (0x97) and `ExitCopyMode` (0x98). Both are
-/// pushes: entering pins the pane's viewport for the sending client,
-/// exiting unpins it (ADR-0012).
+/// Payload for `EnterCopyMode` (0x97), a serial-correlated request
+/// (ADR-0025): `base` is the daemon-published history length bound to the
+/// content the client painted, echoed back as the pin anchor. Success is
+/// an `EnterCopyModeAck` at the same serial; an out-of-range base gets an
+/// `Error` (`InvalidMessage`) and leaves any existing pin untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CopyMode {
+pub struct EnterCopyMode {
+    pub pane_id: u32,
+    pub base: u64,
+}
+
+impl EnterCopyMode {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(12);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.base.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EnterCopyMode too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            base: u64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
+        })
+    }
+
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_ENTER_COPY_MODE, serial, self.encode())
+    }
+}
+
+/// Payload for `EnterCopyModeAck` (0x9B): the daemon accepted the pin,
+/// echoing the base it validated. The client issues no cache fills until
+/// this arrives (ADR-0025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnterCopyModeAck {
+    pub pane_id: u32,
+    pub base: u64,
+}
+
+impl EnterCopyModeAck {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(12);
+        buf.extend_from_slice(&self.pane_id.to_le_bytes());
+        buf.extend_from_slice(&self.base.to_le_bytes());
+        buf
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EnterCopyModeAck too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+            base: u64::from_le_bytes([
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+            ]),
+        })
+    }
+
+    /// # Errors
+    /// Returns an error if frame construction fails.
+    pub fn to_frame(&self, serial: u32) -> io::Result<Frame> {
+        Frame::new(MSG_ENTER_COPY_MODE_ACK, serial, self.encode())
+    }
+}
+
+/// Payload for `ExitCopyMode` (0x98), a push: unpins the sending
+/// client's viewport (ADR-0012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitCopyMode {
     pub pane_id: u32,
 }
 
-impl CopyMode {
+impl ExitCopyMode {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         self.pane_id.to_le_bytes().to_vec()
@@ -1450,7 +1546,7 @@ impl CopyMode {
         if data.len() < 4 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "CopyMode too short",
+                "ExitCopyMode too short",
             ));
         }
         Ok(Self {
@@ -1460,14 +1556,44 @@ impl CopyMode {
 
     /// # Errors
     /// Returns an error if frame construction fails.
-    pub fn to_enter_frame(&self) -> io::Result<Frame> {
-        Frame::new(MSG_ENTER_COPY_MODE, 0, self.encode())
+    pub fn to_exit_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_EXIT_COPY_MODE, 0, self.encode())
+    }
+}
+
+/// Payload for `CopyModeInvalidated` (0x9C), a daemon push: a resize
+/// invalidated this client's pin (ADR-0025). The client exits copy mode
+/// and discards in-flight fills; without this push its next fill would
+/// silently resolve against live coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyModeInvalidated {
+    pub pane_id: u32,
+}
+
+impl CopyModeInvalidated {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        self.pane_id.to_le_bytes().to_vec()
+    }
+
+    /// # Errors
+    /// Returns an error if the payload is too short.
+    pub fn decode(data: &[u8]) -> io::Result<Self> {
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "CopyModeInvalidated too short",
+            ));
+        }
+        Ok(Self {
+            pane_id: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+        })
     }
 
     /// # Errors
     /// Returns an error if frame construction fails.
-    pub fn to_exit_frame(&self) -> io::Result<Frame> {
-        Frame::new(MSG_EXIT_COPY_MODE, 0, self.encode())
+    pub fn to_frame(&self) -> io::Result<Frame> {
+        Frame::new(MSG_COPY_MODE_INVALIDATED, 0, self.encode())
     }
 }
 

@@ -87,6 +87,36 @@ pub(crate) struct PaneState {
     /// per-client: one client can navigate scrollback while another keeps
     /// following live output on the same pane.
     pub(crate) copy_mode_pins: HashMap<u64, u64>,
+    /// History length after the last resize that advanced it, whether or
+    /// not pins existed at the time (ADR-0025). A client base below it
+    /// names coordinates a resize capture invalidated; monotonic because
+    /// grow never reclaims rows from scrollback.
+    pub(crate) resize_watermark: u64,
+    /// Clients whose pins a resize dropped (ADR-0025), keyed to whether
+    /// their `CopyModeInvalidated` push has been written. The entry
+    /// outlives the push — reads stay refused until the client's
+    /// `ExitCopyMode` (or re-pin) lands, so a request buffered behind
+    /// the notification pass can never reach the live fallback.
+    /// Per-client by construction — never cleared by another client's
+    /// wake, unlike the bell/title flags.
+    pub(crate) pending_pin_invalidations: HashMap<u64, PinInvalidation>,
+}
+
+/// Delivery state of a dropped pin's invalidation push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinInvalidation {
+    /// Queued for the client's next notification pass.
+    Queued,
+    /// Written to the wire; the client has not yet exited or re-pinned.
+    Sent,
+}
+
+/// An `EnterCopyMode` base outside `resize_watermark ..= history_len()`
+/// (ADR-0025 clause 4). Carries the bounds for the error message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PinOutOfRange {
+    pub(crate) watermark: u64,
+    pub(crate) history_len: u64,
 }
 
 impl PaneState {
@@ -98,31 +128,90 @@ impl PaneState {
         self.screens.scrollback().pushed()
     }
 
-    /// Pin this client's copy-mode viewport at the current history end
-    /// (ADR-0012: Enter records the *current* offset). Returns the pin it
-    /// replaced, if any — a re-entering client is treated as an implicit
-    /// exit plus enter, since it is about to refill its cache anyway.
-    pub(crate) fn pin_copy_mode(&mut self, conn_id: u64) -> Option<u64> {
-        let base = self.history_len();
-        self.copy_mode_pins.insert(conn_id, base)
+    /// Pin this client's copy-mode viewport at the base it echoed
+    /// (ADR-0025): the daemon-published history length bound to the
+    /// content the client painted. Validation precedes mutation — a
+    /// rejected base leaves any existing pin untouched. `Ok` returns the
+    /// pin it replaced, if any; a re-entering client is treated as an
+    /// implicit exit plus enter, since it is about to refill its cache.
+    pub(crate) fn pin_copy_mode(
+        &mut self,
+        conn_id: u64,
+        base: u64,
+    ) -> Result<Option<u64>, PinOutOfRange> {
+        let history_len = self.history_len();
+        if base < self.resize_watermark || base > history_len {
+            return Err(PinOutOfRange {
+                watermark: self.resize_watermark,
+                history_len,
+            });
+        }
+        // A pin taken now supersedes an invalidation queued against the
+        // generation it replaces; delivering the stale push would tear
+        // down a valid pin the client never exits.
+        self.pending_pin_invalidations.remove(&conn_id);
+        Ok(self.copy_mode_pins.insert(conn_id, base))
+    }
+
+    /// Whether this client's pin was dropped by a resize whose
+    /// invalidation push has not been delivered yet. Reads that would
+    /// fall back to live coordinates are refused while this holds — the
+    /// client still believes it is pinned (ADR-0025 clause 5).
+    pub(crate) fn pin_invalidation_pending(&self, conn_id: u64) -> bool {
+        self.pending_pin_invalidations.contains_key(&conn_id)
     }
 
     /// Drop every pin after a resize that captured live grid rows into
     /// scrollback: those rows land at absolute indices no earlier pin
     /// predicts, so a surviving pin would resolve copy-mode rows against
-    /// shifted content. Spec-0008 has the client re-enter copy mode after
-    /// a resize it initiated. Returns how many pins were dropped.
+    /// shifted content. Advances the resize watermark whether or not pins
+    /// existed, and queues the invalidation push for each dropped client
+    /// (ADR-0025). Returns how many pins were dropped.
     pub(crate) fn invalidate_pins_after_resize(&mut self, history_len_before: u64) -> usize {
         if self.history_len() == history_len_before {
             return 0;
         }
+        self.resize_watermark = self.history_len();
         let dropped = self.copy_mode_pins.len();
+        for conn_id in self.copy_mode_pins.keys() {
+            self.pending_pin_invalidations
+                .insert(*conn_id, PinInvalidation::Queued);
+        }
         self.copy_mode_pins.clear();
         dropped
     }
 
-    /// Release this client's pin. Returns false when it held none.
+    /// Claim this client's queued invalidation push for writing,
+    /// reporting whether one was queued. The entry flips to `Sent`
+    /// rather than clearing: the refusal guard must outlive the push,
+    /// or a request buffered behind the notification pass would resolve
+    /// against the live fallback (ADR-0025 clause 5).
+    pub(crate) fn take_pending_pin_invalidation(&mut self, conn_id: u64) -> bool {
+        match self.pending_pin_invalidations.get(&conn_id) {
+            Some(PinInvalidation::Queued) => {
+                self.pending_pin_invalidations
+                    .insert(conn_id, PinInvalidation::Sent);
+                true
+            }
+            Some(PinInvalidation::Sent) | None => false,
+        }
+    }
+
+    /// Requeue a claimed push that could not be delivered. Skipped when a
+    /// live pin exists — the client re-pinned in the meantime, and a pin
+    /// never coexists with its own queued invalidation.
+    pub(crate) fn requeue_pin_invalidation(&mut self, conn_id: u64) {
+        if !self.copy_mode_pins.contains_key(&conn_id) {
+            self.pending_pin_invalidations
+                .insert(conn_id, PinInvalidation::Queued);
+        }
+    }
+
+    /// Release this client's pin. Returns false when it held none. Also
+    /// drops any queued invalidation push — moot once the client has
+    /// exited or disconnected.
     pub(crate) fn unpin_copy_mode(&mut self, conn_id: u64) -> bool {
+        self.pending_pin_invalidations.remove(&conn_id);
         self.copy_mode_pins.remove(&conn_id).is_some()
     }
 
@@ -240,6 +329,8 @@ impl PaneManager {
                 cwd,
                 closed: false,
                 copy_mode_pins: HashMap::new(),
+                resize_watermark: 0,
+                pending_pin_invalidations: HashMap::new(),
             })),
         );
     }

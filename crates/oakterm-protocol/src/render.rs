@@ -251,6 +251,17 @@ pub struct RenderUpdate {
     /// Used by clients to decide wheel routing: alt screen → forward to app,
     /// primary screen → host scrollback.
     pub alt_screen: bool,
+    /// Input-mode flags (Spec-0011): bit0 DECCKM, bit1 application
+    /// keypad, bits2-3 modifyOtherKeys level. Zero until TREK-236
+    /// populates them.
+    pub input_flags: u8,
+    /// Top of the active grid's Kitty keyboard flag stack (Spec-0011).
+    /// Zero until TREK-236 populates it.
+    pub kitty_kbd_flags: u8,
+    /// Rows ever pushed to the pane's scrollback when this update was
+    /// built — the base a client echoes in `EnterCopyMode` when entering
+    /// at offset 0 (ADR-0025).
+    pub history_len: u64,
     pub dirty_rows: Vec<DirtyRow>,
 }
 
@@ -273,6 +284,9 @@ impl RenderUpdate {
         buf.push(self.bg_b);
         buf.push(u8::from(self.bracketed_paste));
         buf.push(u8::from(self.alt_screen));
+        buf.push(self.input_flags);
+        buf.push(self.kitty_kbd_flags);
+        buf.extend_from_slice(&self.history_len.to_le_bytes());
         buf.extend_from_slice(&row_count.to_le_bytes());
         for row in &self.dirty_rows {
             buf.extend_from_slice(&row.encode()?);
@@ -283,7 +297,7 @@ impl RenderUpdate {
     /// # Errors
     /// Returns an error if the payload is malformed.
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 25 {
+        if data.len() < 35 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "RenderUpdate too short",
@@ -302,9 +316,14 @@ impl RenderUpdate {
         let bg_b = data[20];
         let bracketed_paste = data[21] != 0;
         let alt_screen = data[22] != 0;
-        let dirty_row_count = u16::from_le_bytes([data[23], data[24]]) as usize;
+        let input_flags = data[23];
+        let kitty_kbd_flags = data[24];
+        let history_len = u64::from_le_bytes([
+            data[25], data[26], data[27], data[28], data[29], data[30], data[31], data[32],
+        ]);
+        let dirty_row_count = u16::from_le_bytes([data[33], data[34]]) as usize;
 
-        let mut offset = 25;
+        let mut offset = 35;
         let mut dirty_rows = Vec::with_capacity(dirty_row_count);
         for _ in 0..dirty_row_count {
             let (row, consumed) = DirtyRow::decode(&data[offset..])?;
@@ -324,6 +343,9 @@ impl RenderUpdate {
             bg_b,
             bracketed_paste,
             alt_screen,
+            input_flags,
+            kitty_kbd_flags,
+            history_len,
             dirty_rows,
         })
     }

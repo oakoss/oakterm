@@ -6,23 +6,25 @@ use bytes::BytesMut;
 use oakterm_protocol::frame::{Frame, FrameCodec};
 use oakterm_protocol::input::{KeyInput, Resize};
 use oakterm_protocol::message::{
-    ClientHello, ClientType, ClosePane, CloseTab, CloseWorkspace, CloseWorkspaceResponse, CopyMode,
-    CopySelectionType, CreatePane, CreatePaneResponse, ErrorCode, ErrorMessage, GetLayoutTree,
-    HandshakeStatus, LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE,
-    MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE, MSG_CLOSE_WORKSPACE,
-    MSG_CLOSE_WORKSPACE_RESPONSE, MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ENTER_COPY_MODE,
-    MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT, MSG_LAYOUT_TREE, MSG_LIST_PANES,
-    MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_MOVE_TAB, MSG_NEW_TAB, MSG_NEW_TAB_RESPONSE,
-    MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING, MSG_PONG,
-    MSG_RENAME_TAB, MSG_RENAME_WORKSPACE, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE, MSG_SERVER_HELLO,
-    MSG_SHUTDOWN, MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE, MSG_SWAP_PANE,
-    MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE, MSG_TAB_LIST, MSG_YANK_RESPONSE,
-    MSG_YANK_SELECTION, MoveTab, NewTab, NewTabResponse, NewWorkspace, NewWorkspaceResponse,
-    PaneExited, RenameTab, RenameWorkspace, RequestShutdown, RequestShutdownReason, ResizePane,
-    ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus, ShutdownReason, SplitDirection,
-    SplitPane, SplitPaneResponse, SwapPane, SwitchTab, SwitchWorkspace, TabList, YankResponse,
-    YankSelection,
+    ClientHello, ClientType, ClosePane, CloseTab, CloseWorkspace, CloseWorkspaceResponse,
+    CopyModeInvalidated, CopySelectionType, CreatePane, CreatePaneResponse, EnterCopyMode,
+    EnterCopyModeAck, ErrorCode, ErrorMessage, ExitCopyMode, GetLayoutTree, HandshakeStatus,
+    LayoutTree, LayoutTreeNode, ListPanesResponse, MSG_CLOSE_PANE, MSG_CLOSE_PANE_RESPONSE,
+    MSG_CLOSE_TAB, MSG_CLOSE_TAB_RESPONSE, MSG_CLOSE_WORKSPACE, MSG_CLOSE_WORKSPACE_RESPONSE,
+    MSG_COPY_MODE_INVALIDATED, MSG_CREATE_PANE, MSG_CREATE_PANE_RESPONSE, MSG_ENTER_COPY_MODE,
+    MSG_ENTER_COPY_MODE_ACK, MSG_ERROR, MSG_GET_LAYOUT_TREE, MSG_KEY_INPUT, MSG_LAYOUT_TREE,
+    MSG_LIST_PANES, MSG_LIST_PANES_RESPONSE, MSG_LIST_TABS, MSG_MOVE_TAB, MSG_NEW_TAB,
+    MSG_NEW_TAB_RESPONSE, MSG_NEW_WORKSPACE, MSG_NEW_WORKSPACE_RESPONSE, MSG_PANE_EXITED, MSG_PING,
+    MSG_PONG, MSG_RENAME_TAB, MSG_RENAME_WORKSPACE, MSG_REQUEST_SHUTDOWN, MSG_RESIZE_PANE,
+    MSG_SERVER_HELLO, MSG_SHUTDOWN, MSG_SHUTDOWN_ACK, MSG_SPLIT_PANE, MSG_SPLIT_PANE_RESPONSE,
+    MSG_SWAP_PANE, MSG_SWAP_PANE_RESPONSE, MSG_SWITCH_TAB, MSG_SWITCH_WORKSPACE, MSG_TAB_LIST,
+    MSG_YANK_RESPONSE, MSG_YANK_SELECTION, MoveTab, NewTab, NewTabResponse, NewWorkspace,
+    NewWorkspaceResponse, PaneExited, RenameTab, RenameWorkspace, RequestShutdown,
+    RequestShutdownReason, ResizePane, ServerHello, Shutdown, ShutdownAck, ShutdownAckStatus,
+    ShutdownReason, SplitDirection, SplitPane, SplitPaneResponse, SwapPane, SwitchTab,
+    SwitchWorkspace, TabList, YankResponse, YankSelection,
 };
+use oakterm_protocol::render::{GetRenderUpdate, RenderUpdate};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio_util::codec::{Decoder, Encoder};
@@ -1109,21 +1111,35 @@ async fn switch_tab_changes_active_tab() {
     );
 }
 
-/// Spec-0008 copy mode over the wire: `EnterCopyMode` and `ExitCopyMode`
-/// are silent pushes, so a Ping after them must still get its Pong with no
-/// Error in between.
+/// ADR-0025 copy mode over the wire: `EnterCopyMode` is acked at its
+/// serial with the accepted base echoed; `ExitCopyMode` stays a silent
+/// push, so a Ping after it must still get its Pong with no Error.
 #[tokio::test]
-async fn copy_mode_enter_and_exit_are_silent_pushes() {
+async fn copy_mode_enter_is_acked_and_exit_stays_a_silent_push() {
     let (mut stream, mut codec, _td) = connect_and_handshake().await;
 
-    let msg = CopyMode { pane_id: 0 };
     write_frame(
         &mut stream,
         &mut codec,
-        msg.to_enter_frame().expect("enter"),
+        EnterCopyMode {
+            pane_id: 0,
+            base: 0,
+        }
+        .to_frame(609)
+        .expect("enter"),
     )
     .await;
-    write_frame(&mut stream, &mut codec, msg.to_exit_frame().expect("exit")).await;
+    let ack = read_response_with_serial(&mut stream, &mut codec, 609).await;
+    assert_eq!(ack.msg_type, MSG_ENTER_COPY_MODE_ACK);
+    let ack = EnterCopyModeAck::decode(&ack.payload).expect("decode ack");
+    assert_eq!((ack.pane_id, ack.base), (0, 0), "ack echoes the base");
+
+    write_frame(
+        &mut stream,
+        &mut codec,
+        ExitCopyMode { pane_id: 0 }.to_exit_frame().expect("exit"),
+    )
+    .await;
     let ping = Frame::new(MSG_PING, 610, vec![]).expect("ping frame");
     write_frame(&mut stream, &mut codec, ping).await;
 
@@ -1179,9 +1195,13 @@ async fn yank_selection_returns_pane_text() {
     write_frame(
         &mut stream,
         &mut codec,
-        CopyMode { pane_id }.to_enter_frame().expect("enter"),
+        EnterCopyMode { pane_id, base: 0 }
+            .to_frame(625)
+            .expect("enter"),
     )
     .await;
+    let ack = read_response_with_serial(&mut stream, &mut codec, 625).await;
+    assert_eq!(ack.msg_type, MSG_ENTER_COPY_MODE_ACK);
 
     // Copy-mode row 0 is the top of the pinned viewport, where the child's
     // first line lands. Poll: the VT parse races the yank.
@@ -1223,14 +1243,21 @@ async fn yank_selection_returns_pane_text() {
 async fn copy_mode_on_an_unknown_pane_reports_errors() {
     let (mut stream, mut codec, _td) = connect_and_handshake().await;
 
-    // EnterCopyMode is a push, so the failure arrives as an Error push.
+    // EnterCopyMode is a correlated request, so the failure arrives as
+    // an Error at its serial.
     write_frame(
         &mut stream,
         &mut codec,
-        CopyMode { pane_id: 99 }.to_enter_frame().expect("enter"),
+        EnterCopyMode {
+            pane_id: 99,
+            base: 0,
+        }
+        .to_frame(701)
+        .expect("enter"),
     )
     .await;
-    let resp = read_push_with_msg_type(&mut stream, &mut codec, MSG_ERROR).await;
+    let resp = read_response_with_serial(&mut stream, &mut codec, 701).await;
+    assert_eq!(resp.msg_type, MSG_ERROR);
     let err = ErrorMessage::decode(&resp.payload).expect("decode ErrorMessage");
     assert_eq!(err.code, ErrorCode::UnknownPane as u32);
 
@@ -2407,4 +2434,112 @@ async fn request_shutdown_unknown_reason_rejected() {
         !td.state_dir().join("session.json").exists(),
         "rejected request must not save a session"
     );
+}
+
+/// ADR-0025 clauses 1 and 5 over the wire: the render reply publishes a
+/// non-zero history anchor once output scrolls, a pin at that anchor is
+/// acked, and an invalidating resize from ANOTHER client delivers
+/// `CopyModeInvalidated` to the pinned client's own connection — while
+/// the resizing client receives none.
+#[tokio::test]
+async fn an_invalidating_resize_pushes_invalidation_to_the_pinned_client_only() {
+    let (mut a, mut codec_a, td) = connect_and_handshake_as(ClientType::Control).await;
+
+    let create = CreatePane {
+        command: "/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line-$i; done; read x'"
+            .to_string(),
+        cwd: String::new(),
+    };
+    let frame = Frame::new(MSG_CREATE_PANE, 700, create.encode().expect("encode")).expect("frame");
+    write_frame(&mut a, &mut codec_a, frame).await;
+    let resp = read_response_with_serial(&mut a, &mut codec_a, 700).await;
+    let pane_id = CreatePaneResponse::decode(&resp.payload)
+        .expect("decode CreatePaneResponse")
+        .pane_id;
+
+    let resize = Resize {
+        pane_id,
+        cols: 80,
+        rows: 6,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(&mut a, &mut codec_a, resize.to_frame().expect("resize")).await;
+    poll_for_pid(&mut a, &mut codec_a, pane_id).await;
+
+    // Twelve lines on a six-row grid must push history; poll until the
+    // published anchor is non-zero (clause 1, end to end).
+    let mut history = 0;
+    let mut serial = 710;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while history == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "history never advanced"
+        );
+        serial += 1;
+        let req = GetRenderUpdate {
+            pane_id,
+            since_seqno: 0,
+        };
+        let frame = Frame::new(0x71, serial, req.encode()).expect("frame");
+        write_frame(&mut a, &mut codec_a, frame).await;
+        let resp = read_response_with_serial(&mut a, &mut codec_a, serial).await;
+        history = RenderUpdate::decode(&resp.payload)
+            .expect("decode RenderUpdate")
+            .history_len;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    write_frame(
+        &mut a,
+        &mut codec_a,
+        EnterCopyMode {
+            pane_id,
+            base: history,
+        }
+        .to_frame(730)
+        .expect("enter"),
+    )
+    .await;
+    let ack = read_response_with_serial(&mut a, &mut codec_a, 730).await;
+    assert_eq!(ack.msg_type, MSG_ENTER_COPY_MODE_ACK);
+    let ack = EnterCopyModeAck::decode(&ack.payload).expect("decode ack");
+    assert_eq!(ack.base, history, "ack echoes the non-zero anchor");
+
+    // A second client's shrink captures live rows, dropping A's pin.
+    let (mut b, mut codec_b) = connect_to(&td).await;
+    let shrink = Resize {
+        pane_id,
+        cols: 80,
+        rows: 3,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    write_frame(&mut b, &mut codec_b, shrink.to_frame().expect("shrink")).await;
+
+    let push = read_push_with_msg_type(&mut a, &mut codec_a, MSG_COPY_MODE_INVALIDATED).await;
+    let msg = CopyModeInvalidated::decode(&push.payload).expect("decode push");
+    assert_eq!(msg.pane_id, pane_id);
+
+    // The resizing client holds no pin and must receive no invalidation:
+    // drain its frames briefly and assert none is the push.
+    let mut buf = BytesMut::with_capacity(4096);
+    let quiet_until = std::time::Instant::now() + std::time::Duration::from_millis(400);
+    loop {
+        while let Some(frame) = codec_b.decode(&mut buf).expect("decode") {
+            assert_ne!(
+                frame.msg_type, MSG_COPY_MODE_INVALIDATED,
+                "unpinned client must not receive the push"
+            );
+        }
+        let left = quiet_until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(left, b.read_buf(&mut buf)).await {
+            Ok(Ok(n)) if n > 0 => {}
+            _ => break,
+        }
+    }
 }

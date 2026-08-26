@@ -113,6 +113,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![row(2, "third"), row(0, "first"), row(1, "second")],
         };
         assert_eq!(visible_screen(&update), "first\nsecond\nthird");
@@ -132,6 +135,9 @@ mod tests {
             bg_b: 0,
             bracketed_paste: false,
             alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
             dirty_rows: vec![row(0, ""), row(1, "content"), row(2, "")],
         };
         assert_eq!(visible_screen(&update), "content");
@@ -144,6 +150,7 @@ mod tests {
             start_row: -2,
             has_more: false,
             total_rows: 2,
+            base: 0,
             rows: vec![row(0, "older"), row(0, "newer")],
         };
         assert_eq!(scrollback(&data), "older\nnewer");
