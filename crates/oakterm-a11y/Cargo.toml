@@ -11,7 +11,7 @@ description = "Accessibility bridge via AccessKit"
 accesskit = { workspace = true }
 
 [dev-dependencies]
-accesskit_consumer = "0.38.0"
+accesskit_consumer = "0.39.0"
 
 [lints]
 workspace = true
