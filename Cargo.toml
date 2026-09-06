@@ -45,12 +45,12 @@ winit = "0.30.13"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # Accessibility
-accesskit = "0.24.1"
-accesskit_winit = "0.33.2"
+accesskit = "0.25.0"
+accesskit_winit = "0.34.0"
 
 # Lua config
 gethostname = "1.1.0"
-mlua = { version = "0.12.0", features = ["lua54", "vendored", "send"] }
+mlua = { version = "0.12.1", features = ["lua54", "vendored", "send"] }
 strsim = "0.11.1"
 
 # Async runtime
@@ -72,10 +72,10 @@ serde_json = "1.0.151"
 
 # Scroll buffer archive
 ring = "0.17.14"
-zstd = "0.13.3"
+zstd = "0.14.0"
 
 # Atlas cache
-lru = "0.18.2"
+lru = "0.18.4"
 
 # Font loading and rasterization
 bytemuck = { version = "1.25.2", features = ["derive"] }
