@@ -90,7 +90,7 @@ notify-debouncer-full = "0.7.0"
 
 # Benchmarks
 criterion = "0.8.2"
-pollster = "0.4"
+pollster = "1.0.1"
 
 # PTY
 libc = "0.2.189"
