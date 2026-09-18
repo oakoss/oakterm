@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "OakTerm CLI control tool"
 
 [dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 oakterm-protocol = { path = "../oakterm-protocol" }
 serde_json = { workspace = true }
 
