@@ -31,7 +31,7 @@ arboard = "3.6.1"
 wgpu = "29.0.4"
 
 # macOS color space (Display P3)
-objc2 = "0.6.4"
+objc2 = "0.6.5"
 objc2-core-graphics = { version = "0.3.2", features = ["CGColorSpace"] }
 objc2-quartz-core = { version = "0.3.2", features = [
   "CAMetalLayer",
@@ -45,18 +45,18 @@ winit = "0.30.13"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # Accessibility
-accesskit = "0.24.1"
-accesskit_winit = "0.33.2"
+accesskit = "0.25.1"
+accesskit_winit = "0.34.1"
 
 # Lua config
 gethostname = "1.1.0"
-mlua = { version = "0.12.0", features = ["lua54", "vendored", "send"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "send"] }
 strsim = "0.11.1"
 
 # Async runtime
 bytes = "1.12.1"
-tokio = { version = "1.53.1", features = ["full"] }
-tokio-util = { version = "0.7.19", features = ["codec"] }
+tokio = { version = "1.53.2", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["codec"] }
 
 # Structured logging
 tracing = "0.1.44"
@@ -72,10 +72,10 @@ serde_json = "1.0.151"
 
 # Scroll buffer archive
 ring = "0.17.14"
-zstd = "0.13.3"
+zstd = "0.14.2"
 
 # Atlas cache
-lru = "0.18.2"
+lru = "0.18.5"
 
 # Font loading and rasterization
 bytemuck = { version = "1.25.2", features = ["derive"] }
@@ -93,8 +93,8 @@ criterion = "0.8.2"
 pollster = "1.0.1"
 
 # PTY
-libc = "0.2.189"
-rustix = { version = "1.1.4", features = [
+libc = "0.2.190"
+rustix = { version = "1.1.5", features = [
   "pty",
   "termios",
   "process",
