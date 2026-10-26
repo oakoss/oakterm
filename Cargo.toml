@@ -28,7 +28,7 @@ rust-version = "1.98.0"
 arboard = "3.6.1"
 
 # GPU rendering
-wgpu = "29.0.4"
+wgpu = "30.0.1"
 
 # macOS color space (Display P3)
 objc2 = "0.6.4"
