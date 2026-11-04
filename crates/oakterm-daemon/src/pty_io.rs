@@ -72,8 +72,12 @@ pub(crate) async fn pty_read_loop(
                 ready = read_ready => ready,
             };
 
-            let Ok(mut guard) = read_outcome else {
-                break "readable poll failed";
+            let mut guard = match read_outcome {
+                Ok(guard) => guard,
+                Err(e) => {
+                    warn!(pane_id, error = %e, "PTY readable poll failed");
+                    break "readable poll failed";
+                }
             };
 
             match guard.try_io(|inner| {
