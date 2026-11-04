@@ -24,7 +24,7 @@ paths:
 - Format: `NNNN-short-title.md`, numbered sequentially
 - **Status**: `draft → review → accepted → implementing → complete`
 - One spec per bounded concern (API surface, wire protocol, data format)
-- Trekker tasks reference specs. Implementation builds what specs define.
+- tm Issues reference specs. Implementation builds what specs define.
 - Template: [docs/specs/README.md](../../docs/specs/README.md)
 
 ## Reviews (`docs/reviews/`)
