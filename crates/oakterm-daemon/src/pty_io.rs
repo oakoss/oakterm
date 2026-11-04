@@ -47,9 +47,14 @@ pub(crate) async fn pty_read_loop(
             }
         }
 
-        let Ok(async_fd) = AsyncFd::new(raw_fd) else {
-            error!(pane_id, "failed to create AsyncFd for PTY");
-            break 'lifecycle "AsyncFd setup failed";
+        // SAFETY: `pty` owns the master fd and outlives this block, so the fd
+        // stays open and unchanged until `async_fd` drops at the block's end.
+        let async_fd = match unsafe { AsyncFd::register(raw_fd) } {
+            Ok(fd) => fd,
+            Err(e) => {
+                error!(pane_id, error = %e, "failed to create AsyncFd for PTY");
+                break 'lifecycle "AsyncFd setup failed";
+            }
         };
 
         debug!(pid, pane_id, "PTY read loop started");

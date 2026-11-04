@@ -8,11 +8,12 @@ ignore = [
   # winit->sctk-adwaita->ab_glyph. No safe upgrade exists — the fix is migrating
   # font parsing to skrifa, which is a renderer work item, not a config tweak.
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; skrifa migration tracked separately" },
-  # quick-xml DoS on untrusted XML input. Only reachable through wayland-scanner,
-  # a build-time codegen tool that parses vendored Wayland protocol XML — never
-  # untrusted input. Fix needs wayland-scanner to move to quick-xml >=0.41.
-  { id = "RUSTSEC-2026-0194", reason = "build-time only (wayland-scanner), input is trusted vendored XML" },
-  { id = "RUSTSEC-2026-0195", reason = "build-time only (wayland-scanner), input is trusted vendored XML" },
+  # zbus's zvariant family is unmaintained with no successor release. Linux and
+  # BSD only, reached through accesskit_unix (AT-SPI screen reader support); the fix is an
+  # accesskit release that drops zbus.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained; Unix a11y via accesskit_unix, awaiting upstream" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained; Unix a11y via accesskit_unix, awaiting upstream" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained; Unix a11y via accesskit_unix, awaiting upstream" },
 ]
 
 [licenses]
