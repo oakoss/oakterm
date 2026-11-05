@@ -251,3 +251,4 @@ Remote steering of long-running agent sessions is the strongest converged demand
 - [Multiplexer](03-multiplexer.md) — SSH domains (different from remote domains)
 - [Security](21-security.md) — auth and encryption
 - [Platform Support](20-platform-support.md) — headless Linux support
+- [Agent Handoff](40-agent-handoff.md) — moving agent sessions to a remote daemon before the laptop sleeps
