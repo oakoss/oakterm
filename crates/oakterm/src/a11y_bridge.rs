@@ -302,10 +302,15 @@ fn apply_to_snapshot<'a>(
     let grid = view.grid();
     match event {
         A11yEvent::Render { dirty_rows } => {
-            let cursor_changed =
-                snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
+            let before = (snap.scroll_offset, snap.selection);
             let before_rows = std::mem::take(&mut snap.row_texts);
+            let cursor_moved = snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
             snap.refresh_from_screen(view, screen);
+            // Scroll position and selection ride on the terminal node, which
+            // is rebuilt only on a change flag; after copy mode both can
+            // change with rows and cursor unchanged.
+            let cursor_changed = cursor_moved || snap.scroll_offset != before.0;
+            let selection_changed = snap.selection != before.1;
             // The daemon names only what it changed; rows AT last heard from
             // another view (copy mode, before the live page came back) differ
             // too and must be pushed or AT keeps reading them.
@@ -314,7 +319,8 @@ fn apply_to_snapshot<'a>(
                 .into_iter()
                 .filter(|(row, _)| !dirty_rows.iter().any(|(named, _)| named == row))
                 .collect();
-            if dirty_rows.is_empty() && unnamed.is_empty() && !cursor_changed {
+            if dirty_rows.is_empty() && unnamed.is_empty() && !cursor_changed && !selection_changed
+            {
                 return None;
             }
             let dirty_rows = if unnamed.is_empty() {
@@ -325,6 +331,7 @@ fn apply_to_snapshot<'a>(
             Some(EventOutcome {
                 dirty_rows,
                 cursor_changed,
+                selection_changed,
                 ..Default::default()
             })
         }
@@ -1373,6 +1380,26 @@ mod tests {
         );
     }
 
+    /// The selection AT last heard was copy mode's; the live view has none,
+    /// with the same rows and cursor, and the render must still say so.
+    #[test]
+    fn apply_render_publishes_a_selection_that_left_with_copy_mode() {
+        let mut view = PaneView::new(ClientGrid::new(8, 4));
+        let state = tracked_model(0, &view);
+        let _fill = view.enter_copy_mode();
+        view.set_copy_mode_cursor(0, 0);
+        view.toggle_copy_mode_selection(crate::copy_mode::CopySelectionType::Character);
+        let _ = apply(&state, 0, &view, A11yEvent::ViewChanged);
+        assert!(view.exit_copy_mode());
+
+        assert!(
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_some(),
+            "the copy-mode selection is gone"
+        );
+        let selection = state.lock().unwrap().as_ref().unwrap().panes[&0].selection;
+        assert_eq!(selection, None);
+    }
+
     #[test]
     fn apply_render_nothing_changed_returns_none() {
         let view = PaneView::new(ClientGrid::new(80, 24));
@@ -1674,15 +1701,23 @@ mod tests {
     }
 
     #[test]
-    fn apply_render_none_still_refreshes_snapshot() {
-        // A no-push frame still refreshes the snapshot, so an AT connecting
-        // later sees the current scroll position, not a stale one.
+    fn apply_render_refreshes_and_publishes_the_scroll_position() {
+        // The render refreshes the snapshot, so an AT connecting later sees
+        // the current scroll position, and publishes the change to one
+        // already connected.
         let mut view = PaneView::new(ClientGrid::new(80, 24));
         assert!(!view.scroll_up(5), "no copy mode to release");
         let state = tracked_model(0, &view);
         apply(&state, 0, &view, A11yEvent::Scrollback { total_rows: 100 }).expect("scrolled");
         assert!(!view.scroll_down(5).copy_mode_exited);
-        assert!(apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none());
+        assert!(
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_some(),
+            "scroll_y moved from 5 to 0"
+        );
+        assert!(
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).is_none(),
+            "nothing left to publish"
+        );
         let full = state.lock().unwrap().as_ref().unwrap().build_full_tree();
         let terminal = full
             .nodes
