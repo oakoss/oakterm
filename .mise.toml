@@ -9,6 +9,7 @@ dprint = "0.56.1"
 rumdl = "0.2.60"
 "cargo:cocogitto" = "7"
 "cargo:cargo-deny" = "0.19"
+"github:oakoss/tm" = "0.3.0"
 
 [tasks.fmt]
 description = "Format all non-Rust files"

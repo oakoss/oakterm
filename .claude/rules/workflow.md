@@ -26,7 +26,7 @@ Use for: idea docs, ADRs, specs, research, brainstorming, conventions, roadmap u
 
 Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
-**I1. Review** — `trekker ready`, pick task, set `in_progress`.
+**I1. Review** — `tm ready`, pick an Issue, `tm start KEY`.
 
 **I2. Research** — read the spec, ADRs, idea docs, existing code. Check performance/security docs if relevant.
 
@@ -38,7 +38,7 @@ Use for: new features, bug fixes, refactors, tests, performance work, CI/CD.
 
 **I5b. Benchmark** — if the feature touches a hot path (rendering, VT parsing, grid ops, scrollback, search), add or extend a criterion benchmark in the relevant `benches/` directory. Run `mise run bench` to verify. Skip for cold paths (config loading, CLI flags, one-time setup).
 
-**I6. Update Tracking** — trekker comment + status. Update docs if implementation diverged from spec.
+**I6. Update Tracking** — `tm comment` + `tm move KEY in_review`; a `Closes OT-XX` footer lets `tm git scan` move it to done after merge. Update docs if implementation diverged from spec.
 
 **I7. Checks** — `mise run check` then `mise run test`.
 

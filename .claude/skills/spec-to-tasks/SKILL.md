@@ -1,14 +1,14 @@
 ---
 name: spec-to-tasks
 description: |
-  Break an accepted spec into implementable Trekker tasks with dependency ordering, HITL/AFK classification, and spec coverage verification.
+  Break an accepted spec into implementable tm Issues with dependency ordering, HITL/AFK classification, and spec coverage verification.
 
   Use when: an accepted spec is ready for implementation, you need to decompose work into tasks, or you want to verify every contract item has a task. Requires an accepted spec as input.
 ---
 
 # Spec to Tasks
 
-Decompose an accepted spec into independently implementable Trekker tasks. Each task is traceable to specific contract items in the spec. No contract item is left without a task.
+Decompose an accepted spec into independently implementable tm Issues. Each task is traceable to specific contract items in the spec. No contract item is left without a task.
 
 Skip for: trivial specs that map to a single task, or when the spec is still in draft/review.
 
@@ -74,7 +74,7 @@ Order tasks so blockers come first:
 - Later slices may depend on earlier slices if they extend the same surface
 - HITL tasks should be scheduled early — they block on human input
 
-Use Trekker's dependency system (`trekker dep add`) to encode the graph.
+Encode the graph with `tm link BLOCKER blocks TASK`.
 
 ### 6. Verify Spec Coverage
 
@@ -94,7 +94,7 @@ Every contract item must be covered. If an item is intentionally deferred, note 
 
 ### 7. Create an Epic
 
-If the spec decomposes into 5+ tasks, create a Trekker epic scoped by user-visible outcome (per CLAUDE.md: "What is different when this is done?"). The epic references the spec. Tasks belong to the epic.
+If the spec decomposes into 5+ tasks, create an epic (`tm create --type epic`) scoped by user-visible outcome (per CLAUDE.md: "What is different when this is done?"). The epic references the spec. Tasks set the epic as their `--parent`.
 
 ### 8. Quiz the User
 
@@ -114,17 +114,17 @@ Ask:
 
 Iterate until approved.
 
-### 9. Create Tasks in Trekker
+### 9. Create Issues in tm
 
-For each approved task, create a Trekker task with:
+For each approved task, `tm create --type task` (or `--type spike`) with:
 
 - **Title**: Clear, action-oriented (e.g., "Implement PingPdu message with roundtrip test")
 - **Description**: What to build, referencing specific spec sections
-- **Tags**: `feature`/`chore`/`spike` + area tag + AFK/Checkpoint/HITL
-- **Priority**: 1 (must-ship) / 2 (important) / 3 (nice-to-have) within the epic
-- **Dependencies**: Trekker dep links to blocking tasks
+- **Labels**: `feature`/`chore` + area label + AFK/Checkpoint/HITL
+- **Priority**: `high` (must-ship) / `medium` (important) / `low` (nice-to-have) within the epic
+- **Dependencies**: `tm link` `blocks` Links from blocking Issues
 
-Set dependencies after all tasks are created (need real task IDs).
+Set dependencies after all Issues are created (need real Keys).
 
 ### 10. Update Spec Status
 
@@ -147,6 +147,6 @@ Present the task breakdown summary and wait for explicit "commit" before committ
 
 ## Output
 
-- A Trekker epic (if 5+ tasks)
-- Trekker tasks with descriptions, tags, priorities, and dependencies
+- A tm epic (if 5+ tasks)
+- tm Issues with descriptions, labels, priorities, and dependencies
 - A spec coverage table showing all contract items are accounted for

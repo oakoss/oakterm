@@ -33,6 +33,16 @@
             "command": ".claude/hooks/fmt-file.sh"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook heartbeat claude",
+            "async": true
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -43,6 +53,47 @@
             "type": "command",
             "if": "Bash(git push -f *)|Bash(git push --force*)|Bash(git reset --hard*)|Bash(git checkout -- .)|Bash(git restore .)|Bash(git clean -f*)|Bash(git commit --amend*)",
             "command": ".claude/hooks/block-destructive-git.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tm hook pre-bash claude || exit 1"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tm prime"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook subagent-stop claude || exit 1",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
+            "timeout": 10
           }
         ]
       }

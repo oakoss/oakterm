@@ -1,6 +1,6 @@
 # Specifications
 
-Formal contracts for implementation. A spec defines the exact interface, behavior, and constraints that code must satisfy. Trekker tasks reference specs, not idea docs.
+Formal contracts for implementation. A spec defines the exact interface, behavior, and constraints that code must satisfy. tm Issues reference specs, not idea docs.
 
 ## Format
 

@@ -8,7 +8,7 @@ GPU-accelerated, extensible terminal emulator with a plugin-driven process dashb
 
 ```text
 docs/ideas/ → docs/adrs/ → docs/specs/ → implementation
-explore    decide       formalize     build (trekker)
+explore    decide       formalize     build (tm)
                ↑
         docs/reviews/
         (audits that surface corrections and ADR candidates)
@@ -17,7 +17,7 @@ explore    decide       formalize     build (trekker)
 - **Ideas** explore possibilities. **Reviews** audit them and surface corrections.
 - **ADRs** resolve questions. An accepted ADR moves the idea doc to `decided`.
 - **Specs** formalize decisions into implementation contracts.
-- **Implementation** builds what specs define. Trekker tracks work.
+- **Implementation** builds what specs define. tm tracks work.
 
 For doc conventions, see `.claude/rules/docs.md`. For workflows, see `.claude/rules/workflow.md`. For Rust patterns, see `.claude/rules/rust.md`.
 
@@ -42,20 +42,24 @@ Managed by [mise](https://mise.jdx.dev/). Run `mise install` to get all tools.
 
 ## Task Tracking
 
-Trekker tracks implementation work. Design work is tracked by docs themselves.
+<!-- tm:start -->
+This repo tracks its work in tm. Run `tm guide` for how to work with it.
+<!-- tm:end -->
 
-- **Epics** = committed work streams (5-15 tasks, 2-6 weeks)
-- **Tags** = type (`feature`, `chore`, `spike`) + area (`renderer`, `core`, `docs`)
+tm tracks implementation work (Project `OT`). Design work is tracked by docs themselves. Issues imported from Trekker keep their old `TREK-n` and `CMT-n` ids as aliases, so `tm show TREK-114` still resolves.
+
+- **Epics** = committed work streams (5-15 tasks, 2-6 weeks); tasks set the epic as `--parent`
+- **Labels** = kind (`feature`, `chore`, `fix`, `refactor`) + area (`renderer`, `core`, `docs`); bugs and spikes use `--type bug` / `--type spike`
 - **Priority** on tasks, not epics
-- **Standalone tasks** (priority 3) for shaped but uncommitted features — promote to epic when committed
-- **Icebox** = priority 4-5 with no epic; archive if nobody mentions in 3 months
+- **Standalone tasks** (priority `low`, no parent) for shaped but uncommitted features — promote to epic when committed
+- **Icebox** = priority `none` with no parent; archive if nobody mentions in 3 months
 - Don't create epics for uncommitted work or catch-all epics like "Features"
 
 ## Rules
 
 - **Never commit proactively** — wait for the user's go-ahead
 - **Never push** unless explicitly asked
-- **Trekker is for implementation** — `trekker ready` before starting, summary comment before completing
+- **tm is for implementation** — `tm start` before starting, summary `tm comment` before completing
 - **Read before writing** — understand existing docs/code before modifying
 - **Conventions are law** — follow [docs/ideas/30-conventions.md](docs/ideas/30-conventions.md) for idea docs, README templates for ADRs/specs
 - **No empty docs** — every idea doc needs a problem statement, every ADR needs options + rationale, every spec needs formal definitions
@@ -70,16 +74,16 @@ Conventional commits: `type(scope): short description`
 
 Types: `docs`, `chore`, `feat`, `fix`, `refactor`, `test`, `perf`, `ci`
 
-Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `trekker`, `core`, `setup`, `renderer`, `ci`, `repo`
+Scopes: `ideas`, `review`, `adr`, `spec`, `docs`, `readme`, `config`, `tm`, `core`, `setup`, `renderer`, `ci`, `repo`
 
-Task references go in the commit footer as a bare `TREK-XX`, not in the subject line:
+Issue references go in the commit footer, not in the subject line: a bare `OT-XX`, or `Closes OT-XX` when the commit finishes the Issue (`tm git scan` moves those to done after merge). Older commits cite `TREK-XX`, which `tm show` resolves as aliases; `tm git scan` reads only `OT-XX`.
 
 ```text
 feat(core): implement dark/light mode detection
 
 Detect OS appearance via winit ThemeChanged and expose to Lua config.
 
-TREK-50
+Closes OT-50
 ```
 
 # Comment policy
