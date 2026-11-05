@@ -37,8 +37,8 @@ winit = "0.30.13"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 # Accessibility
-accesskit = "0.24.1"
-accesskit_winit = "0.33.2"
+accesskit = "0.25.2"
+accesskit_winit = "0.34.2"
 
 # Lua config
 gethostname = "1.1.0"
