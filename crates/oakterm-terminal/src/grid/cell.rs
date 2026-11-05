@@ -281,7 +281,7 @@ mod tests {
     fn cell_default_has_no_extra() {
         let cell = Cell::default();
         assert!(cell.extra.is_none());
-        assert!(cell.graphemes().is_empty());
+        assert_eq!(cell.graphemes(), [] as [char; 0]);
         assert!(cell.underline_color().is_none());
         assert!(cell.hyperlink().is_none());
     }

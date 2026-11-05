@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(tab.id(), TabId(0));
         assert_eq!(tab.focused_pane(), pane);
         assert!(tab.layout().is_leaf());
-        assert!(tab.floating().is_empty());
+        assert_eq!(tab.floating(), []);
     }
 
     #[test]

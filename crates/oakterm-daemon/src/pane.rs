@@ -794,7 +794,7 @@ mod tests {
     fn build_command_spec_empty_command_default_shell() {
         let spec = build_command_spec("", "").expect("default spec");
         assert!(spec.program.is_none());
-        assert!(spec.args.is_empty());
+        assert_eq!(spec.args, [] as [std::ffi::OsString; 0]);
         assert!(spec.cwd.is_none());
     }
 
@@ -802,7 +802,7 @@ mod tests {
     fn build_command_spec_empty_command_with_cwd() {
         let spec = build_command_spec("", "/tmp").expect("default shell with cwd");
         assert!(spec.program.is_none());
-        assert!(spec.args.is_empty());
+        assert_eq!(spec.args, [] as [std::ffi::OsString; 0]);
         assert_eq!(spec.cwd, Some(PathBuf::from("/tmp")));
     }
 
@@ -810,7 +810,7 @@ mod tests {
     fn build_command_spec_program_only() {
         let spec = build_command_spec("htop", "").expect("htop spec");
         assert_eq!(spec.program, Some(PathBuf::from("htop")));
-        assert!(spec.args.is_empty());
+        assert_eq!(spec.args, [] as [std::ffi::OsString; 0]);
     }
 
     #[test]

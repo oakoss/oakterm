@@ -4377,11 +4377,7 @@ mod tests {
         );
 
         panes.get_mut(&7).unwrap().last_sent_dims = (40, 10);
-        assert!(
-            plan_pane_syncs(&geometry, CELL, &mut panes)
-                .resizes
-                .is_empty()
-        );
+        assert_eq!(plan_pane_syncs(&geometry, CELL, &mut panes).resizes, []);
     }
 
     #[test]
@@ -4611,7 +4607,7 @@ mod tests {
 
         let plan = plan_pane_syncs(&geometry, CELL, &mut panes);
 
-        assert!(plan.copy_mode_exits.is_empty());
+        assert_eq!(plan.copy_mode_exits, [] as [u32; 0]);
         assert!(panes[&7].copy_mode().is_some());
     }
 
@@ -4622,11 +4618,7 @@ mod tests {
         view.last_sent_dims = (40, 10);
         panes.insert(7, view);
         let geometry = geometry_of(&[(7, 400, 200)]);
-        assert!(
-            plan_pane_syncs(&geometry, CELL, &mut panes)
-                .resizes
-                .is_empty()
-        );
+        assert_eq!(plan_pane_syncs(&geometry, CELL, &mut panes).resizes, []);
     }
 
     // --- drain_wheel_notches: LineDelta ---

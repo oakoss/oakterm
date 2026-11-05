@@ -193,7 +193,7 @@ fn grid_dirty_tracking() {
     assert_eq!(grid.dirty_rows(initial), vec![5, 10]);
 
     // Querying with the latest seqno returns nothing.
-    assert!(grid.dirty_rows(grid.seqno).is_empty());
+    assert_eq!(grid.dirty_rows(grid.seqno), []);
 }
 
 #[test]

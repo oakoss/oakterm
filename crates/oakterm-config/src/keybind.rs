@@ -594,7 +594,6 @@ impl KeybindRegistry {
     /// order: entries shadowed by a later registration of the same chord are
     /// skipped, so each yielded pair is exactly what [`Self::lookup`] resolves
     /// for its chord. Reverse for last-registered-first.
-    #[must_use]
     pub fn effective_bindings(&self) -> impl DoubleEndedIterator<Item = (&KeyChord, &Action)> {
         self.bindings
             .bindings

@@ -221,7 +221,10 @@ mod tests {
         assert_eq!(buf.first_index(), 0);
 
         let pruned = buf.set_max_bytes(row_size * 2);
-        assert!(!pruned.is_empty());
+        assert!(
+            !pruned.is_empty(),
+            "shrinking the byte budget should prune rows"
+        );
         assert_eq!(buf.pushed(), 10, "pushed never rewinds");
         assert_eq!(buf.first_index(), 10 - buf.len() as u64);
     }
@@ -259,7 +262,10 @@ mod tests {
         let rows_before = buf.len();
         let row_size = row_byte_size(&make_row(80));
         let pruned = buf.set_max_bytes(row_size * 10);
-        assert!(!pruned.is_empty());
+        assert!(
+            !pruned.is_empty(),
+            "shrinking the byte budget should prune rows"
+        );
         assert!(buf.len() < rows_before);
         assert!(buf.used_bytes() <= row_size * 10);
     }
@@ -292,10 +298,13 @@ mod tests {
         let max = row_size * 3;
         let mut buf = HotBuffer::new(max);
         for _ in 0..3 {
-            assert!(buf.push(make_row(80)).is_empty());
+            assert_eq!(buf.push(make_row(80)), []);
         }
         let pruned = buf.push(make_row(80));
-        assert!(!pruned.is_empty());
+        assert!(
+            !pruned.is_empty(),
+            "a push past the budget should prune rows"
+        );
     }
 
     #[test]

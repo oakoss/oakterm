@@ -819,7 +819,7 @@ mod tests {
         let stored = mgr.total_archived_rows();
         let pre_gap = stored - 10;
         // Indices inside the gap resolve to no rows, not misaligned rows.
-        assert!(mgr.read_range(pre_gap, 1).unwrap().is_empty());
+        assert_eq!(mgr.read_range(pre_gap, 1).unwrap(), []);
         // The post-gap batch lives at its true absolute position.
         assert_eq!(mgr.read_range(pre_gap + gap, 10).unwrap().len(), 10);
     }

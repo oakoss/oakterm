@@ -19,9 +19,9 @@ edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/oakoss/oakterm"
 # Equals .mise.toml's rust pin: one supported version, floor == ceiling. An
-# older toolchain gets `requires rustc 1.98.0` instead of a failure deep in a
+# older toolchain gets `requires rustc 1.99.1` instead of a failure deep in a
 # dependency. Moving the pin moves this too.
-rust-version = "1.98.0"
+rust-version = "1.99.1"
 
 [workspace.dependencies]
 # Clipboard

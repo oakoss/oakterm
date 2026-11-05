@@ -759,7 +759,7 @@ mod tests {
         for c in "close".chars() {
             palette.input_char(c, &reg, ctx);
         }
-        assert!(palette.results().is_empty());
+        assert_eq!(palette.results(), []);
         let mut assembly = FrameAssembly::default();
         assemble_palette(&mut font, &palette, (800.0, 600.0), 0, &mut assembly);
         assert_eq!(assembly.bg_sections[1].uniforms.rows, 2);

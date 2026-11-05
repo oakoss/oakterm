@@ -291,9 +291,9 @@ mod tests {
     fn empty_rows_round_trip() {
         let rows: Vec<Row> = vec![];
         let bytes = serialize_rows(&rows).expect("serialize failed");
-        assert!(bytes.is_empty());
+        assert_eq!(bytes, []);
         let decoded = deserialize_rows(&bytes).expect("deserialize failed");
-        assert!(decoded.is_empty());
+        assert_eq!(decoded, []);
     }
 
     #[test]
