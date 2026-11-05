@@ -4,7 +4,7 @@
 use crate::UserEvent;
 use oakterm_protocol::frame::Frame;
 use oakterm_protocol::message::{
-    ClientHello, ClientType, CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage,
+    Bell, ClientHello, ClientType, CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage,
     HandshakeStatus, LayoutTree, MSG_BELL, MSG_CLOSE_PANE_RESPONSE, MSG_CLOSE_TAB_RESPONSE,
     MSG_COPY_MODE_INVALIDATED, MSG_DIRTY_NOTIFY, MSG_ENTER_COPY_MODE_ACK, MSG_ERROR,
     MSG_GET_RENDER_UPDATE, MSG_LAYOUT_TREE, MSG_NEW_TAB_RESPONSE, MSG_PROMPT_POSITION,
@@ -517,9 +517,7 @@ fn events_for_frame(frame: &Frame) -> Option<Vec<UserEvent>> {
                 error!(error = %e, "failed to decode PromptPosition");
             }
         },
-        MSG_BELL => {
-            events.push(UserEvent::Bell);
-        }
+        MSG_BELL => events.push(bell_event(frame)),
         MSG_SPLIT_PANE_RESPONSE => match SplitPaneResponse::decode(&frame.payload) {
             Ok(resp) => {
                 events.push(UserEvent::SplitCreated(resp.new_pane_id));
@@ -604,6 +602,17 @@ fn invalidated_events(frame: &Frame) -> Vec<UserEvent> {
     }
 }
 
+fn bell_event(frame: &Frame) -> UserEvent {
+    match Bell::decode(&frame.payload) {
+        Ok(bell) => UserEvent::Bell(Some(bell.pane_id)),
+        Err(e) => {
+            // Still ring: a malformed pane id should not swallow the bell.
+            error!(error = %e, "failed to decode Bell");
+            UserEvent::Bell(None)
+        }
+    }
+}
+
 /// What an error frame reports: the failed serial, plus a bell for the
 /// rejections that would otherwise look like a dead keybind.
 fn error_events(frame: &Frame) -> Vec<UserEvent> {
@@ -616,7 +625,7 @@ fn error_events(frame: &Frame) -> Vec<UserEvent> {
         code,
     }];
     if error_rings_bell(code) {
-        events.push(UserEvent::Bell);
+        events.push(UserEvent::Bell(None));
     }
     events
 }
@@ -676,9 +685,9 @@ mod tests {
     use crate::UserEvent;
     use oakterm_protocol::frame::Frame;
     use oakterm_protocol::message::{
-        CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage, MSG_COPY_MODE_INVALIDATED,
-        MSG_ENTER_COPY_MODE_ACK, MSG_ERROR, MSG_SCROLLBACK_DATA, MSG_YANK_RESPONSE, ScrollbackData,
-        YankResponse,
+        Bell, CopyModeInvalidated, EnterCopyModeAck, ErrorCode, ErrorMessage, MSG_BELL,
+        MSG_COPY_MODE_INVALIDATED, MSG_ENTER_COPY_MODE_ACK, MSG_ERROR, MSG_SCROLLBACK_DATA,
+        MSG_YANK_RESPONSE, ScrollbackData, YankResponse,
     };
 
     /// A valid ack dispatches the entry event with the frame's serial and
@@ -761,6 +770,20 @@ mod tests {
         Frame::new(MSG_SCROLLBACK_DATA, serial, payload).expect("frame")
     }
 
+    #[test]
+    fn a_bell_push_names_the_pane_that_rang() {
+        let frame = Bell { pane_id: 7 }.to_frame().expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(events.as_slice(), [UserEvent::Bell(Some(7))]));
+    }
+
+    #[test]
+    fn a_malformed_bell_push_still_rings() {
+        let frame = Frame::new(MSG_BELL, 0, vec![1]).expect("frame");
+        let events = events_for_frame(&frame).expect("handled");
+        assert!(matches!(events.as_slice(), [UserEvent::Bell(None)]));
+    }
+
     fn error_frame(serial: u32, code: ErrorCode) -> Frame {
         let payload = ErrorMessage {
             code: code as u32,
@@ -828,7 +851,10 @@ mod tests {
         let events = events_for_frame(&error_frame(9, ErrorCode::UnknownPane)).expect("owned type");
 
         match events.as_slice() {
-            [UserEvent::RequestFailed { serial, code }, UserEvent::Bell] => {
+            [
+                UserEvent::RequestFailed { serial, code },
+                UserEvent::Bell(None),
+            ] => {
                 assert_eq!(*serial, 9);
                 assert_eq!(*code, Some(ErrorCode::UnknownPane));
             }

@@ -77,12 +77,14 @@ impl App {
         let mut bg_sections: Vec<BgSection> = Vec::new();
         let mut glyph_instances: Vec<oakterm_renderer::pipeline::GlyphVertex> = Vec::new();
         if let Some(font) = &mut self.font {
+            let flashing = self.bell_flash.flashing(Instant::now());
             let mut assembly = assemble_frame(
                 font,
                 &self.panes,
                 &render_list,
                 self.focused_pane,
                 self.blink_visible,
+                &flashing,
                 viewport,
             );
             if self.tabs.bar_visible() {
