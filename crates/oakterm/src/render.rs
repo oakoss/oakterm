@@ -48,6 +48,7 @@ impl App {
     /// panes (plus the tab bar and split borders) and submits the draw.
     #[allow(clippy::cast_precision_loss)] // viewport dimensions fit in f32
     pub(crate) fn redraw(&mut self) {
+        self.sync_copy_mode_a11y();
         if !self.initial_resize_sent {
             // Retries on the next RedrawRequested while font, view,
             // or daemon are still initializing.

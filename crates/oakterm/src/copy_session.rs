@@ -4,7 +4,7 @@
 //! socket, so the rules are testable without an event loop, which the
 //! GUI's own state is not.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The `YankSelection` requests awaiting their text, by pane. The daemon
 /// answers with text alone, so the pane has to be remembered against the
@@ -159,12 +159,129 @@ pub(crate) fn plan_leader_flush(buffered: Option<Vec<u8>>, copy_mode: bool) -> L
     LeaderFlush::Send(bytes)
 }
 
+/// What a left press does to the host selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeftPress {
+    StartSelection,
+    ClearSelection,
+    Ignore,
+}
+
+/// Shift starts a selection and a plain press drops the one on screen,
+/// except in copy mode, which owns the pane's only selection (Spec-0008
+/// Mouse).
+pub(crate) fn left_press(left_pressed: bool, copy_mode: bool, shift: bool) -> LeftPress {
+    match (left_pressed && !copy_mode, shift) {
+        (false, _) => LeftPress::Ignore,
+        (true, true) => LeftPress::StartSelection,
+        (true, false) => LeftPress::ClearSelection,
+    }
+}
+
+/// Where a wheel notch goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WheelRoute {
+    /// The pane's own view: copy mode's display window (Spec-0008 Mouse),
+    /// else host scrollback.
+    Screen,
+    /// The application, on the alt screen.
+    Pty,
+}
+
+/// Matches alacritty/kitty/wezterm outside copy mode: host scrollback when
+/// already scrolled, Shift held, or on the primary screen. Copy mode is
+/// never active on the alt screen, but scrolls its own view regardless.
+pub(crate) fn wheel_route(
+    copy_mode: bool,
+    viewport_offset: u32,
+    shift: bool,
+    alt_screen: bool,
+) -> WheelRoute {
+    if copy_mode || viewport_offset > 0 || shift || !alt_screen {
+        WheelRoute::Screen
+    } else {
+        WheelRoute::Pty
+    }
+}
+
+/// Panes the a11y tree has heard enter copy mode, so each transition is
+/// announced exactly once (Spec-0006 Copy Mode).
+#[derive(Debug, Default)]
+pub(crate) struct CopyModeAnnouncer(HashSet<u32>);
+
+impl CopyModeAnnouncer {
+    /// Record `pane_id`'s copy-mode state, returning the announcement a
+    /// transition owes.
+    pub(crate) fn transition(&mut self, pane_id: u32, in_copy_mode: bool) -> Option<&'static str> {
+        if in_copy_mode {
+            self.0.insert(pane_id).then_some("Copy mode")
+        } else {
+            self.0.remove(&pane_id).then_some("Copy mode off")
+        }
+    }
+
+    /// Whether `pane_id` was last announced as in copy mode.
+    pub(crate) fn announced(&self, pane_id: u32) -> bool {
+        self.0.contains(&pane_id)
+    }
+
+    /// Forget panes that no longer exist.
+    pub(crate) fn retain(&mut self, keep: impl Fn(u32) -> bool) {
+        self.0.retain(|&id| keep(id));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        LeaderFlush, PendingEnter, PendingEnters, PendingYanks, YankDisposition, YankOutcome,
-        plan_leader_flush, yank_disposition,
+        CopyModeAnnouncer, LeaderFlush, LeftPress, PendingEnter, PendingEnters, PendingYanks,
+        WheelRoute, YankDisposition, YankOutcome, left_press, plan_leader_flush, wheel_route,
+        yank_disposition,
     };
+
+    #[test]
+    fn copy_mode_keeps_the_mouse_off_the_host_selection() {
+        assert_eq!(left_press(true, false, true), LeftPress::StartSelection);
+        assert_eq!(left_press(true, false, false), LeftPress::ClearSelection);
+        assert_eq!(
+            left_press(true, true, true),
+            LeftPress::Ignore,
+            "Shift+click"
+        );
+        assert_eq!(left_press(true, true, false), LeftPress::Ignore);
+        assert_eq!(
+            left_press(false, false, true),
+            LeftPress::Ignore,
+            "not a left press"
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_pane_view_in_copy_mode() {
+        assert_eq!(
+            wheel_route(true, 0, false, true),
+            WheelRoute::Screen,
+            "copy mode"
+        );
+        assert_eq!(wheel_route(false, 0, false, false), WheelRoute::Screen);
+        assert_eq!(wheel_route(false, 3, false, true), WheelRoute::Screen);
+        assert_eq!(wheel_route(false, 0, true, true), WheelRoute::Screen);
+        assert_eq!(wheel_route(false, 0, false, true), WheelRoute::Pty);
+    }
+
+    #[test]
+    fn copy_mode_transitions_announce_once_each_way() {
+        let mut announcer = CopyModeAnnouncer::default();
+        assert_eq!(announcer.transition(4, true), Some("Copy mode"));
+        assert_eq!(announcer.transition(4, true), None);
+        assert!(announcer.announced(4));
+        assert_eq!(announcer.transition(4, false), Some("Copy mode off"));
+        assert_eq!(announcer.transition(4, false), None);
+
+        announcer.transition(5, true);
+        announcer.retain(|id| id != 5);
+        assert!(!announcer.announced(5), "a closed pane is forgotten");
+    }
 
     /// Yanks are matched by serial and retire one pane's entry. A single
     /// global slot loses the race: a `y` on a second pane would overwrite

@@ -161,7 +161,9 @@ impl FrameAssembly {
 }
 
 /// Cursor and selection render only in the focused pane; the cursor
-/// honors the blink phase. A pane in `flashing` has its whole rect and
+/// honors the blink phase. A pane in copy mode draws its copy-mode view
+/// instead, keeping its selection when unfocused since that is state the
+/// user built, not a transient drag. A pane in `flashing` has its whole rect and
 /// every cell background tinted for the visual bell; glyphs are untouched.
 #[allow(clippy::cast_precision_loss)] // pixel origins fit in f32
 pub(crate) fn assemble_frame(
@@ -178,16 +180,16 @@ pub(crate) fn assemble_frame(
         let Some(pane) = panes.get(&pane_id) else {
             continue;
         };
-        let grid = pane.grid();
         let is_focused = pane_id == focused_pane;
+        let screen = pane.on_screen();
+        let grid = screen.grid();
+        let selection = screen
+            .selection
+            .as_ref()
+            .filter(|_| is_focused || screen.copy_mode);
         let cursor_vis = is_focused
             && grid.cursor_visible
             && (blink_visible || !matches!(grid.cursor_style, 0 | 2 | 4));
-        let selection = if is_focused {
-            pane.selection.as_ref()
-        } else {
-            None
-        };
         let flash = flashing.contains(&pane_id);
         if flash {
             // Backdrop for the pane area the cell grid does not cover.
@@ -203,7 +205,7 @@ pub(crate) fn assemble_frame(
             (rect.x as f32, rect.y as f32),
             cursor_vis,
             selection,
-            pane.viewport_offset(),
+            screen.selection_offset,
             viewport,
         );
         if flash && let Some(cells) = assembly.bg_sections.last_mut() {
@@ -612,6 +614,61 @@ mod tests {
         assert_eq!(assembly.bg_sections.len(), 2);
         assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
+
+    /// A copy-mode pane draws its copy cursor as a steady reverse-video
+    /// block, shown whatever the blink phase, and keeps its selection
+    /// when another pane has focus.
+    #[test]
+    fn assemble_frame_draws_copy_mode_cursor_and_selection() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            eprintln!("skipping: no system monospace font available");
+            return;
+        };
+        let mut grid = ClientGrid::new(4, 2);
+        grid.set_cell(0, 1, 'a', [10, 20, 30], [1, 2, 3]);
+        let mut view = PaneView::new(grid);
+        let _fill = view.enter_copy_mode();
+        let rect = PixelRect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 40,
+        };
+        let mut panes = HashMap::new();
+        panes.insert(1, view);
+
+        let blink_off = assemble_frame(
+            &mut font,
+            &panes,
+            &[(1, rect)],
+            1,
+            false,
+            &[],
+            (400.0, 300.0),
+        );
+        assert_eq!(
+            blink_off.bg_sections[0].colors[4],
+            render_grid::pack_bg_color([10, 20, 30]),
+            "the cursor cell (row 1, col 0) shows its fg as bg"
+        );
+
+        let view = panes.get_mut(&1).expect("pane");
+        view.toggle_copy_mode_selection(crate::copy_mode::CopySelectionType::Line);
+        let unfocused = assemble_frame(
+            &mut font,
+            &panes,
+            &[(1, rect)],
+            9,
+            true,
+            &[],
+            (400.0, 300.0),
+        );
+        assert_eq!(
+            unfocused.bg_sections[0].colors[5],
+            render_grid::pack_bg_color([255, 255, 255]),
+            "the selected line paints with focus elsewhere"
+        );
     }
 
     #[test]

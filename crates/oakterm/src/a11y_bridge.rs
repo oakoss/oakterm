@@ -17,7 +17,7 @@ use oakterm_a11y::{Announcement, SelectionRange};
 use oakterm_renderer::shaper::FontMetrics;
 use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
 
-use crate::pane_view::PaneView;
+use crate::pane_view::{OnScreen, PaneView};
 use crate::render_grid::ClientGrid;
 use tracing::{debug, warn};
 
@@ -38,38 +38,50 @@ struct PaneA11ySnapshot {
 
 impl PaneA11ySnapshot {
     fn from_view(view: &PaneView) -> Self {
-        let grid = view.grid();
-        Self {
-            rows: grid.rows,
-            cols: grid.cols,
-            row_texts: grid.row_texts(),
-            cursor_row: grid.cursor_y,
-            cursor_col: grid.cursor_x,
+        let mut snap = Self {
+            rows: 0,
+            cols: 0,
+            row_texts: Vec::new(),
+            cursor_row: 0,
+            cursor_col: 0,
             title: String::new(),
             scrollback_lines: 0,
-            scroll_offset: u64::from(view.viewport_offset()),
-            selection: view_selection(view, view.viewport_offset()),
+            scroll_offset: 0,
+            selection: None,
             origin: (0.0, 0.0),
-        }
+        };
+        snap.refresh_from(view);
+        snap
     }
 
-    /// Refresh the grid-derived fields at the given viewport offset.
-    fn refresh_from(&mut self, view: &PaneView, offset: u32) {
-        let grid = view.grid();
+    /// Refresh the grid-derived fields from what the pane shows: copy
+    /// mode's display window while it is active (Spec-0006 Copy Mode).
+    fn refresh_from(&mut self, view: &PaneView) {
+        self.refresh_from_screen(view, &view.on_screen());
+    }
+
+    /// [`Self::refresh_from`] with the pane's screen already composed, so a
+    /// copy-mode pane is not composed twice for one update.
+    fn refresh_from_screen(&mut self, view: &PaneView, screen: &OnScreen<'_>) {
+        let grid = screen.grid();
         self.rows = grid.rows;
         self.cols = grid.cols;
         self.row_texts = grid.row_texts();
         self.cursor_row = grid.cursor_y;
         self.cursor_col = grid.cursor_x;
-        self.scroll_offset = u64::from(offset);
-        self.selection = view_selection(view, offset);
+        self.scroll_offset = u64::from(view.screen_scroll_offset());
+        // Copy mode can report a scroll position before any Scrollback
+        // event set the max; AccessKit needs `scroll_y <= scroll_y_max`.
+        self.scrollback_lines = self.scrollback_lines.max(self.scroll_offset);
+        self.selection = screen_selection(screen);
     }
 }
 
-fn view_selection(view: &PaneView, offset: u32) -> Option<SelectionRange> {
-    view.selection
+fn screen_selection(screen: &OnScreen<'_>) -> Option<SelectionRange> {
+    screen
+        .selection
         .as_ref()
-        .and_then(|s| selection_range(s, offset, view.grid().rows))
+        .and_then(|s| selection_range(s, screen.selection_offset, screen.grid().rows))
 }
 
 /// What changed this frame; drives which snapshot fields [`apply`] mutates
@@ -86,6 +98,9 @@ pub(crate) enum A11yEvent<'a> {
     Title(&'a str),
     /// The tracked selection may have changed; no-op when it hasn't.
     SelectionChanged,
+    /// What the pane shows may have changed without a daemon update, as in
+    /// copy mode; pushes only what differs.
+    ViewChanged,
     /// Grid dimensions changed: refresh the snapshot and rebuild the full
     /// tree (row node IDs are only stable while dimensions hold).
     Resize,
@@ -103,6 +118,7 @@ impl A11yEvent<'_> {
             Self::Scrollback { .. } => "scrollback",
             Self::Title(_) => "title",
             Self::SelectionChanged => "selection",
+            Self::ViewChanged => "view",
             Self::Resize => "resize",
             Self::Announce(_) => "announce",
             Self::ClearAnnouncement => "clear-announcement",
@@ -265,6 +281,7 @@ struct EventOutcome<'a> {
 fn apply_to_snapshot<'a>(
     snap: &mut PaneA11ySnapshot,
     view: &PaneView,
+    screen: &OnScreen<'_>,
     event: &A11yEvent<'a>,
 ) -> Option<EventOutcome<'a>> {
     let grid = view.grid();
@@ -272,9 +289,7 @@ fn apply_to_snapshot<'a>(
         A11yEvent::Render { dirty_rows } => {
             let cursor_changed =
                 snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
-            // The render path only runs on the live view, so the offset is
-            // 0 whenever that contract holds — and stays truthful if not.
-            snap.refresh_from(view, view.viewport_offset());
+            snap.refresh_from_screen(view, screen);
             if dirty_rows.is_empty() && !cursor_changed {
                 return None;
             }
@@ -285,7 +300,7 @@ fn apply_to_snapshot<'a>(
             })
         }
         A11yEvent::Scrollback { total_rows } => {
-            snap.refresh_from(view, view.viewport_offset());
+            snap.refresh_from_screen(view, screen);
             snap.scrollback_lines = *total_rows;
             // Every visible row changed; cursor_changed forces the terminal
             // rebuild that carries the new scroll position.
@@ -302,21 +317,50 @@ fn apply_to_snapshot<'a>(
             snap.title = (*title).to_string();
             // The rebuilt terminal node carries scroll state; keep it
             // current even when no scroll event refreshed the snapshot yet.
-            snap.scroll_offset = u64::from(view.viewport_offset());
+            snap.scroll_offset = u64::from(view.screen_scroll_offset());
             Some(EventOutcome {
                 title_changed: true,
                 ..Default::default()
             })
         }
         A11yEvent::SelectionChanged => {
-            let sel = view_selection(view, view.viewport_offset());
+            let sel = screen_selection(screen);
             if snap.selection == sel {
                 return None;
             }
             snap.selection = sel;
-            snap.scroll_offset = u64::from(view.viewport_offset());
+            snap.scroll_offset = u64::from(view.screen_scroll_offset());
             Some(EventOutcome {
                 selection_changed: true,
+                ..Default::default()
+            })
+        }
+        A11yEvent::ViewChanged => {
+            let before_rows = std::mem::take(&mut snap.row_texts);
+            let before = (
+                snap.cursor_row,
+                snap.cursor_col,
+                snap.scroll_offset,
+                snap.selection,
+            );
+            snap.refresh_from_screen(view, screen);
+            let dirty: Vec<(u16, String)> = snap
+                .row_texts
+                .iter()
+                .enumerate()
+                .filter(|&(i, text)| before_rows.get(i) != Some(text))
+                .filter_map(|(i, text)| Some((u16::try_from(i).ok()?, text.clone())))
+                .collect();
+            let cursor_changed = (snap.cursor_row, snap.cursor_col, snap.scroll_offset)
+                != (before.0, before.1, before.2);
+            let selection_changed = snap.selection != before.3;
+            if dirty.is_empty() && !cursor_changed && !selection_changed {
+                return None;
+            }
+            Some(EventOutcome {
+                dirty_rows: dirty.into(),
+                cursor_changed,
+                selection_changed,
                 ..Default::default()
             })
         }
@@ -351,7 +395,8 @@ pub(crate) fn apply(
         );
         return None;
     };
-    let grid = view.grid();
+    let screen = view.on_screen();
+    let grid = screen.grid();
 
     // Announcements touch only the shared window-level live region, so
     // they need no pane snapshot and skip the pane-presence gate.
@@ -390,12 +435,12 @@ pub(crate) fn apply(
         // Row node IDs are recalculated when dimensions change; the
         // viewport was reset to 0 by the caller.
         let snap = model.panes.get_mut(&pane_id).expect("presence checked");
-        snap.refresh_from(view, view.viewport_offset());
+        snap.refresh_from_screen(view, &screen);
         return Some(model.build_full_tree());
     }
 
     let snap = model.panes.get_mut(&pane_id).expect("presence checked");
-    let outcome = apply_to_snapshot(snap, view, &event)?;
+    let outcome = apply_to_snapshot(snap, view, &screen, &event)?;
 
     let announcement = if let A11yEvent::Render { dirty_rows } = event {
         model.output_announcement(dirty_rows, grid.rows)
@@ -432,7 +477,7 @@ impl A11yModel {
             if let Some(snap) = self.panes.get_mut(&pane_id) {
                 let dims_changed = snap.rows != view.grid().rows || snap.cols != view.grid().cols;
                 if dims_changed {
-                    snap.refresh_from(view, view.viewport_offset());
+                    snap.refresh_from(view);
                     snap.origin = origin;
                     changed = true;
                 } else if snap.origin != origin {
@@ -441,7 +486,7 @@ impl A11yModel {
                     // full row-text refresh; carry the scroll offset the
                     // resize path may have reset.
                     snap.origin = origin;
-                    snap.scroll_offset = u64::from(view.viewport_offset());
+                    snap.scroll_offset = u64::from(view.screen_scroll_offset());
                     changed = true;
                 }
             } else {
@@ -690,44 +735,93 @@ fn clamp_selection_cols(mut sel: SelectionRange, grid: &ClientGrid) -> Selection
 }
 
 /// Map the terminal's cell-inclusive `Selection` to visible-viewport
-/// between-character positions. Selection rows are viewport-relative
-/// (`visible_row = sel_row + viewport_offset`); rows partially inside the
-/// `rows`-tall viewport clamp to its edge per Spec-0006, and a selection
-/// entirely outside it (above or below) yields `None`. `Block` selections
-/// map to the stream range between their corners — AccessKit's
-/// `TextSelection` cannot express a rectangle, so the intermediate rows
-/// read as fully selected.
+/// between-character positions, from its start to its end so the AT
+/// caret (the focus) sits where the drag or the copy-mode cursor ended.
+/// Selection rows are viewport-relative (`visible_row = sel_row +
+/// viewport_offset`). An end outside the `rows`-tall viewport clamps to
+/// the edge the highlight runs to (Spec-0006): the start of the top row
+/// or the end of the bottom row. A selection entirely outside it yields
+/// `None`. `Block` selections map to the stream range between their
+/// corners — AccessKit's `TextSelection` cannot express a rectangle, so
+/// the intermediate rows read as fully selected.
 pub(crate) fn selection_range(
     sel: &Selection,
     viewport_offset: u32,
     rows: u16,
 ) -> Option<SelectionRange> {
-    let (start, end) = sel.normalized();
+    let (first, last) = sel.normalized();
     let to_visible = |row: i64| row + i64::from(viewport_offset);
-    let (start_vis, end_vis) = (to_visible(start.row), to_visible(end.row));
-    if end_vis < 0 || start_vis >= i64::from(rows) {
+    let last_row = rows.checked_sub(1)?;
+    if to_visible(last.row) < 0 || to_visible(first.row) > i64::from(last_row) {
         return None;
     }
-    let clamp_row = |row: i64| {
-        u16::try_from(row.max(0))
-            .unwrap_or(u16::MAX)
-            .min(rows.saturating_sub(1))
+    let forward = sel.start == first;
+    // Columns are boundaries: the position after a cell is its column + 1.
+    // Callers clamp them to each row's text length.
+    let position = |end: &oakterm_terminal::grid::selection::SelectionAnchor, earlier: bool| {
+        let row = to_visible(end.row);
+        if row < 0 {
+            return (0, 0);
+        }
+        let Ok(row) = u16::try_from(row) else {
+            return (last_row, usize::MAX);
+        };
+        if row > last_row {
+            return (last_row, usize::MAX);
+        }
+        let col = match sel.ty {
+            SelectionType::Line if earlier => 0,
+            SelectionType::Line => usize::MAX,
+            _ => usize::from(end.col) + usize::from(end.side == AnchorSide::Right),
+        };
+        (row, col)
     };
-
-    // Between-character position after a cell is its column + 1.
-    let boundary = |anchor: &oakterm_terminal::grid::selection::SelectionAnchor| {
-        usize::from(anchor.col) + usize::from(anchor.side == AnchorSide::Right)
-    };
-    let (anchor_col, focus_col) = match sel.ty {
-        // Full rows; callers clamp to each row's text length.
-        SelectionType::Line => (0, usize::MAX),
-        _ => (boundary(&start), boundary(&end)),
-    };
+    let (anchor_row, anchor_col) = position(&sel.start, forward);
+    let (focus_row, focus_col) = position(&sel.end, !forward);
     Some(SelectionRange {
-        anchor_row: clamp_row(start_vis),
+        anchor_row,
         anchor_col,
-        focus_row: clamp_row(end_vis),
+        focus_row,
         focus_col,
+    })
+}
+
+pub(crate) type WindowCell = (u16, u16);
+
+/// An AT selection request as copy mode reads it: the cell the cursor
+/// takes (the focus), and the anchor cell when the request selects
+/// anything — `None` for a collapsed caret, decided from the AT's own
+/// positions before they become cells. Positions are boundaries, so the
+/// later one is exclusive: its cell is the one before it, the previous
+/// row's last cell when it sits at column 0. `None` overall for a
+/// cross-pane, non-row, or off-window request.
+pub(crate) fn copy_selection_from_a11y(
+    sel: &accesskit::TextSelection,
+    rows: u16,
+) -> Option<(WindowCell, Option<WindowCell>)> {
+    let (anchor_pane, Some(anchor_row)) = oakterm_a11y::decode_node_id(sel.anchor.node)? else {
+        return None;
+    };
+    let (focus_pane, Some(focus_row)) = oakterm_a11y::decode_node_id(sel.focus.node)? else {
+        return None;
+    };
+    if anchor_pane != focus_pane || anchor_row >= rows || focus_row >= rows {
+        return None;
+    }
+    let col = |c: usize| u16::try_from(c).unwrap_or(u16::MAX);
+    let anchor = (anchor_row, col(sel.anchor.character_index));
+    let focus = (focus_row, col(sel.focus.character_index));
+    if anchor == focus {
+        return Some((focus, None));
+    }
+    let last_cell_before = |(row, col): WindowCell| match col.checked_sub(1) {
+        Some(col) => (row, col),
+        None => (row.saturating_sub(1), u16::MAX),
+    };
+    Some(if focus > anchor {
+        (last_cell_before(focus), Some(anchor))
+    } else {
+        (focus, Some(last_cell_before(anchor)))
     })
 }
 
@@ -1272,6 +1366,99 @@ mod tests {
         assert!(apply(&state, 0, &view, A11yEvent::SelectionChanged).is_none());
     }
 
+    /// Copy mode changes what a pane shows with no daemon update behind
+    /// it; the view event must push those changes and nothing else.
+    #[test]
+    fn apply_view_changed_tracks_copy_mode_and_dedups() {
+        let mut view = PaneView::new(ClientGrid::new(8, 4));
+        let state = tracked_model(0, &view);
+        assert!(
+            apply(&state, 0, &view, A11yEvent::ViewChanged).is_none(),
+            "nothing changed"
+        );
+
+        let _fill = view.enter_copy_mode();
+        let update = apply(&state, 0, &view, A11yEvent::ViewChanged).expect("cursor moved");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == terminal_node_id(0))
+        );
+        let snap_cursor = |state: &Mutex<Option<A11yModel>>| {
+            let guard = state.lock().unwrap();
+            let snap = &guard.as_ref().unwrap().panes[&0];
+            (snap.cursor_col, snap.cursor_row)
+        };
+        assert_eq!(
+            snap_cursor(&state),
+            (0, 3),
+            "the copy cursor, not the live one"
+        );
+        assert!(apply(&state, 0, &view, A11yEvent::ViewChanged).is_none());
+
+        view.set_copy_mode_cursor(1, 4);
+        assert!(apply(&state, 0, &view, A11yEvent::ViewChanged).is_some());
+        assert_eq!(snap_cursor(&state), (4, 1));
+
+        view.toggle_copy_mode_selection(crate::copy_mode::CopySelectionType::Character);
+        view.set_copy_mode_cursor(0, 2);
+        assert!(
+            apply(&state, 0, &view, A11yEvent::ViewChanged).is_some(),
+            "a new selection is a change"
+        );
+        let selection = state.lock().unwrap().as_ref().unwrap().panes[&0].selection;
+        assert_eq!(
+            selection,
+            Some(SelectionRange {
+                anchor_row: 1,
+                anchor_col: 5,
+                focus_row: 0,
+                focus_col: 2,
+            }),
+            "anchor to cursor, the caret on the cursor though it moved up"
+        );
+    }
+
+    #[test]
+    fn selection_range_runs_start_to_end_and_clamps_to_the_window() {
+        // Built as copy mode builds them: the anchor's side Left going
+        // forward and Right going backward, so both cells are inclusive.
+        let range = |ty, anchor: (i64, u16), cursor: (i64, u16)| {
+            let forward = anchor <= cursor;
+            let (a, c) = if forward {
+                (AnchorSide::Left, AnchorSide::Right)
+            } else {
+                (AnchorSide::Right, AnchorSide::Left)
+            };
+            let mut sel = Selection::new(ty, anchor.0, anchor.1, a);
+            sel.update(cursor.0, cursor.1, c);
+            selection_range(&sel, 0, 4)
+        };
+        let at = |anchor_row, anchor_col, focus_row, focus_col| {
+            Some(SelectionRange {
+                anchor_row,
+                anchor_col,
+                focus_row,
+                focus_col,
+            })
+        };
+        assert_eq!(range(SelectionType::Normal, (1, 3), (2, 6)), at(1, 3, 2, 7));
+        assert_eq!(range(SelectionType::Normal, (2, 6), (1, 3)), at(2, 7, 1, 3));
+        assert_eq!(
+            range(SelectionType::Normal, (-8, 5), (1, 3)),
+            at(0, 0, 1, 4)
+        );
+        assert_eq!(
+            range(SelectionType::Normal, (9, 5), (1, 3)),
+            at(3, usize::MAX, 1, 3)
+        );
+        assert_eq!(
+            range(SelectionType::Line, (2, 6), (1, 3)),
+            at(2, usize::MAX, 1, 0)
+        );
+    }
+
     #[test]
     fn apply_title_updates_snapshot_and_pushes() {
         let view = PaneView::new(ClientGrid::new(80, 24));
@@ -1488,16 +1675,17 @@ mod tests {
     }
 
     #[test]
-    fn selection_range_reversed_drag_normalizes() {
+    fn selection_range_reversed_drag_keeps_the_caret_at_the_drag_end() {
         // Right-to-left drag: anchor at (2,9), dragged back to (1,3). The
-        // normalized mapping must match the forward equivalent.
+        // same cells as the forward equivalent, with the focus where the
+        // drag ended.
         let mut sel = Selection::new(SelectionType::Normal, 2, 9, AnchorSide::Right);
         sel.update(1, 3, AnchorSide::Left);
         let range = selection_range(&sel, 0, 24).expect("visible");
-        assert_eq!(range.anchor_row, 1);
-        assert_eq!(range.anchor_col, 3);
-        assert_eq!(range.focus_row, 2);
-        assert_eq!(range.focus_col, 10);
+        assert_eq!(range.anchor_row, 2);
+        assert_eq!(range.anchor_col, 10);
+        assert_eq!(range.focus_row, 1);
+        assert_eq!(range.focus_col, 3);
     }
 
     #[test]
@@ -1506,7 +1694,11 @@ mod tests {
         let mut sel = Selection::new(SelectionType::Normal, -4, 3, AnchorSide::Left);
         sel.update(2, 4, AnchorSide::Right);
         let range = selection_range(&sel, 1, 24).expect("partially visible");
-        assert_eq!(range.anchor_row, 0);
+        assert_eq!(
+            (range.anchor_row, range.anchor_col),
+            (0, 0),
+            "start of the top row"
+        );
         assert_eq!(range.focus_row, 3);
     }
 
@@ -1533,7 +1725,11 @@ mod tests {
         sel.update(30, 4, AnchorSide::Right);
         let range = selection_range(&sel, 0, 24).expect("partially visible");
         assert_eq!(range.anchor_row, 1);
-        assert_eq!(range.focus_row, 23);
+        assert_eq!(
+            (range.focus_row, range.focus_col),
+            (23, usize::MAX),
+            "end of the bottom row"
+        );
     }
 
     #[test]
@@ -1578,6 +1774,95 @@ mod tests {
             .expect("terminal node");
         let sel = terminal.1.text_selection().expect("selection");
         assert_eq!(sel.focus.character_index, 0);
+    }
+
+    #[test]
+    fn copy_selection_from_a11y_keeps_direction_and_the_focus_cell() {
+        let pos = |row, character_index| accesskit::TextPosition {
+            node: row_node_id(3, row),
+            character_index,
+        };
+        let forward = accesskit::TextSelection {
+            anchor: pos(1, 2),
+            focus: pos(2, 7),
+        };
+        assert_eq!(
+            copy_selection_from_a11y(&forward, 4),
+            Some(((2, 6), Some((1, 2)))),
+            "a focus after the anchor is the boundary past cell 6"
+        );
+        let backward = accesskit::TextSelection {
+            anchor: pos(2, 7),
+            focus: pos(1, 2),
+        };
+        assert_eq!(
+            copy_selection_from_a11y(&backward, 4),
+            Some(((1, 2), Some((2, 6)))),
+            "the anchor is the exclusive end going backward"
+        );
+        let caret = accesskit::TextSelection {
+            anchor: pos(1, 2),
+            focus: pos(1, 2),
+        };
+        assert_eq!(copy_selection_from_a11y(&caret, 4), Some(((1, 2), None)));
+        let to_next_row_start = accesskit::TextSelection {
+            anchor: pos(1, 2),
+            focus: pos(2, 0),
+        };
+        assert_eq!(
+            copy_selection_from_a11y(&to_next_row_start, 4),
+            Some(((1, u16::MAX), Some((1, 2)))),
+            "a boundary at column 0 ends on the previous row"
+        );
+        let off_window = accesskit::TextSelection {
+            anchor: pos(1, 2),
+            focus: pos(4, 0),
+        };
+        assert_eq!(copy_selection_from_a11y(&off_window, 4), None);
+    }
+
+    /// Every AT request on one window, end to end: the yank takes exactly
+    /// the cells between the two boundaries, in either direction, and a
+    /// collapsed request selects nothing.
+    #[test]
+    fn an_at_selection_yanks_exactly_the_cells_it_names() {
+        use crate::copy_mode::CopyModeState;
+        let (rows, cols) = (3u16, 6u16);
+        let mut checked = 0;
+        for anchor in 0..rows * cols {
+            for focus in 0..rows * cols {
+                let boundary = |i: u16| (i / cols, i % cols);
+                let (a, f) = (boundary(anchor), boundary(focus));
+                let pos = |(row, col): (u16, u16)| accesskit::TextPosition {
+                    node: row_node_id(0, row),
+                    character_index: usize::from(col),
+                };
+                let request = accesskit::TextSelection {
+                    anchor: pos(a),
+                    focus: pos(f),
+                };
+                let (cursor, anchor_cell) =
+                    copy_selection_from_a11y(&request, rows).expect("in window");
+                let mut state = CopyModeState::new(cols, rows, 0, Vec::new());
+                state.select_in_window(cursor, anchor_cell);
+                let range = state.yank_range();
+                if anchor == focus {
+                    assert_eq!(range, None, "caret at {a:?}");
+                    continue;
+                }
+                let (low, high) = (anchor.min(focus), anchor.max(focus) - 1);
+                let range = range.expect("selected");
+                let start = (u16::try_from(range.start_row).unwrap(), range.start_col);
+                let end = (u16::try_from(range.end_row).unwrap(), range.end_col);
+                assert_eq!(
+                    (start, end),
+                    (boundary(low), boundary(high)),
+                    "AT {a:?} -> {f:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 18 * 17);
     }
 
     #[test]

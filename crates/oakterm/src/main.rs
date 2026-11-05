@@ -660,6 +660,7 @@ struct App {
     /// frame with a clock re-arms it.
     clock_deadline: Option<std::time::Instant>,
     bell_flash: bell::BellFlash,
+    copy_announcer: copy_session::CopyModeAnnouncer,
     /// Active modal key table (resize mode): while set, unmatched keys
     /// are dropped rather than forwarded to the PTY. Constructed
     /// programmatically by the mode that owns it (no Lua registration API
@@ -754,6 +755,7 @@ impl App {
             blink_deadline: None,
             clock_deadline: None,
             bell_flash: bell::BellFlash::default(),
+            copy_announcer: copy_session::CopyModeAnnouncer::default(),
             active_key_table: None,
             leader_pending: None,
             focused: true,
@@ -888,6 +890,9 @@ impl App {
             return;
         };
         let fill = view.enter_copy_mode();
+        // A drag held through entry would keep extending the mouse
+        // selection that entry dropped (Spec-0008 Mouse).
+        self.mouse_pressed = false;
         // A re-entry is a fresh session with fresh row indices, so a
         // yank still in flight from the old one must not land on it.
         self.pending_yanks.retire(pane_id);
@@ -1102,8 +1107,92 @@ impl App {
             }
             CopyCommand::Exit => self.exit_copy_mode(pane_id),
             CopyCommand::Search => {
-                debug!(pane_id, "copy mode search is not wired yet (TREK-114)");
+                debug!(pane_id, "copy mode search is not wired yet (OT-323)");
             }
+        }
+    }
+
+    /// Push a live-region announcement, then clear it so a repeat is a
+    /// fresh text transition a screen reader speaks again.
+    fn announce(&mut self, text: &str, level: accesskit::Live) {
+        let (Some(view), Some(adapter)) = (self.panes.get(&self.focused_pane), &mut self.accesskit)
+        else {
+            return;
+        };
+        let ann = oakterm_a11y::Announcement {
+            text: text.into(),
+            level,
+        };
+        for event in [A11yEvent::Announce(&ann), A11yEvent::ClearAnnouncement] {
+            if let Some(update) =
+                a11y_bridge::apply(&self.a11y_state, self.focused_pane, view, event)
+            {
+                adapter.update_if_active(|| update);
+            }
+        }
+    }
+
+    /// Mirror copy-mode panes into the a11y tree (Spec-0006 Copy Mode)
+    /// ahead of each frame, so every path that moves, fills, enters or
+    /// leaves copy mode reaches the screen reader without its own call.
+    pub(crate) fn sync_copy_mode_a11y(&mut self) {
+        self.copy_announcer
+            .retain(|id| self.panes.contains_key(&id));
+        let ids: Vec<u32> = self
+            .panes
+            .iter()
+            .filter(|&(&id, view)| view.is_copy_mode() || self.copy_announcer.announced(id))
+            .map(|(id, _)| *id)
+            .collect();
+        for pane_id in ids {
+            let in_copy_mode = self.panes.get(&pane_id).is_some_and(PaneView::is_copy_mode);
+            let transition = self.copy_announcer.transition(pane_id, in_copy_mode);
+            if let (Some(view), Some(adapter)) = (self.panes.get(&pane_id), &mut self.accesskit)
+                && let Some(update) =
+                    a11y_bridge::apply(&self.a11y_state, pane_id, view, A11yEvent::ViewChanged)
+            {
+                adapter.update_if_active(|| update);
+            }
+            if let Some(text) = transition {
+                self.announce(text, accesskit::Live::Polite);
+            }
+        }
+    }
+
+    /// Scroll what the pane shows `rows_up` rows toward history (negative
+    /// toward live): copy mode's display window (Spec-0008 Mouse), else
+    /// host scrollback. The one place the wheel and AT choose between them.
+    fn scroll_screen(&mut self, pane_id: u32, rows_up: i32) {
+        let Some(view) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        if view.is_copy_mode() {
+            view.scroll_copy_mode_up(rows_up);
+            self.prefetch_copy_mode(pane_id);
+            self.request_redraw();
+        } else {
+            self.scroll_viewport(pane_id, rows_up);
+        }
+    }
+
+    /// Put what the pane shows `offset` rows above the live bottom, the
+    /// unit Spec-0006 `scroll_y` reports: copy mode's display window, else
+    /// the host viewport.
+    fn set_screen_scroll_offset(&mut self, pane_id: u32, offset: u32) {
+        let Some(view) = self.panes.get_mut(&pane_id) else {
+            debug!(pane_id, "a11y: scroll offset for untracked pane");
+            return;
+        };
+        if view.is_copy_mode() {
+            view.set_copy_mode_scroll_offset(offset);
+            self.prefetch_copy_mode(pane_id);
+            self.request_redraw();
+        } else if offset == 0 {
+            self.return_to_live(pane_id);
+        } else {
+            let exited = view.set_scroll_offset(offset);
+            self.release_copy_mode_pin(pane_id, exited);
+            self.request_scrollback(pane_id);
         }
     }
 
@@ -1993,12 +2082,10 @@ impl ApplicationHandler<UserEvent> for App {
                 // reason has to still hold when the button comes up.
                 let swallow_press = shift || copy_mode;
 
-                // A left press either starts a selection (Shift) or drops
-                // the one on screen, whatever happens to the event after.
-                if pressed && btn == 0 {
-                    if shift {
-                        self.start_selection();
-                    } else {
+                // Runs whether or not the press is then forwarded.
+                match copy_session::left_press(pressed && btn == 0, copy_mode, shift) {
+                    copy_session::LeftPress::StartSelection => self.start_selection(),
+                    copy_session::LeftPress::ClearSelection => {
                         let cleared = self
                             .focused_view_mut()
                             .is_some_and(|view| view.selection.take().is_some());
@@ -2009,6 +2096,7 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                         }
                     }
+                    copy_session::LeftPress::Ignore => {}
                 }
 
                 let pass =
@@ -2061,22 +2149,17 @@ impl ApplicationHandler<UserEvent> for App {
                 let shift = self.modifiers.state().shift_key();
                 let alt_screen = self.focused_view().is_some_and(|v| v.grid().alt_screen);
 
-                // Routing (matches alacritty/kitty/wezterm):
-                // - Already in host scrollback: keep scrolling host until offset == 0.
-                // - Shift held, or primary screen: host scrollback.
-                // - Alt screen with no Shift: forward to daemon (mouse mode / 1007 alt-scroll).
                 let delta = if scroll_up {
                     scroll_lines
                 } else {
                     -scroll_lines
                 };
-                // Only the alt-screen branch leaks: it scrolls a hidden
-                // TUI under a frozen view. Host scroll keeps forwarding
-                // because it visibly leaves copy mode (TREK-114).
                 let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
-                if self.viewport_offset() > 0 || shift || !alt_screen {
-                    self.scroll_viewport(self.focused_pane, delta);
-                } else if let Some(daemon) = self.daemon.as_mut().filter(|_| !copy_mode) {
+                let route =
+                    copy_session::wheel_route(copy_mode, self.viewport_offset(), shift, alt_screen);
+                if route == copy_session::WheelRoute::Screen {
+                    self.scroll_screen(self.focused_pane, delta);
+                } else if let Some(daemon) = self.daemon.as_mut() {
                     let (x, y) = self.last_mouse_cell;
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
                     let mods = input::encode_mouse_modifiers(self.modifiers);
@@ -2181,6 +2264,8 @@ impl ApplicationHandler<UserEvent> for App {
                 match reply.map_or(ScrollbackRoute::Drop("unknown pane"), route_scrollback) {
                     ScrollbackRoute::CopyModeFill => {
                         self.prefetch_copy_mode(pane_id);
+                        // Rows the display drew blank have landed.
+                        self.request_redraw();
                         return;
                     }
                     ScrollbackRoute::Drop(why) => {
@@ -2291,32 +2376,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
-                // Announce bell to screen readers (assertive = interrupts).
-                if let (Some(view), Some(adapter)) =
-                    (self.panes.get(&self.focused_pane), &mut self.accesskit)
-                {
-                    let ann = oakterm_a11y::Announcement {
-                        text: "Bell".into(),
-                        level: accesskit::Live::Assertive,
-                    };
-                    if let Some(update) = a11y_bridge::apply(
-                        &self.a11y_state,
-                        self.focused_pane,
-                        view,
-                        A11yEvent::Announce(&ann),
-                    ) {
-                        adapter.update_if_active(|| update);
-                    }
-                    // Clear so a repeated bell is a fresh text transition.
-                    if let Some(clear) = a11y_bridge::apply(
-                        &self.a11y_state,
-                        self.focused_pane,
-                        view,
-                        A11yEvent::ClearAnnouncement,
-                    ) {
-                        adapter.update_if_active(|| clear);
-                    }
-                }
+                self.announce("Bell", accesskit::Live::Assertive);
             }
             UserEvent::AccessKitAction(request) => {
                 // AT actions name a target node; route to its pane
@@ -2365,24 +2425,12 @@ impl ApplicationHandler<UserEvent> for App {
                         if request.action == accesskit::Action::ScrollDown {
                             page = -page;
                         }
-                        self.scroll_viewport(target_pane, page);
+                        self.scroll_screen(target_pane, page);
                     }
                     accesskit::Action::SetScrollOffset => {
                         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                         if let Some(accesskit::ActionData::SetScrollOffset(point)) = request.data {
-                            let target = point.y.max(0.0) as u32;
-                            if !self.panes.contains_key(&target_pane) {
-                                debug!(target_pane, "a11y: scroll offset for untracked pane");
-                            } else if target == 0 {
-                                self.return_to_live(target_pane);
-                            } else {
-                                let exited = self
-                                    .panes
-                                    .get_mut(&target_pane)
-                                    .is_some_and(|view| view.set_scroll_offset(target));
-                                self.release_copy_mode_pin(target_pane, exited);
-                                self.request_scrollback(target_pane);
-                            }
+                            self.set_screen_scroll_offset(target_pane, point.y.max(0.0) as u32);
                         } else {
                             debug!("a11y: SetScrollOffset without offset data");
                         }
@@ -2402,6 +2450,28 @@ impl ApplicationHandler<UserEvent> for App {
                         // rows = 0, rejecting every row).
                         let pane_hint = oakterm_a11y::decode_node_id(at_sel.anchor.node)
                             .map(|(pane_id, _)| pane_id);
+                        // Copy mode owns the pane's only selection: the
+                        // request drives the copy cursor and selection in
+                        // the window AT was reading (Spec-0006 Copy Mode).
+                        if let Some(view) = pane_hint
+                            .and_then(|id| self.panes.get_mut(&id))
+                            .filter(|view| view.is_copy_mode())
+                        {
+                            let rows = view.grid().rows;
+                            if let Some((cursor, anchor)) =
+                                a11y_bridge::copy_selection_from_a11y(&at_sel, rows)
+                            {
+                                view.select_in_copy_mode(cursor, anchor);
+                                self.request_redraw();
+                            } else {
+                                debug!(
+                                    anchor = ?at_sel.anchor.node,
+                                    focus = ?at_sel.focus.node,
+                                    "a11y: copy-mode SetTextSelection rejected"
+                                );
+                            }
+                            return;
+                        }
                         let (offset, rows) = pane_hint
                             .and_then(|id| self.panes.get(&id))
                             .map_or((0, 0), |v| (v.viewport_offset(), v.grid().rows));

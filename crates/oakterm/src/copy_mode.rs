@@ -13,8 +13,10 @@
 
 use crate::copy_keys::PendingPrefix;
 use crate::copy_motion::{MotionBounds, RowText};
+use crate::render_grid::RowSource;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::DirtyRow;
+use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
 use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 
@@ -38,6 +40,9 @@ const MAX_ROWS_PER_REQUEST: u32 = 4096;
 
 /// Cache window as a multiple of the visible rows (Spec-0008 default).
 const CACHE_ROWS_PER_SCREEN: u32 = 3;
+// The window-centred trim in `apply_fill` keeps the whole display window
+// cached only from two screens up.
+const _: () = assert!(CACHE_ROWS_PER_SCREEN >= 2);
 
 /// One `GetScrollback` window in copy-mode row space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +126,6 @@ impl ViewportCache {
         self.rows.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn get(&self, row: i64) -> Option<&DirtyRow> {
         self.rows.get(&row)
     }
@@ -277,6 +281,9 @@ pub(crate) struct CopyModeState {
     /// grid's top, so without this the rows shown and the rows operated
     /// on drift apart by the scroll offset.
     viewport_top: i64,
+    /// Top row of the display window (Spec-0008 Display): follows the
+    /// cursor, never below `viewport_top`.
+    display_top: i64,
     /// Fills awaiting a reply, by request serial.
     in_flight: HashMap<u32, PendingFill>,
     /// Oldest row the daemon has shown it can serve, learned when a
@@ -313,6 +320,7 @@ impl CopyModeState {
             visible_rows: visible_rows.max(1),
             cols: cols.max(1),
             viewport_top,
+            display_top: viewport_top,
             in_flight: HashMap::new(),
             history_start: None,
             snapshot,
@@ -392,6 +400,84 @@ impl CopyModeState {
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
         self.cursor_col = col.min(self.cols - 1);
+        let rows = i64::from(self.visible_rows);
+        if self.cursor_row < self.display_top {
+            self.display_top = self.cursor_row;
+        } else if self.cursor_row >= self.display_top + rows {
+            self.display_top = (self.cursor_row - rows + 1).min(self.viewport_top);
+        }
+    }
+
+    pub(crate) fn display_top(&self) -> i64 {
+        self.display_top
+    }
+
+    /// Scroll the display window by `delta` rows (negative is up, into
+    /// history), bounded by the addressable rows, then pull the cursor
+    /// into the window it leaves on screen (Spec-0008 Mouse).
+    pub(crate) fn scroll_display(&mut self, delta: i64) {
+        let top = self.display_top.saturating_add(delta);
+        self.display_top = top.clamp(self.first_row(), self.viewport_top);
+        let bottom = self.display_top + i64::from(self.visible_rows) - 1;
+        self.cursor_row = self.cursor_row.clamp(self.display_top, bottom);
+    }
+
+    /// Where display row `visible` comes from (Spec-0008 Display): the
+    /// frozen page by its visible index, else the cache, else blank until
+    /// the fill lands. Page rows win: the frozen page keeps its colors.
+    pub(crate) fn display_row(&self, visible: u16) -> RowSource<'_> {
+        let row = self.display_top + i64::from(visible);
+        if let Ok(page_row) = u16::try_from(row - self.viewport_top) {
+            return RowSource::Own(page_row);
+        }
+        self.cache
+            .get(row)
+            .map_or(RowSource::Blank, RowSource::Wire)
+    }
+
+    pub(crate) fn display_cursor(&self) -> Option<(u16, u16)> {
+        let row = u16::try_from(self.cursor_row - self.display_top).ok()?;
+        (row < self.visible_rows).then_some((self.cursor_col, row))
+    }
+
+    /// Put the cursor on `cursor` and, given an anchor, select characters
+    /// from it, both `(window row, col)` cells; no anchor leaves a caret.
+    pub(crate) fn select_in_window(&mut self, cursor: (u16, u16), anchor: Option<(u16, u16)>) {
+        self.selection = None;
+        let row = |r: u16| self.display_top + i64::from(r);
+        let cursor_row = row(cursor.0);
+        if let Some(anchor) = anchor {
+            self.set_cursor(row(anchor.0), anchor.1);
+            self.anchor_selection(CopySelectionType::Character);
+        }
+        self.set_cursor(cursor_row, cursor.1);
+    }
+
+    /// The selection as a Spec-0003 `Selection` in display coordinates,
+    /// covering exactly the cells a yank would take. It runs from the
+    /// anchor to the cursor, with sides that make both cells inclusive, so
+    /// the a11y caret lands on the cursor whichever way it moved. Rows may
+    /// fall outside the window; only the visible ones paint.
+    pub(crate) fn display_selection(&self) -> Option<Selection> {
+        let selection = self.selection?;
+        let ty = match selection.ty {
+            CopySelectionType::Character => SelectionType::Normal,
+            CopySelectionType::Line => SelectionType::Line,
+            CopySelectionType::Block => SelectionType::Block,
+        };
+        let anchor = (
+            selection.anchor_row - self.display_top,
+            selection.anchor_col,
+        );
+        let cursor = (self.cursor_row - self.display_top, self.cursor_col);
+        let (anchor_side, cursor_side) = if anchor <= cursor {
+            (AnchorSide::Left, AnchorSide::Right)
+        } else {
+            (AnchorSide::Right, AnchorSide::Left)
+        };
+        let mut display = Selection::new(ty, anchor.0, anchor.1, anchor_side);
+        display.update(cursor.0, cursor.1, cursor_side);
+        Some(display)
     }
 
     /// The region motions resolve inside: the addressable rows plus the
@@ -566,7 +652,7 @@ impl CopyModeState {
         }
     }
 
-    /// The next chunk to fetch when the cursor has entered the top or
+    /// The next chunk to fetch when the window has entered the top or
     /// bottom quarter of the cache window (Spec-0008 prefetch), or `None`
     /// when it has not, when the chunk is already cached or in flight, or
     /// when no history remains in that direction.
@@ -576,7 +662,9 @@ impl CopyModeState {
         let zone = (len / 4).max(1);
         let chunk = u32::from(self.visible_rows).min(MAX_ROWS_PER_REQUEST);
 
-        let candidate = if self.cursor_row < start + zone {
+        // The window's edges, not the cursor: the wheel scrolls the window
+        // past a cursor that stays put (Spec-0008 Display).
+        let candidate = if self.display_top < start + zone {
             // Saturating because `oldest` is a sentinel until the daemon
             // reports where history begins; the true span is irrelevant
             // once it exceeds one chunk.
@@ -589,7 +677,7 @@ impl CopyModeState {
                 start_row: start - want,
                 count: u32::try_from(want).unwrap_or(chunk),
             }
-        } else if self.cursor_row >= end - zone {
+        } else if self.display_top + i64::from(self.visible_rows) > end - zone {
             // Rows at and past 0 live in the frozen grid snapshot, so
             // there is nothing further for the daemon to serve.
             let want = i64::from(chunk).min(-end);
@@ -692,10 +780,12 @@ impl CopyModeState {
                 "scrollback window clamped; keying rows from the served start"
             );
         }
-        // The cursor needs no re-clamp: trimming evicts from the end
-        // farther from it, and a non-abutting window is discarded.
+        // Centred on the window, not the cursor: the wheel leaves the
+        // cursor at a window edge, where a cursor-centred trim evicts each
+        // prefetched window and refetches it forever.
         if self.cache.insert_window(data.start_row, data.rows.clone()) {
-            self.cache.trim_to_capacity(self.cursor_row);
+            let rows = i64::from(self.visible_rows);
+            self.cache.trim_to_capacity(self.display_top + rows / 2);
         } else if !data.rows.is_empty() {
             warn!(
                 served = data.start_row,
@@ -1953,6 +2043,239 @@ mod tests {
         assert_eq!(
             state.yank_plan(),
             Some(YankPlan::Local("only\n".to_string()))
+        );
+    }
+
+    // --- Display window (Spec-0008 Display) ---
+
+    #[test]
+    fn the_display_window_follows_the_cursor_and_never_drops_below_the_page() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        assert_eq!(state.display_top(), 0);
+
+        state.set_cursor(2, 0);
+        assert_eq!(state.display_top(), 0, "inside the window: no move");
+
+        state.set_cursor(-6, 0);
+        assert_eq!(state.display_top(), -6, "above: the top follows");
+
+        state.set_cursor(-4, 0);
+        assert_eq!(state.display_top(), -6, "back inside: stays");
+
+        state.set_cursor(3, 0);
+        assert_eq!(state.display_top(), 0, "down to the page bottom");
+    }
+
+    #[test]
+    fn scrolling_the_display_clamps_to_history_and_pulls_the_cursor_along() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        assert_eq!(state.cursor(), (3, 0));
+
+        state.scroll_display(-6);
+        assert_eq!(state.display_top(), -6);
+        assert_eq!(
+            state.cursor(),
+            (-3, 0),
+            "cursor clamps to the window bottom"
+        );
+
+        state.scroll_display(-100);
+        assert_eq!(state.display_top(), -12, "stops at the oldest cached row");
+
+        state.scroll_display(100);
+        assert_eq!(state.display_top(), 0, "stops at the entry page");
+        assert_eq!(state.cursor(), (0, 0), "cursor clamps to the window top");
+    }
+
+    #[test]
+    fn display_rows_come_from_the_page_then_the_cache_then_blank() {
+        use crate::render_grid::RowSource;
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -2, "yz", true);
+        state.set_cursor(-3, 0);
+        assert_eq!(state.display_top(), -2, "clamped to the oldest cached row");
+        state.scroll_display(0);
+
+        assert!(matches!(state.display_row(0), RowSource::Wire(r) if tag_of(r) == 'y'));
+        assert!(matches!(state.display_row(1), RowSource::Wire(r) if tag_of(r) == 'z'));
+        assert_eq!(state.display_row(2), RowSource::Own(0));
+        assert_eq!(state.display_row(3), RowSource::Own(1));
+
+        let mut sparse = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut sparse, -8, "ab", true);
+        sparse.set_cursor(-8, 0);
+        assert_eq!(
+            sparse.display_row(2),
+            RowSource::Blank,
+            "row -6 is uncached history"
+        );
+    }
+
+    /// Entering from scrollback, rows below 0 are both on the page and in
+    /// the cache.
+    #[test]
+    fn page_rows_win_over_cached_copies_of_the_same_row() {
+        use crate::render_grid::RowSource;
+        let mut state = CopyModeState::new(80, 4, 4, Vec::new());
+        filled(&mut state, -8, "abcdefgh", false);
+        assert_eq!(state.display_top(), -4);
+        assert_eq!(state.display_row(0), RowSource::Own(0));
+    }
+
+    #[test]
+    fn the_display_cursor_is_window_relative() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        state.set_cursor(-6, 5);
+        assert_eq!(state.display_cursor(), Some((5, 0)));
+        state.set_cursor(-4, 7);
+        assert_eq!(state.display_cursor(), Some((7, 2)));
+    }
+
+    #[test]
+    fn the_display_selection_covers_the_yank_range_in_window_rows() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        state.set_cursor(2, 6);
+        state.toggle_selection(CopySelectionType::Character);
+        state.set_cursor(1, 3);
+
+        let selection = state.display_selection().expect("selected");
+        assert!(selection.contains(1, 3) && selection.contains(2, 6));
+        assert!(!selection.contains(1, 2) && !selection.contains(2, 7));
+        assert!(selection.contains(1, 79), "character spans to row end");
+
+        state.toggle_selection(CopySelectionType::Block);
+        let block = state.display_selection().expect("selected");
+        assert!(block.contains(1, 3) && block.contains(2, 6) && block.contains(1, 6));
+        assert!(!block.contains(1, 7) && !block.contains(2, 2));
+
+        state.toggle_selection(CopySelectionType::Line);
+        let line = state.display_selection().expect("selected");
+        assert!(line.contains(1, 0) && line.contains(2, 79));
+        assert!(!line.contains(0, 0) && !line.contains(3, 0));
+
+        state.set_cursor(-6, 0);
+        let scrolled = state.display_selection().expect("selected");
+        assert!(
+            scrolled.contains(0, 0) && scrolled.contains(8, 0),
+            "rows follow the window: -6 is row 0, the anchor at 2 is row 8"
+        );
+    }
+
+    /// Answer the planned prefetch the way the daemon would, tagging each
+    /// served row; `false` once nothing is planned.
+    fn answer_prefetch(state: &mut CopyModeState, serial: u32) -> bool {
+        let Some(request) = state.plan_prefetch() else {
+            return false;
+        };
+        state.record_fill(serial, request);
+        let count = usize::try_from(request.count).expect("small");
+        let tags: String = "abcdefghijklmnopqrstuvwxyz"
+            .chars()
+            .cycle()
+            .take(count)
+            .collect();
+        assert!(state.apply_fill(serial, &served(request.start_row, &tags, true)));
+        true
+    }
+
+    /// The wheel leaves the cursor at the window bottom, where a trim
+    /// centred on the cursor would evict each prefetched window forever.
+    #[test]
+    fn prefetch_settles_after_the_wheel_scrolls_up() {
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
+        let tags: String = "abcdefghijklmnopqrstuvwx".to_string();
+        filled(&mut state, -24, &tags, true);
+        state.scroll_display(-20);
+        assert_eq!(
+            state.cursor().0 - state.display_top(),
+            7,
+            "cursor at the bottom"
+        );
+
+        let rounds = (2..50)
+            .take_while(|&serial| answer_prefetch(&mut state, serial))
+            .count();
+        assert!(rounds < 10, "prefetch kept re-planning: {rounds} rounds");
+        for visible in 0..8 {
+            assert_ne!(
+                state.display_row(visible),
+                crate::render_grid::RowSource::Blank
+            );
+        }
+    }
+
+    /// The wheel leaves the cursor at the window top, so the window bottom
+    /// can pass the cache end with the cursor nowhere near it.
+    #[test]
+    fn prefetch_fetches_below_a_window_scrolled_down_past_the_cursor() {
+        let mut state = CopyModeState::new(80, 8, 0, Vec::new());
+        state.set_pinned_base(0);
+        filled(&mut state, -40, "abcdefghijklmnopqrstuvwx", true);
+        state.set_cursor(-40, 0);
+        state.scroll_display(17);
+        assert_eq!(state.cursor().0, state.display_top(), "cursor at the top");
+        assert!(
+            state
+                .plan_prefetch()
+                .is_some_and(|fill| fill.start_row == -16),
+            "the rows below the cache are fetched: {:?}",
+            state.plan_prefetch()
+        );
+    }
+
+    #[test]
+    fn an_at_selection_puts_the_cursor_on_its_focus() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        state.set_cursor(-6, 0);
+
+        state.select_in_window((1, 3), Some((2, 6)));
+        assert_eq!(state.cursor(), (-5, 3), "focus at window row 1");
+        let selection = state.display_selection().expect("selected");
+        assert_eq!(
+            (selection.start.row, selection.start.col),
+            (2, 6),
+            "the selection runs from the anchor"
+        );
+        assert_eq!((selection.end.row, selection.end.col), (1, 3));
+
+        state.select_in_window((3, 2), Some((3, 2)));
+        let one = state.display_selection().expect("one cell is a selection");
+        assert!(one.contains(3, 2), "the cell paints");
+        assert!(
+            !one.contains(3, 1) && !one.contains(3, 3),
+            "its neighbours do not"
+        );
+
+        state.select_in_window((3, 2), None);
+        assert_eq!(state.cursor(), (-3, 2));
+        assert!(
+            state.display_selection().is_none(),
+            "a caret drops the selection"
+        );
+    }
+
+    #[test]
+    fn prefetch_fires_when_the_window_scrolls_into_the_top_quarter() {
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        filled(&mut state, -12, "abcdefghijkl", true);
+        state.set_cursor(-5, 0);
+        assert_eq!(state.plan_prefetch(), None);
+
+        // The cursor stays near the window bottom; the top reaches the zone.
+        state.scroll_display(-6);
+        assert_eq!(state.display_top(), -11);
+        assert_eq!(
+            state.plan_prefetch(),
+            Some(FillRequest {
+                start_row: -16,
+                count: 4
+            })
         );
     }
 }
