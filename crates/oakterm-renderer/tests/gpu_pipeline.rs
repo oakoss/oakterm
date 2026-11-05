@@ -16,6 +16,7 @@ async fn create_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
         .ok()?;
@@ -171,7 +172,7 @@ fn read_pixels(
         .expect("readback: callback never fired")
         .expect("readback: GPU buffer mapping failed");
 
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("map range");
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for row in 0..height {
         let start = (row * padded_row) as usize;

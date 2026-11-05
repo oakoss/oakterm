@@ -226,7 +226,7 @@ impl RenderPipeline {
             vertex: wgpu::VertexState {
                 module: &text_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GlyphVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
@@ -267,7 +267,7 @@ impl RenderPipeline {
                             shader_location: 5,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {

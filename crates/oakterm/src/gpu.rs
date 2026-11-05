@@ -9,10 +9,7 @@ use winit::window::Window;
 
 use oakterm_renderer::atlas::AtlasPlane;
 use oakterm_renderer::pipeline::RenderPipeline;
-// Only `set_surface_p3_colorspace` (macOS-only) logs; ungated this is an
-// unused import on other targets, which CI's `-D warnings` rejects.
-#[cfg(target_os = "macos")]
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::render_grid;
 
@@ -202,6 +199,7 @@ pub(crate) async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         })
         .await
         .map_err(|e| format!("no compatible GPU adapter found: {e}"))?;
@@ -212,18 +210,41 @@ pub(crate) async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<
         .map_err(|e| format!("failed to create GPU device: {e}"))?;
 
     let caps = surface.get_capabilities(&adapter);
+    // Wide-gamut output stays macOS-only: the shaders' P3 path is unexercised
+    // on other platforms.
+    let want_p3 = cfg!(target_os = "macos");
+    let supports_p3 = |f: &wgpu::TextureFormat| {
+        caps.color_spaces(*f)
+            .contains(wgpu::SurfaceColorSpaces::DISPLAY_P3)
+    };
     let format = caps
         .formats
         .iter()
-        .find(|f| f.is_srgb())
+        .find(|f| f.is_srgb() && (!want_p3 || supports_p3(f)))
+        .or_else(|| caps.formats.iter().find(|f| f.is_srgb()))
         .or(caps.formats.first())
         .copied()
         .ok_or_else(|| "no compatible surface format found".to_string())?;
+
+    let p3_active = want_p3 && supports_p3(&format);
+    let color_space = if p3_active {
+        wgpu::SurfaceColorSpace::DisplayP3
+    } else {
+        wgpu::SurfaceColorSpace::Auto
+    };
+    if want_p3 && !p3_active {
+        warn!(
+            ?format,
+            "surface does not support Display P3; rendering sRGB"
+        );
+    }
+    info!(?format, ?color_space, "surface color space selected");
 
     let size = window.inner_size();
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
+        color_space,
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::AutoVsync,
@@ -232,13 +253,6 @@ pub(crate) async fn init_gpu(window: Arc<Window>, blending_mode: u32) -> Result<
         desired_maximum_frame_latency: 2,
     };
     surface.configure(&device, &config);
-
-    // Set Display P3 color space on macOS for wide-gamut rendering.
-    // Enable P3 in shaders only when the layer was configured.
-    #[cfg(target_os = "macos")]
-    let p3_active = set_surface_p3_colorspace(&window);
-    #[cfg(not(target_os = "macos"))]
-    let p3_active = false;
 
     let pipeline = RenderPipeline::new(&device, format, blending_mode, p3_active);
     // AtlasPlane::new() creates a 256x256 atlas — match the GPU texture.
@@ -316,81 +330,4 @@ fn create_color_atlas_texture(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
-}
-
-/// Set the `CAMetalLayer`'s color space to Display P3 on macOS.
-///
-/// wgpu doesn't expose color space configuration. We access the
-/// `CAMetalLayer` through the window's `NSView` layer and set it directly.
-/// Returns `true` if the layer was successfully set to P3.
-#[cfg(target_os = "macos")]
-fn set_surface_p3_colorspace(window: &Window) -> bool {
-    use objc2_core_graphics::{CGColorSpace, kCGColorSpaceDisplayP3};
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Ok(handle) = window.window_handle() else {
-        warn!("failed to get window handle for P3 color space");
-        return false;
-    };
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        warn!("expected AppKit window handle on macOS");
-        return false;
-    };
-
-    // Safety: kCGColorSpaceDisplayP3 is a well-known constant string.
-    #[allow(unsafe_code)]
-    let p3_name = unsafe { kCGColorSpaceDisplayP3 };
-    let Some(p3) = CGColorSpace::with_name(Some(p3_name)) else {
-        warn!("failed to create Display P3 color space");
-        return false;
-    };
-
-    // Safety: the NSView pointer is valid for the window's lifetime.
-    // wgpu may set the view's layer to a CAMetalLayer directly, or the
-    // CAMetalLayer may be a sublayer of a backing layer. Search both.
-    #[allow(unsafe_code)]
-    unsafe {
-        use objc2::msg_send;
-        use objc2::runtime::{AnyClass, AnyObject, Bool};
-        use objc2_quartz_core::CAMetalLayer;
-
-        let ns_view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
-        let layer: *mut AnyObject = msg_send![ns_view, layer];
-        if layer.is_null() {
-            warn!("NSView has no layer for P3 color space");
-            return false;
-        }
-
-        let metal_class = AnyClass::get(c"CAMetalLayer");
-        let Some(metal_class) = metal_class else {
-            warn!("CAMetalLayer class not found");
-            return false;
-        };
-
-        // Check if the view's layer is directly a CAMetalLayer.
-        let is_metal: Bool = msg_send![layer, isKindOfClass: metal_class];
-        if is_metal.as_bool() {
-            let metal_layer: &CAMetalLayer = &*(layer.cast::<CAMetalLayer>());
-            metal_layer.setColorspace(Some(&p3));
-            return true;
-        }
-
-        // Search sublayers for the CAMetalLayer.
-        let sublayers: *mut AnyObject = msg_send![layer, sublayers];
-        if !sublayers.is_null() {
-            let count: usize = msg_send![sublayers, count];
-            for i in 0..count {
-                let sublayer: *mut AnyObject = msg_send![sublayers, objectAtIndex: i];
-                let is_metal: Bool = msg_send![sublayer, isKindOfClass: metal_class];
-                if is_metal.as_bool() {
-                    let metal_layer: &CAMetalLayer = &*(sublayer.cast::<CAMetalLayer>());
-                    metal_layer.setColorspace(Some(&p3));
-                    return true;
-                }
-            }
-        }
-
-        warn!("no CAMetalLayer found on NSView for P3 color space");
-        false
-    }
 }

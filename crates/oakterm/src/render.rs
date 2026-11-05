@@ -153,7 +153,7 @@ impl App {
         if let Some(w) = &self.window {
             w.pre_present_notify();
         }
-        frame.present();
+        gpu.queue.present(frame);
 
         // Re-arm the minute repaint after each frame that shows a clock;
         // firing clears the deadline so drift never accumulates.
