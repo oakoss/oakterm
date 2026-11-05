@@ -50,7 +50,7 @@ tm tracks implementation work (Project `OT`). Design work is tracked by docs the
 
 - **Epics** = committed work streams (5-15 tasks, 2-6 weeks); tasks set the epic as `--parent`
 - **Labels** = kind (`feature`, `chore`, `fix`, `refactor`) + area (`renderer`, `core`, `docs`); bugs and spikes use `--type bug` / `--type spike`
-- **Priority** on tasks, not epics
+- **Priority** on a task ranks it within its epic; on an epic it sets the order epics are worked in
 - **Standalone tasks** (priority `low`, no parent) for shaped but uncommitted features — promote to epic when committed
 - **Icebox** = priority `none` with no parent; archive if nobody mentions in 3 months
 - Don't create epics for uncommitted work or catch-all epics like "Features"
