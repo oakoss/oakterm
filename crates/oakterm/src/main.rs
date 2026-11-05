@@ -2453,6 +2453,9 @@ impl ApplicationHandler<UserEvent> for App {
                         // Copy mode owns the pane's only selection: the
                         // request drives the copy cursor and selection in
                         // the window AT was reading (Spec-0006 Copy Mode).
+                        let shown_offset = pane_hint.and_then(|id| {
+                            a11y_bridge::published_scroll_offset(&self.a11y_state, id)
+                        });
                         if let Some(view) = pane_hint
                             .and_then(|id| self.panes.get_mut(&id))
                             .filter(|view| view.is_copy_mode())
@@ -2461,7 +2464,7 @@ impl ApplicationHandler<UserEvent> for App {
                             if let Some((cursor, anchor)) =
                                 a11y_bridge::copy_selection_from_a11y(&at_sel, rows)
                             {
-                                view.select_in_copy_mode(cursor, anchor);
+                                view.select_in_copy_mode(shown_offset, cursor, anchor);
                                 self.request_redraw();
                             } else {
                                 debug!(

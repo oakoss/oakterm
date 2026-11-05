@@ -69,11 +69,26 @@ impl PaneA11ySnapshot {
         self.row_texts = grid.row_texts();
         self.cursor_row = grid.cursor_y;
         self.cursor_col = grid.cursor_x;
-        self.scroll_offset = u64::from(view.screen_scroll_offset());
-        // Copy mode can report a scroll position before any Scrollback
-        // event set the max; AccessKit needs `scroll_y <= scroll_y_max`.
-        self.scrollback_lines = self.scrollback_lines.max(self.scroll_offset);
+        self.set_scroll_offset(view);
         self.selection = screen_selection(screen);
+    }
+
+    /// Adopt the pane's scroll position. Copy mode can report one before
+    /// any Scrollback event set the max, and AccessKit needs
+    /// `scroll_y <= scroll_y_max`, so the max rises to meet it.
+    fn set_scroll_offset(&mut self, view: &PaneView) {
+        self.scroll_offset = u64::from(view.screen_scroll_offset());
+        self.scrollback_lines = self.scrollback_lines.max(self.scroll_offset);
+    }
+
+    /// Rows whose text differs from `before`, as `(row, text)`.
+    fn rows_changed_since(&self, before: &[String]) -> Vec<(u16, String)> {
+        self.row_texts
+            .iter()
+            .enumerate()
+            .filter(|&(i, text)| before.get(i) != Some(text))
+            .filter_map(|(i, text)| Some((u16::try_from(i).ok()?, text.clone())))
+            .collect()
     }
 }
 
@@ -289,12 +304,26 @@ fn apply_to_snapshot<'a>(
         A11yEvent::Render { dirty_rows } => {
             let cursor_changed =
                 snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
+            let before_rows = std::mem::take(&mut snap.row_texts);
             snap.refresh_from_screen(view, screen);
-            if dirty_rows.is_empty() && !cursor_changed {
+            // The daemon names only what it changed; rows AT last heard from
+            // another view (copy mode, before the live page came back) differ
+            // too and must be pushed or AT keeps reading them.
+            let unnamed: Vec<(u16, String)> = snap
+                .rows_changed_since(&before_rows)
+                .into_iter()
+                .filter(|(row, _)| !dirty_rows.iter().any(|(named, _)| named == row))
+                .collect();
+            if dirty_rows.is_empty() && unnamed.is_empty() && !cursor_changed {
                 return None;
             }
+            let dirty_rows = if unnamed.is_empty() {
+                std::borrow::Cow::Borrowed(*dirty_rows)
+            } else {
+                std::borrow::Cow::Owned([dirty_rows, unnamed.as_slice()].concat())
+            };
             Some(EventOutcome {
-                dirty_rows: std::borrow::Cow::Borrowed(dirty_rows),
+                dirty_rows,
                 cursor_changed,
                 ..Default::default()
             })
@@ -317,7 +346,7 @@ fn apply_to_snapshot<'a>(
             snap.title = (*title).to_string();
             // The rebuilt terminal node carries scroll state; keep it
             // current even when no scroll event refreshed the snapshot yet.
-            snap.scroll_offset = u64::from(view.screen_scroll_offset());
+            snap.set_scroll_offset(view);
             Some(EventOutcome {
                 title_changed: true,
                 ..Default::default()
@@ -329,7 +358,7 @@ fn apply_to_snapshot<'a>(
                 return None;
             }
             snap.selection = sel;
-            snap.scroll_offset = u64::from(view.screen_scroll_offset());
+            snap.set_scroll_offset(view);
             Some(EventOutcome {
                 selection_changed: true,
                 ..Default::default()
@@ -344,15 +373,12 @@ fn apply_to_snapshot<'a>(
                 snap.selection,
             );
             snap.refresh_from_screen(view, screen);
-            let dirty: Vec<(u16, String)> = snap
-                .row_texts
-                .iter()
-                .enumerate()
-                .filter(|&(i, text)| before_rows.get(i) != Some(text))
-                .filter_map(|(i, text)| Some((u16::try_from(i).ok()?, text.clone())))
-                .collect();
+            let dirty = snap.rows_changed_since(&before_rows);
+            // The caret clamps to its row's text when the terminal node is
+            // rebuilt, so new text on the cursor row needs that rebuild too.
             let cursor_changed = (snap.cursor_row, snap.cursor_col, snap.scroll_offset)
-                != (before.0, before.1, before.2);
+                != (before.0, before.1, before.2)
+                || dirty.iter().any(|(row, _)| *row == snap.cursor_row);
             let selection_changed = snap.selection != before.3;
             if dirty.is_empty() && !cursor_changed && !selection_changed {
                 return None;
@@ -620,6 +646,18 @@ pub(crate) fn resolve_tab_click(
         .tabs
         .get(usize::try_from(index).ok()?)
         .map(|t| t.tab_id)
+}
+
+/// The scroll position AT was last shown for `pane_id` (Spec-0006
+/// `scroll_y`), so a request against that tree can be read in its rows.
+/// `None` before the model exists or for an untracked pane.
+pub(crate) fn published_scroll_offset(
+    state: &Mutex<Option<A11yModel>>,
+    pane_id: u32,
+) -> Option<u32> {
+    let guard = state.lock().ok()?;
+    let offset = guard.as_ref()?.panes.get(&pane_id)?.scroll_offset;
+    u32::try_from(offset).ok()
 }
 
 /// Move accessibility focus to `pane_id`'s terminal node. Returns the
@@ -1314,6 +1352,27 @@ mod tests {
         assert_eq!(announcement_value(&update).as_deref(), Some("hello"));
     }
 
+    /// A render update names only the rows the daemon changed. After copy
+    /// mode, AT last heard the copy-mode view, so every row that differs
+    /// from it has to go out with the first live update.
+    #[test]
+    fn apply_render_pushes_rows_that_differ_from_what_at_last_heard() {
+        let mut view = PaneView::new(ClientGrid::new(8, 4));
+        let state = tracked_model(0, &view);
+        let _fill = view.enter_copy_mode();
+        let _ = apply(&state, 0, &view, A11yEvent::ViewChanged);
+        assert!(view.exit_copy_mode());
+        view.grid_mut()
+            .set_cell(0, 1, 'x', [255, 255, 255], [0, 0, 0]);
+
+        let update =
+            apply(&state, 0, &view, A11yEvent::Render { dirty_rows: &[] }).expect("rows changed");
+        assert!(
+            update.nodes.iter().any(|(id, _)| *id == row_node_id(0, 1)),
+            "row 1 changed without the daemon naming it"
+        );
+    }
+
     #[test]
     fn apply_render_nothing_changed_returns_none() {
         let view = PaneView::new(ClientGrid::new(80, 24));
@@ -1844,7 +1903,7 @@ mod tests {
                 let (cursor, anchor_cell) =
                     copy_selection_from_a11y(&request, rows).expect("in window");
                 let mut state = CopyModeState::new(cols, rows, 0, Vec::new());
-                state.select_in_window(cursor, anchor_cell);
+                state.select_in_window(state.display_top(), cursor, anchor_cell);
                 let range = state.yank_range();
                 if anchor == focus {
                     assert_eq!(range, None, "caret at {a:?}");

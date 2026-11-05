@@ -262,7 +262,7 @@ All cursor movement is local to the GUI. No IPC per keystroke.
 Copy mode draws the rows `[display_top, display_top + rows)`, where `rows` is the pane's visible row count.
 
 - **The window follows the cursor.** It starts at `viewport_top` and moves only as far as needed to keep the cursor inside it: a cursor above the window pulls `display_top` up to the cursor's row, and a cursor below it pulls the window down. The window never moves below the entry page (`display_top <= viewport_top`), because nothing below the page is addressable.
-- **Row sources.** Rows at or after `viewport_top` draw from the frozen page with their colors. Rows before it draw from the cache, and a row not yet cached draws blank until its fill lands.
+- **Row sources.** A row the cache holds draws from it, with its colors, the same source yank and motions read. Other rows on the entry page draw from the frozen page, and a history row not yet cached draws blank until its fill lands. The frozen page can carry a scroll indicator over history rows, and the cache keeps it from showing.
 - **Cursor.** The live cursor is hidden. A non-blinking block cursor marks the copy-mode cursor.
 - **Selection.** The selection highlights exactly the cells a yank would take, for character, line and block selections alike. It stays drawn while another pane has focus, since it is state the user built rather than a transient drag.
 - **Prefetch** keys off the display window rather than the cursor, so scrolling the window fetches ahead the same way cursor movement does.

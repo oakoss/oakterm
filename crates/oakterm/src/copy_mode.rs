@@ -422,17 +422,14 @@ impl CopyModeState {
         self.cursor_row = self.cursor_row.clamp(self.display_top, bottom);
     }
 
-    /// Where display row `visible` comes from (Spec-0008 Display): the
-    /// frozen page by its visible index, else the cache, else blank until
-    /// the fill lands. Page rows win: the frozen page keeps its colors.
+    /// The cache wins over the page, as in [`RowText`]: rows below 0 are
+    /// daemon-authoritative, and the page can carry the scroll indicator.
     pub(crate) fn display_row(&self, visible: u16) -> RowSource<'_> {
         let row = self.display_top + i64::from(visible);
-        if let Ok(page_row) = u16::try_from(row - self.viewport_top) {
-            return RowSource::Own(page_row);
+        if let Some(cached) = self.cache.get(row) {
+            return RowSource::Wire(cached);
         }
-        self.cache
-            .get(row)
-            .map_or(RowSource::Blank, RowSource::Wire)
+        u16::try_from(row - self.viewport_top).map_or(RowSource::Blank, RowSource::Own)
     }
 
     pub(crate) fn display_cursor(&self) -> Option<(u16, u16)> {
@@ -441,10 +438,16 @@ impl CopyModeState {
     }
 
     /// Put the cursor on `cursor` and, given an anchor, select characters
-    /// from it, both `(window row, col)` cells; no anchor leaves a caret.
-    pub(crate) fn select_in_window(&mut self, cursor: (u16, u16), anchor: Option<(u16, u16)>) {
+    /// from it, both `(window row, col)` cells of a window whose top row is
+    /// `window_top`; no anchor leaves a caret.
+    pub(crate) fn select_in_window(
+        &mut self,
+        window_top: i64,
+        cursor: (u16, u16),
+        anchor: Option<(u16, u16)>,
+    ) {
         self.selection = None;
-        let row = |r: u16| self.display_top + i64::from(r);
+        let row = |r: u16| window_top + i64::from(r);
         let cursor_row = row(cursor.0);
         if let Some(anchor) = anchor {
             self.set_cursor(row(anchor.0), anchor.1);
@@ -2114,14 +2117,21 @@ mod tests {
     }
 
     /// Entering from scrollback, rows below 0 are both on the page and in
-    /// the cache.
+    /// the cache; the display reads the cache, as yanks and motions do, so
+    /// a scroll indicator painted on the page never shows in copy mode.
     #[test]
-    fn page_rows_win_over_cached_copies_of_the_same_row() {
+    fn cached_rows_win_over_the_page_copy_of_the_same_row() {
         use crate::render_grid::RowSource;
-        let mut state = CopyModeState::new(80, 4, 4, Vec::new());
+        let mut state = CopyModeState::new(80, 4, 2, Vec::new());
         filled(&mut state, -8, "abcdefgh", false);
-        assert_eq!(state.display_top(), -4);
-        assert_eq!(state.display_row(0), RowSource::Own(0));
+        assert_eq!(state.display_top(), -2);
+        assert!(matches!(state.display_row(0), RowSource::Wire(r) if tag_of(r) == 'g'));
+        assert!(matches!(state.display_row(1), RowSource::Wire(r) if tag_of(r) == 'h'));
+        assert_eq!(
+            state.display_row(2),
+            RowSource::Own(2),
+            "row 0 is live, never cached"
+        );
     }
 
     #[test]
@@ -2234,7 +2244,7 @@ mod tests {
         filled(&mut state, -12, "abcdefghijkl", true);
         state.set_cursor(-6, 0);
 
-        state.select_in_window((1, 3), Some((2, 6)));
+        state.select_in_window(state.display_top(), (1, 3), Some((2, 6)));
         assert_eq!(state.cursor(), (-5, 3), "focus at window row 1");
         let selection = state.display_selection().expect("selected");
         assert_eq!(
@@ -2244,7 +2254,7 @@ mod tests {
         );
         assert_eq!((selection.end.row, selection.end.col), (1, 3));
 
-        state.select_in_window((3, 2), Some((3, 2)));
+        state.select_in_window(state.display_top(), (3, 2), Some((3, 2)));
         let one = state.display_selection().expect("one cell is a selection");
         assert!(one.contains(3, 2), "the cell paints");
         assert!(
@@ -2252,12 +2262,18 @@ mod tests {
             "its neighbours do not"
         );
 
-        state.select_in_window((3, 2), None);
+        state.select_in_window(state.display_top(), (3, 2), None);
         assert_eq!(state.cursor(), (-3, 2));
         assert!(
             state.display_selection().is_none(),
             "a caret drops the selection"
         );
+
+        // AT read a window 2 rows lower than the one now on screen: its
+        // row 0 is the current row 2.
+        let top = state.display_top();
+        state.select_in_window(top + 2, (0, 1), None);
+        assert_eq!(state.cursor(), (top + 2, 1));
     }
 
     #[test]

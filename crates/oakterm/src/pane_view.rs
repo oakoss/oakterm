@@ -372,9 +372,18 @@ impl PaneView {
     }
 
     /// Apply an AT selection request in copy mode; a no-op outside it.
-    pub(crate) fn select_in_copy_mode(&mut self, cursor: (u16, u16), anchor: Option<(u16, u16)>) {
+    /// Rows count from the window AT was shown, `shown_offset` rows above
+    /// the live bottom (Spec-0006 `scroll_y`): the window may have moved
+    /// since the tree was last published. `None` uses the current window.
+    pub(crate) fn select_in_copy_mode(
+        &mut self,
+        shown_offset: Option<u32>,
+        cursor: (u16, u16),
+        anchor: Option<(u16, u16)>,
+    ) {
         if let Some(state) = &mut self.copy_mode {
-            state.select_in_window(cursor, anchor);
+            let top = shown_offset.map_or(state.display_top(), |offset| -i64::from(offset));
+            state.select_in_window(top, cursor, anchor);
         }
     }
 
@@ -868,6 +877,68 @@ mod tests {
         );
         view.set_copy_mode_scroll_offset(8);
         assert_eq!(view.screen_scroll_offset(), 8);
+    }
+
+    /// The AT caret clamps to its row's text when the terminal node is
+    /// rebuilt, so a fill that changes the cursor row's text must rebuild
+    /// it even though the cursor itself did not move.
+    #[test]
+    fn a_fill_on_the_cursor_row_rebuilds_the_a11y_terminal_node() {
+        use crate::a11y_bridge::{A11yEvent, A11yModel, apply};
+        let mut view = PaneView::new(ClientGrid::new(4, 4));
+        assert!(!view.scroll_up(4), "no copy mode to release");
+        let page: Vec<DirtyRow> = (0..4).map(|i| make_dirty_row(i, b"page")).collect();
+        view.apply_scrollback(&page, 0, false);
+        let _fill = view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        let mut model = A11yModel::new(0, (8.0, 16.0));
+        model.register_pane(0, &view);
+        let state = std::sync::Mutex::new(Some(model));
+        let _ = apply(&state, 0, &view, A11yEvent::ViewChanged);
+
+        view.record_copy_mode_fill(
+            7,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(7, &scrollback_data(-8, 8)));
+        let update = apply(&state, 0, &view, A11yEvent::ViewChanged).expect("rows changed");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == oakterm_a11y::terminal_node_id(0)),
+            "the cursor row now reads the cache, so the caret is rebuilt"
+        );
+    }
+
+    /// AT selects in the window it was shown, which a scroll may have moved
+    /// before the request arrives.
+    #[test]
+    fn an_at_selection_counts_rows_from_the_window_at_was_shown() {
+        let mut view = PaneView::new(ClientGrid::new(4, 4));
+        let _fill = view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        view.record_copy_mode_fill(
+            7,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(7, &scrollback_data(-8, 8)));
+        view.set_copy_mode_scroll_offset(5);
+        let shown = view.screen_scroll_offset();
+        view.set_copy_mode_scroll_offset(2);
+
+        view.select_in_copy_mode(Some(shown), (1, 2), Some((0, 0)));
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((-4, 2)),
+            "row 1 of the window at offset 5, not of the one at offset 2"
+        );
     }
 
     #[test]
