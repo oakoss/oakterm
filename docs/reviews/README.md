@@ -71,3 +71,4 @@ Not every review needs every section. Competitive research reviews may only have
 | 2026-08-16 | [Agent Tooling Landscape Audit](2026-08-16-215731-agent-tooling-landscape-audit.md)         | 11 agent-adjacent tools + Anthropic auth/billing policy — 3 ADR candidates |
 | 2026-08-17 | [GPUI Evaluation](2026-08-17-181057-gpui-evaluation.md)                                     | Zed's GPUI vs ADR-0018 wgpu — rejected; ADR-0018 amended (Option E)        |
 | 2026-11-04 | [Rex Architecture](2026-11-04-233107-rex-architecture-review.md)                            | Superlogical's Rex (libghostty, Go server) — 3 missing specs, OSC 7501     |
+| 2026-11-05 | [T3 Code Source Review](2026-11-05-075636-t3code-source-review.md)                          | T3 Code at 337c585 — agents, remote auth, replay; 5 missing specs          |
