@@ -1,4 +1,4 @@
-use vergen_gitcl::{BuildBuilder, CargoBuilder, Emitter, GitclBuilder};
+use vergen_gitcl::{Build, Cargo, Emitter, Gitcl};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
@@ -11,9 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         option_env!("RELEASE_CHANNEL").unwrap_or("dev")
     );
 
-    let build = BuildBuilder::all_build()?;
-    let cargo = CargoBuilder::all_cargo()?;
-    let gitcl = GitclBuilder::all_git()?;
+    let build = Build::all_build();
+    let cargo = Cargo::all_cargo();
+    let gitcl = Gitcl::all_git();
 
     Emitter::default()
         .add_instructions(&build)?
