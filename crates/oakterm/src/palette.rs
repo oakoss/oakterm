@@ -598,7 +598,7 @@ mod tests {
         for c in "close".chars() {
             p.input_char(c, &reg, restrictive_ctx());
         }
-        assert!(labels(&p).is_empty());
+        assert_eq!(labels(&p), [] as [&str; 0]);
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         for c in "close".chars() {
             p.input_char(c, &reg, restrictive_ctx());
         }
-        assert!(p.results().is_empty());
+        assert_eq!(p.results(), []);
         p.move_down();
         p.move_up();
         assert_eq!(p.selected_index(), 0);

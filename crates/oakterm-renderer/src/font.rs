@@ -412,7 +412,7 @@ mod tests {
             assert!(metrics.cell_width > 0.0);
             assert!(metrics.cell_height > 0.0);
             assert!(metrics.baseline > 0.0);
-            assert!(!data.is_empty());
+            assert!(!data.is_empty(), "rasterized glyph has no bitmap data");
         } else {
             eprintln!("no system monospace font found — skipping");
         }

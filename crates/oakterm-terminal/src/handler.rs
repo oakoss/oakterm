@@ -2496,7 +2496,7 @@ mod tests {
         for _ in 0..10 {
             parse(&mut grid, b"\x1b[23;0t");
         }
-        assert!(grid.title_stack.is_empty());
+        assert_eq!(grid.title_stack, [] as [String; 0]);
 
         // 11th pop is a no-op.
         grid.title_dirty = false;
@@ -2512,7 +2512,7 @@ mod tests {
         assert_eq!(grid.title_stack.len(), 1);
 
         parse(&mut grid, b"\x1bc"); // RIS
-        assert!(grid.title_stack.is_empty());
+        assert_eq!(grid.title_stack, [] as [String; 0]);
 
         // Pop should be no-op.
         grid.title_dirty = false;

@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn focus_update_moves_focus_without_node_changes() {
         let update = build_focus_update(7);
-        assert!(update.nodes.is_empty());
+        assert_eq!(update.nodes, []);
         assert!(update.tree.is_none());
         assert_eq!(update.focus, terminal_node_id(7));
     }

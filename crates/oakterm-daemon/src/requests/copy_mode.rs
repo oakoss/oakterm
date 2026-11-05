@@ -1069,7 +1069,7 @@ mod tests {
         let result = exit_copy_mode(1, &exit_frame(pane_id), &panes).await;
 
         assert!(matches!(result, RequestResult::NoResponse));
-        assert!(pins(&panes, pane_id).await.is_empty());
+        assert_eq!(pins(&panes, pane_id).await, [] as [u64; 0]);
     }
 
     #[tokio::test]
@@ -1122,7 +1122,7 @@ mod tests {
         release_client_pins(1, &panes).await;
 
         assert_eq!(pins(&panes, a).await, vec![2], "other clients keep theirs");
-        assert!(pins(&panes, b).await.is_empty());
+        assert_eq!(pins(&panes, b).await, [] as [u64; 0]);
     }
 
     #[tokio::test]

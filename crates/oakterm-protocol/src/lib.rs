@@ -26,7 +26,7 @@ mod tests {
         let encoded = frame.encode_to_vec();
         let (decoded, _) = Frame::decode_from_slice(&encoded).unwrap();
         assert_eq!(decoded.msg_type, MSG_PING);
-        assert!(decoded.payload.is_empty());
+        assert_eq!(decoded.payload, b"");
     }
 
     #[test]
@@ -207,8 +207,8 @@ mod tests {
         let request = Frame::new(MSG_PING, 5, vec![]).unwrap();
         let response = Frame::new(MSG_PONG, 5, vec![]).unwrap();
         assert_eq!(request.serial, response.serial);
-        assert!(request.payload.is_empty());
-        assert!(response.payload.is_empty());
+        assert_eq!(request.payload, b"");
+        assert_eq!(response.payload, b"");
     }
 
     #[test]
@@ -408,7 +408,7 @@ mod tests {
         let encoded = msg.encode().unwrap();
         let decoded = KeyInput::decode(&encoded).unwrap();
         assert_eq!(decoded, msg);
-        assert!(decoded.key_data.is_empty());
+        assert_eq!(decoded.key_data, b"");
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
     fn detach_roundtrip() {
         let msg = Detach;
         let encoded = msg.encode();
-        assert!(encoded.is_empty());
+        assert_eq!(encoded, b"");
         Detach::decode(&encoded).unwrap();
     }
 
@@ -486,7 +486,7 @@ mod tests {
     fn detach_as_frame() {
         let frame = Frame::new(MSG_DETACH, 0, Detach.encode()).unwrap();
         assert_eq!(frame.msg_type, MSG_DETACH);
-        assert!(frame.payload.is_empty());
+        assert_eq!(frame.payload, b"");
     }
 
     #[test]
@@ -1022,7 +1022,7 @@ mod tests {
         };
         let encoded = resp.encode().unwrap();
         assert_eq!(encoded.len(), 4);
-        assert!(YankResponse::decode(&encoded).unwrap().text.is_empty());
+        assert_eq!(YankResponse::decode(&encoded).unwrap().text, "");
     }
 
     #[test]
@@ -1444,7 +1444,7 @@ mod tests {
         let frame = CloseTabResponse.to_frame(31).unwrap();
         assert_eq!(frame.msg_type, MSG_CLOSE_TAB_RESPONSE);
         assert_eq!(frame.serial, 31);
-        assert!(frame.payload.is_empty());
+        assert_eq!(frame.payload, b"");
         assert!(CloseTabResponse::decode(&frame.payload).is_ok());
     }
 
@@ -1603,7 +1603,7 @@ mod tests {
         let frame = CloseWorkspaceResponse.to_frame(52).unwrap();
         assert_eq!(frame.msg_type, MSG_CLOSE_WORKSPACE_RESPONSE);
         assert_eq!(frame.serial, 52);
-        assert!(frame.payload.is_empty());
+        assert_eq!(frame.payload, b"");
         assert!(CloseWorkspaceResponse::decode(&frame.payload).is_ok());
     }
 

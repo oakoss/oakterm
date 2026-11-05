@@ -374,7 +374,7 @@ mod tests {
                 rect: CONTENT
             }]
         );
-        assert!(g.borders.is_empty());
+        assert_eq!(g.borders, []);
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
         let g = compute_layout(&tree, CONTENT);
         assert_eq!(focused_border_indices(&g, 0), vec![0]);
         assert_eq!(focused_border_indices(&g, 1), vec![0]);
-        assert!(focused_border_indices(&g, 99).is_empty());
+        assert_eq!(focused_border_indices(&g, 99), [] as [usize; 0]);
     }
 
     #[test]

@@ -585,9 +585,9 @@ mod tests {
     fn seek_table_empty_round_trip() {
         let entries: Vec<SeekTableEntry> = vec![];
         let bytes = serialize_seek_table(&entries);
-        assert!(bytes.is_empty());
+        assert_eq!(bytes, []);
         let decoded = deserialize_seek_table(&bytes).unwrap();
-        assert!(decoded.is_empty());
+        assert_eq!(decoded, []);
     }
 
     #[test]
@@ -628,7 +628,10 @@ mod tests {
         assert_eq!(writer.frame_count(), 1);
         assert_eq!(writer.total_rows(), 1);
         let (data, _key) = writer.finalize().unwrap();
-        assert!(!data.is_empty());
+        assert!(
+            !data.is_empty(),
+            "finalized archive with one frame has no bytes"
+        );
         let table = read_seek_table(&data).unwrap();
         assert_eq!(table.len(), 1);
         assert_eq!(table[0].row_count, 1);

@@ -584,9 +584,12 @@ mod tests {
         let mut core = ArchiveCore::new(dir.path().join("archive"), u64::MAX).unwrap();
         core.archive_rows(make_rows(5, 80), 0).unwrap();
         assert_eq!(core.stats().total_archived_rows, 0);
-        assert!(!core.pending_rows.is_empty());
+        assert!(
+            !core.pending_rows.is_empty(),
+            "rows below the frame threshold should stay pending"
+        );
         core.flush_pending().unwrap();
-        assert!(core.pending_rows.is_empty());
+        assert_eq!(core.pending_rows, []);
         assert_eq!(core.stats().total_archived_rows, 5);
     }
 
@@ -698,7 +701,7 @@ mod tests {
         core.archive_rows(make_rows(10, 80), 0).unwrap();
         core.flush_pending().unwrap();
         core.seal_active_segment().unwrap();
-        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(0, 1).unwrap(), []);
         assert_eq!(core.read_range(base_before, 10).unwrap().len(), 10);
     }
 
@@ -743,7 +746,7 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 22);
-        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(0, 1).unwrap(), []);
         assert_eq!(core.read_range(17, 5).unwrap().len(), 5);
     }
 
@@ -868,7 +871,7 @@ mod tests {
 
         let stats = core.stats();
         assert_eq!(stats.total_archived_rows + stats.lost_rows, 15);
-        assert!(core.read_range(0, 1).unwrap().is_empty());
+        assert_eq!(core.read_range(0, 1).unwrap(), []);
         assert_eq!(core.read_range(10, 5).unwrap().len(), 5);
     }
 

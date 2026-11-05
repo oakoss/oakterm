@@ -408,7 +408,7 @@ mod tests {
             14.0,
         );
         assert_eq!(bitmap.width, 0);
-        assert!(bitmap.data.is_empty());
+        assert_eq!(bitmap.data, []);
     }
 
     #[test]
