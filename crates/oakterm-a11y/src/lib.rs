@@ -8,7 +8,8 @@
 //! `(pane_id + 1) * PANE_STRIDE`.
 
 use accesskit::{
-    Action, Live, Node, NodeId, Rect, Role, TextPosition, TextSelection, Tree, TreeId, TreeUpdate,
+    Action, Live, Node, NodeId, Rect, Role, TextPosition, TextSelection, TreeId, TreeInfo,
+    TreeUpdate,
 };
 
 pub const WINDOW_ID: NodeId = NodeId(0);
@@ -194,7 +195,7 @@ pub fn build_initial_tree(input: &TreeInput<'_>) -> TreeUpdate {
 
     TreeUpdate {
         nodes,
-        tree: Some(Tree::new(WINDOW_ID)),
+        tree: Some(TreeInfo::new(WINDOW_ID)),
         tree_id: TreeId::ROOT,
         focus,
     }
@@ -1066,15 +1067,20 @@ mod tests {
 
     struct NoOpChanges;
     impl accesskit_consumer::TreeChangeHandler for NoOpChanges {
-        fn node_added(&mut self, _: &accesskit_consumer::Node) {}
-        fn node_updated(&mut self, _: &accesskit_consumer::Node, _: &accesskit_consumer::Node) {}
-        fn focus_moved(
+        fn node_added(&mut self, _: &accesskit_consumer::NodeRef) {}
+        fn node_updated(
             &mut self,
-            _: Option<&accesskit_consumer::Node>,
-            _: Option<&accesskit_consumer::Node>,
+            _: &accesskit_consumer::NodeRef,
+            _: &accesskit_consumer::NodeRef,
         ) {
         }
-        fn node_removed(&mut self, _: &accesskit_consumer::Node) {}
+        fn focus_moved(
+            &mut self,
+            _: Option<&accesskit_consumer::NodeRef>,
+            _: Option<&accesskit_consumer::NodeRef>,
+        ) {
+        }
+        fn node_removed(&mut self, _: &accesskit_consumer::NodeRef) {}
     }
 
     /// AccessKit's consumer panics on structurally invalid trees (duplicate
