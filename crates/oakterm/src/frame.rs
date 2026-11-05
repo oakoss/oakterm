@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::pane_view::PaneView;
 use crate::render_grid::{self, ClientGrid};
-use crate::{layout, tab_bar};
+use crate::{bell, layout, tab_bar};
 
 /// Tab bar colors, fixed until the theme system (TREK-212) lands.
 const TAB_BAR_BG_RGB: [u8; 3] = [16, 16, 16];
@@ -161,7 +161,8 @@ impl FrameAssembly {
 }
 
 /// Cursor and selection render only in the focused pane; the cursor
-/// honors the blink phase.
+/// honors the blink phase. A pane in `flashing` has its whole rect and
+/// every cell background tinted for the visual bell; glyphs are untouched.
 #[allow(clippy::cast_precision_loss)] // pixel origins fit in f32
 pub(crate) fn assemble_frame(
     font: &mut FontState,
@@ -169,6 +170,7 @@ pub(crate) fn assemble_frame(
     render_list: &[(u32, layout::PixelRect)],
     focused_pane: u32,
     blink_visible: bool,
+    flashing: &[u32],
     viewport: (f32, f32),
 ) -> FrameAssembly {
     let mut assembly = FrameAssembly::default();
@@ -186,6 +188,14 @@ pub(crate) fn assemble_frame(
         } else {
             None
         };
+        let flash = flashing.contains(&pane_id);
+        if flash {
+            // Backdrop for the pane area the cell grid does not cover.
+            let rgb = bell::flash_rgb(grid.bg_color);
+            assembly
+                .bg_sections
+                .push(solid_section(rect, rgb, viewport));
+        }
         push_grid(
             &mut assembly,
             font,
@@ -196,6 +206,11 @@ pub(crate) fn assemble_frame(
             pane.viewport_offset(),
             viewport,
         );
+        if flash && let Some(cells) = assembly.bg_sections.last_mut() {
+            for color in &mut cells.colors {
+                *color = bell::flash_packed(*color);
+            }
+        }
     }
     assembly
 }
@@ -529,9 +544,10 @@ pub(crate) fn solid_section(
 #[allow(clippy::float_cmp)] // exact arithmetic on small integers in f64
 mod tests {
     use super::{FrameAssembly, assemble_frame, assemble_palette, assemble_tab_bar, try_init_font};
+    use crate::bell;
     use crate::layout::PixelRect;
     use crate::pane_view::PaneView;
-    use crate::render_grid::ClientGrid;
+    use crate::render_grid::{self, ClientGrid};
     use crate::tab_bar::TabsState;
     use oakterm_protocol::message::{TabEntry, TabList};
     use std::collections::HashMap;
@@ -583,11 +599,78 @@ mod tests {
         // Pane 9 has no view and must be skipped, not rendered empty.
         let render_list = [(1, rect(0)), (2, rect(120)), (9, rect(240))];
 
-        let assembly = assemble_frame(&mut font, &panes, &render_list, 1, true, (400.0, 300.0));
+        let assembly = assemble_frame(
+            &mut font,
+            &panes,
+            &render_list,
+            1,
+            true,
+            &[],
+            (400.0, 300.0),
+        );
 
         assert_eq!(assembly.bg_sections.len(), 2);
         assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
+
+    #[test]
+    fn assemble_frame_flashes_only_the_ringing_pane() {
+        let Ok(mut font) = try_init_font(&oakterm_config::ConfigValues::default(), 14.0) else {
+            eprintln!("skipping: no system monospace font available");
+            return;
+        };
+        let mut ringing = ClientGrid::new(10, 5);
+        ringing.bg_color = [239, 241, 245];
+        ringing.set_cell(0, 0, 'x', [0, 0, 0], [200, 30, 30]);
+        let mut panes = HashMap::new();
+        panes.insert(1, PaneView::new(ClientGrid::new(10, 5)));
+        panes.insert(2, PaneView::new(ringing));
+        let rect = |x| PixelRect {
+            x,
+            y: 0,
+            width: 100,
+            height: 80,
+        };
+        let render_list = [(1, rect(0)), (2, rect(120))];
+
+        let assembly = assemble_frame(
+            &mut font,
+            &panes,
+            &render_list,
+            1,
+            true,
+            &[2],
+            (400.0, 300.0),
+        );
+
+        assert_eq!(assembly.bg_sections.len(), 3);
+        assert_eq!(
+            assembly.bg_sections[0].colors,
+            panes[&1].grid().bg_colors(true, None, 0),
+            "the quiet pane is untouched"
+        );
+        let backdrop = &assembly.bg_sections[1];
+        assert_eq!(backdrop.uniforms.pad_left, 120.0);
+        assert_eq!(
+            (backdrop.uniforms.cell_width, backdrop.uniforms.cell_height),
+            (100.0, 80.0)
+        );
+        assert_eq!(
+            backdrop.colors,
+            vec![render_grid::pack_bg_color(bell::flash_rgb([239, 241, 245]))]
+        );
+        let tinted: Vec<u32> = panes[&2]
+            .grid()
+            .bg_colors(false, None, 0)
+            .into_iter()
+            .map(bell::flash_packed)
+            .collect();
+        assert_eq!(assembly.bg_sections[2].colors, tinted);
+        assert_eq!(
+            assembly.bg_sections[2].colors[0],
+            render_grid::pack_bg_color(bell::flash_rgb([200, 30, 30]))
+        );
     }
 
     #[test]
@@ -643,6 +726,7 @@ mod tests {
             &render_list,
             1,
             true,
+            &[],
             (400.0, 300.0),
         );
 

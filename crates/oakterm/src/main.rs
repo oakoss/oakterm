@@ -1,4 +1,5 @@
 mod a11y_bridge;
+mod bell;
 mod copy_keys;
 mod copy_mode;
 mod copy_motion;
@@ -103,7 +104,9 @@ enum UserEvent {
     },
     PromptPosition(PromptPosition),
     TitleChanged(u32, String),
-    Bell,
+    /// The pane that rang; `None` flashes the focused pane (a rejected
+    /// user action, or a daemon bell whose pane id did not decode).
+    Bell(Option<u32>),
     AccessKitAction(accesskit::ActionRequest),
     Disconnected,
     ConfigReloaded(Box<oakterm_config::ConfigResult>),
@@ -656,6 +659,7 @@ struct App {
     /// Next status bar clock repaint (minute boundary). `None` until a
     /// frame with a clock re-arms it.
     clock_deadline: Option<std::time::Instant>,
+    bell_flash: bell::BellFlash,
     /// Active modal key table (resize mode): while set, unmatched keys
     /// are dropped rather than forwarded to the PTY. Constructed
     /// programmatically by the mode that owns it (no Lua registration API
@@ -749,6 +753,7 @@ impl App {
             blink_visible: true,
             blink_deadline: None,
             clock_deadline: None,
+            bell_flash: bell::BellFlash::default(),
             active_key_table: None,
             leader_pending: None,
             focused: true,
@@ -954,11 +959,8 @@ impl App {
                     "copy mode cache fill failed again; leaving copy mode"
                 );
                 // The teardown itself destroys the invalidation push's
-                // announcement path, so this arm owes a bell — unless
-                // the reader thread already rang for this code.
-                if !daemon_conn::error_rings_bell(code) {
-                    self.ring_bell();
-                }
+                // announcement path, so this arm owes a bell.
+                self.ring_for_failure(code);
                 if retryable {
                     self.exit_copy_mode(pane_id);
                 } else {
@@ -1211,7 +1213,18 @@ impl App {
     /// of: a key that looks dead is otherwise reported as a broken
     /// keyboard.
     fn ring_bell(&self) {
-        let _ = self.proxy.send_event(UserEvent::Bell);
+        if let Err(e) = self.proxy.send_event(UserEvent::Bell(None)) {
+            debug!(error = %e, "bell dropped: event loop closed");
+        }
+    }
+
+    /// Ring for a failed request unless the reader thread already rang
+    /// for its code ([`daemon_conn::error_rings_bell`]): one failure, one
+    /// bell, or a screen reader hears the rejection twice.
+    fn ring_for_failure(&self, code: Option<oakterm_protocol::message::ErrorCode>) {
+        if !daemon_conn::error_rings_bell(code) {
+            self.ring_bell();
+        }
     }
 
     fn request_redraw(&self) {
@@ -2270,7 +2283,14 @@ impl ApplicationHandler<UserEvent> for App {
                     debug!(pane_id, "a11y: title change dropped (no client view)");
                 }
             }
-            UserEvent::Bell => {
+            UserEvent::Bell(pane) => {
+                self.bell_flash.ring(
+                    bell::target(pane, self.focused_pane),
+                    std::time::Instant::now(),
+                );
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
                 // Announce bell to screen readers (assertive = interrupts).
                 if let (Some(view), Some(adapter)) =
                     (self.panes.get(&self.focused_pane), &mut self.accesskit)
@@ -2483,9 +2503,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // the daemon DID pin; the exit is a no-op against a
                     // genuinely refused pin, so send it unconditionally.
                     self.send_exit_copy_mode(pane_id);
-                    if !daemon_conn::error_rings_bell(code) {
-                        self.ring_bell();
-                    }
+                    self.ring_for_failure(code);
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -2510,7 +2528,7 @@ impl ApplicationHandler<UserEvent> for App {
                         pane_id,
                         serial, "entry refetch failed; abandoning copy-mode entry"
                     );
-                    self.ring_bell();
+                    self.ring_for_failure(code);
                 }
                 // A dead yank has to be retired or the next reply would
                 // be refused as answering a superseded request, leaving
@@ -2523,12 +2541,7 @@ impl ApplicationHandler<UserEvent> for App {
                         "yank rejected; staying in copy mode"
                     );
                     self.pending_yanks.retire(pane_id);
-                    // The reader thread already rang for the codes it
-                    // covers; ringing again announces the same rejection
-                    // twice to a screen reader.
-                    if !daemon_conn::error_rings_bell(code) {
-                        self.ring_bell();
-                    }
+                    self.ring_for_failure(code);
                 }
             }
             UserEvent::YankResponse { serial, text } => {
@@ -2644,6 +2657,11 @@ impl ApplicationHandler<UserEvent> for App {
                     self.blink_deadline = None;
                 }
             }
+            if self.bell_flash.expire(now)
+                && let Some(w) = &self.window
+            {
+                w.request_redraw();
+            }
             if self.clock_deadline.is_some_and(|d| now >= d) {
                 // The redraw re-arms the deadline at the next boundary.
                 self.clock_deadline = None;
@@ -2659,6 +2677,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.blink_deadline,
             self.clock_deadline,
             self.leader_pending.as_ref().map(|p| p.deadline),
+            self.bell_flash.next_deadline(),
         ];
         if let Some(deadline) = next_wakeup(deadlines) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
@@ -3048,7 +3067,7 @@ impl App {
                     // absent index rings rather than appearing dead. Tab
                     // state is empty against pre-1.2 daemons, so these
                     // binds ring there too.
-                    let _ = self.proxy.send_event(UserEvent::Bell);
+                    self.ring_bell();
                 }
                 true
             }
