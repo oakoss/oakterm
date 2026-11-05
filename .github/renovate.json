@@ -26,6 +26,13 @@
       "matchPackageNames": ["rust"],
       "groupName": null,
       "automerge": false
+    },
+    {
+      "description": "A pre-1.0 minor bump is a breaking release under SemVer, but Renovate files it as non-major. Each gets its own PR and a reviewed merge, so a compile break can't hold the non-major group hostage and a quiet behavior change can't automerge.",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "/^v?0\\./",
+      "groupName": null,
+      "automerge": false
     }
   ]
 }
