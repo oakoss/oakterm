@@ -543,6 +543,17 @@ When the user scrolls through scrollback (viewport offset changes):
 - All visible row TextRuns are rebuilt (the content has changed).
 - The screen reader can use `ScrollUp`/`ScrollDown` actions to navigate scrollback.
 
+### Copy Mode
+
+While a pane is in copy mode (Spec-0008), its subtree describes what copy mode draws, not the live grid:
+
+- The TextRun nodes reflect the rows of the copy-mode display window, rebuilt when the window moves.
+- The terminal node's `text_selection` is the copy-mode cursor, as a collapsed caret, or the copy-mode selection from its anchor to the cursor. An anchor outside the display window clamps to the window's nearest edge: the start of its top row, or the end of its bottom row.
+- `scroll_y` reports the display window's distance above the live bottom at entry (`-display_top`), the same unit Scrollback Navigation uses; `scroll_y_max` is never below it.
+- AT actions act on copy mode: `ScrollUp`/`ScrollDown` and `SetScrollOffset` move the display window, and `SetTextSelection` moves the copy-mode cursor to the focus and, when anchor and focus differ, selects characters from the anchor.
+- Entering and leaving copy mode are announced through the live region at `Polite` ("Copy mode", "Copy mode off").
+- New output is not announced for a pane in copy mode: its view is frozen, so the announcement would describe text the user cannot see.
+
 ### Multi-Pane
 
 Each pane gets its own Terminal subtree in its own node-ID block (see NodeId

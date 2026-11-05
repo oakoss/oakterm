@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
 use oakterm_renderer::pipeline::GlyphVertex;
 use oakterm_renderer::shaper::{FontKey, FontMetrics, PixelFormat, TextRun, TextShaper};
+use oakterm_terminal::grid::cursor::CursorStyle;
 use oakterm_terminal::grid::selection::Selection;
 
 /// sRGB to linear (IEC 61966-2-1). Matches the shader's `srgb_to_linear`.
@@ -66,6 +67,15 @@ pub struct FontKeys {
     pub italic: Option<FontKey>,
     /// Bold-italic font, if loaded.
     pub bold_italic: Option<FontKey>,
+}
+
+/// Where [`ClientGrid::compose`] takes one row from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RowSource<'a> {
+    /// A visible row of the grid being composed from.
+    Own(u16),
+    Wire(&'a DirtyRow),
+    Blank,
 }
 
 /// Saved live-view state when the viewport is scrolled up.
@@ -331,6 +341,47 @@ impl ClientGrid {
             bg,
             flags: 0,
         };
+    }
+
+    /// A grid of this one's shape built row by row from `source`, with a
+    /// steady block cursor at `cursor` (`(col, row)`) when one is given.
+    #[must_use]
+    pub fn compose<'a>(
+        &self,
+        source: impl Fn(u16) -> RowSource<'a>,
+        cursor: Option<(u16, u16)>,
+    ) -> ClientGrid {
+        let cols = usize::from(self.cols);
+        let mut out = ClientGrid::new(self.cols, self.rows);
+        out.bg_color = self.bg_color;
+        for row in 0..self.rows {
+            let dst = usize::from(row) * cols;
+            match source(row) {
+                RowSource::Own(src_row) if src_row < self.rows => {
+                    let src = usize::from(src_row) * cols;
+                    out.cells[dst..dst + cols].clone_from_slice(&self.cells[src..src + cols]);
+                }
+                RowSource::Wire(dirty) => {
+                    for (col, wire) in dirty.cells.iter().take(cols).enumerate() {
+                        out.cells[dst + col] = wire_cell_to_render(wire);
+                    }
+                }
+                RowSource::Own(src_row) => {
+                    debug_assert!(false, "row {src_row} is outside a {}-row grid", self.rows);
+                }
+                RowSource::Blank => {}
+            }
+        }
+        match cursor {
+            Some((col, row)) => {
+                out.cursor_x = col;
+                out.cursor_y = row;
+                out.cursor_visible = true;
+                out.cursor_style = CursorStyle::SteadyBlock.to_wire();
+            }
+            None => out.cursor_visible = false,
+        }
+        out
     }
 
     /// Fill every cell's background, keeping default fg and no glyph.
@@ -1245,6 +1296,37 @@ mod tests {
         assert_eq!(cell.codepoint, u32::from('x'));
         assert_eq!(cell.fg, [1, 2, 3]);
         assert_eq!(cell.bg, [4, 5, 6]);
+    }
+
+    #[test]
+    fn compose_takes_each_row_from_its_source_and_draws_a_steady_block() {
+        let mut grid = ClientGrid::new(4, 3);
+        grid.bg_color = [9, 9, 9];
+        grid.set_cell(0, 0, 'p', [1, 1, 1], [7, 7, 7]);
+        grid.cursor_x = 3;
+        grid.cursor_y = 2;
+        let wire = make_dirty_row(0, b"wxyz!");
+
+        let out = grid.compose(
+            |row| match row {
+                0 => RowSource::Wire(&wire),
+                1 => RowSource::Own(0),
+                _ => RowSource::Blank,
+            },
+            Some((1, 0)),
+        );
+
+        assert_eq!(out.row_text(0), "wxyz", "a wider served row is clipped");
+        assert_eq!(out.row_text(1), "p");
+        assert_eq!(out.cells[4].bg, [7, 7, 7], "page rows keep their colors");
+        assert_eq!(out.row_text(2), "");
+        assert_eq!(out.bg_color, [9, 9, 9]);
+        assert!(out.cursor_visible);
+        assert_eq!((out.cursor_x, out.cursor_y), (1, 0));
+        assert_eq!(out.cursor_style, CursorStyle::SteadyBlock.to_wire());
+
+        let hidden = grid.compose(|_| RowSource::Blank, None);
+        assert!(!hidden.cursor_visible, "no copy cursor, no live cursor");
     }
 
     #[test]

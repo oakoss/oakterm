@@ -33,6 +33,10 @@ struct CopyModeState {
     cursor_row: i64,
     cursor_col: u16,
 
+    /// Top row of the display window (see Display below), in the same
+    /// row space. Starts at the entry page's top and never exceeds it.
+    display_top: i64,
+
     /// Active selection, if any.
     selection: Option<CopySelection>,
 
@@ -248,10 +252,24 @@ All cursor movement is local to the GUI. No IPC per keystroke.
 
 - Cursor position is clamped to valid row/col ranges within the cached rows.
 - When the cursor moves past the top or bottom of the cache, the GUI sends `GetScrollback` to fetch the next chunk.
-- **Prefetch:** When the cursor enters the top or bottom 25% of the cache window, the GUI starts fetching the next chunk in the background to hide latency.
+- **Prefetch:** When the display window (see Display) enters the top or bottom 25% of the cache window, the GUI starts fetching the next chunk in the background to hide latency.
 - Word boundaries for `w`/`b`/`e` are defined as transitions between alphanumeric/underscore characters and everything else (matching vim's `iskeyword` default).
 
 **As built (TREK-112).** `gg` and `Ctrl+b` clamp to the oldest row the cache currently holds rather than jumping to the true top of scrollback; reaching rows the GUI has not fetched needs a fetch-then-jump, which is deferred to a follow-up task. Word motions stop at the same edge for the same reason: they resolve against text the GUI holds, so an unfetched row ends the scan.
+
+### Display
+
+Copy mode draws the rows `[display_top, display_top + rows)`, where `rows` is the pane's visible row count.
+
+- **The window follows the cursor.** It starts at `viewport_top` and moves only as far as needed to keep the cursor inside it: a cursor above the window pulls `display_top` up to the cursor's row, and a cursor below it pulls the window down. The window never moves below the entry page (`display_top <= viewport_top`), because nothing below the page is addressable.
+- **Row sources.** A row the cache holds draws from it, with its colors, the same source yank and motions read. Other rows on the entry page draw from the frozen page, and a history row not yet cached draws blank until its fill lands. The frozen page can carry a scroll indicator over history rows, and the cache keeps it from showing.
+- **Cursor.** The live cursor is hidden. A non-blinking block cursor marks the copy-mode cursor.
+- **Selection.** The selection highlights exactly the cells a yank would take, for character, line and block selections alike. It stays drawn while another pane has focus, since it is state the user built rather than a transient drag.
+- **Prefetch** keys off the display window rather than the cursor, so scrolling the window fetches ahead the same way cursor movement does.
+
+### Mouse
+
+While copy mode is active, mouse clicks and pointer motion reach neither the application nor the host selection, Shift+click included: the copy-mode selection is the pane's only selection. Entering copy mode drops any host selection and ends a drag in progress. The wheel scrolls the display window by its usual step, clamped as above, and the cursor clamps into the window it leaves on screen. Leaving copy mode is a key action, never a side effect of scrolling.
 
 ### Selection
 

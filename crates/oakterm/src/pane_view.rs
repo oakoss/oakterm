@@ -13,6 +13,24 @@ use oakterm_protocol::render::{DirtyRow, RenderUpdate};
 use oakterm_terminal::grid::selection::Selection;
 use std::num::NonZeroU32;
 
+/// See [`PaneView::on_screen`].
+pub(crate) struct OnScreen<'a> {
+    composed: Option<ClientGrid>,
+    live: &'a ClientGrid,
+    pub(crate) selection: Option<Selection>,
+    /// Scroll the selection's rows are relative to, as `bg_colors` and
+    /// `a11y_bridge::selection_range` read them.
+    pub(crate) selection_offset: u32,
+    pub(crate) copy_mode: bool,
+}
+
+impl OnScreen<'_> {
+    #[must_use]
+    pub(crate) fn grid(&self) -> &ClientGrid {
+        self.composed.as_ref().unwrap_or(self.live)
+    }
+}
+
 /// Owns the pane's scroll state: the viewport offset and the grid's
 /// live-snapshot are only ever changed together, through the methods
 /// below. Nothing else may call `ClientGrid::enter_scrollback` /
@@ -277,6 +295,9 @@ impl PaneView {
         );
         let fill = state.initial_fill();
         self.copy_mode = Some(state);
+        // The copy-mode selection is the pane's only one (Spec-0008
+        // Mouse); a mouse selection left behind would be yanked unseen.
+        self.selection = None;
         fill
     }
 
@@ -309,10 +330,79 @@ impl PaneView {
         self.scrollback_serial == Some(serial)
     }
 
-    #[must_use]
-    #[allow(dead_code, reason = "read by the copy-mode renderer (TREK-114)")]
+    #[cfg(test)]
     pub(crate) fn copy_mode(&self) -> Option<&CopyModeState> {
         self.copy_mode.as_ref()
+    }
+
+    /// What the pane shows: copy mode's composed display window
+    /// (Spec-0008 Display), else the grid at the viewport offset.
+    #[must_use]
+    pub(crate) fn on_screen(&self) -> OnScreen<'_> {
+        match &self.copy_mode {
+            Some(state) => OnScreen {
+                composed: Some(
+                    self.grid
+                        .compose(|row| state.display_row(row), state.display_cursor()),
+                ),
+                live: &self.grid,
+                selection: state.display_selection(),
+                selection_offset: 0,
+                copy_mode: true,
+            },
+            None => OnScreen {
+                composed: None,
+                live: &self.grid,
+                selection: self.selection.clone(),
+                selection_offset: self.viewport_offset,
+                copy_mode: false,
+            },
+        }
+    }
+
+    /// Rows the shown page sits above the live bottom: copy mode's
+    /// display window, else the viewport offset (Spec-0006 `scroll_y`).
+    #[must_use]
+    pub(crate) fn screen_scroll_offset(&self) -> u32 {
+        self.copy_mode
+            .as_ref()
+            .map_or(self.viewport_offset, |state| {
+                u32::try_from(-state.display_top()).unwrap_or(0)
+            })
+    }
+
+    /// Apply an AT selection request in copy mode; a no-op outside it.
+    /// Rows count from the window AT was shown, `shown_offset` rows above
+    /// the live bottom (Spec-0006 `scroll_y`): the window may have moved
+    /// since the tree was last published. `None` uses the current window.
+    pub(crate) fn select_in_copy_mode(
+        &mut self,
+        shown_offset: Option<u32>,
+        cursor: (u16, u16),
+        anchor: Option<(u16, u16)>,
+    ) {
+        if let Some(state) = &mut self.copy_mode {
+            let top = shown_offset.map_or(state.display_top(), |offset| -i64::from(offset));
+            state.select_in_window(top, cursor, anchor);
+        }
+    }
+
+    /// Scroll the copy-mode window so it sits `offset` rows above the live
+    /// bottom at entry, the unit `screen_scroll_offset` reports.
+    pub(crate) fn set_copy_mode_scroll_offset(&mut self, offset: u32) {
+        if let Some(state) = &mut self.copy_mode {
+            let delta = -i64::from(offset) - state.display_top();
+            state.scroll_display(delta);
+        }
+    }
+
+    /// Scroll the copy-mode window `rows_up` rows toward history, the
+    /// direction host scrollback counts; a no-op outside copy mode.
+    pub(crate) fn scroll_copy_mode_up(&mut self, rows_up: i32) {
+        if let Some(state) = &mut self.copy_mode {
+            // Copy-mode rows count down from history, so up is negative.
+            state.scroll_display(-i64::from(rows_up));
+        }
     }
 
     /// Move the copy-mode cursor, clamped to the rows copy mode can
@@ -735,6 +825,132 @@ mod tests {
         // Output arriving during copy mode must not move what is shown.
         view.apply_update(&make_update(2, 0, b"new!"));
         assert_eq!(view.grid().row_text(0), "live");
+    }
+
+    #[test]
+    fn copy_mode_shows_the_frozen_page_with_the_copy_cursor() {
+        use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.apply_update(&make_update(1, 0, b"live"));
+        view.selection = Some(Selection::new(
+            SelectionType::Normal,
+            0,
+            0,
+            AnchorSide::Left,
+        ));
+        let _fill = view.enter_copy_mode();
+        view.apply_update(&make_update(2, 0, b"new!"));
+
+        let screen = view.on_screen();
+        assert!(screen.copy_mode);
+        assert_eq!(screen.grid().row_text(0), "live", "output stays frozen");
+        assert_eq!(
+            (screen.grid().cursor_x, screen.grid().cursor_y),
+            (0, 7),
+            "the copy cursor, seeded bottom-left"
+        );
+        drop(screen);
+        assert!(view.selection.is_none(), "entry drops the mouse selection");
+        assert_eq!(view.screen_scroll_offset(), 0);
+
+        view.scroll_copy_mode_up(3);
+        assert_eq!(
+            view.screen_scroll_offset(),
+            0,
+            "nothing cached to scroll into"
+        );
+
+        view.set_copy_mode_pinned_base(0);
+        view.record_copy_mode_fill(
+            42,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(42, &scrollback_data(-8, 8)));
+        view.scroll_copy_mode_up(3);
+        assert_eq!(
+            view.screen_scroll_offset(),
+            3,
+            "AT scroll_y is -display_top"
+        );
+        view.set_copy_mode_scroll_offset(8);
+        assert_eq!(view.screen_scroll_offset(), 8);
+    }
+
+    /// The AT caret clamps to its row's text when the terminal node is
+    /// rebuilt, so a fill that changes the cursor row's text must rebuild
+    /// it even though the cursor itself did not move.
+    #[test]
+    fn a_fill_on_the_cursor_row_rebuilds_the_a11y_terminal_node() {
+        use crate::a11y_bridge::{A11yEvent, A11yModel, apply};
+        let mut view = PaneView::new(ClientGrid::new(4, 4));
+        assert!(!view.scroll_up(4), "no copy mode to release");
+        let page: Vec<DirtyRow> = (0..4).map(|i| make_dirty_row(i, b"page")).collect();
+        view.apply_scrollback(&page, 0, false);
+        let _fill = view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        let mut model = A11yModel::new(0, (8.0, 16.0));
+        model.register_pane(0, &view);
+        let state = std::sync::Mutex::new(Some(model));
+        let _ = apply(&state, 0, &view, A11yEvent::ViewChanged);
+
+        view.record_copy_mode_fill(
+            7,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(7, &scrollback_data(-8, 8)));
+        let update = apply(&state, 0, &view, A11yEvent::ViewChanged).expect("rows changed");
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(id, _)| *id == oakterm_a11y::terminal_node_id(0)),
+            "the cursor row now reads the cache, so the caret is rebuilt"
+        );
+    }
+
+    /// AT selects in the window it was shown, which a scroll may have moved
+    /// before the request arrives.
+    #[test]
+    fn an_at_selection_counts_rows_from_the_window_at_was_shown() {
+        let mut view = PaneView::new(ClientGrid::new(4, 4));
+        let _fill = view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        view.record_copy_mode_fill(
+            7,
+            FillRequest {
+                start_row: -8,
+                count: 8,
+            },
+        );
+        assert!(view.apply_copy_mode_scrollback(7, &scrollback_data(-8, 8)));
+        view.set_copy_mode_scroll_offset(5);
+        let shown = view.screen_scroll_offset();
+        view.set_copy_mode_scroll_offset(2);
+
+        view.select_in_copy_mode(Some(shown), (1, 2), Some((0, 0)));
+        assert_eq!(
+            view.copy_mode().map(CopyModeState::cursor),
+            Some((-4, 2)),
+            "row 1 of the window at offset 5, not of the one at offset 2"
+        );
+    }
+
+    #[test]
+    fn outside_copy_mode_the_screen_is_the_grid_at_its_offset() {
+        let mut view = PaneView::new(ClientGrid::new(4, 8));
+        view.apply_update(&make_update(1, 0, b"live"));
+        assert!(!view.scroll_up(5), "no copy mode to release");
+
+        let screen = view.on_screen();
+        assert!(!screen.copy_mode);
+        assert_eq!(screen.selection_offset, 5);
+        assert_eq!(view.screen_scroll_offset(), 5);
     }
 
     /// The race: `viewport_offset` moves when a scroll is requested, but
