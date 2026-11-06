@@ -44,6 +44,9 @@ struct RenderCell {
     bg: [u8; 3],
     /// Raw `CellFlags` bits from the wire protocol (BOLD=1, ITALIC=4).
     flags: u16,
+    /// Drawn over the pane by the client (the search bar): a selection
+    /// beneath it does not recolor it.
+    overlay: bool,
 }
 
 impl Default for RenderCell {
@@ -53,6 +56,7 @@ impl Default for RenderCell {
             fg: [255, 255, 255],
             bg: [0, 0, 0],
             flags: 0,
+            overlay: false,
         }
     }
 }
@@ -322,7 +326,7 @@ impl ClientGrid {
                 codepoint: ch as u32,
                 fg: [0, 0, 0],
                 bg: [200, 200, 200],
-                flags: 0,
+                ..RenderCell::default()
             };
         }
     }
@@ -339,7 +343,23 @@ impl ClientGrid {
             codepoint: ch as u32,
             fg,
             bg,
+            ..RenderCell::default()
+        };
+    }
+
+    /// Write one cell of a client overlay, which a selection beneath does
+    /// not recolor.
+    pub fn set_overlay_cell(&mut self, col: u16, row: u16, ch: char, fg: [u8; 3], bg: [u8; 3]) {
+        if col >= self.cols || row >= self.rows {
+            return;
+        }
+        let idx = usize::from(row) * usize::from(self.cols) + usize::from(col);
+        self.cells[idx] = RenderCell {
+            codepoint: ch as u32,
+            fg,
+            bg,
             flags: 0,
+            overlay: true,
         };
     }
 
@@ -441,15 +461,10 @@ impl ClientGrid {
                 let col = i % cols;
                 #[allow(clippy::cast_possible_wrap)]
                 let sel_row = row as i64 - i64::from(viewport_offset);
-                #[allow(clippy::cast_possible_truncation)]
-                let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
-
                 let block_cursor = is_block && Some(i) == cursor_idx;
-                if block_cursor || selected {
-                    pack_bg_color(c.fg)
-                } else {
-                    pack_bg_color(c.bg)
-                }
+                #[allow(clippy::cast_possible_truncation)]
+                let (_, bg) = shown_colors(c, block_cursor, selection, sel_row, col as u16);
+                pack_bg_color(bg)
             })
             .collect()
     }
@@ -622,12 +637,8 @@ impl ClientGrid {
                 #[allow(clippy::cast_possible_wrap)]
                 let sel_row = row as i64 - i64::from(viewport_offset);
                 #[allow(clippy::cast_possible_truncation)]
-                let selected = selection.is_some_and(|s| s.contains(sel_row, col as u16));
-                let (fg_rgb, bg_rgb) = if (is_cursor && is_block) || selected {
-                    (cell.bg, cell.fg)
-                } else {
-                    (cell.fg, cell.bg)
-                };
+                let (fg_rgb, bg_rgb) =
+                    shown_colors(cell, is_cursor && is_block, selection, sel_row, col as u16);
 
                 // sRGB values passed to shader (linearized in fragment shader).
                 let fg = [
@@ -802,12 +813,31 @@ pub fn pack_bg_color(rgb: [u8; 3]) -> u32 {
     0xFF_00_00_00 | (u32::from(rgb[2]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[0])
 }
 
+/// A cell's `(fg, bg)` as drawn: swapped under a block cursor or a
+/// selection, except that a selection leaves a client overlay alone. The
+/// background and glyph passes both draw from this, so they agree.
+fn shown_colors(
+    cell: &RenderCell,
+    block_cursor: bool,
+    selection: Option<&Selection>,
+    sel_row: i64,
+    col: u16,
+) -> ([u8; 3], [u8; 3]) {
+    let selected = !cell.overlay && selection.is_some_and(|s| s.contains(sel_row, col));
+    if block_cursor || selected {
+        (cell.bg, cell.fg)
+    } else {
+        (cell.fg, cell.bg)
+    }
+}
+
 fn wire_cell_to_render(cell: &WireCell) -> RenderCell {
     RenderCell {
         codepoint: cell.codepoint,
         fg: [cell.fg_r, cell.fg_g, cell.fg_b],
         bg: [cell.bg_r, cell.bg_g, cell.bg_b],
         flags: cell.flags,
+        overlay: false,
     }
 }
 
@@ -1014,7 +1044,7 @@ mod tests {
             codepoint: u32::from(b'A'),
             fg: [255, 255, 255],
             bg: [0, 0, 0],
-            flags: 0,
+            ..RenderCell::default()
         };
         grid.cursor_x = 1;
         grid.cursor_y = 0;
@@ -1034,7 +1064,7 @@ mod tests {
             codepoint: u32::from(b'A'),
             fg: [255, 255, 255],
             bg: [0, 0, 0],
-            flags: 0,
+            ..RenderCell::default()
         };
         grid.cursor_x = 1;
         grid.cursor_y = 0;

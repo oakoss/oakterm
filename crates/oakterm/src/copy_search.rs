@@ -91,10 +91,13 @@ pub(crate) fn matcher(query: &str) -> Option<SearchEngine> {
     SearchEngine::new(query, SearchMode::SmartCase).ok()
 }
 
-/// Every match on one row, in column order.
+/// Every match on one row, in column order. Trailing blanks are not
+/// searched: the entry page's rows arrive trimmed and history rows
+/// padded, and the same text must match the same way in both.
 #[must_use]
 pub(crate) fn row_matches(engine: &SearchEngine, row: i64, chars: &[char]) -> Vec<Match> {
-    let text: String = chars.iter().collect();
+    let len = chars.iter().rposition(|&c| c != ' ').map_or(0, |i| i + 1);
+    let text: String = chars[..len].iter().collect();
     let col = |c: usize| u16::try_from(c).unwrap_or(u16::MAX);
     engine
         .char_spans(&text)
@@ -159,15 +162,15 @@ pub(crate) fn find(
     Find::Exhausted
 }
 
-/// Every match in the held rows of `[first, last]`, in reading order.
-/// Rows without text are skipped.
+/// Every match in `held`, a list of row indices in reading order. Rows
+/// without text are skipped.
 #[must_use]
 pub(crate) fn held_matches(
     rows: &impl RowText,
     engine: &SearchEngine,
-    (first, last): (i64, i64),
+    held: impl IntoIterator<Item = i64>,
 ) -> Vec<Match> {
-    (first..=last)
+    held.into_iter()
         .filter_map(|row| rows.row(row).map(|chars| row_matches(engine, row, &chars)))
         .flatten()
         .collect()
@@ -261,6 +264,20 @@ mod tests {
         assert!(matcher("").is_none());
     }
 
+    /// A padded history row and a trimmed page row with the same text
+    /// match the same way.
+    #[test]
+    fn trailing_blanks_are_not_searched() {
+        let spaced = matcher("b  ").expect("query");
+        let padded: Vec<char> = "ab      ".chars().collect();
+        let trimmed: Vec<char> = "ab".chars().collect();
+        assert_eq!(row_matches(&spaced, 0, &padded), []);
+        assert_eq!(row_matches(&spaced, 0, &trimmed), []);
+        let inner = matcher("a b").expect("query");
+        let row: Vec<char> = "a b   ".chars().collect();
+        assert_eq!(row_matches(&inner, 0, &row).len(), 1, "inner blanks count");
+    }
+
     #[test]
     fn find_steps_past_the_cursor_and_crosses_rows_both_ways() {
         use SearchDirection::{Backward, Forward};
@@ -331,7 +348,7 @@ mod tests {
     fn held_matches_list_every_match_in_reading_order() {
         let text = rows(&[(-1, "ab ab"), (0, "ab")]);
         let ab = matcher("ab").expect("query");
-        let found: Vec<(i64, u16)> = held_matches(&text, &ab, (-3, 0))
+        let found: Vec<(i64, u16)> = held_matches(&text, &ab, -3..=0)
             .into_iter()
             .map(|m| (m.row, m.start))
             .collect();

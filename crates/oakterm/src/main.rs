@@ -1142,6 +1142,9 @@ impl App {
     /// Copy Mode) or that nothing matched.
     fn after_copy_search(&mut self, pane_id: u32, step: copy_mode::SearchStep) {
         use copy_mode::SearchStep;
+        // A scan can land after focus moved on: only the focused pane's
+        // search announces its result, and the bell flashes the pane searched.
+        let focused = pane_id == self.focused_pane;
         match step {
             SearchStep::Moved => {
                 self.prefetch_copy_mode(pane_id);
@@ -1149,7 +1152,9 @@ impl App {
                     .panes
                     .get(&pane_id)
                     .and_then(PaneView::copy_search_status);
-                if let Some(index) = status.as_ref().and_then(|status| status.index) {
+                if let Some(index) = status.as_ref().and_then(|status| status.index)
+                    && focused
+                {
                     let total = status.map_or(0, |status| status.total);
                     self.announce(
                         &format!("{} of {total}", index + 1),
@@ -1163,10 +1168,12 @@ impl App {
                 self.request_redraw();
             }
             SearchStep::NotFound { ring } => {
-                if ring {
-                    self.ring_bell();
+                if ring && let Err(e) = self.proxy.send_event(UserEvent::Bell(Some(pane_id))) {
+                    debug!(error = %e, "bell dropped: event loop closed");
                 }
-                self.announce("No match", accesskit::Live::Polite);
+                if focused {
+                    self.announce("No match", accesskit::Live::Polite);
+                }
                 self.request_redraw();
             }
             // Returning to the origin can bring unfetched rows into view.

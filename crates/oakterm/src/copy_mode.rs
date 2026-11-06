@@ -39,6 +39,14 @@ pub(crate) enum SelectionEffect {
 /// Per-request row cap the daemon enforces (Spec-0001 `GetScrollback`).
 const MAX_ROWS_PER_REQUEST: u32 = 4096;
 
+/// Rows per search chunk. The daemon caps rows, not bytes, and history
+/// rows keep their old width, so this budgets 256 columns or more.
+fn scan_chunk_rows(cols: u16) -> u32 {
+    let row_bytes = u32::from(cols.max(256))
+        * u32::try_from(oakterm_protocol::render::WireCell::FIXED_SIZE).unwrap_or(u32::MAX);
+    (oakterm_protocol::frame::MAX_PAYLOAD / 2 / row_bytes).clamp(1, MAX_ROWS_PER_REQUEST)
+}
+
 /// Cache window as a multiple of the visible rows (Spec-0008 default).
 const CACHE_ROWS_PER_SCREEN: u32 = 3;
 // The window-centred trim in `apply_fill` keeps the whole display window
@@ -633,6 +641,7 @@ impl CopyModeState {
         self.seek = None;
     }
 
+    #[must_use]
     pub(crate) fn search_editing(&self) -> bool {
         self.search.as_ref().is_some_and(|search| search.editing)
     }
@@ -761,7 +770,7 @@ impl CopyModeState {
     /// The largest window toward `direction` that starts at `row`: a long
     /// scan costs one round trip per chunk (Spec-0008 Search latency).
     fn scan_chunk(&self, row: i64, direction: SearchDirection) -> FillRequest {
-        let chunk = i64::from(MAX_ROWS_PER_REQUEST);
+        let chunk = i64::from(scan_chunk_rows(self.cols));
         let (start_row, count) = match direction {
             SearchDirection::Backward => {
                 let floor = self.history_start.unwrap_or(i64::MIN);
@@ -869,7 +878,19 @@ impl CopyModeState {
     pub(crate) fn search_status(&self) -> Option<SearchStatus> {
         let search = self.search.as_ref()?;
         let (index, total) = search.engine().map_or((None, 0), |engine| {
-            let held = copy_search::held_matches(self, engine, (self.first_row(), self.last_row()));
+            // The cached rows above the page, then the page: a cache that
+            // jumped far up leaves a gap not worth walking every frame.
+            let cached = self
+                .cache
+                .rows
+                .keys()
+                .copied()
+                .take_while(|&row| row < self.viewport_top);
+            let held = copy_search::held_matches(
+                self,
+                engine,
+                cached.chain(self.viewport_top..=self.last_row()),
+            );
             let cursor = self.cursor();
             let index = held.iter().position(|hit| (hit.row, hit.start) == cursor);
             (index, held.len())
@@ -1231,8 +1252,8 @@ impl CopyModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CopyModeState, CopySelectionType, FillFailure, FillRequest, MAX_ROWS_PER_REQUEST,
-        SearchStep, SelectionEffect, ViewportCache, YankPlan, YankRange,
+        CopyModeState, CopySelectionType, FillFailure, FillRequest, SearchStep, SelectionEffect,
+        ViewportCache, YankPlan, YankRange,
     };
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
@@ -2779,6 +2800,33 @@ mod tests {
         assert_eq!(state.cursor(), (-3, 0), "N searches the other way");
     }
 
+    #[test]
+    fn search_chunks_fit_the_payload_limit() {
+        use super::scan_chunk_rows;
+        use crate::copy_search::{BarKey, SearchDirection};
+        use oakterm_protocol::frame::MAX_PAYLOAD;
+        assert_eq!(scan_chunk_rows(80), 2048);
+        assert_eq!(scan_chunk_rows(256), 2048);
+        for cols in [1, 80, 256, 300, 1000, u16::MAX] {
+            let rows = u64::from(scan_chunk_rows(cols));
+            let wider = u64::from(cols.max(256)) * 2;
+            assert!(
+                rows * wider * 16 <= u64::from(MAX_PAYLOAD),
+                "{cols} columns, history twice as wide"
+            );
+        }
+
+        // The scan asks for chunks of that size.
+        let mut wide = CopyModeState::new(300, 4, 0, Vec::new());
+        wide.set_pinned_base(0);
+        wide.set_snapshot(snap(&["a", "b", "c", "d"]));
+        wide.start_search(SearchDirection::Backward);
+        let SearchStep::Fetch(chunk) = wide.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        assert_eq!(chunk.count, scan_chunk_rows(300));
+    }
+
     /// Past the cache the scan asks for a chunk and leaves the cursor
     /// put; a cache fill landing meanwhile resumes nothing, and the chunk
     /// becomes the cache when it holds the match.
@@ -2788,9 +2836,10 @@ mod tests {
         let mut state = searchable(true);
         state.set_cursor(-7, 0);
         state.start_search(SearchDirection::Backward);
+        let rows = super::scan_chunk_rows(8);
         let chunk = FillRequest {
-            start_row: -9 - i64::from(MAX_ROWS_PER_REQUEST) + 1,
-            count: MAX_ROWS_PER_REQUEST,
+            start_row: -9 - i64::from(rows) + 1,
+            count: rows,
         };
         assert_eq!(
             state.edit_search(BarKey::Insert('w')),
@@ -3054,6 +3103,34 @@ mod tests {
         );
         assert_eq!(state.cursor(), (0, 4));
         assert!(state.search_editing(), "the bar stays open");
+    }
+
+    /// With the cache far above the page, the count still covers both.
+    #[test]
+    fn the_status_counts_a_cache_apart_from_the_page() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-2000, 0)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        assert!(state.apply_fill(5, &served(window.start_row, "xbxdxfghijkl", true)));
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        let status = state.search_status().expect("searching");
+        assert_eq!(status.total, 5, "three cached rows and two page rows");
+
+        // Entered scrolled back, the cache holds page rows too; each row
+        // counts once.
+        let mut scrolled = CopyModeState::new(8, 4, 4, Vec::new());
+        scrolled.set_snapshot(snap(&["x", "x", "x", "x"]));
+        filled(&mut scrolled, -8, "xxxxxxxx", true);
+        scrolled.start_search(SearchDirection::Backward);
+        scrolled.edit_search(BarKey::Insert('x'));
+        let status = scrolled.search_status().expect("searching");
+        assert_eq!(status.total, 8);
+        assert_eq!(scrolled.cursor(), (-1, 0));
+        assert_eq!(status.index, Some(7));
     }
 
     #[test]

@@ -162,12 +162,18 @@ impl SearchEngine {
     /// Matches in one line as character ranges, end exclusive, so a caller
     /// holding one character per cell reads them as columns.
     pub fn char_spans<'t>(&'t self, text: &'t str) -> impl Iterator<Item = (usize, usize)> + 't {
+        // Offsets carry over from the previous match, so a row is counted
+        // once however many matches it holds.
+        let (mut byte, mut chars) = (0, 0);
         self.regex
             .find_iter(text)
             .filter(|m| m.start() != m.end())
             .map(move |m| {
-                let start = text[..m.start()].chars().count();
-                (start, start + m.as_str().chars().count())
+                chars += text[byte..m.start()].chars().count();
+                let start = chars;
+                chars += m.as_str().chars().count();
+                byte = m.end();
+                (start, chars)
             })
     }
 
@@ -381,6 +387,12 @@ mod tests {
             spans,
             vec![(2, 4), (6, 8)],
             "smart case, columns after a 2-byte char"
+        );
+        let wide = SearchEngine::new("a.", SearchMode::Regex).unwrap();
+        assert_eq!(
+            wide.char_spans("aé ü aü").collect::<Vec<_>>(),
+            vec![(0, 2), (5, 7)],
+            "multi-byte chars inside and between matches"
         );
 
         let upper = SearchEngine::new("AB", SearchMode::SmartCase).unwrap();
