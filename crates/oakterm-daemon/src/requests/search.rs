@@ -710,15 +710,17 @@ mod tests {
             search_close(1, &close, &panes).await,
             RequestResult::NoResponse
         ));
-        for bad in [vec![1], SearchNav { pane_id: 999 }.encode()] {
+        for (bad, code) in [
+            (vec![1], ErrorCode::MalformedPayload),
+            (SearchNav { pane_id: 999 }.encode(), ErrorCode::UnknownPane),
+        ] {
             let frame = Frame::new(0x7B, 0, bad).expect("frame");
-            assert!(
-                matches!(
-                    search_close(1, &frame, &panes).await,
-                    RequestResult::Response(_)
-                ),
-                "malformed or unknown-pane SearchClose gets an Error frame"
-            );
+            let RequestResult::Response(reply) = search_close(1, &frame, &panes).await else {
+                panic!("malformed or unknown-pane SearchClose gets an Error frame");
+            };
+            let err =
+                oakterm_protocol::message::ErrorMessage::decode(&reply.payload).expect("decode");
+            assert_eq!(err.code, code as u32);
         }
 
         let closed = lock_live_pane(&panes, ids[0]).await.expect("pane");
