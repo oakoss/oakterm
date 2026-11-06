@@ -497,9 +497,7 @@ impl CopyModeState {
     /// the cursor starts on the live grid, which `GetScrollback` never
     /// serves.
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
-        // A seek still in flight would jump the cursor back from wherever
-        // this put it.
-        self.seek = None;
+        self.drop_pending_search();
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
         self.cursor_col = col.min(self.cols - 1);
         let rows = i64::from(self.visible_rows);
@@ -514,14 +512,21 @@ impl CopyModeState {
         self.display_top
     }
 
+    /// A scan or seek still in flight would move the cursor, or stretch a
+    /// selection, from wherever the user has since put it (Spec-0008 Search).
+    fn drop_pending_search(&mut self) {
+        self.scan = None;
+        self.seek = None;
+    }
+
     /// Scroll the display window by `delta` rows (negative is up, into
     /// history), bounded by the addressable rows, then pull the cursor
     /// into the window it leaves on screen (Spec-0008 Mouse).
     pub(crate) fn scroll_display(&mut self, delta: i64) {
-        // Scrolling away drops a pending seek; `apply_fill` re-clamps with
-        // a zero delta, which must leave one in flight.
+        // `apply_fill` re-clamps with a zero delta, which must leave a
+        // pending search in flight.
         if delta != 0 {
-            self.seek = None;
+            self.drop_pending_search();
         }
         let top = self.display_top.saturating_add(delta);
         self.display_top = top.clamp(self.first_row(), self.viewport_top);
@@ -614,6 +619,7 @@ impl CopyModeState {
     /// active type cancels it, a different type switches shape and keeps
     /// the anchor where the user put it.
     pub(crate) fn toggle_selection(&mut self, ty: CopySelectionType) {
+        self.drop_pending_search();
         match self.selection.map(|selection| selection.ty) {
             Some(active) if active == ty => self.selection = None,
             Some(_) => {
@@ -3092,6 +3098,40 @@ mod tests {
             "rows 0 and 1 are output after the pin; the page keeps its own"
         );
         assert_eq!(state.cache().get(-1).map(tag_of), Some('j'));
+    }
+
+    /// After `n` starts a scan, starting a selection, moving or scrolling
+    /// drops it: the reply must not drag the cursor, and with it the
+    /// selection, to a far match.
+    #[test]
+    fn acting_after_n_drops_the_pending_scan() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let start = |state: &mut CopyModeState| {
+            state.start_search(SearchDirection::Backward, BarStyle::Preset);
+            state.edit_search(BarKey::Insert('x'));
+            state.edit_search(BarKey::Accept);
+            state.set_cursor(-8, 0);
+            let SearchStep::Fetch(chunk) = state.search_again(false) else {
+                panic!("expected a chunk request");
+            };
+            state.record_fill(9, chunk);
+            chunk
+        };
+        let acts: [fn(&mut CopyModeState); 3] = [
+            |s| s.toggle_selection(CopySelectionType::Character),
+            |s| s.set_cursor(-7, 0),
+            |s| s.scroll_display(-1),
+        ];
+        for act in acts {
+            let mut state = searchable(true);
+            let chunk = start(&mut state);
+            act(&mut state);
+            let before = state.cursor();
+            assert_eq!(state.awaited_fill(), None);
+            assert!(state.apply_fill(9, &served(chunk.start_row, "x", true)));
+            assert_eq!(state.continue_search(), SearchStep::Inert);
+            assert_eq!(state.cursor(), before);
+        }
     }
 
     /// Moving or scrolling away drops a pending seek, so it cannot pull

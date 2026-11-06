@@ -93,6 +93,17 @@ fn preset_bar_key(preset: CopyModePreset, key: CopyKey, typed: Option<char>) -> 
     }
 }
 
+/// What a screen reader hears when a bar opens: the bar takes keys the
+/// display never shows (Spec-0006 Copy Mode).
+#[must_use]
+pub(crate) fn bar_label(style: BarStyle, direction: SearchDirection) -> &'static str {
+    match (style, direction) {
+        (BarStyle::Find, _) => "Find",
+        (BarStyle::Preset, SearchDirection::Forward) => "Search forward",
+        (BarStyle::Preset, SearchDirection::Backward) => "Search backward",
+    }
+}
+
 /// The one printable character a key event's text holds, if any.
 #[must_use]
 pub(crate) fn typed_char(text: &str) -> Option<char> {
@@ -426,6 +437,15 @@ mod tests {
             preset_key(Vim, CopyPress::ModifierOnly, None),
             BarKey::Ignore
         );
+    }
+
+    #[test]
+    fn each_bar_has_a_spoken_label() {
+        use super::bar_label;
+        use SearchDirection::{Backward, Forward};
+        assert_eq!(bar_label(BarStyle::Find, Backward), "Find");
+        assert_eq!(bar_label(BarStyle::Preset, Forward), "Search forward");
+        assert_eq!(bar_label(BarStyle::Preset, Backward), "Search backward");
     }
 
     /// The find bar's Enter steps through matches and its Escape leaves

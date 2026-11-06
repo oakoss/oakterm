@@ -923,7 +923,8 @@ impl App {
         self.pending_copy_enters.record(serial, pane_id, fill);
         debug!(pane_id, base, serial, "copy mode entry requested");
         if intent == CopyEntry::Find {
-            self.open_find_bar(pane_id);
+            // The entry announcement names the bar (`sync_copy_mode_a11y`).
+            self.open_find_bar(pane_id, false);
         }
         // The frozen pane stops update-driven redraws, so the COPY
         // indicator needs an explicit repaint to appear at entry.
@@ -936,24 +937,31 @@ impl App {
     /// the pane is live.
     fn find(&mut self, pane_id: u32) {
         if self.panes.get(&pane_id).is_some_and(PaneView::is_copy_mode) {
-            self.open_find_bar(pane_id);
+            self.open_find_bar(pane_id, true);
         } else {
             self.enter_copy_mode(pane_id, CopyEntry::Find);
         }
     }
 
     /// Open the find bar on a pane in copy mode; a bar already open stays.
-    fn open_find_bar(&mut self, pane_id: u32) {
+    fn open_find_bar(&mut self, pane_id: u32, announce: bool) {
         let Some(view) = self.panes.get_mut(&pane_id) else {
             return;
         };
         if !view.is_copy_mode() || view.copy_search_bar().is_some() {
             return;
         }
-        view.start_copy_search(
+        let (direction, style) = (
             copy_search::SearchDirection::Backward,
             copy_search::BarStyle::Find,
         );
+        view.start_copy_search(direction, style);
+        if announce {
+            self.announce(
+                copy_search::bar_label(style, direction),
+                accesskit::Live::Polite,
+            );
+        }
         self.request_redraw();
     }
 
@@ -1157,8 +1165,13 @@ impl App {
             }
             CopyCommand::Exit => self.exit_copy_mode(pane_id),
             CopyCommand::Search(direction) => {
+                let style = copy_search::BarStyle::Preset;
                 if let Some(view) = self.panes.get_mut(&pane_id) {
-                    view.start_copy_search(direction, copy_search::BarStyle::Preset);
+                    view.start_copy_search(direction, style);
+                    self.announce(
+                        copy_search::bar_label(style, direction),
+                        accesskit::Live::Polite,
+                    );
                 }
                 self.request_redraw();
             }
@@ -1265,7 +1278,16 @@ impl App {
                 adapter.update_if_active(|| update);
             }
             if let Some(text) = transition {
-                self.announce(text, accesskit::Live::Polite);
+                let bar = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(PaneView::copy_search_status)
+                    .filter(|status| status.editing)
+                    .map(|status| copy_search::bar_label(status.style, status.direction));
+                self.announce(
+                    &copy_session::entry_announcement(text, bar),
+                    accesskit::Live::Polite,
+                );
             }
         }
     }
