@@ -231,6 +231,17 @@ impl CopyModeAnnouncer {
     }
 }
 
+/// A copy-mode transition's announcement, naming the search bar when one
+/// opened with it (`oak_mod+F` from a live pane), so the screen reader hears
+/// one utterance in order rather than two that may cut each other off.
+#[must_use]
+pub(crate) fn entry_announcement(transition: &str, bar: Option<&str>) -> String {
+    match bar {
+        Some(bar) => format!("{transition}, {bar}"),
+        None => transition.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -281,6 +292,16 @@ mod tests {
         announcer.transition(5, true);
         announcer.retain(|id| id != 5);
         assert!(!announcer.announced(5), "a closed pane is forgotten");
+    }
+
+    #[test]
+    fn entering_with_the_find_bar_names_it_in_one_announcement() {
+        use super::entry_announcement;
+        assert_eq!(
+            entry_announcement("Copy mode", Some("Find")),
+            "Copy mode, Find"
+        );
+        assert_eq!(entry_announcement("Copy mode", None), "Copy mode");
     }
 
     /// Yanks are matched by serial and retire one pane's entry. A single

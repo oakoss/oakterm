@@ -280,8 +280,15 @@ pub(crate) fn resolve_key(
     {
         return KeyDispatch::LeaderArm(lk.timeout_ms);
     }
+    // Find stays live in copy mode, where it opens the find bar; every
+    // other key belongs to the copy-mode table.
     if ctx.copy_mode {
-        return KeyDispatch::CopyMode;
+        return either(&|c| {
+            ctx.registry
+                .lookup_index(c)
+                .filter(|&i| matches!(ctx.registry.get(i), Some(oakterm_config::Action::Find)))
+        })
+        .map_or(KeyDispatch::CopyMode, KeyDispatch::Binding);
     }
     if let Some(table) = ctx.table {
         return either(&|c| table.lookup_index(c))
@@ -414,6 +421,26 @@ mod tests {
             // A key that produces no chord at all still belongs to copy
             // mode; the caller reads the character off the event.
             assert_eq!(resolve_key(&c, None, None), KeyDispatch::CopyMode);
+        }
+
+        #[test]
+        fn find_reaches_its_binding_in_copy_mode() {
+            let mut reg = registry();
+            reg.register(chord("super+f"), Action::Find);
+            let c = copy_ctx(&reg, None);
+            assert_eq!(
+                resolve_key(&c, Some(&chord("super+f")), None),
+                KeyDispatch::Binding(1)
+            );
+            assert_eq!(
+                resolve_key(&c, None, Some(&chord("super+f"))),
+                KeyDispatch::Binding(1),
+                "the physical chord matches too"
+            );
+            assert_eq!(
+                resolve_key(&c, Some(&chord("ctrl+t")), None),
+                KeyDispatch::CopyMode
+            );
         }
 
         /// ADR-0011 puts the leader layer above the modal one, so a tmux

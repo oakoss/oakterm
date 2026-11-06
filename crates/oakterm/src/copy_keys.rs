@@ -38,7 +38,10 @@ pub(crate) enum CopyKey {
     },
     Escape,
     /// Enter and Backspace edit the search query; no preset binds them.
-    Enter,
+    /// Shift+Enter steps back in the find bar.
+    Enter {
+        shift: bool,
+    },
     Backspace,
 }
 
@@ -140,7 +143,11 @@ pub(crate) enum VimKey {
 pub(crate) fn copy_key(mods: ModifiersState, composed: &Key, base: &Key) -> Option<CopyKey> {
     match composed {
         Key::Named(NamedKey::Escape) => return Some(CopyKey::Escape),
-        Key::Named(NamedKey::Enter) => return Some(CopyKey::Enter),
+        Key::Named(NamedKey::Enter) => {
+            return Some(CopyKey::Enter {
+                shift: mods.shift_key(),
+            });
+        }
         Key::Named(NamedKey::Backspace) => return Some(CopyKey::Backspace),
         _ => {}
     }
@@ -287,9 +294,10 @@ pub(crate) fn vim_key(pending: Option<PendingPrefix>, key: CopyKey) -> VimKey {
         CopyKey::Char(c) => char_key(c),
         CopyKey::Ctrl(c) => ctrl_key(c),
         CopyKey::Escape => VimKey::Run(CopyCommand::ClearOrExit),
-        CopyKey::Alt { .. } | CopyKey::Named { .. } | CopyKey::Enter | CopyKey::Backspace => {
-            VimKey::Drop
-        }
+        CopyKey::Alt { .. }
+        | CopyKey::Named { .. }
+        | CopyKey::Enter { .. }
+        | CopyKey::Backspace => VimKey::Drop,
     }
 }
 
@@ -665,6 +673,19 @@ mod tests {
         ] {
             assert_eq!(copy_key(mods, &esc, &esc), Some(CopyKey::Escape));
         }
+    }
+
+    #[test]
+    fn enter_carries_shift_for_the_find_bar() {
+        let enter = Key::Named(NamedKey::Enter);
+        assert_eq!(
+            copy_key(ModifiersState::empty(), &enter, &enter),
+            Some(CopyKey::Enter { shift: false })
+        );
+        assert_eq!(
+            copy_key(ModifiersState::SHIFT, &enter, &enter),
+            Some(CopyKey::Enter { shift: true })
+        );
     }
 
     /// Super chords resolve to nothing, so the caller drops them rather

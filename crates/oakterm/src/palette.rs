@@ -409,7 +409,7 @@ mod tests {
     }
 
     use super::{PaletteResultKind, PaletteState};
-    use oakterm_config::{ActionContext, ActionRegistry, KeybindRegistry};
+    use oakterm_config::{ActionContext, ActionId, ActionRegistry, KeybindRegistry};
 
     fn registry() -> ActionRegistry {
         ActionRegistry::core(&KeybindRegistry::new())
@@ -485,7 +485,7 @@ mod tests {
         for _ in 0.."tab".len() {
             p.backspace(&reg, open_ctx());
         }
-        assert_eq!(labels(&p).len(), 15);
+        assert_eq!(labels(&p).len(), ActionId::ALL.len());
     }
 
     #[test]
@@ -518,8 +518,6 @@ mod tests {
 
     #[test]
     fn confirm_returns_the_selection_closes_and_records_recents() {
-        use oakterm_config::ActionId;
-
         let reg = registry();
         let mut p = PaletteState::new();
         let kind = run_action(&mut p, &reg, "New Tab");
@@ -529,7 +527,7 @@ mod tests {
         // The recent action leads the default view on reopen, undoubled.
         p.open(&reg, open_ctx());
         assert_eq!(labels(&p)[0], "New Tab");
-        assert_eq!(labels(&p).len(), 15);
+        assert_eq!(labels(&p).len(), ActionId::ALL.len());
     }
 
     #[test]
@@ -560,7 +558,7 @@ mod tests {
                 "Split Pane Down",
             ],
         );
-        assert_eq!(labels(&p).len(), 15);
+        assert_eq!(labels(&p).len(), ActionId::ALL.len());
     }
 
     #[test]
@@ -605,7 +603,7 @@ mod tests {
     fn window_follows_selection_only_at_its_edges() {
         let reg = registry();
         let mut p = PaletteState::new();
-        p.open(&reg, open_ctx()); // 15 results, 10-row window
+        p.open(&reg, open_ctx()); // every action, 10-row window
         assert_eq!(p.window_start(), 0);
 
         // Down to the window's bottom edge: no scroll yet.
@@ -616,23 +614,22 @@ mod tests {
         // Crossing the edge scrolls one row per step.
         p.move_down();
         assert_eq!((p.selected_index(), p.window_start()), (10, 1));
-        p.move_down();
-        p.move_down();
-        p.move_down();
-        p.move_down();
-        assert_eq!((p.selected_index(), p.window_start()), (14, 5));
+        for _ in 0..5 {
+            p.move_down();
+        }
+        assert_eq!((p.selected_index(), p.window_start()), (15, 6));
         // Clamped at the last result; the window stays put.
         p.move_down();
-        assert_eq!((p.selected_index(), p.window_start()), (14, 5));
+        assert_eq!((p.selected_index(), p.window_start()), (15, 6));
 
         // Moving up moves the cursor within the window first...
         for _ in 0..9 {
             p.move_up();
         }
-        assert_eq!((p.selected_index(), p.window_start()), (5, 5));
+        assert_eq!((p.selected_index(), p.window_start()), (6, 6));
         // ...and only scrolls once the selection crosses the top edge.
         p.move_up();
-        assert_eq!((p.selected_index(), p.window_start()), (4, 4));
+        assert_eq!((p.selected_index(), p.window_start()), (5, 5));
 
         // Any edit resets the window with the selection.
         p.input_char('t', &reg, open_ctx());
