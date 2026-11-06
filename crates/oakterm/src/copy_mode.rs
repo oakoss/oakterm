@@ -802,9 +802,14 @@ impl CopyModeState {
 
     /// Ask for a scan or seek window, or hold it until the pin lands: a
     /// fill before the ack would resolve against live rows (ADR-0025
-    /// clause 2). The pin handler sends the held window via `awaited_fill`.
+    /// clause 2). The pin handler sends the held window via `awaited_fill`;
+    /// a window already in flight serves whichever scan awaits it on landing.
     fn fetch(&self, awaiting: FillRequest) -> SearchStep {
-        if self.pinned_base.is_some() {
+        let sent = self
+            .in_flight
+            .values()
+            .any(|pending| pending.request == awaiting);
+        if self.pinned_base.is_some() && !sent {
             SearchStep::Fetch(awaiting)
         } else {
             SearchStep::Updated
@@ -3044,6 +3049,25 @@ mod tests {
         assert_eq!(state.continue_search(), SearchStep::Moved);
         assert_eq!(state.cursor(), (-1, 0));
         assert_eq!(state.awaited_fill(), None);
+    }
+
+    /// Typing on past the cache asks for the same window once; the reply
+    /// serves the newest query.
+    #[test]
+    fn a_window_in_flight_is_not_asked_for_again() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        state.edit_search(BarKey::Backspace);
+        assert_eq!(state.edit_search(BarKey::Insert('z')), SearchStep::Updated);
+        assert_eq!(state.awaited_fill(), Some(chunk));
+        assert!(state.apply_fill(9, &served(-12, "aqzb", true)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-10, 0));
     }
 
     /// A chunk the search asked for before it changed belongs to nobody:
