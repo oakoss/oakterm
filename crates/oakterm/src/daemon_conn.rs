@@ -125,7 +125,10 @@ fn spawn_daemon(socket_path: &std::path::Path) -> std::io::Result<std::process::
         .expect("exe has parent dir")
         .join("oakterm-daemon");
 
+    // The daemon's shells inherit its environment; an `oakterm` run from one
+    // must not launch in the background.
     let mut child = std::process::Command::new(&daemon_bin)
+        .env_remove("OAKTERM_BACKGROUND")
         .spawn()
         .map_err(|e| {
             std::io::Error::new(
