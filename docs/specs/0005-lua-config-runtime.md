@@ -223,11 +223,12 @@ oakterm.action.reload_config()
 oakterm.action.next_tab()
 oakterm.action.previous_tab()
 oakterm.action.switch_tab(1)             -- switch to tab by 1-based index
+oakterm.action.enter_copy_mode()
+oakterm.action.find()                    -- copy mode's find bar (Spec-0008 Search)
 
 -- Phase 1: Multiplexer actions (Spec-0007, Spec-0008, Spec-0009)
 -- NOT YET IMPLEMENTED. These constructors are not registered in the current
 -- runtime; referencing any of them raises a Lua error until Phase 1 lands.
-oakterm.action.enter_copy_mode()
 oakterm.action.enter_resize_mode()
 oakterm.action.toggle_floating_pane()
 oakterm.action.zoom_pane()               -- toggle pane fullscreen within tab

@@ -81,7 +81,7 @@ enum ActionCategory {
 }
 ```
 
-**Registration policy:** only actions with a working handler register; the catalog never contains entries that would execute as no-ops. Registered today: split_pane_right, split_pane_down, close_pane, focus_pane_left, focus_pane_right, focus_pane_up, focus_pane_down, new_tab, close_tab, next_tab, previous_tab, toggle_fullscreen, show_command_palette, reload_config, enter_copy_mode.
+**Registration policy:** only actions with a working handler register; the catalog never contains entries that would execute as no-ops. Registered today: split_pane_right, split_pane_down, close_pane, focus_pane_left, focus_pane_right, focus_pane_up, focus_pane_down, new_tab, close_tab, next_tab, previous_tab, toggle_fullscreen, show_command_palette, reload_config, enter_copy_mode, find.
 
 **Target set** (register as their features land): new_workspace, switch_workspace, toggle_floating, enter_resize_mode.
 

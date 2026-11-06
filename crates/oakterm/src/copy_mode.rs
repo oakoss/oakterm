@@ -13,7 +13,7 @@
 
 use crate::copy_keys::PendingPrefix;
 use crate::copy_motion::{MotionBounds, RowText};
-use crate::copy_search::{self, BarKey, Match, SearchDirection, SearchState};
+use crate::copy_search::{self, BarKey, BarStyle, Match, SearchDirection, SearchState};
 use crate::render_grid::RowSource;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::DirtyRow;
@@ -376,6 +376,8 @@ pub(crate) enum SearchStep {
     },
     /// The bar, the query or the cursor changed with no match to report.
     Updated,
+    /// The find bar closed with Escape: leave copy mode.
+    Exit,
     Inert,
 }
 
@@ -384,6 +386,8 @@ pub(crate) enum SearchStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchStatus {
     pub(crate) query: String,
+    pub(crate) direction: SearchDirection,
+    pub(crate) style: BarStyle,
     pub(crate) editing: bool,
     pub(crate) index: Option<usize>,
     pub(crate) total: usize,
@@ -493,6 +497,7 @@ impl CopyModeState {
     /// the cursor starts on the live grid, which `GetScrollback` never
     /// serves.
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
+        self.drop_pending_search();
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
         self.cursor_col = col.min(self.cols - 1);
         let rows = i64::from(self.visible_rows);
@@ -507,10 +512,22 @@ impl CopyModeState {
         self.display_top
     }
 
+    /// A scan or seek still in flight would move the cursor, or stretch a
+    /// selection, from wherever the user has since put it (Spec-0008 Search).
+    fn drop_pending_search(&mut self) {
+        self.scan = None;
+        self.seek = None;
+    }
+
     /// Scroll the display window by `delta` rows (negative is up, into
     /// history), bounded by the addressable rows, then pull the cursor
     /// into the window it leaves on screen (Spec-0008 Mouse).
     pub(crate) fn scroll_display(&mut self, delta: i64) {
+        // `apply_fill` re-clamps with a zero delta, which must leave a
+        // pending search in flight.
+        if delta != 0 {
+            self.drop_pending_search();
+        }
         let top = self.display_top.saturating_add(delta);
         self.display_top = top.clamp(self.first_row(), self.viewport_top);
         let bottom = self.display_top + i64::from(self.visible_rows) - 1;
@@ -602,6 +619,7 @@ impl CopyModeState {
     /// active type cancels it, a different type switches shape and keeps
     /// the anchor where the user put it.
     pub(crate) fn toggle_selection(&mut self, ty: CopySelectionType) {
+        self.drop_pending_search();
         match self.selection.map(|selection| selection.ty) {
             Some(active) if active == ty => self.selection = None,
             Some(_) => {
@@ -635,15 +653,24 @@ impl CopyModeState {
     }
 
     /// Open the search bar for a new search (Spec-0008 Search).
-    pub(crate) fn start_search(&mut self, direction: SearchDirection) {
-        self.search = Some(SearchState::new(direction, self.cursor()));
+    pub(crate) fn start_search(&mut self, direction: SearchDirection, style: BarStyle) {
+        self.search = Some(SearchState::new(direction, style, self.cursor()));
         self.scan = None;
         self.seek = None;
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn search_editing(&self) -> bool {
-        self.search.as_ref().is_some_and(|search| search.editing)
+        self.open_bar().is_some()
+    }
+
+    /// The style of the bar taking keys, if one is open.
+    pub(crate) fn open_bar(&self) -> Option<BarStyle> {
+        self.search
+            .as_ref()
+            .filter(|search| search.editing)
+            .map(|search| search.style)
     }
 
     /// Apply one key typed into the open bar.
@@ -674,6 +701,20 @@ impl CopyModeState {
             BarKey::Repeat(direction) => {
                 search.direction = direction;
                 self.search_on(direction)
+            }
+            BarKey::Next { reverse } => {
+                let direction = if reverse {
+                    search.direction.reversed()
+                } else {
+                    search.direction
+                };
+                self.search_on(direction)
+            }
+            BarKey::Leave => {
+                search.editing = false;
+                self.scan = None;
+                self.seek = None;
+                SearchStep::Exit
             }
             BarKey::Ignore => SearchStep::Inert,
         }
@@ -713,7 +754,13 @@ impl CopyModeState {
             self.scan = None;
             return self.go_to(origin);
         }
-        self.scan_from(origin, direction, true, false)
+        // The find bar reads its whole starting row, so a match on the
+        // bottom line is found going up (Spec-0008 Search, Find).
+        let from = match search.style {
+            BarStyle::Preset => origin,
+            BarStyle::Find => (origin.0, u16::MAX),
+        };
+        self.scan_from(from, direction, true, false)
     }
 
     fn search_on(&mut self, direction: SearchDirection) -> SearchStep {
@@ -762,9 +809,32 @@ impl CopyModeState {
                     ring,
                     awaiting,
                 });
-                SearchStep::Fetch(awaiting)
+                self.fetch(awaiting)
             }
         }
+    }
+
+    /// Ask for a scan or seek window, or hold it until the pin lands: a
+    /// fill before the ack would resolve against live rows (ADR-0025
+    /// clause 2). The pin handler sends the held window via `awaited_fill`;
+    /// a window already in flight serves whichever scan awaits it on landing.
+    fn fetch(&self, awaiting: FillRequest) -> SearchStep {
+        let sent = self
+            .in_flight
+            .values()
+            .any(|pending| pending.request == awaiting);
+        if self.pinned_base.is_some() && !sent {
+            SearchStep::Fetch(awaiting)
+        } else {
+            SearchStep::Updated
+        }
+    }
+
+    /// The window a scan or seek is waiting on.
+    pub(crate) fn awaited_fill(&self) -> Option<FillRequest> {
+        self.scan
+            .map(|scan| scan.awaiting)
+            .or(self.seek.map(|seek| seek.awaiting))
     }
 
     /// The largest window toward `direction` that starts at `row`: a long
@@ -804,7 +874,7 @@ impl CopyModeState {
             count: u32::try_from(count).unwrap_or(MAX_ROWS_PER_REQUEST),
         };
         self.seek = Some(Seek { target, awaiting });
-        SearchStep::Fetch(awaiting)
+        self.fetch(awaiting)
     }
 
     /// A scan chunk landed: scan it, and on a match make it the cache so
@@ -910,6 +980,8 @@ impl CopyModeState {
             };
         Some(SearchStatus {
             query: search.query().to_string(),
+            direction: search.direction,
+            style: search.style,
             editing: search.editing,
             index,
             total,
@@ -942,7 +1014,11 @@ impl CopyModeState {
     /// Drop the selection, reporting whether there was one. Escape uses
     /// the answer to decide between clearing and leaving copy mode.
     pub(crate) fn clear_selection(&mut self) -> bool {
-        self.selection.take().is_some()
+        let cleared = self.selection.take().is_some();
+        if cleared {
+            self.drop_pending_search();
+        }
+        cleared
     }
 
     /// The selection as ordered inclusive endpoints, or `None` when
@@ -1208,6 +1284,20 @@ impl CopyModeState {
         if data.start_row > request.start_row || !data.has_more {
             self.history_start = Some(data.start_row);
         }
+        // A front-clamped window keeps its row count, so it can run past
+        // row 0 into output that arrived after the pin; those rows belong
+        // to the frozen snapshot, as in `initial_fill`.
+        let held = usize::try_from(-data.start_row).unwrap_or(0);
+        let trimmed;
+        let data = if data.rows.len() > held {
+            trimmed = ScrollbackData {
+                rows: data.rows[..held].to_vec(),
+                ..data.clone()
+            };
+            &trimmed
+        } else {
+            data
+        };
         if data.start_row != request.start_row {
             warn!(
                 requested = request.start_row,
@@ -1255,6 +1345,7 @@ mod tests {
         CopyModeState, CopySelectionType, FillFailure, FillRequest, SearchStep, SelectionEffect,
         ViewportCache, YankPlan, YankRange,
     };
+    use crate::copy_search::BarStyle;
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
 
@@ -2743,7 +2834,7 @@ mod tests {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
         assert_eq!(state.cursor(), (3, 0));
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         assert!(state.search_editing());
 
         assert_eq!(state.edit_search(BarKey::Insert('x')), SearchStep::Moved);
@@ -2768,7 +2859,7 @@ mod tests {
     fn escape_returns_to_the_start_and_keeps_the_query_for_n() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         state.edit_search(BarKey::Cancel);
         assert_eq!(state.cursor(), (3, 0));
@@ -2781,7 +2872,7 @@ mod tests {
     fn n_walks_the_matches_and_n_reverses() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(false);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         state.edit_search(BarKey::Accept);
         let mut visited = Vec::new();
@@ -2820,7 +2911,7 @@ mod tests {
         let mut wide = CopyModeState::new(300, 4, 0, Vec::new());
         wide.set_pinned_base(0);
         wide.set_snapshot(snap(&["a", "b", "c", "d"]));
-        wide.start_search(SearchDirection::Backward);
+        wide.start_search(SearchDirection::Backward, BarStyle::Preset);
         let SearchStep::Fetch(chunk) = wide.edit_search(BarKey::Insert('q')) else {
             panic!("expected a chunk request");
         };
@@ -2835,7 +2926,7 @@ mod tests {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
         state.set_cursor(-7, 0);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         let rows = super::scan_chunk_rows(8);
         let chunk = FillRequest {
             start_row: -9 - i64::from(rows) + 1,
@@ -2875,7 +2966,7 @@ mod tests {
     fn a_typed_miss_past_history_reports_without_a_bell() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
             panic!("expected a chunk request");
         };
@@ -2972,13 +3063,147 @@ mod tests {
         );
     }
 
+    /// A search typed before the entry ack holds its history window until
+    /// the pin lands, so no fill resolves against live rows.
+    #[test]
+    fn a_search_before_the_pin_waits_for_it() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = CopyModeState::new(8, 4, 0, Vec::new());
+        state.set_snapshot(snap(&["one", "two", "six", "ten"]));
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        assert_eq!(state.edit_search(BarKey::Insert('q')), SearchStep::Updated);
+        let chunk = state.awaited_fill().expect("the scan awaits a window");
+        assert_eq!(chunk.start_row + i64::from(chunk.count), 0);
+
+        state.set_pinned_base(0);
+        state.record_fill(3, chunk);
+        assert!(state.apply_fill(3, &served(-2, "aq", false)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-1, 0));
+        assert_eq!(state.awaited_fill(), None);
+    }
+
+    /// A window clamped at the history floor keeps its row count; rows it
+    /// carries from 0 on are output since the pin and stay out of reach.
+    #[test]
+    fn rows_past_the_pin_in_a_clamped_reply_are_dropped() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        assert!(state.apply_fill(9, &served(-10, "qbcdefghijzz", false)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-10, 0));
+        assert!(
+            state.cache().get(0).is_none(),
+            "rows 0 and 1 are output after the pin; the page keeps its own"
+        );
+        assert_eq!(state.cache().get(-1).map(tag_of), Some('j'));
+    }
+
+    /// After `n` starts a scan, starting a selection, moving or scrolling
+    /// drops it: the reply must not drag the cursor, and with it the
+    /// selection, to a far match.
+    #[test]
+    fn acting_after_n_drops_the_pending_scan() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let start = |state: &mut CopyModeState| {
+            state.start_search(SearchDirection::Backward, BarStyle::Preset);
+            state.edit_search(BarKey::Insert('x'));
+            state.edit_search(BarKey::Accept);
+            state.set_cursor(-8, 0);
+            let SearchStep::Fetch(chunk) = state.search_again(false) else {
+                panic!("expected a chunk request");
+            };
+            state.record_fill(9, chunk);
+            chunk
+        };
+        let acts: [fn(&mut CopyModeState); 3] = [
+            |s| s.toggle_selection(CopySelectionType::Character),
+            |s| s.set_cursor(-7, 0),
+            |s| s.scroll_display(-1),
+        ];
+        for act in acts {
+            let mut state = searchable(true);
+            let chunk = start(&mut state);
+            act(&mut state);
+            let before = state.cursor();
+            assert_eq!(state.awaited_fill(), None);
+            assert!(state.apply_fill(9, &served(chunk.start_row, "x", true)));
+            assert_eq!(state.continue_search(), SearchStep::Inert);
+            assert_eq!(state.cursor(), before);
+        }
+
+        // Escape clearing a selection made before `n` drops it as well.
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        state.edit_search(BarKey::Insert('x'));
+        state.edit_search(BarKey::Accept);
+        state.set_cursor(-8, 0);
+        state.toggle_selection(CopySelectionType::Character);
+        assert!(matches!(state.search_again(false), SearchStep::Fetch(_)));
+        assert!(state.clear_selection());
+        assert_eq!(state.awaited_fill(), None);
+    }
+
+    /// Moving or scrolling away drops a pending seek, so it cannot pull
+    /// the cursor back when it lands.
+    #[test]
+    fn a_move_drops_a_pending_seek() {
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        state.set_cursor(1, 2);
+        assert!(state.apply_fill(5, &served(-24, "abcdefghijkl", true)));
+        assert_eq!(state.continue_search(), SearchStep::Inert);
+        assert_eq!(state.cursor(), (1, 2));
+
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(6, window);
+        state.scroll_display(0);
+        assert_eq!(
+            state.awaited_fill(),
+            Some(window),
+            "a zero re-clamp keeps it"
+        );
+        state.scroll_display(-3);
+        assert!(state.apply_fill(6, &served(-24, "abcdefghijkl", true)));
+        assert_eq!(state.continue_search(), SearchStep::Inert);
+    }
+
+    /// Typing on past the cache asks for the same window once; the reply
+    /// serves the newest query.
+    #[test]
+    fn a_window_in_flight_is_not_asked_for_again() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        state.edit_search(BarKey::Backspace);
+        assert_eq!(state.edit_search(BarKey::Insert('z')), SearchStep::Updated);
+        assert_eq!(state.awaited_fill(), Some(chunk));
+        assert!(state.apply_fill(9, &served(-12, "aqzb", true)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-10, 0));
+    }
+
     /// A chunk the search asked for before it changed belongs to nobody:
     /// it neither moves the cursor nor ends the new search.
     #[test]
     fn a_chunk_for_a_replaced_search_resumes_nothing() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
             panic!("expected a chunk request");
         };
@@ -2992,7 +3217,7 @@ mod tests {
             panic!("expected a seek window");
         };
         state.record_fill(10, seek);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         assert_eq!(state.edit_search(BarKey::Insert('x')), SearchStep::Moved);
         assert!(state.apply_fill(10, &served(-44, "abcdefghijkl", true)));
         assert_eq!(
@@ -3008,7 +3233,7 @@ mod tests {
     fn a_match_next_to_the_cache_merges_with_it() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
             panic!("expected a chunk request");
         };
@@ -3052,7 +3277,7 @@ mod tests {
         assert!(state.apply_fill(5, &served(-124, "abcdefghijkl", true)));
         assert_eq!(state.cursor(), (-120, 0));
 
-        state.start_search(SearchDirection::Forward);
+        state.start_search(SearchDirection::Forward, BarStyle::Preset);
         let chunk = FillRequest {
             start_row: -112,
             count: 15,
@@ -3077,7 +3302,7 @@ mod tests {
     fn highlights_are_window_relative_in_history() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         state.edit_search(BarKey::Accept);
         state.set_cursor(-7, 0);
@@ -3094,7 +3319,7 @@ mod tests {
     fn a_repeat_key_in_the_bar_moves_on_in_its_direction() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         assert_eq!(state.cursor(), (2, 0));
         assert_eq!(
@@ -3115,7 +3340,7 @@ mod tests {
         };
         state.record_fill(5, window);
         assert!(state.apply_fill(5, &served(window.start_row, "xbxdxfghijkl", true)));
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         let status = state.search_status().expect("searching");
         assert_eq!(status.total, 5, "three cached rows and two page rows");
@@ -3125,7 +3350,7 @@ mod tests {
         let mut scrolled = CopyModeState::new(8, 4, 4, Vec::new());
         scrolled.set_snapshot(snap(&["x", "x", "x", "x"]));
         filled(&mut scrolled, -8, "xxxxxxxx", true);
-        scrolled.start_search(SearchDirection::Backward);
+        scrolled.start_search(SearchDirection::Backward, BarStyle::Preset);
         scrolled.edit_search(BarKey::Insert('x'));
         let status = scrolled.search_status().expect("searching");
         assert_eq!(status.total, 8);
@@ -3133,11 +3358,77 @@ mod tests {
         assert_eq!(status.index, Some(7));
     }
 
+    /// The find bar's Enter goes on up, Shift+Enter back down, without
+    /// turning the search around; Escape asks to leave copy mode.
+    #[test]
+    fn the_find_bar_steps_both_ways_and_escape_leaves() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(false);
+        state.start_search(SearchDirection::Backward, BarStyle::Find);
+        state.edit_search(BarKey::Insert('x'));
+        assert_eq!(state.cursor(), (2, 0));
+        let next = |reverse| BarKey::Next { reverse };
+        assert_eq!(state.edit_search(next(false)), SearchStep::Moved);
+        assert_eq!(state.cursor(), (0, 4));
+        assert_eq!(state.edit_search(next(false)), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-3, 0));
+        assert_eq!(state.edit_search(next(true)), SearchStep::Moved);
+        assert_eq!(state.cursor(), (0, 4), "Shift+Enter steps back down");
+        assert_eq!(state.edit_search(next(false)), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-3, 0), "Enter still goes up");
+        assert!(state.search_editing(), "the find bar stays open");
+
+        assert_eq!(state.edit_search(BarKey::Leave), SearchStep::Exit);
+        assert!(!state.search_editing());
+    }
+
+    /// The bar reports the style and direction it opened with, which pick
+    /// its keys in the app and its prefix on screen.
+    #[test]
+    fn the_bar_reports_its_style_and_direction() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        for (style, direction) in [
+            (BarStyle::Find, SearchDirection::Backward),
+            (BarStyle::Preset, SearchDirection::Forward),
+            (BarStyle::Preset, SearchDirection::Backward),
+        ] {
+            let mut state = searchable(true);
+            state.start_search(direction, style);
+            assert_eq!(state.open_bar(), Some(style));
+            state.edit_search(BarKey::Insert('x'));
+            let status = state.search_status().expect("searching");
+            assert_eq!((status.style, status.direction), (style, direction));
+        }
+    }
+
+    /// The find bar reads its whole starting row: a match right of the
+    /// cursor on the bottom line is the first one up.
+    #[test]
+    fn the_find_bar_finds_the_bottom_line() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = CopyModeState::new(8, 4, 0, Vec::new());
+        state.set_snapshot(snap(&["one", "two", "six", "ab zz"]));
+        state.start_search(SearchDirection::Backward, BarStyle::Find);
+        assert_eq!(state.edit_search(BarKey::Insert('z')), SearchStep::Moved);
+        assert_eq!(state.cursor(), (3, 4));
+
+        // Emptying the query returns to where the bar opened, not to the
+        // end of that row.
+        let mut state = searchable(true);
+        state.set_cursor(1, 2);
+        state.start_search(SearchDirection::Backward, BarStyle::Find);
+        assert_eq!(state.edit_search(BarKey::Backspace), SearchStep::Updated);
+        assert_eq!(state.cursor(), (1, 2));
+        state.edit_search(BarKey::Insert('x'));
+        assert_eq!(state.edit_search(BarKey::Backspace), SearchStep::Updated);
+        assert_eq!(state.cursor(), (1, 2));
+    }
+
     #[test]
     fn the_status_and_highlights_cover_the_held_rows() {
         use crate::copy_search::{BarKey, SearchDirection};
         let mut state = searchable(true);
-        state.start_search(SearchDirection::Backward);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
         state.edit_search(BarKey::Insert('x'));
         let status = state.search_status().expect("searching");
         assert_eq!(

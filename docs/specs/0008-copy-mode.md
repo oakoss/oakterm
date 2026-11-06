@@ -99,6 +99,10 @@ struct SearchState {
     /// the last repeat key's.
     direction: SearchDirection,
 
+    /// Which bar is open: the preset's search, or the find bar
+    /// `oak_mod + F` opens (see Search, Find).
+    style: BarStyle,
+
     /// Whether the search bar is open and keys edit the query.
     editing: bool,
 
@@ -120,13 +124,20 @@ enum SearchDirection {
     /// Toward older rows (up).
     Backward,
 }
+
+enum BarStyle {
+    /// Opened by the preset's search keys.
+    Preset,
+    /// Opened by `oak_mod + F`; `Enter` steps and `Escape` exits copy mode.
+    Find,
+}
 ```
 
 The preset enum (`Vim`, `Emacs`, `Basic`) lives with the config surface as the value of `copy_mode_keybinds` (Spec-0005), not in per-pane state.
 
 ### Key Tables
 
-Copy mode activates a key table (ADR-0011). Unmatched keys are dropped, not forwarded to the PTY. The active preset is `oakterm.config.copy_mode_keybinds` (Spec-0005), read at each key press rather than frozen into per-pane state at entry, so a config reload switches tables immediately.
+Copy mode activates a key table (ADR-0011). Unmatched keys are dropped, not forwarded to the PTY. The one exception is a chord bound to `find`, which still reaches its action (see Search, Find). The active preset is `oakterm.config.copy_mode_keybinds` (Spec-0005), read at each key press rather than frozen into per-pane state at entry, so a config reload switches tables immediately.
 
 A configured leader chord outranks every preset row it collides with — ADR-0011 resolves the leader layer before the copy-mode table. With the template's suggested `leader = { key = "ctrl+b" }`, the vim preset's `Ctrl+b` (page up) and the emacs preset's `Ctrl+b` (cursor backward) arm the leader instead.
 
@@ -291,11 +302,12 @@ While copy mode is active, mouse clicks and pointer motion reach neither the app
 Search runs in the GUI over the rows copy mode can address, reading each row the way yank and motions do (the cache first, then the entry page), so a match is always the text a yank would take. The daemon's search messages are not used: their state is shared by every client on the pane and their results carry no columns.
 
 1. **Start.** `/` (vim) and `Ctrl+s` (emacs) start a forward search, toward newer rows; `?` (vim), `Ctrl+r` (emacs) and `Ctrl+f` (basic) start a backward one, toward older rows. Starting opens the search bar and records where the cursor stood.
-2. **The bar.** A one-row bar floats at the top right of the pane, over the display window, showing the query and the position among matches found so far (`3/17`, with `+` while history in the search direction is still unscanned). It moves to the bottom right while the cursor is on the window's top row. The bar is drawn over the display, not part of it: yanks, motions and the a11y rows never read its text.
+2. **The bar.** A one-row bar floats at the top right of the pane, over the display window, showing the query behind `/` or `?` for its direction (no prefix in the find bar) and the position among matches found so far (`3/17`, with `+` while history in the search direction is still unscanned). It moves to the bottom right while the cursor is on the window's top row. The bar is drawn over the display, not part of it: yanks, motions and the a11y rows never read its text.
 3. **Typing.** Printable keys edit the query and `Backspace` deletes; the preset's key table is bypassed while the bar is open. After each edit the cursor jumps to the nearest match from where the search started, in its direction. Matching is literal and smart-case, the same rule the daemon's search uses: case-insensitive unless the query has an uppercase letter.
-4. **Closing.** `Enter` closes the bar and leaves the cursor on the match; a scan still reading history finishes and moves the cursor when it finds one. `Escape` closes the bar, stops any scan, and returns the cursor to where the search started, refetching that row's window when the cache no longer holds it. Either way the query stays: matches remain highlighted until copy mode exits or a new search starts.
+4. **Closing.** `Enter` closes the bar and leaves the cursor on the match; a scan still reading history finishes and moves the cursor when it finds one, unless the user moves the cursor, scrolls, or starts or changes a selection first, which drops the scan (as it drops any pending scan or seek). `Escape` closes the bar, stops any scan, and returns the cursor to where the search started, refetching that row's window when the cache no longer holds it. Either way the query stays: matches remain highlighted until copy mode exits or a new search starts.
 5. **Next and previous.** `n` moves to the next match in the search's direction and `N` to the previous one (vim); with the bar open, the preset's start keys search on in their own direction and the search keeps that direction (`Ctrl+s`/`Ctrl+r` in emacs, `Ctrl+f` in basic). When no held row has a further match, the GUI fetches the next chunk of history in that direction (`GetScrollback`, up to the request limit) and scans it without caching it; the cursor stays put meanwhile. A chunk holding a match joins the cache, replacing it when the two do not touch, and the cursor moves there; otherwise the next chunk is fetched. Rows the display window shows but the cache lacks are fetched before the cache grows at its edges. The search ends at the oldest history row going back, or at the bottom of the entry page going forward. A miss from `n`, `N` or a repeat key rings the bell; a miss while typing does not, since the query is still changing.
 6. **Highlights.** Every match in the display window is highlighted; the selection paints over a match where they overlap.
+7. **Find.** `oak_mod + F` (Cmd+F on macOS, Ctrl+Shift+F on Linux) opens a browser-style find bar whatever the preset. On a live pane it enters copy mode first; in copy mode it opens the bar from the cursor, and does nothing while a bar is open. The find bar searches backward, up from the end of the row where it opened, so a match on the bottom line counts. It types as the preset's bar does, but `Enter` moves to the next match up and `Shift+Enter` to the previous one below, keeping the bar open and the search's direction; `Escape` closes the bar and exits copy mode (see Exit).
 
 ### Yank
 
@@ -311,7 +323,7 @@ Search runs in the GUI over the rows copy mode can address, reading each row the
 
 ### Exit
 
-1. User presses `Escape`/`q` (vim), `Ctrl+g` (emacs), or `Escape` (basic).
+1. User presses `Escape`/`q` (vim), `Ctrl+g` (emacs), or `Escape` (basic), or `Escape` in the find bar.
 2. GUI deactivates the copy mode key table.
 3. GUI sends `ExitCopyMode { pane_id }` to the daemon. The daemon removes the client from the pane's pinned viewport set and resumes normal scroll-on-output for that client.
 4. GUI discards the `CopyModeState` for this pane. The viewport snaps to follow live output.

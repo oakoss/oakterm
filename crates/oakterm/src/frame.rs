@@ -225,19 +225,26 @@ pub(crate) fn assemble_frame(
 const SEARCH_BAR_BG_RGB: [u8; 3] = [48, 48, 48];
 const SEARCH_BAR_FG_RGB: [u8; 3] = [230, 230, 230];
 
-/// The search bar's text, at most `width` characters: the query, then the
-/// cursor's match among the held matches (`-` when it is on none), `+`
-/// while history remains. A query too long to fit loses its start, so
-/// what was just typed and the count stay in view.
+/// The search bar's text, at most `width` characters: the query behind
+/// `/` or `?` for its direction (none in the find bar), then the cursor's
+/// match among the held matches (`-` when it is on none), `+` while
+/// history remains. A query too long to fit loses its start, so what was
+/// just typed and the count stay in view.
 #[must_use]
 pub(crate) fn search_bar_text(status: &crate::copy_mode::SearchStatus, width: usize) -> String {
+    use crate::copy_search::{BarStyle, SearchDirection};
+    let prefix = match (status.style, status.direction) {
+        (BarStyle::Find, _) => "",
+        (BarStyle::Preset, SearchDirection::Forward) => "/",
+        (BarStyle::Preset, SearchDirection::Backward) => "?",
+    };
     let position = status
         .index
         .map_or_else(|| "-".to_string(), |index| (index + 1).to_string());
     let more = if status.more { "+" } else { "" };
     let tail = format!(" {position}/{}{more} ", status.total);
     let query: Vec<char> = status.query.chars().collect();
-    let room = width.saturating_sub(tail.chars().count() + 2);
+    let room = width.saturating_sub(tail.chars().count() + 1 + prefix.len());
     let shown: String = if query.len() <= room {
         query.iter().collect()
     } else {
@@ -246,7 +253,7 @@ pub(crate) fn search_bar_text(status: &crate::copy_mode::SearchStatus, width: us
             .chain(query[query.len() - keep..].iter().copied())
             .collect()
     };
-    let text = format!(" /{shown}{tail}");
+    let text = format!(" {prefix}{shown}{tail}");
     let len = text.chars().count();
     text.chars().skip(len.saturating_sub(width)).collect()
 }
@@ -676,20 +683,30 @@ mod tests {
     #[test]
     fn the_search_bar_shows_the_query_and_position() {
         use crate::copy_mode::SearchStatus;
-        let status = |index, more| SearchStatus {
+        use crate::copy_search::{BarStyle, SearchDirection};
+        let status = |index, more, style, direction| SearchStatus {
             query: "foo".into(),
+            direction,
+            style,
             editing: true,
             index,
             total: 17,
             more,
         };
+        let (preset, find) = (BarStyle::Preset, BarStyle::Find);
+        let (forward, backward) = (SearchDirection::Forward, SearchDirection::Backward);
         assert_eq!(
-            super::search_bar_text(&status(Some(2), false), 80),
+            super::search_bar_text(&status(Some(2), false, preset, forward), 80),
             " /foo 3/17 "
         );
         assert_eq!(
-            super::search_bar_text(&status(None, true), 80),
-            " /foo -/17+ "
+            super::search_bar_text(&status(None, true, preset, backward), 80),
+            " ?foo -/17+ "
+        );
+        assert_eq!(
+            super::search_bar_text(&status(Some(0), false, find, backward), 80),
+            " foo 1/17 ",
+            "the find bar has no vim prefix"
         );
     }
 
@@ -700,6 +717,8 @@ mod tests {
         use crate::copy_mode::SearchStatus;
         let status = SearchStatus {
             query: "abcdefghijklmnop".into(),
+            direction: crate::copy_search::SearchDirection::Forward,
+            style: crate::copy_search::BarStyle::Preset,
             editing: true,
             index: Some(0),
             total: 3,
@@ -721,6 +740,8 @@ mod tests {
         use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
         let status = SearchStatus {
             query: "x".into(),
+            direction: crate::copy_search::SearchDirection::Forward,
+            style: crate::copy_search::BarStyle::Preset,
             editing: true,
             index: Some(0),
             total: 1,
