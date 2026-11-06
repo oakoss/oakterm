@@ -497,6 +497,9 @@ impl CopyModeState {
     /// the cursor starts on the live grid, which `GetScrollback` never
     /// serves.
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
+        // A seek still in flight would jump the cursor back from wherever
+        // this put it.
+        self.seek = None;
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
         self.cursor_col = col.min(self.cols - 1);
         let rows = i64::from(self.visible_rows);
@@ -515,6 +518,11 @@ impl CopyModeState {
     /// history), bounded by the addressable rows, then pull the cursor
     /// into the window it leaves on screen (Spec-0008 Mouse).
     pub(crate) fn scroll_display(&mut self, delta: i64) {
+        // Scrolling away drops a pending seek; `apply_fill` re-clamps with
+        // a zero delta, which must leave one in flight.
+        if delta != 0 {
+            self.seek = None;
+        }
         let top = self.display_top.saturating_add(delta);
         self.display_top = top.clamp(self.first_row(), self.viewport_top);
         let bottom = self.display_top + i64::from(self.visible_rows) - 1;
@@ -1266,6 +1274,20 @@ impl CopyModeState {
         if data.start_row > request.start_row || !data.has_more {
             self.history_start = Some(data.start_row);
         }
+        // A front-clamped window keeps its row count, so it can run past
+        // row 0 into output that arrived after the pin; those rows belong
+        // to the frozen snapshot, as in `initial_fill`.
+        let held = usize::try_from(-data.start_row).unwrap_or(0);
+        let trimmed;
+        let data = if data.rows.len() > held {
+            trimmed = ScrollbackData {
+                rows: data.rows[..held].to_vec(),
+                ..data.clone()
+            };
+            &trimmed
+        } else {
+            data
+        };
         if data.start_row != request.start_row {
             warn!(
                 requested = request.start_row,
@@ -3049,6 +3071,56 @@ mod tests {
         assert_eq!(state.continue_search(), SearchStep::Moved);
         assert_eq!(state.cursor(), (-1, 0));
         assert_eq!(state.awaited_fill(), None);
+    }
+
+    /// A window clamped at the history floor keeps its row count; rows it
+    /// carries from 0 on are output since the pin and stay out of reach.
+    #[test]
+    fn rows_past_the_pin_in_a_clamped_reply_are_dropped() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        assert!(state.apply_fill(9, &served(-10, "qbcdefghijzz", false)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-10, 0));
+        assert!(
+            state.cache().get(0).is_none(),
+            "rows 0 and 1 are output after the pin; the page keeps its own"
+        );
+        assert_eq!(state.cache().get(-1).map(tag_of), Some('j'));
+    }
+
+    /// Moving or scrolling away drops a pending seek, so it cannot pull
+    /// the cursor back when it lands.
+    #[test]
+    fn a_move_drops_a_pending_seek() {
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        state.set_cursor(1, 2);
+        assert!(state.apply_fill(5, &served(-24, "abcdefghijkl", true)));
+        assert_eq!(state.continue_search(), SearchStep::Inert);
+        assert_eq!(state.cursor(), (1, 2));
+
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(6, window);
+        state.scroll_display(0);
+        assert_eq!(
+            state.awaited_fill(),
+            Some(window),
+            "a zero re-clamp keeps it"
+        );
+        state.scroll_display(-3);
+        assert!(state.apply_fill(6, &served(-24, "abcdefghijkl", true)));
+        assert_eq!(state.continue_search(), SearchStep::Inert);
     }
 
     /// Typing on past the cache asks for the same window once; the reply
