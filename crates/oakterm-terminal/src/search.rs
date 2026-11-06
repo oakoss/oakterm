@@ -159,6 +159,18 @@ impl SearchEngine {
         });
     }
 
+    /// Matches in one line as character ranges, end exclusive, so a caller
+    /// holding one character per cell reads them as columns.
+    pub fn char_spans<'t>(&'t self, text: &'t str) -> impl Iterator<Item = (usize, usize)> + 't {
+        self.regex
+            .find_iter(text)
+            .filter(|m| m.start() != m.end())
+            .map(move |m| {
+                let start = text[..m.start()].chars().count();
+                (start, start + m.as_str().chars().count())
+            })
+    }
+
     /// Return matches whose row index falls within `[row_start, row_end)`.
     #[must_use]
     pub fn matches_in_range(&self, row_start: usize, row_end: usize) -> Vec<&SearchMatch> {
@@ -359,5 +371,26 @@ mod tests {
         engine.search(&buf);
         assert_eq!(engine.match_count(), super::MAX_MATCHES);
         assert!(engine.is_capped());
+    }
+
+    #[test]
+    fn char_spans_are_character_columns_under_the_same_rules() {
+        let engine = SearchEngine::new("ab", SearchMode::SmartCase).unwrap();
+        let spans: Vec<_> = engine.char_spans("é AB xab").collect();
+        assert_eq!(
+            spans,
+            vec![(2, 4), (6, 8)],
+            "smart case, columns after a 2-byte char"
+        );
+
+        let upper = SearchEngine::new("AB", SearchMode::SmartCase).unwrap();
+        assert_eq!(upper.char_spans("ab AB").collect::<Vec<_>>(), vec![(3, 5)]);
+
+        let empty = SearchEngine::new("x*", SearchMode::Regex).unwrap();
+        assert_eq!(
+            empty.char_spans("ab").count(),
+            0,
+            "empty matches are skipped"
+        );
     }
 }

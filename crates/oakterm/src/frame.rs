@@ -181,7 +181,12 @@ pub(crate) fn assemble_frame(
             continue;
         };
         let is_focused = pane_id == focused_pane;
-        let screen = pane.on_screen();
+        let mut screen = pane.on_screen();
+        if let Some(status) = pane.copy_search_status().filter(|status| status.editing)
+            && let Some(composed) = screen.composed_mut()
+        {
+            paint_search_bar(composed, &status);
+        }
         let grid = screen.grid();
         let selection = screen
             .selection
@@ -215,6 +220,41 @@ pub(crate) fn assemble_frame(
         }
     }
     assembly
+}
+
+const SEARCH_BAR_BG_RGB: [u8; 3] = [48, 48, 48];
+const SEARCH_BAR_FG_RGB: [u8; 3] = [230, 230, 230];
+
+/// The search bar's text: the query, then the cursor's match among the
+/// held matches (`-` when it is on none), `+` while history remains.
+#[must_use]
+pub(crate) fn search_bar_text(status: &crate::copy_mode::SearchStatus) -> String {
+    let position = status
+        .index
+        .map_or_else(|| "-".to_string(), |index| (index + 1).to_string());
+    let more = if status.more { "+" } else { "" };
+    format!(" /{} {position}/{}{more} ", status.query, status.total)
+}
+
+/// Paint the search bar into the cells it covers: the grid's top right,
+/// or its bottom right while the cursor is on the top row (Spec-0008
+/// Search). Only the frame's copy of the grid gets it, so yanks, motions
+/// and the a11y rows never read its text.
+pub(crate) fn paint_search_bar(grid: &mut ClientGrid, status: &crate::copy_mode::SearchStatus) {
+    let text: Vec<char> = search_bar_text(status).chars().collect();
+    let cols = u16::try_from(text.len()).unwrap_or(u16::MAX).min(grid.cols);
+    if cols == 0 || grid.rows == 0 {
+        return;
+    }
+    let row = if grid.cursor_visible && grid.cursor_y == 0 {
+        grid.rows - 1
+    } else {
+        0
+    };
+    let left = grid.cols - cols;
+    for (offset, ch) in (0..cols).zip(text) {
+        grid.set_cell(left + offset, row, ch, SEARCH_BAR_FG_RGB, SEARCH_BAR_BG_RGB);
+    }
 }
 
 /// Append one grid's backgrounds and glyphs to `assembly` at pixel `origin`,
@@ -614,6 +654,52 @@ mod tests {
         assert_eq!(assembly.bg_sections.len(), 2);
         assert_eq!(assembly.bg_sections[0].uniforms.pad_left, 0.0);
         assert_eq!(assembly.bg_sections[1].uniforms.pad_left, 120.0);
+    }
+
+    #[test]
+    fn the_search_bar_shows_the_query_and_position() {
+        use crate::copy_mode::SearchStatus;
+        let status = |index, more| SearchStatus {
+            query: "foo".into(),
+            editing: true,
+            index,
+            total: 17,
+            more,
+        };
+        assert_eq!(
+            super::search_bar_text(&status(Some(2), false)),
+            " /foo 3/17 "
+        );
+        assert_eq!(super::search_bar_text(&status(None, true)), " /foo -/17+ ");
+    }
+
+    /// The bar sits at the top right, and drops to the bottom right when
+    /// the cursor is on the top row so it never covers the cursor.
+    #[test]
+    fn the_search_bar_paints_top_right_and_steps_aside_for_the_cursor() {
+        use crate::copy_mode::SearchStatus;
+        let status = SearchStatus {
+            query: "x".into(),
+            editing: true,
+            index: Some(0),
+            total: 1,
+            more: false,
+        };
+        let mut grid = ClientGrid::new(12, 3);
+        grid.cursor_y = 2;
+        super::paint_search_bar(&mut grid, &status);
+        assert_eq!(
+            grid.row_text(0),
+            "     /x 1/1",
+            "right-aligned on the top row"
+        );
+        assert_eq!(grid.row_text(2), "");
+
+        let mut top = ClientGrid::new(12, 3);
+        top.cursor_y = 0;
+        super::paint_search_bar(&mut top, &status);
+        assert_eq!(top.row_text(0), "");
+        assert_eq!(top.row_text(2), "     /x 1/1");
     }
 
     /// A copy-mode pane draws its copy cursor as a steady reverse-video

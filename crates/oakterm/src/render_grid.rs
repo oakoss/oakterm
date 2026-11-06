@@ -384,6 +384,20 @@ impl ClientGrid {
         out
     }
 
+    /// Recolor cells `[start, end)` of `row`, keeping their glyphs; out of
+    /// range cells are skipped.
+    pub fn highlight(&mut self, row: u16, start: u16, end: u16, fg: [u8; 3], bg: [u8; 3]) {
+        if row >= self.rows {
+            return;
+        }
+        let base = usize::from(row) * usize::from(self.cols);
+        for col in start..end.min(self.cols) {
+            let cell = &mut self.cells[base + usize::from(col)];
+            cell.fg = fg;
+            cell.bg = bg;
+        }
+    }
+
     /// Fill every cell's background, keeping default fg and no glyph.
     pub fn fill_bg(&mut self, bg: [u8; 3]) {
         for cell in &mut self.cells {
@@ -1296,6 +1310,23 @@ mod tests {
         assert_eq!(cell.codepoint, u32::from('x'));
         assert_eq!(cell.fg, [1, 2, 3]);
         assert_eq!(cell.bg, [4, 5, 6]);
+    }
+
+    #[test]
+    fn highlight_recolors_a_clipped_run_and_keeps_glyphs() {
+        let mut grid = ClientGrid::new(4, 2);
+        grid.set_cell(1, 0, 'a', [1, 1, 1], [2, 2, 2]);
+        grid.highlight(0, 1, 9, [7, 7, 7], [8, 8, 8]);
+        assert_eq!(grid.row_text(0), " a");
+        assert_eq!((grid.cells[1].fg, grid.cells[1].bg), ([7, 7, 7], [8, 8, 8]));
+        assert_eq!(grid.cells[3].bg, [8, 8, 8], "clipped to the last column");
+        assert_eq!(grid.cells[0].bg, [0, 0, 0], "before the run");
+        grid.highlight(5, 0, 4, [7, 7, 7], [8, 8, 8]);
+        assert_eq!(
+            grid.cells[4].bg,
+            [0, 0, 0],
+            "a row past the grid is skipped"
+        );
     }
 
     #[test]

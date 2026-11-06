@@ -4,14 +4,20 @@
 
 use crate::copy_keys::{Motion, PendingPrefix};
 use crate::copy_mode::{
-    CopyModeState, CopySelectionType, FillFailure, FillRequest, SelectionEffect, YankPlan,
+    CopyModeState, CopySelectionType, FillFailure, FillRequest, SearchStatus, SearchStep,
+    SelectionEffect, YankPlan,
 };
 use crate::copy_motion::resolve;
+use crate::copy_search::{BarKey, SearchDirection};
 use crate::render_grid::ClientGrid;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::{DirtyRow, RenderUpdate};
 use oakterm_terminal::grid::selection::Selection;
 use std::num::NonZeroU32;
+
+/// Search match colors, fixed until the theme system (OT-223) lands.
+const MATCH_FG: [u8; 3] = [0, 0, 0];
+const MATCH_BG: [u8; 3] = [229, 192, 123];
 
 /// See [`PaneView::on_screen`].
 pub(crate) struct OnScreen<'a> {
@@ -28,6 +34,12 @@ impl OnScreen<'_> {
     #[must_use]
     pub(crate) fn grid(&self) -> &ClientGrid {
         self.composed.as_ref().unwrap_or(self.live)
+    }
+
+    /// The copy-mode grid, which this value owns, for overlays that must
+    /// not reach the pane itself; `None` outside copy mode.
+    pub(crate) fn composed_mut(&mut self) -> Option<&mut ClientGrid> {
+        self.composed.as_mut()
     }
 }
 
@@ -341,10 +353,23 @@ impl PaneView {
     pub(crate) fn on_screen(&self) -> OnScreen<'_> {
         match &self.copy_mode {
             Some(state) => OnScreen {
-                composed: Some(
-                    self.grid
-                        .compose(|row| state.display_row(row), state.display_cursor()),
-                ),
+                composed: Some({
+                    let mut grid = self
+                        .grid
+                        .compose(|row| state.display_row(row), state.display_cursor());
+                    // The selection paints over a match (Spec-0008 Search),
+                    // so a selected cell keeps the colors it inverts.
+                    let selection = state.display_selection();
+                    for hit in state.display_matches() {
+                        let row = u16::try_from(hit.row).unwrap_or(u16::MAX);
+                        for col in hit.start..hit.end {
+                            if !selection.as_ref().is_some_and(|s| s.contains(hit.row, col)) {
+                                grid.highlight(row, col, col + 1, MATCH_FG, MATCH_BG);
+                            }
+                        }
+                    }
+                    grid
+                }),
                 live: &self.grid,
                 selection: state.display_selection(),
                 selection_offset: 0,
@@ -394,6 +419,42 @@ impl PaneView {
             let delta = -i64::from(offset) - state.display_top();
             state.scroll_display(delta);
         }
+    }
+
+    pub(crate) fn start_copy_search(&mut self, direction: SearchDirection) {
+        if let Some(state) = &mut self.copy_mode {
+            state.start_search(direction);
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn copy_search_editing(&self) -> bool {
+        self.copy_mode
+            .as_ref()
+            .is_some_and(CopyModeState::search_editing)
+    }
+
+    pub(crate) fn edit_copy_search(&mut self, key: BarKey) -> SearchStep {
+        self.copy_mode
+            .as_mut()
+            .map_or(SearchStep::Inert, |state| state.edit_search(key))
+    }
+
+    pub(crate) fn copy_search_again(&mut self, reverse: bool) -> SearchStep {
+        self.copy_mode
+            .as_mut()
+            .map_or(SearchStep::Inert, |state| state.search_again(reverse))
+    }
+
+    pub(crate) fn continue_copy_search(&mut self) -> SearchStep {
+        self.copy_mode
+            .as_mut()
+            .map_or(SearchStep::Inert, CopyModeState::continue_search)
+    }
+
+    #[must_use]
+    pub(crate) fn copy_search_status(&self) -> Option<SearchStatus> {
+        self.copy_mode.as_ref()?.search_status()
     }
 
     /// Scroll the copy-mode window `rows_up` rows toward history, the
@@ -545,7 +606,7 @@ fn clamp_viewport(current: u32, total: u32) -> ScrollbackClampOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{PaneView, ScrollbackClampOutcome, clamp_viewport};
+    use super::{MATCH_BG, PaneView, ScrollbackClampOutcome, SearchStep, clamp_viewport};
     use crate::copy_keys::{Motion, PendingPrefix};
     use crate::copy_mode::{CopyModeState, CopySelectionType, FillRequest, SelectionEffect};
     use crate::render_grid::ClientGrid;
@@ -911,6 +972,40 @@ mod tests {
                 .iter()
                 .any(|(id, _)| *id == oakterm_a11y::terminal_node_id(0)),
             "the cursor row now reads the cache, so the caret is rebuilt"
+        );
+    }
+
+    #[test]
+    fn matches_highlight_on_screen_under_the_selection() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        use oakterm_terminal::grid::selection::Selection;
+        let mut view = PaneView::new(ClientGrid::new(8, 4));
+        view.apply_update(&make_update(1, 1, b"ab ab"));
+        let _fill = view.enter_copy_mode();
+        view.start_copy_search(SearchDirection::Backward);
+        assert_eq!(
+            view.edit_copy_search(BarKey::Insert('a')),
+            SearchStep::Moved
+        );
+        view.edit_copy_search(BarKey::Accept);
+
+        let screen = view.on_screen();
+        let bg = |selection: Option<&Selection>, col: usize| {
+            screen.grid().bg_colors(false, selection, 0)[8 + col]
+        };
+        let packed = crate::render_grid::pack_bg_color;
+        assert_eq!(bg(None, 0), packed(MATCH_BG));
+        assert_eq!(bg(None, 3), packed(MATCH_BG));
+        assert_eq!(bg(None, 2), packed([0, 0, 0]), "between matches");
+        drop(screen);
+
+        view.toggle_copy_mode_selection(CopySelectionType::Character);
+        let screen = view.on_screen();
+        let selected = screen.selection.clone();
+        assert_eq!(
+            screen.grid().bg_colors(false, selected.as_ref(), 0)[8 + 3],
+            packed([255, 255, 255]),
+            "the selected match shows the selection, not inverted match colors"
         );
     }
 
