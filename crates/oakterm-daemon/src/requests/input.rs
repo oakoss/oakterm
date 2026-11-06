@@ -381,6 +381,7 @@ mod tests {
         {
             let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
             assert!(pane.pin_copy_mode(7, 0).expect("in range").is_none());
+            pane.screens.primary_mut().cursor.row = 23;
         }
 
         let (dirty_tx, _dirty_rx) = watch::channel(0u64);

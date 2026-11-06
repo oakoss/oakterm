@@ -409,8 +409,9 @@ fn osc_133_bumps_row_seqno_for_render() {
 fn resize_shrink_captures_to_scrollback() {
     let mut ss = ScreenSet::new(10, 5);
     // Write content so rows aren't all empty.
-    ss.primary_mut().lines[3].cells[0].codepoint = 'x';
-    ss.primary_mut().lines[4].cells[0].codepoint = 'y';
+    ss.primary_mut().lines[0].cells[0].codepoint = 'x';
+    ss.primary_mut().lines[1].cells[0].codepoint = 'y';
+    ss.primary_mut().cursor.row = 4;
     ss.resize_all(10, 3);
     assert_eq!(ss.scrollback().len(), 2);
 }
@@ -425,9 +426,11 @@ fn resize_grow_no_scrollback() {
 #[test]
 fn resize_alt_screen_discards_by_default() {
     let mut ss = ScreenSet::new(10, 5);
+    ss.primary_mut().cursor.row = 4;
     ss.enter_alternate();
+    ss.active_grid_mut().cursor.row = 4;
     ss.resize_all(10, 3);
-    // Default: alt rows discarded; only primary's 2 truncated rows captured.
+    // Default: alt rows discarded; only primary's 2 scrolled rows captured.
     assert_eq!(
         ss.scrollback().len(),
         2,
@@ -438,10 +441,12 @@ fn resize_alt_screen_discards_by_default() {
 #[test]
 fn resize_alt_screen_opt_in_captures() {
     let mut ss = ScreenSet::new(10, 5);
+    ss.primary_mut().cursor.row = 4;
     ss.enter_alternate();
+    ss.active_grid_mut().cursor.row = 4;
     ss.set_save_alternate_scrollback(true);
     ss.resize_all(10, 3);
-    // Opt-in: both primary (2) and alt (2) truncated rows captured.
+    // Opt-in: both primary (2) and alt (2) scrolled rows captured.
     assert_eq!(
         ss.scrollback().len(),
         4,
@@ -565,6 +570,57 @@ fn resize_shrink_rows() {
     assert_eq!(grid.rows, 10);
     assert_eq!(grid.lines.len(), 10);
     assert_eq!(grid.cursor.row, 9, "cursor should clamp to new height");
+}
+
+fn labeled_grid(rows: u16) -> Grid {
+    let mut grid = Grid::new(10, rows);
+    for (i, line) in grid.lines.iter_mut().enumerate() {
+        line.cells[0].codepoint = char::from(b'a' + u8::try_from(i).unwrap());
+    }
+    grid
+}
+
+fn labels(rows: &[Row]) -> String {
+    rows.iter().map(|r| r.cells[0].codepoint).collect()
+}
+
+#[test]
+fn resize_shrink_with_cursor_at_bottom_captures_top_rows() {
+    let mut grid = labeled_grid(6);
+    grid.cursor.row = 5;
+    let captured = grid.resize(10, 3);
+    assert_eq!(labels(&captured), "abc");
+    assert_eq!(labels(&grid.lines), "def");
+    assert_eq!(grid.cursor.row, 2);
+}
+
+#[test]
+fn resize_shrink_with_cursor_near_top_keeps_rows_and_drops_below() {
+    let mut grid = labeled_grid(6);
+    grid.cursor.row = 1;
+    let captured = grid.resize(10, 3);
+    assert_eq!(labels(&captured), "");
+    assert_eq!(labels(&grid.lines), "abc");
+    assert_eq!(grid.cursor.row, 1);
+}
+
+#[test]
+fn resize_shrink_with_cursor_mid_screen_scrolls_just_enough() {
+    let mut grid = labeled_grid(6);
+    grid.cursor.row = 3;
+    let captured = grid.resize(10, 3);
+    assert_eq!(labels(&captured), "a");
+    assert_eq!(labels(&grid.lines), "bcd");
+    assert_eq!(grid.cursor.row, 2);
+}
+
+#[test]
+fn resize_shrink_clamps_saved_cursor() {
+    let mut grid = labeled_grid(6);
+    grid.cursor.row = 5;
+    grid.saved_cursor.row = 4;
+    grid.resize(10, 3);
+    assert_eq!(grid.saved_cursor.row, 2);
 }
 
 #[test]
