@@ -1014,7 +1014,11 @@ impl CopyModeState {
     /// Drop the selection, reporting whether there was one. Escape uses
     /// the answer to decide between clearing and leaving copy mode.
     pub(crate) fn clear_selection(&mut self) -> bool {
-        self.selection.take().is_some()
+        let cleared = self.selection.take().is_some();
+        if cleared {
+            self.drop_pending_search();
+        }
+        cleared
     }
 
     /// The selection as ordered inclusive endpoints, or `None` when
@@ -3132,6 +3136,17 @@ mod tests {
             assert_eq!(state.continue_search(), SearchStep::Inert);
             assert_eq!(state.cursor(), before);
         }
+
+        // Escape clearing a selection made before `n` drops it as well.
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward, BarStyle::Preset);
+        state.edit_search(BarKey::Insert('x'));
+        state.edit_search(BarKey::Accept);
+        state.set_cursor(-8, 0);
+        state.toggle_selection(CopySelectionType::Character);
+        assert!(matches!(state.search_again(false), SearchStep::Fetch(_)));
+        assert!(state.clear_selection());
+        assert_eq!(state.awaited_fill(), None);
     }
 
     /// Moving or scrolling away drops a pending seek, so it cannot pull

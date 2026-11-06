@@ -71,7 +71,15 @@ pub(crate) fn bar_key(
     match (style, key) {
         (BarStyle::Find, CopyKey::Enter { shift }) => BarKey::Next { reverse: shift },
         (BarStyle::Find, CopyKey::Escape) => BarKey::Leave,
-        (_, key) => preset_bar_key(preset, key, typed),
+        // The find bar always searches up; a preset's repeat key steps
+        // through matches like Enter rather than turning it around.
+        (BarStyle::Find, key) => match preset_bar_key(preset, key, typed) {
+            BarKey::Repeat(direction) => BarKey::Next {
+                reverse: direction == SearchDirection::Forward,
+            },
+            other => other,
+        },
+        (BarStyle::Preset, key) => preset_bar_key(preset, key, typed),
     }
 }
 
@@ -465,6 +473,15 @@ mod tests {
         assert_eq!(find(key(CopyKey::Escape)), BarKey::Leave);
         assert_eq!(find(key(CopyKey::Char('x'))), BarKey::Insert('x'));
         assert_eq!(find(key(CopyKey::Backspace)), BarKey::Backspace);
+        // The preset's repeat keys step instead of turning the bar around.
+        assert_eq!(
+            find(key(CopyKey::Ctrl('r'))),
+            BarKey::Next { reverse: false }
+        );
+        assert_eq!(
+            find(key(CopyKey::Ctrl('s'))),
+            BarKey::Next { reverse: true }
+        );
     }
 
     /// Option compositions reach the tables as Alt chords; the bar types
