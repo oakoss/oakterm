@@ -553,6 +553,7 @@ While a pane is in copy mode (Spec-0008), its subtree describes what copy mode d
 - AT actions act on copy mode: `ScrollUp`/`ScrollDown` and `SetScrollOffset` move the display window, and `SetTextSelection` moves the copy-mode cursor to the focus and, when anchor and focus differ, selects characters from the anchor.
 - Entering and leaving copy mode are announced through the live region at `Polite` ("Copy mode", "Copy mode off").
 - New output is not announced for a pane in copy mode: its view is frozen, so the announcement would describe text the user cannot see.
+- The search bar is drawn over the display, not part of its rows, so its state is announced at `Polite` when a search moves the cursor ("3 of 17") or finds nothing ("No match").
 
 ### Multi-Pane
 

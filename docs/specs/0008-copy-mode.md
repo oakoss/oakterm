@@ -95,16 +95,19 @@ struct SearchState {
     /// The search query.
     query: String,
 
-    /// Match positions returned by the daemon.
-    matches: Vec<SearchMatch>,
-
-    /// Index of the currently focused match.
-    current_match: Option<usize>,
-
-    /// Search direction.
+    /// Direction `n` follows: the direction the search started in, or
+    /// the last repeat key's.
     direction: SearchDirection,
+
+    /// Whether the search bar is open and keys edit the query.
+    editing: bool,
+
+    /// Cursor position when the search started; `Escape` returns here.
+    origin: (i64, u16),
 }
 
+/// A match on one row, end exclusive, found by the GUI in the row text
+/// yank and motions read (see Search).
 struct SearchMatch {
     row: i64,
     start_col: u16,
@@ -112,7 +115,9 @@ struct SearchMatch {
 }
 
 enum SearchDirection {
+    /// Toward newer rows (down).
     Forward,
+    /// Toward older rows (up).
     Backward,
 }
 ```
@@ -195,7 +200,7 @@ universal way out.
 | `Shift+Up` / `Shift+Down` / `Shift+Left` / `Shift+Right` | Extend selection                                      |
 | `Ctrl+c`                                                 | Copy selection to clipboard, exit copy mode           |
 | `Escape`                                                 | Exit copy mode (clear selection if active, else exit) |
-| `Ctrl+f`                                                 | Start search                                          |
+| `Ctrl+f`                                                 | Start backward search                                 |
 
 Unshifted movement clears an active selection before moving; any shifted movement extends one, anchoring at the cursor if none is active. This is the GUI convention the preset mirrors — a plain arrow deselects, `Shift+Page Down` selects a page from a bare caret.
 
@@ -217,7 +222,8 @@ Copy mode uses these wire protocol messages (see Spec-0001 for framing):
 Existing messages reused without modification to their payloads:
 
 - `FindPrompt` (0x75) / `PromptPosition` (0x76): prompt jumps.
-- `SearchScrollback` (0x77) / `SearchResults` (0x78) / `SearchNext` (0x79) / `SearchPrev` (0x7A) / `SearchClose` (0x7B): search operations.
+
+Copy mode does not use `SearchScrollback` (0x77) or its companions: search runs in the GUI over fetched rows (see Search).
 
 `GetScrollback` and `FindPrompt` resolve their `i64` offsets against the sending client's pin while it holds one, so all three of cache fills, prompt jumps, and yanks share one origin. See Spec-0001's copy-mode addendum.
 
@@ -282,13 +288,14 @@ While copy mode is active, mouse clicks and pointer motion reach neither the app
 
 ### Search
 
-1. User presses `/` (vim) or `Ctrl+s` (emacs) or `Ctrl+f` (basic).
-2. GUI shows a search input overlay at the bottom of the pane.
-3. As the user types, GUI sends `SearchScrollback { pane_id, query, direction }` to the daemon.
-4. Daemon searches the full scrollback (hot buffer + disk archive) and responds with `SearchResults` containing match positions. While the client is pinned, results clamp to rows below 0 in pin space (ADR-0025 clause 8) — the same clamp `FindPrompt` applies — and the client finds visible-page matches against its entry snapshot and merges them. Results never name rows the frozen page does not show.
-5. GUI highlights matches within the cached viewport.
-6. `n`/`N` cycle through matches. The cursor jumps to the match position. If the match is outside the cache, the GUI fetches the surrounding rows.
-7. Pressing `Enter` or `Escape` closes the search overlay. Matches remain highlighted until copy mode exits.
+Search runs in the GUI over the rows copy mode can address, reading each row the way yank and motions do (the cache first, then the entry page), so a match is always the text a yank would take. The daemon's search messages are not used: their state is shared by every client on the pane and their results carry no columns.
+
+1. **Start.** `/` (vim) and `Ctrl+s` (emacs) start a forward search, toward newer rows; `?` (vim), `Ctrl+r` (emacs) and `Ctrl+f` (basic) start a backward one, toward older rows. Starting opens the search bar and records where the cursor stood.
+2. **The bar.** A one-row bar floats at the top right of the pane, over the display window, showing the query and the position among matches found so far (`3/17`, with `+` while history in the search direction is still unscanned). It moves to the bottom right while the cursor is on the window's top row. The bar is drawn over the display, not part of it: yanks, motions and the a11y rows never read its text.
+3. **Typing.** Printable keys edit the query and `Backspace` deletes; the preset's key table is bypassed while the bar is open. After each edit the cursor jumps to the nearest match from where the search started, in its direction. Matching is literal and smart-case, the same rule the daemon's search uses: case-insensitive unless the query has an uppercase letter.
+4. **Closing.** `Enter` closes the bar and leaves the cursor on the match; a scan still reading history finishes and moves the cursor when it finds one. `Escape` closes the bar, stops any scan, and returns the cursor to where the search started, refetching that row's window when the cache no longer holds it. Either way the query stays: matches remain highlighted until copy mode exits or a new search starts.
+5. **Next and previous.** `n` moves to the next match in the search's direction and `N` to the previous one (vim); with the bar open, the preset's start keys search on in their own direction and the search keeps that direction (`Ctrl+s`/`Ctrl+r` in emacs, `Ctrl+f` in basic). When no held row has a further match, the GUI fetches the next chunk of history in that direction (`GetScrollback`, up to the request limit) and scans it without caching it; the cursor stays put meanwhile. A chunk holding a match joins the cache, replacing it when the two do not touch, and the cursor moves there; otherwise the next chunk is fetched. Rows the display window shows but the cache lacks are fetched before the cache grows at its edges. The search ends at the oldest history row going back, or at the bottom of the entry page going forward. A miss from `n`, `N` or a repeat key rings the bell; a miss while typing does not, since the query is still changing.
+6. **Highlights.** Every match in the display window is highlighted; the selection paints over a match where they overlap.
 
 ### Yank
 
@@ -312,7 +319,7 @@ While copy mode is active, mouse clicks and pointer motion reach neither the app
 ## Constraints
 
 - **Cache size:** Default 3x visible rows. Configurable. Larger caches use more GUI memory but reduce `GetScrollback` requests.
-- **Search latency:** Daemon search over disk-archived scrollback depends on archive size. The seek table (Spec-0004) provides O(log N) frame lookup for point queries. Sequential scan (full-text search) must decompress every frame: ~63μs per frame × frame count. At 64 KB uncompressed per frame and ~4.8 KB per row (200 cols × 24 bytes/cell), each frame holds ~13 rows. For 1M lines of scrollback, that is ~77K frames, ~4.8 seconds worst case. Incremental results must stream back to the GUI as frames are searched; the GUI highlights matches as they arrive. This makes streaming a requirement, not an optimization.
+- **Search latency:** A search that runs past the held rows costs one `GetScrollback` round trip per chunk scanned, so a match N rows away costs about N / chunk size round trips, and a miss scans all history in its direction. Chunks reaching into the disk archive pay its read cost (Spec-0004). The cursor jumps as soon as a fill holds a match, so a near match never waits on the rest of history.
 - **Yank size:** Maximum yank size is bounded by the wire protocol's 16 MiB frame limit. At ~100 bytes per line, this supports yanking ~160K lines in a single response.
 
 ## References
