@@ -132,7 +132,13 @@ it.
 
 ```bash
 kill "$(cat /tmp/otr/oakterm.pid)"
+sleep 1
+for p in $(pgrep -x oakterm-daemon); do
+  if ps eww -p "$p" -o command= | grep -qE ' TMPDIR=/tmp/otr( |$)'; then kill "$p"; fi
+done
 ```
 
-The default (non-persist) daemon self-reaps when its last client disconnects.
+The default (non-persist) daemon should self-reap when its last client
+disconnects, but one has outlived its GUI by hours (OT-332), so the loop
+checks.
 Don't `pkill` by name: that also closes an oakterm the user is running.
