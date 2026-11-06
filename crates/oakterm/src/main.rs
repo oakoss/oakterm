@@ -18,7 +18,7 @@ mod render_grid;
 mod status_bar;
 mod tab_bar;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use tracing::{debug, error, info, warn};
@@ -157,6 +157,14 @@ enum UserEvent {
     },
 }
 
+/// What a copy-mode entry is for: plain entry, or entry that opens the
+/// find bar once copy mode starts (Spec-0008 Search).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyEntry {
+    Plain,
+    Find,
+}
+
 /// Copyable action descriptor to break the borrow on `keybind_registry`
 /// during `dispatch_action_at`. `Callback`/`LeaderCallback` store the
 /// index back into their source table since `RegistryKey` is not `Clone`.
@@ -181,6 +189,7 @@ enum ActionDesc {
     PreviousTab,
     ShowCommandPalette,
     EnterCopyMode,
+    Find,
 }
 
 /// Copy-out result for one action: its descriptor, "consume the key"
@@ -248,6 +257,7 @@ fn desc_of_action(action: &oakterm_config::Action) -> DescOutcome {
         Action::PreviousTab => ActionDesc::PreviousTab,
         Action::ShowCommandPalette => ActionDesc::ShowCommandPalette,
         Action::EnterCopyMode => ActionDesc::EnterCopyMode,
+        Action::Find => ActionDesc::Find,
     };
     DescOutcome::Desc(desc)
 }
@@ -722,8 +732,9 @@ struct App {
     /// session.
     pending_copy_enters: PendingEnters,
     /// Panes whose copy-mode entry waits on a single-instant scrollback
-    /// page: retried once when the refetched page lands.
-    copy_entry_retry: HashSet<u32>,
+    /// page: retried once when the refetched page lands, keeping what the
+    /// entry was for so a find still opens its bar.
+    copy_entry_retry: HashMap<u32, CopyEntry>,
 }
 
 impl App {
@@ -777,7 +788,7 @@ impl App {
             border_drag: None,
             pending_yanks: PendingYanks::default(),
             pending_copy_enters: PendingEnters::default(),
-            copy_entry_retry: HashSet::new(),
+            copy_entry_retry: HashMap::new(),
             next_serial: 10,
         }
     }
@@ -845,7 +856,7 @@ impl App {
     /// base and pin at its own history end — the race the anchor
     /// contract closes. No copy mode beats silently yanking the wrong
     /// text.
-    fn enter_copy_mode(&mut self, pane_id: u32) {
+    fn enter_copy_mode(&mut self, pane_id: u32, intent: CopyEntry) {
         if !copy_mode_supported(self.server_minor) {
             warn!(
                 server_minor = self.server_minor,
@@ -872,7 +883,7 @@ impl App {
             // once when the single-instant page lands (ADR-0025 clause 3).
             // At offset 0 the missing base is the first RenderUpdate, which
             // no scrollback refetch can supply.
-            if !refetch_can_help || self.copy_entry_retry.remove(&pane_id) {
+            if !refetch_can_help || self.copy_entry_retry.remove(&pane_id).is_some() {
                 self.copy_entry_retry.remove(&pane_id);
                 warn!(
                     pane_id,
@@ -881,7 +892,7 @@ impl App {
                 self.ring_bell();
             } else {
                 debug!(pane_id, "painted page spans two instants; refetching");
-                self.copy_entry_retry.insert(pane_id);
+                self.copy_entry_retry.insert(pane_id, intent);
                 self.request_scrollback(pane_id);
             }
             return;
@@ -911,11 +922,39 @@ impl App {
         // No fills until the ack (ADR-0025 clause 2).
         self.pending_copy_enters.record(serial, pane_id, fill);
         debug!(pane_id, base, serial, "copy mode entry requested");
+        if intent == CopyEntry::Find {
+            self.open_find_bar(pane_id);
+        }
         // The frozen pane stops update-driven redraws, so the COPY
         // indicator needs an explicit repaint to appear at entry.
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+    }
+
+    /// Open the find bar (Spec-0008 Search), entering copy mode first when
+    /// the pane is live.
+    fn find(&mut self, pane_id: u32) {
+        if self.panes.get(&pane_id).is_some_and(PaneView::is_copy_mode) {
+            self.open_find_bar(pane_id);
+        } else {
+            self.enter_copy_mode(pane_id, CopyEntry::Find);
+        }
+    }
+
+    /// Open the find bar on a pane in copy mode; a bar already open stays.
+    fn open_find_bar(&mut self, pane_id: u32) {
+        let Some(view) = self.panes.get_mut(&pane_id) else {
+            return;
+        };
+        if !view.is_copy_mode() || view.copy_search_bar().is_some() {
+            return;
+        }
+        view.start_copy_search(
+            copy_search::SearchDirection::Backward,
+            copy_search::BarStyle::Find,
+        );
+        self.request_redraw();
     }
 
     /// Leave copy mode on a pane, releasing the daemon's pin. A pane that
@@ -1055,12 +1094,10 @@ impl App {
         let pane_id = self.focused_pane;
         // The open search bar takes keys before the preset's table
         // (Spec-0008 Search).
-        if let Some(view) = self
-            .panes
-            .get_mut(&pane_id)
-            .filter(|view| view.copy_search_editing())
+        if let Some(view) = self.panes.get_mut(&pane_id)
+            && let Some(style) = view.copy_search_bar()
         {
-            let key = copy_search::bar_key(self.config.copy_mode_keybinds, press, typed);
+            let key = copy_search::bar_key(style, self.config.copy_mode_keybinds, press, typed);
             let step = view.edit_copy_search(key);
             self.after_copy_search(pane_id, step);
             return;
@@ -1121,7 +1158,7 @@ impl App {
             CopyCommand::Exit => self.exit_copy_mode(pane_id),
             CopyCommand::Search(direction) => {
                 if let Some(view) = self.panes.get_mut(&pane_id) {
-                    view.start_copy_search(direction);
+                    view.start_copy_search(direction, copy_search::BarStyle::Preset);
                 }
                 self.request_redraw();
             }
@@ -1176,6 +1213,7 @@ impl App {
                 }
                 self.request_redraw();
             }
+            SearchStep::Exit => self.exit_copy_mode(pane_id),
             // Returning to the origin can bring unfetched rows into view.
             SearchStep::Updated => {
                 self.prefetch_copy_mode(pane_id);
@@ -2388,8 +2426,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // A copy-mode entry deferred on a two-instant page
                 // retries now that a fresh page has painted; the entry
                 // path clears or converts the marker itself.
-                if self.copy_entry_retry.contains(&pane_id) {
-                    self.enter_copy_mode(pane_id);
+                if let Some(&intent) = self.copy_entry_retry.get(&pane_id) {
+                    self.enter_copy_mode(pane_id, intent);
                 }
             }
             UserEvent::PromptPosition(pos) => {
@@ -2667,7 +2705,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // the NEXT press falsely lands on the giving-up branch.
                 let stranded: Vec<u32> = self
                     .copy_entry_retry
-                    .iter()
+                    .keys()
                     .copied()
                     .filter(|id| {
                         self.panes
@@ -2753,6 +2791,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 debug!(pane_id, base, "copy mode pinned; filling viewport cache");
                 self.send_copy_mode_fill(pane_id, fill);
+                if let Some(search) = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(PaneView::copy_search_awaited_fill)
+                {
+                    self.send_copy_mode_fill(pane_id, search);
+                }
             }
             UserEvent::CopyModeInvalidated { pane_id } => {
                 // Another client's resize dropped this pin (ADR-0025
@@ -3237,7 +3282,11 @@ impl App {
                 true
             }
             ActionDesc::EnterCopyMode => {
-                self.enter_copy_mode(self.focused_pane);
+                self.enter_copy_mode(self.focused_pane, CopyEntry::Plain);
+                true
+            }
+            ActionDesc::Find => {
+                self.find(self.focused_pane);
                 true
             }
             ActionDesc::ShowCommandPalette => {
@@ -3290,6 +3339,7 @@ impl App {
             ActionId::ShowCommandPalette => ActionDesc::ShowCommandPalette,
             ActionId::ReloadConfig => ActionDesc::ReloadConfig,
             ActionId::EnterCopyMode => ActionDesc::EnterCopyMode,
+            ActionId::Find => ActionDesc::Find,
         }
     }
 

@@ -25,6 +25,14 @@ impl SearchDirection {
     }
 }
 
+/// Which bar is open: the preset's search, or the find bar `oak_mod+f`
+/// opens, whose keys follow a browser's (Spec-0008 Search).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BarStyle {
+    Preset,
+    Find,
+}
+
 /// What a key does while the search bar is open; the preset's table is
 /// bypassed then (Spec-0008 Search).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +45,13 @@ pub(crate) enum BarKey {
     Cancel,
     /// The preset's start key again: search on in that direction.
     Repeat(SearchDirection),
+    /// The find bar's Enter: the next match in the search's direction,
+    /// or the previous one with Shift, keeping the bar open.
+    Next {
+        reverse: bool,
+    },
+    /// The find bar's Escape: close the bar and leave copy mode.
+    Leave,
     Ignore,
 }
 
@@ -44,12 +59,25 @@ pub(crate) enum BarKey {
 /// a printable key inserts: Option compositions such as `@` on many
 /// layouts arrive as Alt chords the tables normalize away.
 #[must_use]
-pub(crate) fn bar_key(preset: CopyModePreset, press: CopyPress, typed: Option<char>) -> BarKey {
+pub(crate) fn bar_key(
+    style: BarStyle,
+    preset: CopyModePreset,
+    press: CopyPress,
+    typed: Option<char>,
+) -> BarKey {
     let CopyPress::Key(key) = press else {
         return BarKey::Ignore;
     };
+    match (style, key) {
+        (BarStyle::Find, CopyKey::Enter { shift }) => BarKey::Next { reverse: shift },
+        (BarStyle::Find, CopyKey::Escape) => BarKey::Leave,
+        (_, key) => preset_bar_key(preset, key, typed),
+    }
+}
+
+fn preset_bar_key(preset: CopyModePreset, key: CopyKey, typed: Option<char>) -> BarKey {
     match key {
-        CopyKey::Enter => BarKey::Accept,
+        CopyKey::Enter { .. } => BarKey::Accept,
         CopyKey::Escape => BarKey::Cancel,
         CopyKey::Backspace => BarKey::Backspace,
         CopyKey::Char(c) => BarKey::Insert(typed.unwrap_or(c)),
@@ -182,6 +210,7 @@ pub(crate) struct SearchState {
     query: String,
     engine: Option<SearchEngine>,
     pub(crate) direction: SearchDirection,
+    pub(crate) style: BarStyle,
     /// Whether the bar is open and keys edit the query.
     pub(crate) editing: bool,
     /// Cursor when the search started; `Escape` returns here.
@@ -190,11 +219,12 @@ pub(crate) struct SearchState {
 
 impl SearchState {
     #[must_use]
-    pub(crate) fn new(direction: SearchDirection, origin: (i64, u16)) -> Self {
+    pub(crate) fn new(direction: SearchDirection, style: BarStyle, origin: (i64, u16)) -> Self {
         Self {
             query: String::new(),
             engine: None,
             direction,
+            style,
             editing: true,
             origin,
         }
@@ -224,7 +254,8 @@ impl SearchState {
 #[cfg(test)]
 mod tests {
     use super::{
-        BarKey, Find, Match, SearchDirection, bar_key, find, held_matches, matcher, row_matches,
+        BarKey, BarStyle, Find, Match, SearchDirection, bar_key, find, held_matches, matcher,
+        row_matches,
     };
     use crate::copy_keys::{CopyKey, CopyPress};
     use crate::copy_motion::RowText;
@@ -355,34 +386,65 @@ mod tests {
         assert_eq!(found, vec![(-1, 0), (-1, 3), (0, 0)]);
     }
 
+    fn preset_key(preset: CopyModePreset, press: CopyPress, typed: Option<char>) -> BarKey {
+        bar_key(BarStyle::Preset, preset, press, typed)
+    }
+
     #[test]
     fn the_bar_reads_text_and_its_own_keys() {
         use CopyModePreset::{Basic, Emacs, Vim};
         let key = |k| CopyPress::Key(k);
+        let enter = |shift| key(CopyKey::Enter { shift });
         assert_eq!(
-            bar_key(Vim, key(CopyKey::Char('n')), None),
+            preset_key(Vim, key(CopyKey::Char('n')), None),
             BarKey::Insert('n')
         );
-        assert_eq!(bar_key(Vim, key(CopyKey::Enter), None), BarKey::Accept);
-        assert_eq!(bar_key(Vim, key(CopyKey::Escape), None), BarKey::Cancel);
+        assert_eq!(preset_key(Vim, enter(false), None), BarKey::Accept);
+        assert_eq!(preset_key(Vim, enter(true), None), BarKey::Accept);
+        assert_eq!(preset_key(Vim, key(CopyKey::Escape), None), BarKey::Cancel);
         assert_eq!(
-            bar_key(Vim, key(CopyKey::Backspace), None),
+            preset_key(Vim, key(CopyKey::Backspace), None),
             BarKey::Backspace
         );
         assert_eq!(
-            bar_key(Emacs, key(CopyKey::Ctrl('s')), None),
+            preset_key(Emacs, key(CopyKey::Ctrl('s')), None),
             BarKey::Repeat(SearchDirection::Forward)
         );
         assert_eq!(
-            bar_key(Emacs, key(CopyKey::Ctrl('r')), None),
+            preset_key(Emacs, key(CopyKey::Ctrl('r')), None),
             BarKey::Repeat(SearchDirection::Backward)
         );
         assert_eq!(
-            bar_key(Basic, key(CopyKey::Ctrl('f')), None),
+            preset_key(Basic, key(CopyKey::Ctrl('f')), None),
             BarKey::Repeat(SearchDirection::Backward)
         );
-        assert_eq!(bar_key(Vim, key(CopyKey::Ctrl('f')), None), BarKey::Ignore);
-        assert_eq!(bar_key(Vim, CopyPress::ModifierOnly, None), BarKey::Ignore);
+        assert_eq!(
+            preset_key(Vim, key(CopyKey::Ctrl('f')), None),
+            BarKey::Ignore
+        );
+        assert_eq!(
+            preset_key(Vim, CopyPress::ModifierOnly, None),
+            BarKey::Ignore
+        );
+    }
+
+    /// The find bar's Enter steps through matches and its Escape leaves
+    /// copy mode, as in a browser; typing works as in the preset's bar.
+    #[test]
+    fn the_find_bar_steps_with_enter_and_leaves_with_escape() {
+        let key = |k| CopyPress::Key(k);
+        let find = |press| bar_key(BarStyle::Find, CopyModePreset::Emacs, press, None);
+        assert_eq!(
+            find(key(CopyKey::Enter { shift: false })),
+            BarKey::Next { reverse: false }
+        );
+        assert_eq!(
+            find(key(CopyKey::Enter { shift: true })),
+            BarKey::Next { reverse: true }
+        );
+        assert_eq!(find(key(CopyKey::Escape)), BarKey::Leave);
+        assert_eq!(find(key(CopyKey::Char('x'))), BarKey::Insert('x'));
+        assert_eq!(find(key(CopyKey::Backspace)), BarKey::Backspace);
     }
 
     /// Option compositions reach the tables as Alt chords; the bar types
@@ -394,10 +456,10 @@ mod tests {
             shift: false,
         });
         assert_eq!(
-            bar_key(CopyModePreset::Vim, alt, Some('@')),
+            preset_key(CopyModePreset::Vim, alt, Some('@')),
             BarKey::Insert('@')
         );
-        assert_eq!(bar_key(CopyModePreset::Vim, alt, None), BarKey::Ignore);
+        assert_eq!(preset_key(CopyModePreset::Vim, alt, None), BarKey::Ignore);
         assert_eq!(super::typed_char("é"), Some('é'));
         assert_eq!(super::typed_char("\r"), None, "controls are not text");
         assert_eq!(super::typed_char("ab"), None);

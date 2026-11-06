@@ -253,6 +253,7 @@ fn register_action_constructors(lua: &Lua, action: &Table) -> mlua::Result<()> {
         "previous_tab",
         "show_command_palette",
         "enter_copy_mode",
+        "find",
     ] {
         let n = name.to_string();
         action.set(
@@ -511,6 +512,7 @@ fn extract_action_from_table(t: &Table) -> Result<Action, String> {
         }
         "show_command_palette" => Ok(Action::ShowCommandPalette),
         "enter_copy_mode" => Ok(Action::EnterCopyMode),
+        "find" => Ok(Action::Find),
         "scroll_up" => {
             let lines: i64 = t.get("lines").unwrap_or(0);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

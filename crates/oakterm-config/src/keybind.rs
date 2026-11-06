@@ -355,6 +355,8 @@ pub enum Action {
     ShowCommandPalette,
     /// Enter copy mode on the focused pane.
     EnterCopyMode,
+    /// Open copy mode's find bar on the focused pane.
+    Find,
 
     /// Lua callback function.
     Callback(RegistryKey),
@@ -499,6 +501,7 @@ impl KeybindRegistry {
             ("oak_mod+w", Action::ClosePane),
             ("oak_mod+p", Action::ShowCommandPalette),
             ("oak_mod+[", Action::EnterCopyMode),
+            ("oak_mod+f", Action::Find),
             (NEXT_TAB_CHORD, Action::NextTab),
             (PREVIOUS_TAB_CHORD, Action::PreviousTab),
         ];
@@ -1064,6 +1067,13 @@ mod tests {
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
         ));
+    }
+
+    #[test]
+    fn defaults_include_find() {
+        let reg = KeybindRegistry::with_defaults();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+f", platform_mods()).unwrap();
+        assert!(matches!(reg.lookup(&chord), Some(Action::Find)));
     }
 
     /// ADR-0011 reserves `oak_mod+[` for copy mode, which is why tab

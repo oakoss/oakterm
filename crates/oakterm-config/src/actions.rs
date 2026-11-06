@@ -31,6 +31,7 @@ pub enum ActionId {
     ShowCommandPalette,
     ReloadConfig,
     EnterCopyMode,
+    Find,
 }
 
 impl ActionId {
@@ -40,7 +41,7 @@ impl ActionId {
     /// here as their features land (Spec-0009 lists the full target set);
     /// registering only wired actions keeps the catalog free of entries that
     /// would execute as no-ops.
-    pub const ALL: [ActionId; 15] = [
+    pub const ALL: [ActionId; 16] = [
         ActionId::SplitPaneRight,
         ActionId::SplitPaneDown,
         ActionId::ClosePane,
@@ -56,6 +57,7 @@ impl ActionId {
         ActionId::ShowCommandPalette,
         ActionId::ReloadConfig,
         ActionId::EnterCopyMode,
+        ActionId::Find,
     ];
 
     /// The boundary identifier used by Lua config and the palette.
@@ -77,6 +79,7 @@ impl ActionId {
             ActionId::ShowCommandPalette => "show_command_palette",
             ActionId::ReloadConfig => "reload_config",
             ActionId::EnterCopyMode => "enter_copy_mode",
+            ActionId::Find => "find",
         }
     }
 
@@ -99,6 +102,7 @@ impl ActionId {
             ActionId::ShowCommandPalette => "Show Command Palette",
             ActionId::ReloadConfig => "Reload Config",
             ActionId::EnterCopyMode => "Enter Copy Mode",
+            ActionId::Find => "Find",
         }
     }
 
@@ -116,9 +120,10 @@ impl ActionId {
             ActionId::NewTab | ActionId::CloseTab | ActionId::NextTab | ActionId::PreviousTab => {
                 ActionCategory::Tab
             }
-            ActionId::ToggleFullscreen | ActionId::ShowCommandPalette | ActionId::EnterCopyMode => {
-                ActionCategory::View
-            }
+            ActionId::ToggleFullscreen
+            | ActionId::ShowCommandPalette
+            | ActionId::EnterCopyMode
+            | ActionId::Find => ActionCategory::View,
             ActionId::ReloadConfig => ActionCategory::Config,
         }
     }
@@ -146,7 +151,8 @@ impl ActionId {
             // A pre-1.4 daemon's scrollback replies cannot be keyed
             // safely, so the GUI refuses to enter (Spec-0001 1.4); the
             // gate releases the chord to the PTY instead of eating it.
-            ActionId::EnterCopyMode => ctx.copy_mode_supported,
+            // Find searches copy mode's history, so it shares the gate.
+            ActionId::EnterCopyMode | ActionId::Find => ctx.copy_mode_supported,
         }
     }
 }
@@ -309,6 +315,7 @@ pub fn action_id_of(action: &Action) -> Option<ActionId> {
         Action::ShowCommandPalette => Some(ActionId::ShowCommandPalette),
         Action::ReloadConfig => Some(ActionId::ReloadConfig),
         Action::EnterCopyMode => Some(ActionId::EnterCopyMode),
+        Action::Find => Some(ActionId::Find),
         _ => None,
     }
 }
@@ -357,6 +364,7 @@ mod tests {
             (ActionId::ShowCommandPalette, View),
             (ActionId::ReloadConfig, Config),
             (ActionId::EnterCopyMode, View),
+            (ActionId::Find, View),
         ];
         // Covering every ALL member keeps a mis-assigned category from hiding
         // behind a sampled subset.
@@ -710,10 +718,11 @@ mod tests {
                 | ActionId::ToggleFullscreen
                 | ActionId::ShowCommandPalette
                 | ActionId::ReloadConfig
-                | ActionId::EnterCopyMode => {}
+                | ActionId::EnterCopyMode
+                | ActionId::Find => {}
             }
         }
-        assert_eq!(ActionId::ALL.len(), 15);
+        assert_eq!(ActionId::ALL.len(), 16);
     }
 
     #[test]
@@ -777,6 +786,7 @@ mod tests {
             Action::ShowCommandPalette,
             Action::ReloadConfig,
             Action::EnterCopyMode,
+            Action::Find,
         ];
         let mapped: Vec<ActionId> = actions.iter().filter_map(action_id_of).collect();
         assert_eq!(mapped, ActionId::ALL.to_vec());

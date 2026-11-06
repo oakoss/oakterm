@@ -8,7 +8,7 @@ use crate::copy_mode::{
     SelectionEffect, YankPlan,
 };
 use crate::copy_motion::resolve;
-use crate::copy_search::{BarKey, SearchDirection};
+use crate::copy_search::{BarKey, BarStyle, SearchDirection};
 use crate::render_grid::ClientGrid;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::{DirtyRow, RenderUpdate};
@@ -421,17 +421,15 @@ impl PaneView {
         }
     }
 
-    pub(crate) fn start_copy_search(&mut self, direction: SearchDirection) {
+    pub(crate) fn start_copy_search(&mut self, direction: SearchDirection, style: BarStyle) {
         if let Some(state) = &mut self.copy_mode {
-            state.start_search(direction);
+            state.start_search(direction, style);
         }
     }
 
     #[must_use]
-    pub(crate) fn copy_search_editing(&self) -> bool {
-        self.copy_mode
-            .as_ref()
-            .is_some_and(CopyModeState::search_editing)
+    pub(crate) fn copy_search_bar(&self) -> Option<BarStyle> {
+        self.copy_mode.as_ref()?.open_bar()
     }
 
     pub(crate) fn edit_copy_search(&mut self, key: BarKey) -> SearchStep {
@@ -528,6 +526,12 @@ impl PaneView {
         if let Some(state) = &mut self.copy_mode {
             state.set_pinned_base(base);
         }
+    }
+
+    /// The history window a search typed before the pin is waiting on.
+    #[must_use]
+    pub(crate) fn copy_search_awaited_fill(&self) -> Option<FillRequest> {
+        self.copy_mode.as_ref()?.awaited_fill()
     }
 
     /// Note a `GetScrollback` sent for the copy-mode cache, so its reply
@@ -977,12 +981,12 @@ mod tests {
 
     #[test]
     fn matches_highlight_on_screen_under_the_selection() {
-        use crate::copy_search::{BarKey, SearchDirection};
+        use crate::copy_search::{BarKey, BarStyle, SearchDirection};
         use oakterm_terminal::grid::selection::Selection;
         let mut view = PaneView::new(ClientGrid::new(8, 4));
         view.apply_update(&make_update(1, 1, b"ab ab"));
         let _fill = view.enter_copy_mode();
-        view.start_copy_search(SearchDirection::Backward);
+        view.start_copy_search(SearchDirection::Backward, BarStyle::Preset);
         assert_eq!(
             view.edit_copy_search(BarKey::Insert('a')),
             SearchStep::Moved
