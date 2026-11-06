@@ -1343,7 +1343,10 @@ mod tests {
 
         {
             let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            let history_before = pane.history_len();
+            pane.screens.primary_mut().cursor.row = 23;
             pane.screens.resize_all(80, 10);
+            assert!(pane.history_len() > history_before, "the shrink moved rows");
         }
 
         assert_eq!(
