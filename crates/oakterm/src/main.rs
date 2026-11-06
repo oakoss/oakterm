@@ -4211,14 +4211,33 @@ fn main() {
         return;
     }
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .expect("failed to create event loop");
+    #[cfg(target_os = "macos")]
+    let event_loop = {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        EventLoop::<UserEvent>::with_user_event()
+            .with_activate_ignoring_other_apps(!background_launch())
+            .build()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build();
+    let event_loop = event_loop.expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let proxy = event_loop.create_proxy();
     let mut app = App::new(proxy);
     event_loop.run_app(&mut app).expect("event loop error");
+}
+
+/// `OAKTERM_BACKGROUND=1` launches without activating the app (macOS only), so
+/// focus stays where the user left it.
+#[cfg(target_os = "macos")]
+fn background_launch() -> bool {
+    background_flag(std::env::var_os("OAKTERM_BACKGROUND").as_deref())
+}
+
+#[cfg(target_os = "macos")]
+fn background_flag(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| v == "1")
 }
 
 fn run_init_config() {
@@ -4280,6 +4299,16 @@ mod tests {
     use std::collections::HashMap;
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::event::MouseScrollDelta;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn only_oakterm_background_1_launches_in_the_background() {
+        use std::ffi::OsStr;
+        assert!(super::background_flag(Some(OsStr::new("1"))));
+        assert!(!super::background_flag(None));
+        assert!(!super::background_flag(Some(OsStr::new("0"))));
+        assert!(!super::background_flag(Some(OsStr::new(""))));
+    }
 
     /// `FontMetrics` is `#[non_exhaustive]`; take a real one and pin the
     /// cell dimensions the assertions depend on. `None` when no system

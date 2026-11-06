@@ -28,12 +28,16 @@ Use a **short `TMPDIR`**. The daemon's Unix socket path must fit the ~104-char
 `sun_path` limit; a long scratchpad `TMPDIR` overflows it and the socket fails
 to bind. `/tmp/otr` is short and safe.
 
-Launching takes focus once (winit activates the app), so whatever the user
-types next lands in the test shell: tell them before you start it.
+Launch in the background by default: `OAKTERM_BACKGROUND=1` starts oakterm
+without taking focus, so the user keeps typing where they are. An app that has
+never been active doesn't see modifier keys, though, so shortcuts (Cmd+F,
+Cmd+[, leader chords) arrive as plain keys. For a test that needs them, launch
+without the variable and tell the user first: that launch takes focus once,
+and whatever they type next lands in the test shell.
 
 ```bash
 mkdir -p /tmp/otr
-TMPDIR=/tmp/otr ./target/debug/oakterm >| /tmp/otr/oakterm.log 2>&1 &
+OAKTERM_BACKGROUND=1 TMPDIR=/tmp/otr ./target/debug/oakterm >| /tmp/otr/oakterm.log 2>&1 &
 echo $! >| /tmp/otr/oakterm.pid
 sleep 2   # daemon starts, PTY spawns on the first client resize
 ```
