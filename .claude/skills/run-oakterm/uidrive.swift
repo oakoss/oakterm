@@ -58,7 +58,13 @@ func post(pid: pid_t, code: CGKeyCode, flags: CGEventFlags = [], text: String? =
     }
 }
 
-func send(pid: pid_t, spec: String) {
+struct Keystroke {
+    let code: CGKeyCode
+    let flags: CGEventFlags
+    let text: String?
+}
+
+func parse(spec: String) -> [Keystroke] {
     if spec.hasPrefix("{"), spec.hasSuffix("}") {
         var flags: CGEventFlags = []
         var key = String(spec.dropFirst().dropLast())
@@ -69,12 +75,11 @@ func send(pid: pid_t, spec: String) {
             key.removeFirst(prefix.count)
         }
         guard let code = named[key] else { fputs("unknown key \(key)\n", stderr); exit(2) }
-        post(pid: pid, code: code, flags: flags, text: key.count == 1 ? key : nil)
-    } else {
-        for ch in spec {
-            guard let (code, flags) = keyFor(ch) else { fputs("no key for \(ch)\n", stderr); exit(2) }
-            post(pid: pid, code: code, flags: flags, text: String(ch))
-        }
+        return [Keystroke(code: code, flags: flags, text: key.count == 1 ? key : nil)]
+    }
+    return spec.map { ch in
+        guard let (code, flags) = keyFor(ch) else { fputs("no key for \(ch)\n", stderr); exit(2) }
+        return Keystroke(code: code, flags: flags, text: String(ch))
     }
 }
 
@@ -87,7 +92,12 @@ case "winid":
     guard let id = windowID(pid: pid) else { fputs("no window for pid \(pid)\n", stderr); exit(1) }
     print(id)
 case "key":
-    for spec in args.dropFirst(3) { send(pid: pid, spec: spec); usleep(150_000) }
+    // Parse every spec before posting any, so a bad one sends nothing.
+    let specs = args.dropFirst(3).map(parse)
+    for strokes in specs {
+        for s in strokes { post(pid: pid, code: s.code, flags: s.flags, text: s.text) }
+        usleep(150_000)
+    }
 default:
     fputs("unknown command \(args[1])\n", stderr); exit(2)
 }

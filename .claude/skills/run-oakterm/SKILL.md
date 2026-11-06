@@ -92,7 +92,9 @@ Build the helper once (the binary goes in `/tmp/otr`, not the repo):
 swiftc -O .claude/skills/run-oakterm/uidrive.swift -o /tmp/otr/uidrive
 ```
 
-Then, with oakterm running:
+Then, with oakterm running. Chords like `{cmd+f}` need an oakterm launched
+without `OAKTERM_BACKGROUND=1` (see Launch); a background launch gets them as
+plain keys:
 
 ```bash
 PID=$(cat /tmp/otr/oakterm.pid)
@@ -105,8 +107,9 @@ screencapture -x -o -l "$WID" /tmp/otr/shot.png  # this window only, even behind
 ```
 
 Measured 2026-11-06: oakterm (winit) accepts keys posted with
-`CGEventPostToPid` while another app is frontmost, and Cmd+F, typing, Enter
-and Escape all worked. Chords need the key in `uidrive.swift`'s table (US ANSI
+`CGEventPostToPid` while another app is frontmost. After a normal launch,
+Cmd+F, typing, Enter and Escape all worked; after a background launch, typing
+did and Cmd+F arrived as `f`. Chords need the key in `uidrive.swift`'s table (US ANSI
 codes). Add `RUST_LOG=oakterm=debug` to the launch when a GUI action needs
 explaining. Text maps through the same table: a character missing from it fails
 rather than reaching a key binding as the wrong key. The lasting fix is input
