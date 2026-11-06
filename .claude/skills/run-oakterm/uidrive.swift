@@ -47,7 +47,9 @@ func keyFor(_ ch: Character) -> (CGKeyCode, CGEventFlags)? {
 
 func post(pid: pid_t, code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     for down in [true, false] {
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { continue }
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else {
+            fputs("could not create key event for code \(code)\n", stderr); exit(1)
+        }
         event.flags = flags
         if let text {
             let units = Array(text.utf16)
@@ -92,6 +94,7 @@ case "winid":
     guard let id = windowID(pid: pid) else { fputs("no window for pid \(pid)\n", stderr); exit(1) }
     print(id)
 case "key":
+    guard args.count >= 4 else { fputs("usage: uidrive key <pid> <spec>...\n", stderr); exit(2) }
     // Parse every spec before posting any, so a bad one sends nothing.
     let specs = args.dropFirst(3).map(parse)
     for strokes in specs {

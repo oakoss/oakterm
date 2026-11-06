@@ -4308,6 +4308,7 @@ fn background_launch() -> bool {
 }
 
 #[cfg(target_os = "macos")]
+#[must_use]
 fn background_flag(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|v| v == "1")
 }
