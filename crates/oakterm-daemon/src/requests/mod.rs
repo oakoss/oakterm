@@ -52,7 +52,7 @@ pub(crate) async fn handle_request(
         MSG_SEARCH_SCROLLBACK => search::search_scrollback(conn_id, frame, panes).await,
         MSG_SEARCH_NEXT => search::search_next(conn_id, frame, panes).await,
         MSG_SEARCH_PREV => search::search_prev(conn_id, frame, panes).await,
-        MSG_SEARCH_CLOSE => search::search_close(panes).await,
+        MSG_SEARCH_CLOSE => search::search_close(conn_id, frame, panes).await,
         MSG_CREATE_PANE => panes::create_pane(conn_id, frame, panes).await,
         MSG_CLOSE_PANE => panes::close_pane(conn_id, frame, panes).await,
         MSG_FOCUS_PANE => panes::focus_pane(conn_id, frame, panes).await,

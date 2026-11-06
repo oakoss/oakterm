@@ -500,7 +500,7 @@ The daemon does not push screen content to GUI clients. Instead:
 | Magic bytes don't match `0x4F54`                     | Close connection immediately. Log warning.                                                                                                     |
 | Payload exceeds 16 MiB                               | Close connection. Log error.                                                                                                                   |
 | Unknown msg_type                                     | Ignore the frame (skip payload bytes). Log at debug level. This enables minor version compatibility.                                           |
-| Malformed payload (deserialization error)            | Send `Error` response if the frame had a non-zero serial. Log error. Do not close connection — the framing is intact, only the payload is bad. |
+| Malformed payload (deserialization error)            | After the handshake, send an `Error` frame carrying the frame's serial (serial 0 for a push). Log a warning. Do not close connection — the framing is intact, only the payload is bad. |
 | Frame received mid-handshake (before ServerHello)    | Close connection.                                                                                                                              |
 | GUI message on control connection                    | Send `Error` response.                                                                                                                         |
 | Control message on GUI connection                    | Send `Error` response.                                                                                                                         |

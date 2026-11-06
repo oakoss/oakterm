@@ -294,12 +294,29 @@ pub(super) async fn search_prev(
     )
 }
 
-pub(super) async fn search_close(panes: &Arc<Mutex<PaneManager>>) -> RequestResult {
-    // Idempotent — close search on all panes (no pane_id in payload).
-    let all_panes = panes.lock().await.snapshot();
-    for (_, pane) in all_panes {
-        pane.lock().await.screens.clear_search();
-    }
+pub(super) async fn search_close(
+    conn_id: u64,
+    frame: &Frame,
+    panes: &Arc<Mutex<PaneManager>>,
+) -> RequestResult {
+    let Ok(req) = SearchNav::decode(&frame.payload) else {
+        warn!(conn_id, "malformed SearchClose payload");
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::MalformedPayload,
+            "malformed SearchClose",
+        );
+    };
+    let Some(mut pane) = lock_live_pane(panes, req.pane_id).await else {
+        return make_error_response(
+            conn_id,
+            frame.serial,
+            ErrorCode::UnknownPane,
+            "unknown pane",
+        );
+    };
+    pane.screens.clear_search();
     RequestResult::NoResponse
 }
 
@@ -661,6 +678,58 @@ mod tests {
         assert_eq!(
             unpinned.total_matches, 3,
             "the shared engine kept every match for the unpinned client"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_close_clears_only_the_named_pane() {
+        use crate::pane::PaneManager;
+        use oakterm_protocol::message::SearchFlags;
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let panes = Arc::new(TokioMutex::new(PaneManager::new()));
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let id = panes
+                .lock()
+                .await
+                .create(80, 24, String::new(), String::new());
+            let search = SearchScrollback {
+                pane_id: id,
+                query: "x".to_string(),
+                flags: SearchFlags(0),
+            };
+            let frame = Frame::new(0x77, 1, search.encode().expect("encode")).expect("frame");
+            search_scrollback(1, &frame, &panes).await;
+            ids.push(id);
+        }
+
+        let close = Frame::new(0x7B, 0, SearchNav { pane_id: ids[0] }.encode()).expect("frame");
+        assert!(matches!(
+            search_close(1, &close, &panes).await,
+            RequestResult::NoResponse
+        ));
+        for (bad, code) in [
+            (vec![1], ErrorCode::MalformedPayload),
+            (SearchNav { pane_id: 999 }.encode(), ErrorCode::UnknownPane),
+        ] {
+            let frame = Frame::new(0x7B, 0, bad).expect("frame");
+            let RequestResult::Response(reply) = search_close(1, &frame, &panes).await else {
+                panic!("malformed or unknown-pane SearchClose gets an Error frame");
+            };
+            let err =
+                oakterm_protocol::message::ErrorMessage::decode(&reply.payload).expect("decode");
+            assert_eq!(err.code, code as u32);
+        }
+
+        let closed = lock_live_pane(&panes, ids[0]).await.expect("pane");
+        assert!(closed.screens.search().is_none());
+        drop(closed);
+        let other = lock_live_pane(&panes, ids[1]).await.expect("pane");
+        assert!(
+            other.screens.search().is_some(),
+            "other pane keeps its search"
         );
     }
 
