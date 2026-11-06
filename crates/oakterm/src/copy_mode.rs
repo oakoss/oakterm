@@ -13,6 +13,7 @@
 
 use crate::copy_keys::PendingPrefix;
 use crate::copy_motion::{MotionBounds, RowText};
+use crate::copy_search::{self, BarKey, Match, SearchDirection, SearchState};
 use crate::render_grid::RowSource;
 use oakterm_protocol::message::ScrollbackData;
 use oakterm_protocol::render::DirtyRow;
@@ -37,6 +38,14 @@ pub(crate) enum SelectionEffect {
 
 /// Per-request row cap the daemon enforces (Spec-0001 `GetScrollback`).
 const MAX_ROWS_PER_REQUEST: u32 = 4096;
+
+/// Rows per search chunk. The daemon caps rows, not bytes, and history
+/// rows keep their old width, so this budgets 256 columns or more.
+fn scan_chunk_rows(cols: u16) -> u32 {
+    let row_bytes = u32::from(cols.max(256))
+        * u32::try_from(oakterm_protocol::render::WireCell::FIXED_SIZE).unwrap_or(u32::MAX);
+    (oakterm_protocol::frame::MAX_PAYLOAD / 2 / row_bytes).clamp(1, MAX_ROWS_PER_REQUEST)
+}
 
 /// Cache window as a multiple of the visible rows (Spec-0008 default).
 const CACHE_ROWS_PER_SCREEN: u32 = 3;
@@ -133,19 +142,7 @@ impl ViewportCache {
     /// The row's cells as characters, empty cells reading as blanks —
     /// the form word motions scan. `None` for an unserved row.
     pub(crate) fn row_chars(&self, row: i64) -> Option<Vec<char>> {
-        self.rows.get(&row).map(|dirty| {
-            dirty
-                .cells
-                .iter()
-                .map(|cell| {
-                    if cell.codepoint == 0 {
-                        ' '
-                    } else {
-                        char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}')
-                    }
-                })
-                .collect()
-        })
+        self.rows.get(&row).map(dirty_row_chars)
     }
 
     /// File a served window, keyed from where the daemon actually started
@@ -297,6 +294,100 @@ pub(crate) struct CopyModeState {
     /// The base the daemon acked (ADR-0025 clause 2), set when the ack
     /// lands; fills served against any other base are discarded.
     pinned_base: Option<u64>,
+    /// The current search, kept after its bar closes (Spec-0008 Search).
+    search: Option<SearchState>,
+    scan: Option<Scan>,
+    seek: Option<Seek>,
+    /// The step a landed scan or seek fill produced, for the caller to
+    /// collect with [`Self::continue_search`].
+    landed: Option<SearchStep>,
+}
+
+/// A search reading history the cache lacks: it fetches `awaiting` and
+/// scans the chunk without caching it, starting at `from` (inclusive or
+/// not) in `direction`. The cursor stays put until a match is found.
+#[derive(Debug, Clone, Copy)]
+struct Scan {
+    direction: SearchDirection,
+    from: (i64, u16),
+    inclusive: bool,
+    /// Whether a miss rings: `n`/`N` do, typing does not.
+    ring: bool,
+    awaiting: FillRequest,
+}
+
+/// A cursor move to a row the cache no longer holds, as when `Escape`
+/// returns to a search's origin: the cache is replaced around it.
+#[derive(Debug, Clone, Copy)]
+struct Seek {
+    target: (i64, u16),
+    awaiting: FillRequest,
+}
+
+/// A scan chunk's text, read as [`RowText`] without entering the cache.
+struct Chunk {
+    start: i64,
+    rows: Vec<Vec<char>>,
+}
+
+impl Chunk {
+    fn new(data: &ScrollbackData) -> Self {
+        Self {
+            start: data.start_row,
+            rows: data.rows.iter().map(dirty_row_chars).collect(),
+        }
+    }
+
+    /// One past the chunk's last row.
+    fn end(&self) -> i64 {
+        self.start + i64::try_from(self.rows.len()).unwrap_or(i64::MAX)
+    }
+}
+
+impl RowText for Chunk {
+    fn row(&self, row: i64) -> Option<Vec<char>> {
+        let index = usize::try_from(row.checked_sub(self.start)?).ok()?;
+        self.rows.get(index).cloned()
+    }
+}
+
+/// A served row's cells as characters, empty cells reading as blanks.
+fn dirty_row_chars(dirty: &DirtyRow) -> Vec<char> {
+    dirty
+        .cells
+        .iter()
+        .map(|cell| {
+            if cell.codepoint == 0 {
+                ' '
+            } else {
+                char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}')
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchStep {
+    Moved,
+    /// Send this fill; the step resumes when it lands.
+    Fetch(FillRequest),
+    NotFound {
+        ring: bool,
+    },
+    /// The bar, the query or the cursor changed with no match to report.
+    Updated,
+    Inert,
+}
+
+/// What the search bar shows and a screen reader hears; counts cover
+/// the held rows only, `more` saying history remains in the direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SearchStatus {
+    pub(crate) query: String,
+    pub(crate) editing: bool,
+    pub(crate) index: Option<usize>,
+    pub(crate) total: usize,
+    pub(crate) more: bool,
 }
 
 impl CopyModeState {
@@ -325,6 +416,10 @@ impl CopyModeState {
             history_start: None,
             snapshot,
             pinned_base: None,
+            search: None,
+            scan: None,
+            seek: None,
+            landed: None,
         }
     }
 
@@ -539,6 +634,311 @@ impl CopyModeState {
         });
     }
 
+    /// Open the search bar for a new search (Spec-0008 Search).
+    pub(crate) fn start_search(&mut self, direction: SearchDirection) {
+        self.search = Some(SearchState::new(direction, self.cursor()));
+        self.scan = None;
+        self.seek = None;
+    }
+
+    #[must_use]
+    pub(crate) fn search_editing(&self) -> bool {
+        self.search.as_ref().is_some_and(|search| search.editing)
+    }
+
+    /// Apply one key typed into the open bar.
+    pub(crate) fn edit_search(&mut self, key: BarKey) -> SearchStep {
+        let Some(search) = &mut self.search else {
+            return SearchStep::Inert;
+        };
+        match key {
+            BarKey::Insert(c) => {
+                search.push(c);
+                self.search_from_origin()
+            }
+            BarKey::Backspace => {
+                search.pop();
+                self.search_from_origin()
+            }
+            // A scan still running finishes: Enter accepts what it finds.
+            BarKey::Accept => {
+                search.editing = false;
+                SearchStep::Updated
+            }
+            BarKey::Cancel => {
+                search.editing = false;
+                let origin = search.origin;
+                self.scan = None;
+                self.go_to(origin)
+            }
+            BarKey::Repeat(direction) => {
+                search.direction = direction;
+                self.search_on(direction)
+            }
+            BarKey::Ignore => SearchStep::Inert,
+        }
+    }
+
+    /// `n` (or `N`, `reverse`): the next match of the last search.
+    pub(crate) fn search_again(&mut self, reverse: bool) -> SearchStep {
+        let Some(direction) = self
+            .search
+            .as_ref()
+            .filter(|search| search.engine().is_some())
+            .map(|search| search.direction)
+        else {
+            return SearchStep::Inert;
+        };
+        let direction = if reverse {
+            direction.reversed()
+        } else {
+            direction
+        };
+        self.search_on(direction)
+    }
+
+    /// The step a scan or seek fill produced when it landed, once.
+    pub(crate) fn continue_search(&mut self) -> SearchStep {
+        self.landed.take().unwrap_or(SearchStep::Inert)
+    }
+
+    /// An edited query jumps from where the search started, staying on a
+    /// match that still fits; an emptied one returns there.
+    fn search_from_origin(&mut self) -> SearchStep {
+        let Some(search) = &self.search else {
+            return SearchStep::Inert;
+        };
+        let (origin, direction) = (search.origin, search.direction);
+        if search.engine().is_none() {
+            self.scan = None;
+            return self.go_to(origin);
+        }
+        self.scan_from(origin, direction, true, false)
+    }
+
+    fn search_on(&mut self, direction: SearchDirection) -> SearchStep {
+        let cursor = self.cursor();
+        self.scan_from(cursor, direction, false, true)
+    }
+
+    /// Scan the held rows from `from`; past them, ask for the next chunk
+    /// of history and scan it when it lands, leaving the cursor put.
+    fn scan_from(
+        &mut self,
+        from: (i64, u16),
+        direction: SearchDirection,
+        inclusive: bool,
+        ring: bool,
+    ) -> SearchStep {
+        self.scan = None;
+        self.seek = None;
+        let Some(engine) = self.search.as_ref().and_then(SearchState::engine) else {
+            return SearchStep::Inert;
+        };
+        let bounds = (self.history_start.unwrap_or(i64::MIN), self.last_row());
+        match copy_search::find(&*self, engine, from, direction, inclusive, bounds) {
+            copy_search::Find::Found(hit) => {
+                self.set_cursor(hit.row, hit.start);
+                SearchStep::Moved
+            }
+            copy_search::Find::Exhausted => SearchStep::NotFound { ring },
+            copy_search::Find::Missing(row) => {
+                // The starting row keeps its column; a later row is read
+                // whole from its near edge.
+                let from = if row == from.0 {
+                    (from, inclusive)
+                } else {
+                    let edge = match direction {
+                        SearchDirection::Forward => 0,
+                        SearchDirection::Backward => u16::MAX,
+                    };
+                    ((row, edge), true)
+                };
+                let awaiting = self.scan_chunk(row, direction);
+                self.scan = Some(Scan {
+                    direction,
+                    from: from.0,
+                    inclusive: from.1,
+                    ring,
+                    awaiting,
+                });
+                SearchStep::Fetch(awaiting)
+            }
+        }
+    }
+
+    /// The largest window toward `direction` that starts at `row`: a long
+    /// scan costs one round trip per chunk (Spec-0008 Search latency).
+    fn scan_chunk(&self, row: i64, direction: SearchDirection) -> FillRequest {
+        let chunk = i64::from(scan_chunk_rows(self.cols));
+        let (start_row, count) = match direction {
+            SearchDirection::Backward => {
+                let floor = self.history_start.unwrap_or(i64::MIN);
+                let start = (row - chunk + 1).max(floor);
+                (start, row - start + 1)
+            }
+            // The page reads from the entry snapshot, so a forward chunk
+            // stops at its top.
+            SearchDirection::Forward => (row, chunk.min(self.viewport_top.min(0) - row).max(1)),
+        };
+        FillRequest {
+            start_row,
+            count: u32::try_from(count).unwrap_or(MAX_ROWS_PER_REQUEST),
+        }
+    }
+
+    /// Move the cursor to `target`, fetching the window around it first
+    /// when neither the cache nor the page holds that row.
+    fn go_to(&mut self, target: (i64, u16)) -> SearchStep {
+        self.seek = None;
+        if target.0 >= self.viewport_top || self.cache.get(target.0).is_some() {
+            self.set_cursor(target.0, target.1);
+            return SearchStep::Updated;
+        }
+        let screen = i64::from(self.visible_rows);
+        let floor = self.history_start.unwrap_or(i64::MIN);
+        let start_row = (target.0 - screen).max(floor);
+        let count = (i64::from(CACHE_ROWS_PER_SCREEN) * screen).min(-start_row);
+        let awaiting = FillRequest {
+            start_row,
+            count: u32::try_from(count).unwrap_or(MAX_ROWS_PER_REQUEST),
+        };
+        self.seek = Some(Seek { target, awaiting });
+        SearchStep::Fetch(awaiting)
+    }
+
+    /// A scan chunk landed: scan it, and on a match make it the cache so
+    /// the cursor can stand there; otherwise go on past it.
+    fn scan_landed(&mut self, data: &ScrollbackData) -> SearchStep {
+        let Some(scan) = self.scan.take() else {
+            return SearchStep::Inert;
+        };
+        let Some(engine) = self.search.as_ref().and_then(SearchState::engine) else {
+            return SearchStep::Inert;
+        };
+        let chunk = Chunk::new(data);
+        let served_end = chunk.end();
+        // A reply may run past the frozen page's last row.
+        let bounds = (data.start_row, (served_end - 1).min(self.last_row()));
+        match copy_search::find(
+            &chunk,
+            engine,
+            scan.from,
+            scan.direction,
+            scan.inclusive,
+            bounds,
+        ) {
+            copy_search::Find::Found(hit) => {
+                self.adopt_window(data, (hit.row, hit.start));
+                SearchStep::Moved
+            }
+            copy_search::Find::Missing(_) | copy_search::Find::Exhausted => match scan.direction {
+                SearchDirection::Backward
+                    if self
+                        .history_start
+                        .is_some_and(|start| data.start_row <= start) =>
+                {
+                    SearchStep::NotFound { ring: scan.ring }
+                }
+                SearchDirection::Backward => self.scan_from(
+                    (data.start_row - 1, u16::MAX),
+                    scan.direction,
+                    true,
+                    scan.ring,
+                ),
+                SearchDirection::Forward => {
+                    self.scan_from((served_end, 0), scan.direction, true, scan.ring)
+                }
+            },
+        }
+    }
+
+    fn seek_landed(&mut self, data: &ScrollbackData) -> SearchStep {
+        let Some(seek) = self.seek.take() else {
+            return SearchStep::Inert;
+        };
+        self.adopt_window(data, seek.target);
+        SearchStep::Updated
+    }
+
+    /// Take a scan or seek window into the cache, merging when it touches
+    /// the held rows and replacing them when it does not, and put the
+    /// cursor at `at`.
+    fn adopt_window(&mut self, data: &ScrollbackData, at: (i64, u16)) {
+        if !self.cache.insert_window(data.start_row, data.rows.clone()) {
+            self.cache.rows.clear();
+            self.cache.insert_window(data.start_row, data.rows.clone());
+        }
+        self.set_cursor(at.0, at.1);
+        let rows = i64::from(self.visible_rows);
+        self.cache.trim_to_capacity(self.display_top + rows / 2);
+        self.display_top = self.display_top.clamp(self.first_row(), self.viewport_top);
+    }
+
+    pub(crate) fn search_status(&self) -> Option<SearchStatus> {
+        let search = self.search.as_ref()?;
+        let (index, total) = search.engine().map_or((None, 0), |engine| {
+            // The cached rows above the page, then the page: a cache that
+            // jumped far up leaves a gap not worth walking every frame.
+            let cached = self
+                .cache
+                .rows
+                .keys()
+                .copied()
+                .take_while(|&row| row < self.viewport_top);
+            let held = copy_search::held_matches(
+                self,
+                engine,
+                cached.chain(self.viewport_top..=self.last_row()),
+            );
+            let cursor = self.cursor();
+            let index = held.iter().position(|hit| (hit.row, hit.start) == cursor);
+            (index, held.len())
+        });
+        let scanning = self
+            .scan
+            .is_some_and(|scan| scan.direction == search.direction);
+        let more = scanning
+            || match search.direction {
+                SearchDirection::Backward => self
+                    .history_start
+                    .is_none_or(|start| self.first_row() > start),
+                SearchDirection::Forward => self
+                    .cache
+                    .end()
+                    .is_some_and(|end| end < self.viewport_top.min(0)),
+            };
+        Some(SearchStatus {
+            query: search.query().to_string(),
+            editing: search.editing,
+            index,
+            total,
+            more,
+        })
+    }
+
+    /// Matches on the display window's rows, with rows window-relative.
+    pub(crate) fn display_matches(&self) -> Vec<Match> {
+        let Some(engine) = self.search.as_ref().and_then(SearchState::engine) else {
+            return Vec::new();
+        };
+        (0..self.visible_rows)
+            .filter_map(|visible| {
+                let row = self.display_top + i64::from(visible);
+                let chars = RowText::row(self, row)?;
+                Some(
+                    copy_search::row_matches(engine, row, &chars)
+                        .into_iter()
+                        .map(move |hit| Match {
+                            row: i64::from(visible),
+                            ..hit
+                        }),
+                )
+            })
+            .flatten()
+            .collect()
+    }
+
     /// Drop the selection, reporting whether there was one. Escape uses
     /// the answer to decide between clearing and leaving copy mode.
     pub(crate) fn clear_selection(&mut self) -> bool {
@@ -660,7 +1060,17 @@ impl CopyModeState {
     /// when it has not, when the chunk is already cached or in flight, or
     /// when no history remains in that direction.
     pub(crate) fn plan_prefetch(&self) -> Option<FillRequest> {
+        // The cache can sit apart from the display after a search jump;
+        // fetch the gap on screen in one request before extending edges.
+        if let Some(hole) = self.display_hole() {
+            return (!self.is_pending(hole)).then_some(hole);
+        }
         let (start, end) = (self.cache.start()?, self.cache.end()?);
+        // A cache apart from the display is not grown toward it row by row;
+        // `display_hole` fetches what scrolls into view.
+        if end < self.display_top || start > self.display_top + i64::from(self.visible_rows) {
+            return None;
+        }
         let len = end - start;
         let zone = (len / 4).max(1);
         let chunk = u32::from(self.visible_rows).min(MAX_ROWS_PER_REQUEST);
@@ -699,6 +1109,28 @@ impl CopyModeState {
             return None;
         }
         Some(candidate)
+    }
+
+    /// The span of display rows neither the cache nor the page holds.
+    fn display_hole(&self) -> Option<FillRequest> {
+        let floor = self.history_start.unwrap_or(i64::MIN);
+        let top = self.display_top.max(floor);
+        let bottom = (self.display_top + i64::from(self.visible_rows)).min(self.viewport_top);
+        let mut missing = (top..bottom).filter(|row| self.cache.get(*row).is_none());
+        let first = missing.next()?;
+        let last = missing.next_back().unwrap_or(first);
+        Some(FillRequest {
+            start_row: first,
+            count: u32::try_from(last - first + 1).unwrap_or(MAX_ROWS_PER_REQUEST),
+        })
+    }
+
+    fn fills_display_hole(&self, data: &ScrollbackData) -> bool {
+        let Some(hole) = self.display_hole() else {
+            return false;
+        };
+        let served_end = data.start_row + i64::try_from(data.rows.len()).unwrap_or(i64::MAX);
+        data.start_row <= hole.start_row && served_end > hole.start_row
     }
 
     /// Whether a window is already covered by an in-flight request.
@@ -783,12 +1215,29 @@ impl CopyModeState {
                 "scrollback window clamped; keying rows from the served start"
             );
         }
+        // Owned by whichever scan or seek awaits this request now.
+        if self.scan.is_some_and(|scan| scan.awaiting == request) {
+            self.landed = Some(self.scan_landed(data));
+            return true;
+        }
+        if self.seek.is_some_and(|seek| seek.awaiting == request) {
+            self.landed = Some(self.seek_landed(data));
+            return true;
+        }
+        // A window the cache does not touch replaces it only when it fills
+        // a hole in the display window (`plan_prefetch`).
+        let accepted = self.cache.insert_window(data.start_row, data.rows.clone())
+            || (self.fills_display_hole(data) && {
+                self.cache.rows.clear();
+                self.cache.insert_window(data.start_row, data.rows.clone())
+            });
         // Centred on the window, not the cursor: the wheel leaves the
         // cursor at a window edge, where a cursor-centred trim evicts each
         // prefetched window and refetches it forever.
-        if self.cache.insert_window(data.start_row, data.rows.clone()) {
+        if accepted {
             let rows = i64::from(self.visible_rows);
             self.cache.trim_to_capacity(self.display_top + rows / 2);
+            self.scroll_display(0);
         } else if !data.rows.is_empty() {
             warn!(
                 served = data.start_row,
@@ -803,8 +1252,8 @@ impl CopyModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        CopyModeState, CopySelectionType, FillFailure, FillRequest, SelectionEffect, ViewportCache,
-        YankPlan, YankRange,
+        CopyModeState, CopySelectionType, FillFailure, FillRequest, SearchStep, SelectionEffect,
+        ViewportCache, YankPlan, YankRange,
     };
     use oakterm_protocol::message::ScrollbackData;
     use oakterm_protocol::render::{DirtyRow, WireCell};
@@ -1104,7 +1553,9 @@ mod tests {
         state.set_pinned_base(0);
         filled(&mut state, -20, "abcdefgh", true);
 
+        state.set_cursor(-16, 0);
         state.set_cursor(-13, 0);
+        assert_eq!(state.display_top(), -16, "every displayed row is held");
         assert_eq!(
             state.plan_prefetch(),
             Some(FillRequest {
@@ -2274,6 +2725,437 @@ mod tests {
         let top = state.display_top();
         state.select_in_window(top + 2, (0, 1), None);
         assert_eq!(state.cursor(), (top + 2, 1));
+    }
+
+    // --- Search (Spec-0008 Search) ---
+
+    /// A four-row page over eight cached history rows; `x` sits on rows
+    /// -7 and -3 of history and on rows 0 (column 4) and 2 of the page.
+    fn searchable(has_more: bool) -> CopyModeState {
+        let mut state = CopyModeState::new(8, 4, 0, Vec::new());
+        state.set_snapshot(snap(&["one x", "two", "x three", "four"]));
+        filled(&mut state, -8, "axbcdxef", has_more);
+        state
+    }
+
+    #[test]
+    fn typing_a_query_jumps_from_where_the_search_started() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        assert_eq!(state.cursor(), (3, 0));
+        state.start_search(SearchDirection::Backward);
+        assert!(state.search_editing());
+
+        assert_eq!(state.edit_search(BarKey::Insert('x')), SearchStep::Moved);
+        assert_eq!(state.cursor(), (2, 0), "nearest match above the start");
+        assert_eq!(state.edit_search(BarKey::Backspace), SearchStep::Updated);
+        assert_eq!(
+            state.cursor(),
+            (3, 0),
+            "an empty query returns to the start"
+        );
+        state.edit_search(BarKey::Insert('x'));
+        assert_eq!(state.edit_search(BarKey::Accept), SearchStep::Updated);
+        assert!(!state.search_editing());
+        assert_eq!(
+            state.cursor(),
+            (2, 0),
+            "Enter leaves the cursor on the match"
+        );
+    }
+
+    #[test]
+    fn escape_returns_to_the_start_and_keeps_the_query_for_n() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        state.edit_search(BarKey::Cancel);
+        assert_eq!(state.cursor(), (3, 0));
+        assert!(!state.search_editing());
+        assert_eq!(state.search_again(false), SearchStep::Moved);
+        assert_eq!(state.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn n_walks_the_matches_and_n_reverses() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(false);
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        state.edit_search(BarKey::Accept);
+        let mut visited = Vec::new();
+        for _ in 0..3 {
+            assert_eq!(state.search_again(false), SearchStep::Moved);
+            visited.push(state.cursor());
+        }
+        assert_eq!(visited, vec![(0, 4), (-3, 0), (-7, 0)]);
+        assert_eq!(
+            state.search_again(false),
+            SearchStep::NotFound { ring: true },
+            "history starts at -8"
+        );
+        assert_eq!(state.cursor(), (-7, 0), "a miss leaves the cursor put");
+        assert_eq!(state.search_again(true), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-3, 0), "N searches the other way");
+    }
+
+    #[test]
+    fn search_chunks_fit_the_payload_limit() {
+        use super::scan_chunk_rows;
+        use crate::copy_search::{BarKey, SearchDirection};
+        use oakterm_protocol::frame::MAX_PAYLOAD;
+        assert_eq!(scan_chunk_rows(80), 2048);
+        assert_eq!(scan_chunk_rows(256), 2048);
+        for cols in [1, 80, 256, 300, 1000, u16::MAX] {
+            let rows = u64::from(scan_chunk_rows(cols));
+            let wider = u64::from(cols.max(256)) * 2;
+            assert!(
+                rows * wider * 16 <= u64::from(MAX_PAYLOAD),
+                "{cols} columns, history twice as wide"
+            );
+        }
+
+        // The scan asks for chunks of that size.
+        let mut wide = CopyModeState::new(300, 4, 0, Vec::new());
+        wide.set_pinned_base(0);
+        wide.set_snapshot(snap(&["a", "b", "c", "d"]));
+        wide.start_search(SearchDirection::Backward);
+        let SearchStep::Fetch(chunk) = wide.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        assert_eq!(chunk.count, scan_chunk_rows(300));
+    }
+
+    /// Past the cache the scan asks for a chunk and leaves the cursor
+    /// put; a cache fill landing meanwhile resumes nothing, and the chunk
+    /// becomes the cache when it holds the match.
+    #[test]
+    fn a_search_past_the_cache_scans_a_fetched_chunk() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.set_cursor(-7, 0);
+        state.start_search(SearchDirection::Backward);
+        let rows = super::scan_chunk_rows(8);
+        let chunk = FillRequest {
+            start_row: -9 - i64::from(rows) + 1,
+            count: rows,
+        };
+        assert_eq!(
+            state.edit_search(BarKey::Insert('w')),
+            SearchStep::Fetch(chunk)
+        );
+        assert_eq!(state.cursor(), (-7, 0), "the cursor stays put");
+        assert_eq!(state.search_status().map(|s| s.more), Some(true));
+
+        let prefetch = FillRequest {
+            start_row: -10,
+            count: 2,
+        };
+        state.record_fill(8, prefetch);
+        assert!(state.apply_fill(8, &served(-10, "yz", true)));
+        assert_eq!(
+            state.continue_search(),
+            SearchStep::Inert,
+            "an unrelated fill resumes nothing"
+        );
+
+        state.record_fill(9, chunk);
+        assert!(state.apply_fill(9, &served(-12, "awyz", false)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-11, 0));
+        assert_eq!(
+            state.cache().get(-11).map(tag_of),
+            Some('w'),
+            "the chunk is the cache now"
+        );
+    }
+
+    #[test]
+    fn a_typed_miss_past_history_reports_without_a_bell() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        assert!(state.apply_fill(9, &served(-12, "abcd", false)));
+        assert_eq!(
+            state.continue_search(),
+            SearchStep::NotFound { ring: false }
+        );
+        assert_eq!(state.cursor(), (3, 0), "the cursor never left");
+    }
+
+    /// Returning to a row the cache no longer holds replaces the cache
+    /// around it, as Escape does for an evicted origin.
+    #[test]
+    fn going_to_an_evicted_row_seeks_it() {
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        assert_eq!(
+            window,
+            FillRequest {
+                start_row: -24,
+                count: 12
+            }
+        );
+        state.record_fill(5, window);
+        assert!(state.apply_fill(5, &served(-24, "abcdefghijkl", true)));
+        assert_eq!(state.continue_search(), SearchStep::Updated);
+        assert_eq!(state.cursor(), (-20, 3));
+
+        assert!(
+            matches!(state.go_to((-5, 1)), SearchStep::Fetch(_)),
+            "a row newer than the cache is not held either"
+        );
+    }
+
+    /// After a jump the cache sits apart from rows the display scrolls
+    /// onto; prefetch asks for that gap and the reply replaces the cache.
+    #[test]
+    fn prefetch_fills_a_gap_on_screen_in_one_request() {
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        assert!(state.apply_fill(5, &served(-24, "abcdefghijkl", true)));
+        state.scroll_display(10);
+        assert_eq!(state.display_top(), -10);
+        let hole = FillRequest {
+            start_row: -10,
+            count: 4,
+        };
+        assert_eq!(state.plan_prefetch(), Some(hole));
+        state.record_fill(
+            7,
+            FillRequest {
+                start_row: -8,
+                count: 2,
+            },
+        );
+        assert!(state.apply_fill(7, &served(-8, "mn", true)));
+        assert_eq!(
+            state.cache().get(-20).map(tag_of),
+            Some('e'),
+            "a reply below the hole's top leaves the cache alone"
+        );
+
+        let mut on_page = searchable(true);
+        let SearchStep::Fetch(far) = on_page.go_to((-20, 3)) else {
+            panic!("expected a seek window");
+        };
+        on_page.record_fill(8, far);
+        assert!(on_page.apply_fill(8, &served(-24, "abcdefghijkl", true)));
+        on_page.set_cursor(3, 0);
+        assert_eq!(on_page.display_top(), 0);
+        assert_eq!(
+            on_page.plan_prefetch(),
+            None,
+            "a cache apart from the page is not crawled toward it"
+        );
+
+        state.record_fill(6, hole);
+        assert!(state.apply_fill(6, &served(-10, "wxyz", true)));
+        assert_eq!(state.cache().get(-10).map(tag_of), Some('w'));
+        assert_eq!(
+            state.plan_prefetch(),
+            Some(FillRequest {
+                start_row: -14,
+                count: 4
+            }),
+            "with the hole filled, prefetch extends the edges again"
+        );
+    }
+
+    /// A chunk the search asked for before it changed belongs to nobody:
+    /// it neither moves the cursor nor ends the new search.
+    #[test]
+    fn a_chunk_for_a_replaced_search_resumes_nothing() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        assert_eq!(state.edit_search(BarKey::Cancel), SearchStep::Updated);
+        assert!(state.apply_fill(9, &served(-12, "aqyz", true)));
+        assert_eq!(state.continue_search(), SearchStep::Inert);
+        assert_eq!(state.cursor(), (3, 0));
+
+        let SearchStep::Fetch(seek) = state.go_to((-40, 0)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(10, seek);
+        state.start_search(SearchDirection::Backward);
+        assert_eq!(state.edit_search(BarKey::Insert('x')), SearchStep::Moved);
+        assert!(state.apply_fill(10, &served(-44, "abcdefghijkl", true)));
+        assert_eq!(
+            state.continue_search(),
+            SearchStep::Inert,
+            "a new search drops the seek"
+        );
+        assert_eq!(state.cursor(), (2, 0));
+    }
+
+    /// A match in a chunk that touches the cache keeps the rows beside it.
+    #[test]
+    fn a_match_next_to_the_cache_merges_with_it() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        let SearchStep::Fetch(chunk) = state.edit_search(BarKey::Insert('q')) else {
+            panic!("expected a chunk request");
+        };
+        state.record_fill(9, chunk);
+        assert!(state.apply_fill(9, &served(-9, "q", false)));
+        assert_eq!(state.continue_search(), SearchStep::Moved);
+        assert_eq!(state.cursor(), (-9, 0));
+        assert_eq!(state.cache().get(-8).map(tag_of), Some('a'));
+        assert_eq!(state.display_top(), -9);
+
+        // At the history floor with rows below the match unheld, the gap
+        // is still fetched: edge extension upward has nowhere to go.
+        let mut floor = searchable(true);
+        let SearchStep::Fetch(window) = floor.go_to((-30, 0)) else {
+            panic!("expected a seek window");
+        };
+        floor.record_fill(4, window);
+        assert!(floor.apply_fill(4, &served(-30, "q", false)));
+        assert_eq!(floor.display_top(), -30);
+        assert_eq!(
+            floor.plan_prefetch(),
+            Some(FillRequest {
+                start_row: -29,
+                count: 3
+            })
+        );
+    }
+
+    /// Entered scrolled into history, a forward scan stops at the frozen
+    /// page: rows past it are not addressable even when a reply holds them.
+    #[test]
+    fn a_forward_scan_stops_at_the_frozen_page() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = CopyModeState::new(8, 4, 97, Vec::new());
+        state.set_snapshot(snap(&["p", "q", "r", "s"]));
+        filled(&mut state, -101, "abcd", true);
+        let SearchStep::Fetch(window) = state.go_to((-120, 0)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        assert!(state.apply_fill(5, &served(-124, "abcdefghijkl", true)));
+        assert_eq!(state.cursor(), (-120, 0));
+
+        state.start_search(SearchDirection::Forward);
+        let chunk = FillRequest {
+            start_row: -112,
+            count: 15,
+        };
+        assert_eq!(
+            state.edit_search(BarKey::Insert('z')),
+            SearchStep::Fetch(chunk)
+        );
+        state.record_fill(6, chunk);
+        let mut tags = "a".repeat(111);
+        tags.push('z');
+        assert!(state.apply_fill(6, &served(-112, &tags, true)));
+        assert_eq!(
+            state.continue_search(),
+            SearchStep::NotFound { ring: false },
+            "the z at row -1 lies below the page"
+        );
+        assert_eq!(state.cursor(), (-120, 0));
+    }
+
+    #[test]
+    fn highlights_are_window_relative_in_history() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        state.edit_search(BarKey::Accept);
+        state.set_cursor(-7, 0);
+        assert_eq!(state.display_top(), -7);
+        let highlights: Vec<(i64, u16)> = state
+            .display_matches()
+            .into_iter()
+            .map(|hit| (hit.row, hit.start))
+            .collect();
+        assert_eq!(highlights, vec![(0, 0)], "row -7 is window row 0");
+    }
+
+    #[test]
+    fn a_repeat_key_in_the_bar_moves_on_in_its_direction() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        assert_eq!(state.cursor(), (2, 0));
+        assert_eq!(
+            state.edit_search(BarKey::Repeat(SearchDirection::Backward)),
+            SearchStep::Moved
+        );
+        assert_eq!(state.cursor(), (0, 4));
+        assert!(state.search_editing(), "the bar stays open");
+    }
+
+    /// With the cache far above the page, the count still covers both.
+    #[test]
+    fn the_status_counts_a_cache_apart_from_the_page() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        let SearchStep::Fetch(window) = state.go_to((-2000, 0)) else {
+            panic!("expected a seek window");
+        };
+        state.record_fill(5, window);
+        assert!(state.apply_fill(5, &served(window.start_row, "xbxdxfghijkl", true)));
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        let status = state.search_status().expect("searching");
+        assert_eq!(status.total, 5, "three cached rows and two page rows");
+
+        // Entered scrolled back, the cache holds page rows too; each row
+        // counts once.
+        let mut scrolled = CopyModeState::new(8, 4, 4, Vec::new());
+        scrolled.set_snapshot(snap(&["x", "x", "x", "x"]));
+        filled(&mut scrolled, -8, "xxxxxxxx", true);
+        scrolled.start_search(SearchDirection::Backward);
+        scrolled.edit_search(BarKey::Insert('x'));
+        let status = scrolled.search_status().expect("searching");
+        assert_eq!(status.total, 8);
+        assert_eq!(scrolled.cursor(), (-1, 0));
+        assert_eq!(status.index, Some(7));
+    }
+
+    #[test]
+    fn the_status_and_highlights_cover_the_held_rows() {
+        use crate::copy_search::{BarKey, SearchDirection};
+        let mut state = searchable(true);
+        state.start_search(SearchDirection::Backward);
+        state.edit_search(BarKey::Insert('x'));
+        let status = state.search_status().expect("searching");
+        assert_eq!(
+            (
+                status.query.as_str(),
+                status.index,
+                status.total,
+                status.more
+            ),
+            ("x", Some(3), 4, true),
+            "(2, 0) is the last of four held matches; older history remains"
+        );
+        let highlights: Vec<(i64, u16, u16)> = state
+            .display_matches()
+            .into_iter()
+            .map(|hit| (hit.row, hit.start, hit.end))
+            .collect();
+        assert_eq!(highlights, vec![(0, 4, 5), (2, 0, 1)]);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! wrong thing everywhere but one layout.
 
 use crate::copy_mode::{CopySelectionType, SelectionEffect};
+use crate::copy_search::SearchDirection;
 use oakterm_config::CopyModePreset;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -36,6 +37,9 @@ pub(crate) enum CopyKey {
         shift: bool,
     },
     Escape,
+    /// Enter and Backspace edit the search query; no preset binds them.
+    Enter,
+    Backspace,
 }
 
 /// Navigation keys copy mode can classify.
@@ -101,9 +105,12 @@ pub(crate) enum CopyCommand {
     /// Escape: drop the selection if there is one, otherwise exit.
     ClearOrExit,
     Exit,
-    /// `/`, `?`, `n`, `N`. Bound so they cannot fall through to another
-    /// meaning, inert until the search overlay lands (TREK-114).
-    Search,
+    /// Open the search bar for a new search in this direction.
+    Search(SearchDirection),
+    /// Jump to the next match of the last search; `reverse` is vim's `N`.
+    SearchAgain {
+        reverse: bool,
+    },
 }
 
 /// The first key of a multi-key sequence, held until the rest arrives.
@@ -131,8 +138,11 @@ pub(crate) enum VimKey {
 /// what a Ctrl chord must match on since Ctrl+D composes to a control
 /// character rather than to `d`. `None` means nothing copy mode binds.
 pub(crate) fn copy_key(mods: ModifiersState, composed: &Key, base: &Key) -> Option<CopyKey> {
-    if matches!(composed, Key::Named(NamedKey::Escape)) {
-        return Some(CopyKey::Escape);
+    match composed {
+        Key::Named(NamedKey::Escape) => return Some(CopyKey::Escape),
+        Key::Named(NamedKey::Enter) => return Some(CopyKey::Enter),
+        Key::Named(NamedKey::Backspace) => return Some(CopyKey::Backspace),
+        _ => {}
     }
     if mods.super_key() {
         return None;
@@ -277,7 +287,9 @@ pub(crate) fn vim_key(pending: Option<PendingPrefix>, key: CopyKey) -> VimKey {
         CopyKey::Char(c) => char_key(c),
         CopyKey::Ctrl(c) => ctrl_key(c),
         CopyKey::Escape => VimKey::Run(CopyCommand::ClearOrExit),
-        CopyKey::Alt { .. } | CopyKey::Named { .. } => VimKey::Drop,
+        CopyKey::Alt { .. } | CopyKey::Named { .. } | CopyKey::Enter | CopyKey::Backspace => {
+            VimKey::Drop
+        }
     }
 }
 
@@ -295,7 +307,8 @@ pub(crate) fn emacs_key(key: CopyKey) -> Option<CopyCommand> {
         CopyKey::Ctrl('v') => Some(mv(Motion::PageDown)),
         CopyKey::Ctrl(' ') => Some(ToggleSelection(CopySelectionType::Character)),
         CopyKey::Ctrl('g') => Some(Exit),
-        CopyKey::Ctrl('s' | 'r') => Some(Search),
+        CopyKey::Ctrl('s') => Some(Search(SearchDirection::Forward)),
+        CopyKey::Ctrl('r') => Some(Search(SearchDirection::Backward)),
         CopyKey::Alt { ch: 'f', .. } => Some(mv(Motion::WordEnd)),
         CopyKey::Alt { ch: 'b', .. } => Some(mv(Motion::WordBackward)),
         CopyKey::Alt { ch: 'v', .. } => Some(mv(Motion::PageUp)),
@@ -341,7 +354,7 @@ pub(crate) fn basic_key(key: CopyKey) -> Option<CopyCommand> {
             Some(Move { motion, selection })
         }
         CopyKey::Ctrl('c') => Some(Yank),
-        CopyKey::Ctrl('f') => Some(Search),
+        CopyKey::Ctrl('f') => Some(Search(SearchDirection::Backward)),
         // Clear-then-exit: no toggle key exists here, so Escape is the
         // only cancel a Shift+arrow selection has.
         CopyKey::Escape => Some(ClearOrExit),
@@ -350,7 +363,7 @@ pub(crate) fn basic_key(key: CopyKey) -> Option<CopyCommand> {
 }
 
 fn char_key(c: char) -> VimKey {
-    use CopyCommand::{Exit, Search, ToggleSelection, Yank};
+    use CopyCommand::{Exit, Search, SearchAgain, ToggleSelection, Yank};
     match c {
         'h' => VimKey::Run(mv(Motion::Left)),
         'j' => VimKey::Run(mv(Motion::Down)),
@@ -368,7 +381,10 @@ fn char_key(c: char) -> VimKey {
         'V' => VimKey::Run(ToggleSelection(CopySelectionType::Line)),
         'y' => VimKey::Run(Yank),
         'q' => VimKey::Run(Exit),
-        '/' | '?' | 'n' | 'N' => VimKey::Run(Search),
+        '/' => VimKey::Run(Search(SearchDirection::Forward)),
+        '?' => VimKey::Run(Search(SearchDirection::Backward)),
+        'n' => VimKey::Run(SearchAgain { reverse: false }),
+        'N' => VimKey::Run(SearchAgain { reverse: true }),
         _ => VimKey::Drop,
     }
 }
@@ -392,6 +408,7 @@ mod tests {
         advance_copy_key, basic_key, copy_key, copy_press, emacs_key, mv, vim_key,
     };
     use crate::copy_mode::{CopySelectionType, SelectionEffect};
+    use crate::copy_search::SearchDirection;
     use oakterm_config::CopyModePreset;
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -434,10 +451,16 @@ mod tests {
             (CopyKey::Char('y'), Yank),
             (CopyKey::Char('q'), CopyCommand::Exit),
             (CopyKey::Escape, CopyCommand::ClearOrExit),
-            (CopyKey::Char('/'), Search),
-            (CopyKey::Char('?'), Search),
-            (CopyKey::Char('n'), Search),
-            (CopyKey::Char('N'), Search),
+            (CopyKey::Char('/'), Search(SearchDirection::Forward)),
+            (CopyKey::Char('?'), Search(SearchDirection::Backward)),
+            (
+                CopyKey::Char('n'),
+                CopyCommand::SearchAgain { reverse: false },
+            ),
+            (
+                CopyKey::Char('N'),
+                CopyCommand::SearchAgain { reverse: true },
+            ),
         ];
         for (key, expected) in cases {
             assert_eq!(run(key), VimKey::Run(expected), "{key:?}");
@@ -785,8 +808,8 @@ mod tests {
             ),
             (alt('w'), Yank),
             (CopyKey::Ctrl('g'), Exit),
-            (CopyKey::Ctrl('s'), Search),
-            (CopyKey::Ctrl('r'), Search),
+            (CopyKey::Ctrl('s'), Search(SearchDirection::Forward)),
+            (CopyKey::Ctrl('r'), Search(SearchDirection::Backward)),
             (CopyKey::Escape, CopyCommand::ClearOrExit),
         ];
         for (key, expected) in cases {
@@ -872,7 +895,7 @@ mod tests {
             (named(Left, true), extending(Motion::Left)),
             (named(Right, true), extending(Motion::Right)),
             (CopyKey::Ctrl('c'), Yank),
-            (CopyKey::Ctrl('f'), Search),
+            (CopyKey::Ctrl('f'), Search(SearchDirection::Backward)),
             (CopyKey::Escape, ClearOrExit),
         ];
         for (key, expected) in cases {
@@ -940,7 +963,7 @@ mod tests {
         );
         assert_eq!(
             advance_copy_key(CopyModePreset::Basic, None, ctrl_f),
-            (None, Some(CopyCommand::Search))
+            (None, Some(CopyCommand::Search(SearchDirection::Backward)))
         );
     }
 }

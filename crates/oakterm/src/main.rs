@@ -3,6 +3,7 @@ mod bell;
 mod copy_keys;
 mod copy_mode;
 mod copy_motion;
+mod copy_search;
 mod copy_session;
 mod daemon_conn;
 mod frame;
@@ -1050,8 +1051,20 @@ impl App {
     /// Run one key press against the copy-mode table. Copy mode is
     /// modal, so every press reaching here is consumed whatever the
     /// table says; nothing is forwarded to the PTY.
-    fn handle_copy_mode_key(&mut self, press: copy_keys::CopyPress) {
+    fn handle_copy_mode_key(&mut self, press: copy_keys::CopyPress, typed: Option<char>) {
         let pane_id = self.focused_pane;
+        // The open search bar takes keys before the preset's table
+        // (Spec-0008 Search).
+        if let Some(view) = self
+            .panes
+            .get_mut(&pane_id)
+            .filter(|view| view.copy_search_editing())
+        {
+            let key = copy_search::bar_key(self.config.copy_mode_keybinds, press, typed);
+            let step = view.edit_copy_search(key);
+            self.after_copy_search(pane_id, step);
+            return;
+        }
         let pending = self
             .panes
             .get(&pane_id)
@@ -1106,9 +1119,69 @@ impl App {
                 }
             }
             CopyCommand::Exit => self.exit_copy_mode(pane_id),
-            CopyCommand::Search => {
-                debug!(pane_id, "copy mode search is not wired yet (OT-323)");
+            CopyCommand::Search(direction) => {
+                if let Some(view) = self.panes.get_mut(&pane_id) {
+                    view.start_copy_search(direction);
+                }
+                self.request_redraw();
             }
+            CopyCommand::SearchAgain { reverse } => {
+                let step = self
+                    .panes
+                    .get_mut(&pane_id)
+                    .map_or(copy_mode::SearchStep::Inert, |view| {
+                        view.copy_search_again(reverse)
+                    });
+                self.after_copy_search(pane_id, step);
+            }
+        }
+    }
+
+    /// Act on a search step: repaint, send the fill a scan or seek asked
+    /// for, and tell a screen reader where the cursor landed (Spec-0006
+    /// Copy Mode) or that nothing matched.
+    fn after_copy_search(&mut self, pane_id: u32, step: copy_mode::SearchStep) {
+        use copy_mode::SearchStep;
+        // A scan can land after focus moved on: only the focused pane's
+        // search announces its result, and the bell flashes the pane searched.
+        let focused = pane_id == self.focused_pane;
+        match step {
+            SearchStep::Moved => {
+                self.prefetch_copy_mode(pane_id);
+                let status = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(PaneView::copy_search_status);
+                if let Some(index) = status.as_ref().and_then(|status| status.index)
+                    && focused
+                {
+                    let total = status.map_or(0, |status| status.total);
+                    self.announce(
+                        &format!("{} of {total}", index + 1),
+                        accesskit::Live::Polite,
+                    );
+                }
+                self.request_redraw();
+            }
+            SearchStep::Fetch(fill) => {
+                self.send_copy_mode_fill(pane_id, fill);
+                self.request_redraw();
+            }
+            SearchStep::NotFound { ring } => {
+                if ring && let Err(e) = self.proxy.send_event(UserEvent::Bell(Some(pane_id))) {
+                    debug!(error = %e, "bell dropped: event loop closed");
+                }
+                if focused {
+                    self.announce("No match", accesskit::Live::Polite);
+                }
+                self.request_redraw();
+            }
+            // Returning to the origin can bring unfetched rows into view.
+            SearchStep::Updated => {
+                self.prefetch_copy_mode(pane_id);
+                self.request_redraw();
+            }
+            SearchStep::Inert => {}
         }
     }
 
@@ -1897,7 +1970,8 @@ impl ApplicationHandler<UserEvent> for App {
                             &event.logical_key,
                             &chord_key,
                         );
-                        self.handle_copy_mode_key(press);
+                        let typed = event.text.as_deref().and_then(copy_search::typed_char);
+                        self.handle_copy_mode_key(press, typed);
                         self.reset_blink();
                         return;
                     }
@@ -2263,6 +2337,12 @@ impl ApplicationHandler<UserEvent> for App {
                 });
                 match reply.map_or(ScrollbackRoute::Drop("unknown pane"), route_scrollback) {
                     ScrollbackRoute::CopyModeFill => {
+                        // A search scanning past the cache picks up here.
+                        let step = self
+                            .panes
+                            .get_mut(&pane_id)
+                            .map_or(copy_mode::SearchStep::Inert, PaneView::continue_copy_search);
+                        self.after_copy_search(pane_id, step);
                         self.prefetch_copy_mode(pane_id);
                         // Rows the display drew blank have landed.
                         self.request_redraw();
