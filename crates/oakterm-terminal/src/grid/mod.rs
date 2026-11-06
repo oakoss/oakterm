@@ -209,7 +209,8 @@ impl Grid {
     }
 
     /// Resize the grid to new dimensions.
-    /// Returns rows removed when shrinking vertically (for scrollback capture).
+    /// Returns the rows scrolled off the top when shrinking vertically (for
+    /// scrollback capture).
     /// Rejects zero-dimension resizes (no-op, returns empty) and clamps each
     /// dimension to [`MAX_GRID_DIMENSION`] as a defense-in-depth cap against an
     /// unbounded allocation.
@@ -221,8 +222,12 @@ impl Grid {
         let rows = rows.min(MAX_GRID_DIMENSION);
 
         let new_rows = rows as usize;
+        // Scroll only as far as keeps the cursor on screen (xterm, Alacritty);
+        // `resize_with` then drops rows below it and the clamp follows it up.
         let captured = if new_rows < self.lines.len() {
-            self.lines.split_off(new_rows)
+            let scrolled = (usize::from(self.cursor.row) + 1).saturating_sub(new_rows);
+            let kept = self.lines.split_off(scrolled);
+            std::mem::replace(&mut self.lines, kept)
         } else {
             Vec::new()
         };
@@ -527,7 +532,7 @@ impl ScreenSet {
     }
 
     /// Resize both primary and alternate grids (if allocated).
-    /// Rows removed by shrinking are captured into scrollback.
+    /// Rows scrolled off the top by a shrink are captured into scrollback.
     pub fn resize_all(&mut self, cols: u16, rows: u16) {
         let captured = self.primary.resize(cols, rows);
         for row in captured {

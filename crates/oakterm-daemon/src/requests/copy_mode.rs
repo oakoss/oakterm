@@ -1354,8 +1354,9 @@ mod tests {
     }
 
     /// Live grid rows do *not* keep their index across a shrink — the grid
-    /// captures its trailing rows into scrollback — so a resize that moved
-    /// rows drops the pins rather than serving shifted content.
+    /// scrolls its top rows into scrollback to keep the cursor on screen —
+    /// so a resize that moved rows drops the pins rather than serving
+    /// shifted content.
     #[tokio::test]
     async fn a_resize_that_captures_rows_drops_the_pins() {
         let (panes, pane_id) = pane_with_scrollback(&["one"]).await;
@@ -1364,6 +1365,7 @@ mod tests {
 
         let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
         let before = pane.history_len();
+        pane.screens.primary_mut().cursor.row = 23;
         pane.screens.resize_all(80, 10);
         assert_eq!(pane.invalidate_pins_after_resize(before), 2);
         assert!(pane.copy_mode_pins.is_empty());

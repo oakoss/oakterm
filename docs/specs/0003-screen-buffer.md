@@ -409,13 +409,13 @@ When the terminal window is resized:
    - **Column grow:** Soft-wrapped lines are unwrapped (content pulled from continuation rows).
    - **Column shrink:** Lines exceeding the new width are re-wrapped (excess content pushed to new continuation rows).
    - **Row grow:** Empty rows added at the bottom. Scrollback lines may be pulled into the visible area.
-   - **Row shrink:** Bottom rows pushed into scrollback. If the cursor is in the trimmed region, scrollback is not created — the cursor stays in the visible area.
+   - **Row shrink:** Top rows scroll into scrollback only as far as needed to keep the cursor's row on screen (`cursor_row + 1 - new_rows`, or none). Rows below the cursor that no longer fit are discarded, not archived. The cursor keeps its content and moves up by the number of rows scrolled. This matches xterm and Alacritty.
 3. Cursor position is clamped to the new dimensions.
 4. Scroll region is reset to full screen.
 5. All rows are marked dirty (full redraw).
 6. Selection is cleared.
 
-**Reflow status:** The soft-wrap reflow described in step 2 (unwrap-on-grow, rewrap-on-shrink) is specified but not yet implemented. The current `resize()` only splits and pads rows: it clamps the row count (capturing trimmed rows for scrollback) and resizes each row to the new width, without unwrapping or rewrapping soft-wrapped lines. Cursor clamping, scroll-region reset, dirty marking, and selection clearing all behave as specified. The reflow contract stands; its implementation is deferred to a tracked task.
+**Reflow status:** The soft-wrap reflow described in step 2 (unwrap-on-grow, rewrap-on-shrink) is specified but not yet implemented. The current `resize()` only splits and pads rows: it applies the row-shrink rule above and resizes each row to the new width, without unwrapping or rewrapping soft-wrapped lines. Cursor clamping, scroll-region reset, dirty marking, and selection clearing all behave as specified. The reflow contract stands; its implementation is deferred to a tracked task.
 
 ### Cell Write
 
