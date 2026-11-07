@@ -28,6 +28,9 @@ pub struct Selection {
     pub ty: SelectionType,
     pub start: SelectionAnchor,
     pub end: SelectionAnchor,
+    /// The half the press landed on; `extend_to` restores it when a drag
+    /// returns to the pressed cell.
+    pressed_side: AnchorSide,
 }
 
 impl Selection {
@@ -40,6 +43,7 @@ impl Selection {
             ty,
             start: anchor,
             end: anchor,
+            pressed_side: side,
         }
     }
 
@@ -54,13 +58,11 @@ impl Selection {
     pub fn extend_to(&mut self, row: i64, col: u16, side: AnchorSide) {
         self.update(row, col, side);
         let start_cell = (self.start.row, self.start.col);
-        if (row, col) != start_cell {
-            self.start.side = if (row, col) < start_cell {
-                AnchorSide::Right
-            } else {
-                AnchorSide::Left
-            };
-        }
+        self.start.side = match (row, col).cmp(&start_cell) {
+            std::cmp::Ordering::Less => AnchorSide::Right,
+            std::cmp::Ordering::Greater => AnchorSide::Left,
+            std::cmp::Ordering::Equal => self.pressed_side,
+        };
     }
 
     /// Return (earlier, later) anchors regardless of drag direction.
@@ -97,12 +99,7 @@ impl Selection {
             } else {
                 start.col
             };
-            let right = if end.side == AnchorSide::Left && end.col > 0 {
-                end.col - 1
-            } else {
-                end.col
-            };
-            return col >= left && col <= right;
+            return Self::last_col(end).is_some_and(|right| col >= left && col <= right);
         }
         // Multi-line: first row from start to end, middle rows full, last row from 0 to end.
         if row == start.row {
@@ -113,12 +110,7 @@ impl Selection {
             };
             col >= left
         } else if row == end.row {
-            let right = if end.side == AnchorSide::Left && end.col > 0 {
-                end.col - 1
-            } else {
-                end.col
-            };
-            col <= right
+            Self::last_col(end).is_some_and(|right| col <= right)
         } else {
             true // Middle rows are fully selected.
         }
@@ -157,9 +149,13 @@ impl Selection {
             return true;
         }
         let first = start.col + u16::from(start.side == AnchorSide::Right);
-        end.col
-            .checked_sub(u16::from(end.side == AnchorSide::Left))
-            .is_some_and(|last| first <= last)
+        Self::last_col(end).is_some_and(|last| first <= last)
+    }
+
+    /// The last cell an end anchor reaches; `None` when it sits left of
+    /// column 0, so its row holds no selected cell.
+    fn last_col(end: SelectionAnchor) -> Option<u16> {
+        end.col.checked_sub(u16::from(end.side == AnchorSide::Left))
     }
 }
 
@@ -265,6 +261,32 @@ mod tests {
                 "jitter within the pressed cell ({end:?})"
             );
         }
+    }
+
+    #[test]
+    fn a_click_left_of_column_zero_highlights_nothing() {
+        let click = Selection::new(SelectionType::Normal, 0, 0, AnchorSide::Left);
+        assert!(!click.contains(0, 0));
+        let mut rows = Selection::new(SelectionType::Normal, 0, 4, AnchorSide::Left);
+        rows.update(1, 0, AnchorSide::Left);
+        assert!(
+            !rows.contains(1, 0),
+            "a drag ending left of the next row's first cell"
+        );
+        assert!(rows.contains(0, 4));
+    }
+
+    #[test]
+    fn returning_to_the_pressed_cell_restores_the_pressed_half() {
+        use AnchorSide::{Left, Right};
+        let mut left = Selection::new(SelectionType::Normal, 0, 3, Left);
+        left.extend_to(0, 1, Left);
+        left.extend_to(0, 3, Right);
+        assert!(left.contains(0, 3), "as a drag that never left the cell");
+        let mut right = Selection::new(SelectionType::Normal, 0, 3, Right);
+        right.extend_to(0, 5, Left);
+        right.extend_to(0, 3, Right);
+        assert!(!right.covers_cells(), "as a press held on the right half");
     }
 
     #[test]

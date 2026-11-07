@@ -1247,8 +1247,13 @@ pub(crate) mod tests {
     /// A one-row grid of `text`, `_` marking the second cell of the wide
     /// char before it.
     pub(crate) fn grid_with(text: &str) -> ClientGrid {
+        grid_with_rows(text, 1)
+    }
+
+    /// `text` on row 0 of a grid `rows` tall.
+    fn grid_with_rows(text: &str, rows: u16) -> ClientGrid {
         let cols = u16::try_from(text.chars().count()).expect("short");
-        let mut grid = ClientGrid::new(cols, 1);
+        let mut grid = ClientGrid::new(cols, rows);
         grid.apply_update(&RenderUpdate {
             pane_id: 0,
             seqno: 1,
@@ -1274,6 +1279,15 @@ pub(crate) mod tests {
         let mut sel = Selection::new(SelectionType::Normal, 0, from, AnchorSide::Left);
         sel.update(0, to, AnchorSide::Right);
         grid.extract_selection_text(&sel, 0)
+    }
+
+    #[test]
+    fn a_selection_ending_at_the_next_rows_start_copies_the_line_break() {
+        use oakterm_terminal::grid::selection::{AnchorSide, SelectionType};
+        let grid = grid_with_rows("abc", 2);
+        let mut sel = Selection::new(SelectionType::Normal, 0, 1, AnchorSide::Left);
+        sel.update(1, 0, AnchorSide::Left);
+        assert_eq!(grid.extract_selection_text(&sel, 0), "bc\n");
     }
 
     #[test]

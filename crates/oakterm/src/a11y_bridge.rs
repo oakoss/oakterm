@@ -957,14 +957,8 @@ pub(crate) fn selection_from_a11y(
         AnchorSide::Left,
     );
     // End side Left excludes the boundary cell, matching the exclusive
-    // between-character focus position. A focus at column 0 of a later row
-    // selects nothing on that row (`contains_normal` would still include
-    // cell 0), so the selection ends at the previous row's end instead.
-    if last.1 == 0 {
-        selection.update(to_sel_row(last.0 - 1), u16::MAX, AnchorSide::Right);
-    } else {
-        selection.update(to_sel_row(last.0), col(last.1), AnchorSide::Left);
-    }
+    // between-character focus position.
+    selection.update(to_sel_row(last.0), col(last.1), AnchorSide::Left);
     Some((anchor_pane, Some(selection)))
 }
 
@@ -2123,10 +2117,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_from_a11y_focus_at_col_zero_ends_previous_row() {
-        // An exclusive focus at column 0 selects nothing on that row; the
-        // mapped selection must end at the previous row's end instead of
-        // gaining cell 0 (contains_normal includes it for end.col == 0).
+    fn selection_from_a11y_focus_at_col_zero_selects_nothing_on_that_row() {
         let at_sel = accesskit::TextSelection {
             anchor: accesskit::TextPosition {
                 node: row_node_id(0, 0),
