@@ -11,12 +11,13 @@
 //! `[-offset, -offset + visible_rows)`, which is why `viewport_top`
 //! exists rather than everything assuming 0.
 
+use crate::cell_text::{WIDE_TAIL, head_column};
 use crate::copy_keys::PendingPrefix;
 use crate::copy_motion::{MotionBounds, RowText};
 use crate::copy_search::{self, BarKey, BarStyle, Match, SearchDirection, SearchState};
 use crate::render_grid::RowSource;
 use oakterm_protocol::message::ScrollbackData;
-use oakterm_protocol::render::DirtyRow;
+use oakterm_protocol::render::{DirtyRow, FLAG_WIDE_CONT};
 use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
 use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
@@ -351,13 +352,16 @@ impl RowText for Chunk {
     }
 }
 
-/// A served row's cells as characters, empty cells reading as blanks.
+/// A served row's cells as characters, one per column: empty cells read as
+/// blanks and a wide char's second cell as [`WIDE_TAIL`].
 fn dirty_row_chars(dirty: &DirtyRow) -> Vec<char> {
     dirty
         .cells
         .iter()
         .map(|cell| {
-            if cell.codepoint == 0 {
+            if cell.flags & FLAG_WIDE_CONT != 0 {
+                WIDE_TAIL
+            } else if cell.codepoint == 0 {
                 ' '
             } else {
                 char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}')
@@ -499,7 +503,11 @@ impl CopyModeState {
     pub(crate) fn set_cursor(&mut self, row: i64, col: u16) {
         self.drop_pending_search();
         self.cursor_row = row.clamp(self.first_row(), self.last_row());
-        self.cursor_col = col.min(self.cols - 1);
+        let col = col.min(self.cols - 1);
+        // The cursor never rests on a wide char's second cell (Spec-0008).
+        self.cursor_col = self
+            .row(self.cursor_row)
+            .map_or(col, |chars| head_column(&chars, col));
         let rows = i64::from(self.visible_rows);
         if self.cursor_row < self.display_top {
             self.display_top = self.cursor_row;
@@ -532,6 +540,9 @@ impl CopyModeState {
         self.display_top = top.clamp(self.first_row(), self.viewport_top);
         let bottom = self.display_top + i64::from(self.visible_rows) - 1;
         self.cursor_row = self.cursor_row.clamp(self.display_top, bottom);
+        if let Some(chars) = self.row(self.cursor_row) {
+            self.cursor_col = head_column(&chars, self.cursor_col);
+        }
     }
 
     /// The cache wins over the page, as in [`RowText`]: rows below 0 are
@@ -1097,12 +1108,14 @@ impl CopyModeState {
                 }
             };
             let text = self.snapshot_row(row).map_or_else(String::new, |chars| {
-                let from = usize::from(from).min(chars.len());
+                // An edge inside a wide char still copies it, once.
+                let from = usize::from(head_column(chars, from)).min(chars.len());
                 let to = usize::from(to).saturating_add(1).min(chars.len());
                 chars
                     .get(from..to)
                     .unwrap_or(&[])
                     .iter()
+                    .filter(|&&c| c != WIDE_TAIL)
                     .collect::<String>()
             });
             lines.push(text.trim_end_matches(' ').to_string());
@@ -1374,6 +1387,19 @@ mod tests {
 
     fn tag_of(row: &DirtyRow) -> char {
         char::from_u32(row.cells[0].codepoint).expect("tag")
+    }
+
+    #[test]
+    fn a_wide_chars_second_cell_reads_as_its_tail() {
+        use crate::cell_text::WIDE_TAIL;
+        use oakterm_protocol::render::{FLAG_WIDE, FLAG_WIDE_CONT};
+        let mut wide = row('中');
+        wide.cells[0].flags = FLAG_WIDE;
+        let mut tail = wide.cells[0].clone();
+        tail.codepoint = u32::from(' ');
+        tail.flags = FLAG_WIDE_CONT;
+        wide.cells.push(tail);
+        assert_eq!(super::dirty_row_chars(&wide), ['中', WIDE_TAIL]);
     }
 
     fn rows(tags: &str) -> Vec<DirtyRow> {
@@ -2610,6 +2636,32 @@ mod tests {
 
         state.set_cursor(3, 0);
         assert_eq!(state.display_top(), 0, "down to the page bottom");
+    }
+
+    #[test]
+    fn scrolling_never_leaves_the_cursor_on_a_wide_tail() {
+        use oakterm_protocol::render::{FLAG_WIDE, FLAG_WIDE_CONT};
+        let mut state = CopyModeState::new(80, 4, 0, Vec::new());
+        state.set_pinned_base(0);
+        let mut data = served(-12, "abcdefghijkl", true);
+        // Row -3 reads "中_d": its column 1 is the tail.
+        let wide = &mut data.rows[9];
+        wide.cells[0].codepoint = u32::from('中');
+        wide.cells[0].flags = FLAG_WIDE;
+        let mut tail = wide.cells[0].clone();
+        tail.flags = FLAG_WIDE_CONT;
+        wide.cells.push(tail);
+        state.record_fill(
+            1,
+            FillRequest {
+                start_row: -12,
+                count: 12,
+            },
+        );
+        assert!(state.apply_fill(1, &data));
+        state.set_cursor(3, 1);
+        state.scroll_display(-6);
+        assert_eq!(state.cursor(), (-3, 0), "pulled onto the wide char's head");
     }
 
     #[test]

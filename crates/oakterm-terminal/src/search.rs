@@ -159,8 +159,9 @@ impl SearchEngine {
         });
     }
 
-    /// Matches in one line as character ranges, end exclusive, so a caller
-    /// holding one character per cell reads them as columns.
+    /// Matches in one line as character ranges, end exclusive. A wide char
+    /// is one character spanning two columns, so callers map ranges to
+    /// columns rather than reading them as columns.
     pub fn char_spans<'t>(&'t self, text: &'t str) -> impl Iterator<Item = (usize, usize)> + 't {
         // Offsets carry over from the previous match, so a row is counted
         // once however many matches it holds.

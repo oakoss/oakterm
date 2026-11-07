@@ -1,7 +1,7 @@
 //! Row-to-wire encoding shared by the render and scrollback paths.
 
-use oakterm_protocol::render::{DirtyRow, WireCell};
-use oakterm_terminal::grid::cell::{Color, Rgb};
+use oakterm_protocol::render::{DirtyRow, FLAG_WIDE, FLAG_WIDE_CONT, WireCell};
+use oakterm_terminal::grid::cell::{Color, Rgb, WideState};
 use oakterm_terminal::grid::row::{MarkMetadata, Row};
 
 /// Resolve a terminal `Color` to RGB bytes using the palette.
@@ -44,7 +44,12 @@ pub(crate) fn row_to_wire(row: &Row, row_index: u16, palette: &[Rgb; 256]) -> Di
                 bg_g,
                 bg_b,
                 bg_type,
-                flags: c.flags.bits(),
+                flags: c.flags.bits()
+                    | match c.wide {
+                        WideState::Narrow => 0,
+                        WideState::Wide => FLAG_WIDE,
+                        WideState::WideCont => FLAG_WIDE_CONT,
+                    },
                 extra: vec![],
             }
         })
@@ -58,5 +63,25 @@ pub(crate) fn row_to_wire(row: &Row, row_index: u16, palette: &[Rgb; 256]) -> Di
         cells,
         semantic_mark: row.semantic_mark.to_wire(),
         mark_metadata,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oakterm_terminal::grid::cell::CellFlags;
+
+    #[test]
+    fn wide_state_rides_in_the_wire_flags() {
+        let mut row = Row::new(4);
+        row.cells[0].codepoint = '中';
+        row.cells[0].wide = WideState::Wide;
+        row.cells[0].flags = CellFlags::BOLD;
+        row.cells[1].wide = WideState::WideCont;
+        row.cells[2].codepoint = 'x';
+        let wire = row_to_wire(&row, 0, &[Rgb::default(); 256]);
+        assert_eq!(wire.cells[0].flags, FLAG_WIDE | CellFlags::BOLD.bits());
+        assert_eq!(wire.cells[1].flags, FLAG_WIDE_CONT);
+        assert_eq!(wire.cells[2].flags, 0);
     }
 }

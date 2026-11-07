@@ -360,8 +360,12 @@ fn build_text_selection(
 AccessKit positions are between-character indices, while terminal selections
 are cell-inclusive: a selection covering cells `a..=b` maps to anchor
 position `a` and focus position `b + 1` (half-cell `AnchorSide` boundaries
-shift the position by one accordingly). Character indices are clamped to the
-row's trimmed text length so positions never point past the text. A selection
+shift the position by one accordingly). Positions count characters, not
+columns: a wide character is one character in the row text though it spans
+two columns, so a column past it maps to a smaller index (and an AT index
+back to the column where its character starts). Character indices are
+clamped to the row's trimmed text length so positions never point past the
+text. A selection
 partially outside the viewport clamps to the viewport edge; a selection
 entirely outside it is omitted from the tree rather than clamped, so AT is
 never told an off-screen selection sits on a visible row.

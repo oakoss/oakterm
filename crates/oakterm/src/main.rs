@@ -1,5 +1,6 @@
 mod a11y_bridge;
 mod bell;
+mod cell_text;
 mod copy_keys;
 mod copy_mode;
 mod copy_motion;
@@ -1564,7 +1565,7 @@ impl App {
                 if let Some(view) = self.focused_view_mut()
                     && row < view.grid().rows
                 {
-                    let text: Vec<char> = view.grid().row_text(row).chars().collect();
+                    let text = view.grid().word_chars(row);
                     // Click past end of text: no word to select.
                     if (col as usize) < text.len() {
                         let (start_col, end_col) = word_boundaries(&text, col);
@@ -2121,7 +2122,7 @@ impl ApplicationHandler<UserEvent> for App {
                                 .as_ref()
                                 .is_some_and(|s| s.ty == SelectionType::Semantic);
                             let text: Vec<char> = if semantic && row < grid_rows {
-                                view.grid().row_text(row).chars().collect()
+                                view.grid().word_chars(row)
                             } else {
                                 Vec::new()
                             };
@@ -2601,8 +2602,9 @@ impl ApplicationHandler<UserEvent> for App {
                             .filter(|view| view.is_copy_mode())
                         {
                             let rows = view.grid().rows;
+                            let at_cols = a11y_bridge::columns_of(&at_sel, view.on_screen().grid());
                             if let Some((cursor, anchor)) =
-                                a11y_bridge::copy_selection_from_a11y(&at_sel, rows)
+                                a11y_bridge::copy_selection_from_a11y(&at_cols, rows)
                             {
                                 view.select_in_copy_mode(shown_offset, cursor, anchor);
                                 self.request_redraw();
@@ -2615,11 +2617,17 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                             return;
                         }
-                        let (offset, rows) = pane_hint
+                        let (offset, rows, at_cols) = pane_hint
                             .and_then(|id| self.panes.get(&id))
-                            .map_or((0, 0), |v| (v.viewport_offset(), v.grid().rows));
+                            .map_or((0, 0, at_sel), |v| {
+                                (
+                                    v.viewport_offset(),
+                                    v.grid().rows,
+                                    a11y_bridge::columns_of(&at_sel, v.on_screen().grid()),
+                                )
+                            });
                         let Some((pane_id, sel)) =
-                            a11y_bridge::selection_from_a11y(&at_sel, offset, rows)
+                            a11y_bridge::selection_from_a11y(&at_cols, offset, rows)
                         else {
                             debug!(
                                 anchor = ?at_sel.anchor.node,

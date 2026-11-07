@@ -7,6 +7,7 @@
 //! same edge `j`/`k` clamp at, rather than walking a whole unserved gap
 //! to reach text the client cannot show.
 
+use crate::cell_text::{WIDE_TAIL, head_column};
 use crate::copy_keys::Motion;
 use tracing::debug;
 
@@ -47,7 +48,32 @@ impl MotionBounds {
 }
 
 /// Where `motion` puts the cursor. Pure: the caller applies the result.
+/// The cursor never rests on a wide char's second cell: moving right steps
+/// past it, anything else lands on the char's first cell.
 pub(crate) fn resolve(
+    motion: Motion,
+    cursor: (i64, u16),
+    bounds: MotionBounds,
+    rows: &impl RowText,
+) -> (i64, u16) {
+    let (row, col) = raw_target(motion, cursor, bounds, rows);
+    // A word starts on a char's first cell, so `w` and `b` never land on a
+    // tail and skip the extra row read.
+    if matches!(motion, Motion::WordForward | Motion::WordBackward) {
+        return (row, col);
+    }
+    let chars = row_chars(rows, row);
+    if chars.get(usize::from(col)) != Some(&WIDE_TAIL) {
+        return (row, col);
+    }
+    if motion == Motion::Right && col < bounds.last_col() {
+        (row, col + 1)
+    } else {
+        (row, head_column(&chars, col))
+    }
+}
+
+fn raw_target(
     motion: Motion,
     cursor: (i64, u16),
     bounds: MotionBounds,
@@ -138,8 +164,9 @@ impl<'a, R: RowText> Scan<'a, R> {
     /// The class at the current cell. Cells past a row's text are blank —
     /// every row is `cols` wide whatever its trailing content.
     fn class(&self) -> Class {
+        let col = head_column(&self.chars, self.at.1);
         self.chars
-            .get(usize::from(self.at.1))
+            .get(usize::from(col))
             .copied()
             .map_or(Class::Blank, class_of)
     }
@@ -159,9 +186,20 @@ impl<'a, R: RowText> Scan<'a, R> {
         true
     }
 
+    /// Like `step_forward`, but over a wide char's second cell. Backward needs
+    /// no skip: that cell reads as its char's class.
+    fn forward(&mut self) -> bool {
+        while self.step_forward() {
+            if self.chars.get(usize::from(self.at.1)) != Some(&WIDE_TAIL) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Step one cell in reading order, or `false` at the end of the
     /// served region.
-    fn forward(&mut self) -> bool {
+    fn step_forward(&mut self) -> bool {
         let (row, col) = self.at;
         if col < self.bounds.last_col() {
             self.at = (row, col + 1);
@@ -316,6 +354,70 @@ mod tests {
 
     fn go(motion: Motion, cursor: (i64, u16), rows: &Rows, b: MotionBounds) -> (i64, u16) {
         resolve(motion, cursor, b, rows)
+    }
+
+    /// `_` marks the second cell of the wide char before it.
+    fn wide_rows(first: i64, lines: &[&str]) -> Rows {
+        let mut rows = Rows::new(first, lines);
+        for chars in rows.0.values_mut() {
+            for c in chars.iter_mut() {
+                if *c == '_' {
+                    *c = crate::cell_text::WIDE_TAIL;
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn horizontal_motions_step_over_a_wide_char_whole() {
+        let rows = wide_rows(0, &["a中_文_b"]);
+        let b = bounds(0, 0, 10);
+        assert_eq!(go(Motion::Right, (0, 1), &rows, b), (0, 3));
+        assert_eq!(go(Motion::Left, (0, 3), &rows, b), (0, 1));
+        assert_eq!(go(Motion::Right, (0, 0), &rows, b), (0, 1));
+        assert_eq!(go(Motion::LineEnd, (0, 0), &rows, wide_bounds()), (0, 5));
+    }
+
+    fn wide_bounds() -> MotionBounds {
+        bounds(0, 1, 10)
+    }
+
+    #[test]
+    fn a_motion_never_lands_on_a_wide_chars_second_cell() {
+        let rows = wide_rows(0, &["ab中_", "中_cd"]);
+        let b = wide_bounds();
+        assert_eq!(go(Motion::LineEnd, (0, 0), &rows, b), (0, 2));
+        assert_eq!(
+            go(Motion::Down, (0, 1), &rows, b),
+            (1, 0),
+            "lands on the tail"
+        );
+        assert_eq!(
+            go(Motion::Up, (1, 3), &rows, b),
+            (0, 2),
+            "lands on the tail"
+        );
+    }
+
+    #[test]
+    fn word_motions_treat_a_wide_char_as_one_cell_of_its_class() {
+        let rows = wide_rows(0, &["a 中_文_ b"]);
+        let b = bounds(0, 0, 12);
+        assert_eq!(go(Motion::WordForward, (0, 0), &rows, b), (0, 2));
+        assert_eq!(go(Motion::WordEnd, (0, 2), &rows, b), (0, 4));
+        assert_eq!(go(Motion::WordBackward, (0, 7), &rows, b), (0, 2));
+        assert_eq!(go(Motion::WordForward, (0, 2), &rows, b), (0, 7));
+    }
+
+    #[test]
+    fn repeated_word_end_walks_past_words_ending_in_a_wide_char() {
+        let rows = wide_rows(0, &["a 中_文_ b"]);
+        let b = bounds(0, 0, 12);
+        assert_eq!(go(Motion::WordEnd, (0, 2), &rows, b), (0, 4));
+        assert_eq!(go(Motion::WordEnd, (0, 4), &rows, b), (0, 7));
+        let rows = wide_rows(0, &["中_ x"]);
+        assert_eq!(go(Motion::WordEnd, (0, 0), &rows, bounds(0, 0, 6)), (0, 3));
     }
 
     // --- Arrow-equivalent motions ---

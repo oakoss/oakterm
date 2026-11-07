@@ -1,6 +1,7 @@
 //! Convert client-side grid state to GPU render data.
 
-use oakterm_protocol::render::{DirtyRow, RenderUpdate, WireCell};
+use crate::cell_text::{ColumnText, WIDE_TAIL};
+use oakterm_protocol::render::{DirtyRow, FLAG_WIDE, FLAG_WIDE_CONT, RenderUpdate, WireCell};
 use std::collections::HashSet;
 
 use oakterm_renderer::atlas::{AtlasPlane, GlyphCacheKey};
@@ -428,6 +429,19 @@ impl ClientGrid {
         }
     }
 
+    /// The index of the other cell of the wide char at `i`, if it is one.
+    fn wide_partner(&self, i: usize) -> Option<usize> {
+        let cols = usize::from(self.cols);
+        let flags = self.cells.get(i)?.flags;
+        if flags & FLAG_WIDE != 0 && !(i + 1).is_multiple_of(cols) {
+            Some(i + 1)
+        } else if flags & FLAG_WIDE_CONT != 0 && !i.is_multiple_of(cols) {
+            Some(i - 1)
+        } else {
+            None
+        }
+    }
+
     /// Linear cell index of the cursor, if visible and in-bounds.
     fn cursor_cell_index(&self, visible: bool) -> Option<usize> {
         if visible && self.cursor_x < self.cols && self.cursor_y < self.rows {
@@ -450,23 +464,43 @@ impl ClientGrid {
         viewport_offset: u32,
     ) -> Vec<u32> {
         let cursor_idx = self.cursor_cell_index(cursor_visible);
-        let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
-        let cols = usize::from(self.cols);
-
-        self.cells
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let row = i / cols;
-                let col = i % cols;
-                #[allow(clippy::cast_possible_wrap)]
-                let sel_row = row as i64 - i64::from(viewport_offset);
-                let block_cursor = is_block && Some(i) == cursor_idx;
-                #[allow(clippy::cast_possible_truncation)]
-                let (_, bg) = shown_colors(c, block_cursor, selection, sel_row, col as u16);
-                pack_bg_color(bg)
+        (0..self.cells.len())
+            .map(|i| {
+                pack_bg_color(
+                    self.cell_colors(i, cursor_idx, selection, viewport_offset)
+                        .1,
+                )
             })
             .collect()
+    }
+
+    /// Cell `i`'s `(fg, bg)` as drawn. A wide char's two cells share one
+    /// cursor and one selection state, so either cell selected or under a
+    /// block cursor inverts both.
+    fn cell_colors(
+        &self,
+        i: usize,
+        cursor_idx: Option<usize>,
+        selection: Option<&Selection>,
+        viewport_offset: u32,
+    ) -> ([u8; 3], [u8; 3]) {
+        let cols = usize::from(self.cols);
+        #[allow(clippy::cast_possible_wrap)]
+        let sel_row = (i / cols) as i64 - i64::from(viewport_offset);
+        #[allow(clippy::cast_possible_truncation)] // col < cols, a u16
+        let sel_col = |i: usize| (i % cols) as u16;
+        let partner = self.wide_partner(i);
+        let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
+        let block_cursor = is_block && cursor_idx.is_some_and(|k| k == i || Some(k) == partner);
+        let col = match (partner, selection) {
+            (Some(p), Some(s))
+                if !s.contains(sel_row, sel_col(i)) && s.contains(sel_row, sel_col(p)) =>
+            {
+                sel_col(p)
+            }
+            _ => sel_col(i),
+        };
+        shown_colors(&self.cells[i], block_cursor, selection, sel_row, col)
     }
 
     /// Build glyph instances and any new bitmap uploads needed.
@@ -632,13 +666,8 @@ impl ClientGrid {
                 let x = col as f32 * metrics.cell_width + pad_left;
                 let y = row as f32 * metrics.cell_height + pad_top;
 
-                let is_cursor = Some(idx) == cursor_idx;
-                let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
-                #[allow(clippy::cast_possible_wrap)]
-                let sel_row = row as i64 - i64::from(viewport_offset);
-                #[allow(clippy::cast_possible_truncation)]
                 let (fg_rgb, bg_rgb) =
-                    shown_colors(cell, is_cursor && is_block, selection, sel_row, col as u16);
+                    self.cell_colors(idx, cursor_idx, selection, viewport_offset);
 
                 // sRGB values passed to shader (linearized in fragment shader).
                 let fg = [
@@ -694,11 +723,16 @@ impl ClientGrid {
                 1.0,
             ];
 
+            let cells_wide = if self.wide_partner(cell_idx) == Some(cell_idx + 1) {
+                2.0
+            } else {
+                1.0
+            };
             let (pos, size) = if cursor_shape == 1 {
                 // Underline: thin line at cell bottom.
                 (
                     [cx, cy + metrics.cell_height - 2.0],
-                    [metrics.cell_width, 2.0],
+                    [metrics.cell_width * cells_wide, 2.0],
                 )
             } else {
                 // Bar: thin line at cell left edge.
@@ -743,6 +777,9 @@ impl ClientGrid {
         }
         let mut s = String::with_capacity(usize::from(self.cols));
         for cell in &self.cells[start..end] {
+            if cell.flags & FLAG_WIDE_CONT != 0 {
+                continue;
+            }
             if cell.codepoint == 0 {
                 s.push(' ');
             } else {
@@ -752,6 +789,64 @@ impl ClientGrid {
         let trimmed = s.trim_end_matches(' ').len();
         s.truncate(trimmed);
         s
+    }
+
+    /// A visible row's text with each character's starting column, for
+    /// readers that work in characters while the grid works in columns.
+    #[must_use]
+    pub fn column_text(&self, row: u16) -> ColumnText {
+        ColumnText::new(&self.cells_as_chars(row))
+    }
+
+    /// A visible row as one char per column (empty cells as spaces, a wide
+    /// char's second cell as [`WIDE_TAIL`]), trailing blanks trimmed: the
+    /// shape copy mode's rows take, where an index is a column.
+    #[must_use]
+    pub fn row_chars(&self, row: u16) -> Vec<char> {
+        let mut chars = self.cells_as_chars(row);
+        let len = chars.iter().rposition(|&c| c != ' ').map_or(0, |i| i + 1);
+        chars.truncate(len);
+        chars
+    }
+
+    /// [`Self::row_chars`] with a wide char's second cell reading as its
+    /// first, so a word scan sees the pair as one class.
+    #[must_use]
+    pub fn word_chars(&self, row: u16) -> Vec<char> {
+        let mut chars = self.row_chars(row);
+        for i in 1..chars.len() {
+            if chars[i] == WIDE_TAIL {
+                chars[i] = chars[i - 1];
+            }
+        }
+        chars
+    }
+
+    fn cells_as_chars(&self, row: u16) -> Vec<char> {
+        let start = usize::from(row) * usize::from(self.cols);
+        self.cells
+            .get(start..start + usize::from(self.cols))
+            .unwrap_or_default()
+            .iter()
+            .map(|cell| {
+                if cell.flags & FLAG_WIDE_CONT != 0 {
+                    WIDE_TAIL
+                } else if cell.codepoint == 0 {
+                    ' '
+                } else {
+                    char::from_u32(cell.codepoint).unwrap_or('\u{FFFD}')
+                }
+            })
+            .collect()
+    }
+
+    /// The cursor's position as a character offset in its row's text.
+    #[must_use]
+    pub fn cursor_char_offset(&self) -> u16 {
+        let offset = self
+            .column_text(self.cursor_y)
+            .char_at_column(self.cursor_x);
+        u16::try_from(offset).unwrap_or(u16::MAX)
     }
 
     /// Extract text from all visible rows.
@@ -784,12 +879,21 @@ impl ClientGrid {
             }
             let mut line = String::with_capacity(cols);
 
+            #[allow(clippy::cast_possible_truncation)] // col < cols, a u16
+            let contains = |col: usize| selection.contains(sel_row, col as u16);
             for col in 0..cols {
-                #[allow(clippy::cast_possible_truncation)]
-                if !selection.contains(sel_row, col as u16) {
+                if !contains(col) {
                     continue;
                 }
-                let cell = &self.cells[row_start + col];
+                let mut cell = &self.cells[row_start + col];
+                // A wide char is copied once, from its first cell, when
+                // either of its cells is selected.
+                if cell.flags & FLAG_WIDE_CONT != 0 {
+                    if col == 0 || contains(col - 1) {
+                        continue;
+                    }
+                    cell = &self.cells[row_start + col - 1];
+                }
                 if cell.codepoint == 0 {
                     line.push(' ');
                 } else {
@@ -842,7 +946,7 @@ fn wire_cell_to_render(cell: &WireCell) -> RenderCell {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use oakterm_protocol::render::{DirtyRow, RenderUpdate};
 
@@ -1110,6 +1214,139 @@ mod tests {
             semantic_mark: 0,
             mark_metadata: vec![],
         }
+    }
+
+    /// `_` marks the second cell of the wide char before it.
+    pub(crate) fn wide_row(index: u16, text: &str) -> DirtyRow {
+        use oakterm_protocol::render::{FLAG_WIDE, FLAG_WIDE_CONT};
+        let chars: Vec<char> = text.chars().collect();
+        let cells = chars
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let mut cell = make_wire_cell(b' ');
+                if c == '_' {
+                    cell.flags = FLAG_WIDE_CONT;
+                } else {
+                    cell.codepoint = u32::from(c);
+                    if chars.get(i + 1) == Some(&'_') {
+                        cell.flags = FLAG_WIDE;
+                    }
+                }
+                cell
+            })
+            .collect();
+        DirtyRow {
+            row_index: index,
+            cells,
+            semantic_mark: 0,
+            mark_metadata: vec![],
+        }
+    }
+
+    /// A one-row grid of `text`, `_` marking the second cell of the wide
+    /// char before it.
+    pub(crate) fn grid_with(text: &str) -> ClientGrid {
+        let cols = u16::try_from(text.chars().count()).expect("short");
+        let mut grid = ClientGrid::new(cols, 1);
+        grid.apply_update(&RenderUpdate {
+            pane_id: 0,
+            seqno: 1,
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_style: 0,
+            cursor_visible: false,
+            bg_r: 0,
+            bg_g: 0,
+            bg_b: 0,
+            bracketed_paste: false,
+            alt_screen: false,
+            input_flags: 0,
+            kitty_kbd_flags: 0,
+            history_len: 0,
+            dirty_rows: vec![wide_row(0, text)],
+        });
+        grid
+    }
+
+    fn selected(grid: &ClientGrid, from: u16, to: u16) -> String {
+        use oakterm_terminal::grid::selection::{AnchorSide, SelectionType};
+        let mut sel = Selection::new(SelectionType::Normal, 0, from, AnchorSide::Left);
+        sel.update(0, to, AnchorSide::Right);
+        grid.extract_selection_text(&sel, 0)
+    }
+
+    #[test]
+    fn selection_text_copies_a_wide_char_once() {
+        let grid = grid_with("a中_文_b");
+        assert_eq!(selected(&grid, 0, 5), "a中文b");
+        assert_eq!(
+            selected(&grid, 2, 3),
+            "中文",
+            "starting on a tail keeps its char"
+        );
+        assert_eq!(selected(&grid, 1, 1), "中", "the head alone");
+    }
+
+    #[test]
+    fn row_text_reads_a_wide_char_once() {
+        let grid = grid_with("a中_文_b");
+        assert_eq!(grid.row_text(0), "a中文b");
+    }
+
+    #[test]
+    fn a_block_cursor_and_a_selection_cover_both_cells_of_a_wide_char() {
+        use oakterm_terminal::grid::selection::{AnchorSide, SelectionType};
+        let white = pack_bg_color([255, 255, 255]);
+        let black = pack_bg_color([0, 0, 0]);
+        let mut grid = grid_with("a中_b");
+        grid.cursor_x = 1;
+        let colors = grid.bg_colors(true, None, 0);
+        assert_eq!(colors, [black, white, white, black]);
+
+        let mut sel = Selection::new(SelectionType::Normal, 0, 2, AnchorSide::Left);
+        sel.update(0, 2, AnchorSide::Right);
+        let colors = grid.bg_colors(false, Some(&sel), 0);
+        assert_eq!(
+            colors,
+            [black, white, white, black],
+            "only the tail selected"
+        );
+    }
+
+    #[test]
+    fn word_selection_after_a_wide_char_keeps_its_columns() {
+        use oakterm_terminal::grid::selection::word_boundaries;
+        let grid = grid_with("中_ foo x");
+        assert_eq!(word_boundaries(&grid.word_chars(0), 4), (3, 5));
+        assert_eq!(word_boundaries(&grid.word_chars(0), 1), (0, 1), "the pair");
+    }
+
+    #[test]
+    fn a_wide_heads_glyph_inverts_with_its_background() {
+        use oakterm_terminal::grid::selection::{AnchorSide, SelectionType};
+        let mut grid = grid_with("a中_b");
+        let (white, black) = ([255, 255, 255], [0, 0, 0]);
+        let mut tail_only = Selection::new(SelectionType::Normal, 0, 2, AnchorSide::Left);
+        tail_only.update(0, 2, AnchorSide::Right);
+        assert_eq!(
+            grid.cell_colors(1, None, Some(&tail_only), 0),
+            (black, white)
+        );
+        grid.cursor_x = 2;
+        let on_tail = grid.cursor_cell_index(true);
+        assert_eq!(grid.cell_colors(1, on_tail, None, 0), (black, white));
+    }
+
+    #[test]
+    fn the_cursor_offset_counts_a_wide_char_once() {
+        let mut grid = grid_with("a中_文_b");
+        grid.cursor_x = 3;
+        assert_eq!(grid.cursor_char_offset(), 2);
+        grid.cursor_x = 4;
+        assert_eq!(grid.cursor_char_offset(), 2, "on the tail");
+        grid.cursor_x = 5;
+        assert_eq!(grid.cursor_char_offset(), 3);
     }
 
     #[test]

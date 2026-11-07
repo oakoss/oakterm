@@ -297,7 +297,7 @@ impl PaneView {
         // cells as they stand, not the saved live snapshot, which keeps
         // absorbing updates while scrolled.
         let snapshot: Vec<Vec<char>> = (0..self.grid.rows)
-            .map(|visible| self.grid.row_text(visible).chars().collect())
+            .map(|visible| self.grid.row_chars(visible))
             .collect();
         let state = CopyModeState::new(
             self.grid.cols,
@@ -890,6 +890,47 @@ mod tests {
         // Output arriving during copy mode must not move what is shown.
         view.apply_update(&make_update(2, 0, b"new!"));
         assert_eq!(view.grid().row_text(0), "live");
+    }
+
+    #[test]
+    fn copy_mode_reads_a_wide_row_one_char_per_column() {
+        use crate::cell_text::WIDE_TAIL;
+        use crate::copy_motion::RowText;
+        let mut view = PaneView::new(ClientGrid::new(5, 2));
+        let mut update = make_update(1, 0, b"");
+        update.dirty_rows = vec![crate::render_grid::tests::wide_row(0, "a中_bc")];
+        view.apply_update(&update);
+        view.enter_copy_mode();
+        let state = view.copy_mode().expect("copy mode");
+        assert_eq!(state.row(0), Some(vec!['a', '中', WIDE_TAIL, 'b', 'c']));
+    }
+
+    #[test]
+    fn a_copy_mode_yank_copies_a_wide_char_once() {
+        let mut view = PaneView::new(ClientGrid::new(5, 2));
+        let mut update = make_update(1, 0, b"");
+        update.dirty_rows = vec![crate::render_grid::tests::wide_row(0, "a中_bc")];
+        view.apply_update(&update);
+        view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        view.select_in_copy_mode(Some(0), (0, 4), Some((0, 0)));
+        assert_eq!(
+            view.copy_mode_yank_plan(),
+            Some(crate::copy_mode::YankPlan::Local("a中bc".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_copy_mode_selection_never_parks_the_cursor_on_a_tail() {
+        let mut view = PaneView::new(ClientGrid::new(5, 2));
+        let mut update = make_update(1, 0, b"");
+        update.dirty_rows = vec![crate::render_grid::tests::wide_row(0, "a中_bc")];
+        view.apply_update(&update);
+        view.enter_copy_mode();
+        view.set_copy_mode_pinned_base(0);
+        view.select_in_copy_mode(Some(0), (0, 2), Some((0, 1)));
+        let cursor = view.copy_mode().map(CopyModeState::cursor);
+        assert_eq!(cursor, Some((0, 1)));
     }
 
     #[test]

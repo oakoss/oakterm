@@ -68,7 +68,7 @@ impl PaneA11ySnapshot {
         self.cols = grid.cols;
         self.row_texts = grid.row_texts();
         self.cursor_row = grid.cursor_y;
-        self.cursor_col = grid.cursor_x;
+        self.cursor_col = grid.cursor_char_offset();
         self.set_scroll_offset(view);
         self.selection = screen_selection(screen);
     }
@@ -92,11 +92,60 @@ impl PaneA11ySnapshot {
     }
 }
 
+/// The on-screen selection as AT positions: character offsets, which a wide
+/// char's two columns share.
 fn screen_selection(screen: &OnScreen<'_>) -> Option<SelectionRange> {
-    screen
+    let grid = screen.grid();
+    let range = screen
         .selection
         .as_ref()
-        .and_then(|s| selection_range(s, screen.selection_offset, screen.grid().rows))
+        .and_then(|s| selection_range(s, screen.selection_offset, grid.rows))?;
+    Some(offsets_of(range, grid))
+}
+
+/// A column-boundary selection as character offsets in `grid`'s rows. A
+/// boundary inside a wide char widens the range to take all of it, as the
+/// highlight and the copied text do.
+fn offsets_of(mut range: SelectionRange, grid: &ClientGrid) -> SelectionRange {
+    let anchor_first = (range.anchor_row, range.anchor_col) <= (range.focus_row, range.focus_col);
+    // Equal endpoints are a caret; round both the same way so it stays one.
+    let collapsed = (range.anchor_row, range.anchor_col) == (range.focus_row, range.focus_col);
+    let offset = |row: u16, col: usize, first: bool| {
+        let text = grid.column_text(row);
+        if first {
+            text.char_at_column(u16::try_from(col).unwrap_or(u16::MAX))
+        } else {
+            text.offset_at_boundary(col)
+        }
+    };
+    range.anchor_col = offset(range.anchor_row, range.anchor_col, anchor_first);
+    range.focus_col = offset(range.focus_row, range.focus_col, !anchor_first || collapsed);
+    range
+}
+
+/// An AT selection's character offsets as the terminal's columns, for the
+/// row nodes of `grid`; other endpoints pass through unchanged.
+pub(crate) fn columns_of(
+    sel: &accesskit::TextSelection,
+    grid: &ClientGrid,
+) -> accesskit::TextSelection {
+    let to_column = |pos: accesskit::TextPosition| {
+        let Some((_, Some(row))) = oakterm_a11y::decode_node_id(pos.node) else {
+            return pos;
+        };
+        if row >= grid.rows {
+            return pos;
+        }
+        let col = grid.column_text(row).column_at_offset(pos.character_index);
+        accesskit::TextPosition {
+            character_index: usize::from(col),
+            ..pos
+        }
+    };
+    accesskit::TextSelection {
+        anchor: to_column(sel.anchor),
+        focus: to_column(sel.focus),
+    }
 }
 
 /// What changed this frame; drives which snapshot fields [`apply`] mutates
@@ -304,7 +353,8 @@ fn apply_to_snapshot<'a>(
         A11yEvent::Render { dirty_rows } => {
             let before = (snap.scroll_offset, snap.selection);
             let before_rows = std::mem::take(&mut snap.row_texts);
-            let cursor_moved = snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_x;
+            let cursor_moved =
+                snap.cursor_row != grid.cursor_y || snap.cursor_col != grid.cursor_char_offset();
             snap.refresh_from_screen(view, screen);
             // Scroll position and selection ride on the terminal node, which
             // is rebuilt only on a change flag; after copy mode both can
@@ -740,7 +790,7 @@ fn build_update(
         cols: grid.cols,
         dirty_rows: &outcome.dirty_rows,
         cursor_row: grid.cursor_y,
-        cursor_col: grid.cursor_x,
+        cursor_col: grid.cursor_char_offset(),
         cursor_changed: outcome.cursor_changed,
         cursor_row_text: &cursor_row_text,
         title: &snap.title,
@@ -2006,6 +2056,70 @@ mod tests {
         assert_eq!(sel.end.col, 7);
         assert!(sel.contains(4, 6));
         assert!(!sel.contains(4, 7));
+    }
+
+    fn at(row: u16, character_index: usize) -> accesskit::TextPosition {
+        accesskit::TextPosition {
+            node: row_node_id(0, row),
+            character_index,
+        }
+    }
+
+    #[test]
+    fn at_offsets_become_columns_past_a_wide_char() {
+        let grid = crate::render_grid::tests::grid_with("a中_文_b");
+        let sel = accesskit::TextSelection {
+            anchor: at(0, 2),
+            focus: at(0, 3),
+        };
+        let cols = columns_of(&sel, &grid);
+        assert_eq!(cols.anchor.character_index, 3);
+        assert_eq!(cols.focus.character_index, 5);
+    }
+
+    #[test]
+    fn selection_columns_become_at_offsets_past_a_wide_char() {
+        let grid = crate::render_grid::tests::grid_with("a中_文_b");
+        let range = SelectionRange {
+            anchor_row: 0,
+            anchor_col: 3,
+            focus_row: 0,
+            focus_col: 6,
+        };
+        let offsets = offsets_of(range, &grid);
+        assert_eq!((offsets.anchor_col, offsets.focus_col), (2, 4));
+    }
+
+    #[test]
+    fn an_empty_selection_inside_a_wide_char_stays_a_caret() {
+        let grid = crate::render_grid::tests::grid_with("a中_b");
+        let range = SelectionRange {
+            anchor_row: 0,
+            anchor_col: 2,
+            focus_row: 0,
+            focus_col: 2,
+        };
+        let offsets = offsets_of(range, &grid);
+        assert_eq!(offsets.anchor_col, offsets.focus_col);
+    }
+
+    #[test]
+    fn a_selection_starting_on_a_tail_keeps_its_wide_char() {
+        let grid = crate::render_grid::tests::grid_with("a中_b");
+        for (anchor, focus) in [(2, 4), (4, 2)] {
+            let range = SelectionRange {
+                anchor_row: 0,
+                anchor_col: anchor,
+                focus_row: 0,
+                focus_col: focus,
+            };
+            let offsets = offsets_of(range, &grid);
+            let (lo, hi) = (
+                offsets.anchor_col.min(offsets.focus_col),
+                offsets.anchor_col.max(offsets.focus_col),
+            );
+            assert_eq!((lo, hi), (1, 3), "anchor {anchor}");
+        }
     }
 
     #[test]

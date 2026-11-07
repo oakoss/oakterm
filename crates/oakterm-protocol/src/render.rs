@@ -64,6 +64,11 @@ impl GetRenderUpdate {
     }
 }
 
+/// `WireCell::flags`: first cell of a two-cell character.
+pub const FLAG_WIDE: u16 = 1 << 8;
+/// `WireCell::flags`: second cell of a two-cell character.
+pub const FLAG_WIDE_CONT: u16 = 1 << 9;
+
 /// Wire representation of a terminal cell (16 bytes fixed + variable extra).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireCell {
