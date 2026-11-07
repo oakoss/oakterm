@@ -574,15 +574,18 @@ implementation task:
    66 (`set_keypad_application_mode`), but `key_to_bytes` has no numpad arm, so
    DECKPAM has no effect on output.
 6. **`text`-first encoding leaks compose state.** `key_to_bytes` returns the
-   winit `text` field before considering modifiers, so control and meta chords
-   are encoded inconsistently across platforms depending on whether the platform
-   populated `text`. The committed-text path should be reached only after
-   keybind and modifier resolution. On macOS this makes Ctrl+letter type the
-   letter (OT-343).
-7. **Super chords send nothing.** A Super (Cmd) chord no keybind consumes is
-   dropped (`input::pty_bytes`) rather than encoded with the Super modifier bit (Modifier Encoding):
-   macOS reports Cmd+C's text as `c`, so forwarding it typed the letter. Super
-   chords join the modifier encoding when item 2 lands.
+   winit `text` field before considering modifiers, so meta chords are encoded
+   inconsistently across platforms depending on whether the platform populated
+   `text`. The committed-text path should be reached only after keybind and
+   modifier resolution. Ctrl chords already are: `input::pty_bytes` maps them
+   to their Character Input C0 byte from the key before reading `text`.
+7. **Terminal chords send nothing.** A Super (Cmd) chord, or a Ctrl+Shift+letter
+   chord, that no keybind consumes is dropped (`input::pty_bytes`) rather than
+   encoded: these are the default `oak_mod` chords, so a copy binding released
+   with nothing selected would otherwise type `c` (macOS reports Cmd+C's text as
+   `c`) or send `0x03` and interrupt the job. Legacy encoding gives
+   Ctrl+Shift+letter the same byte as Ctrl+letter, so programs lose nothing.
+   Both join the modifier encoding when item 2 lands.
 
 ## References
 

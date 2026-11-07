@@ -286,17 +286,49 @@ pub(crate) fn binding_releases(
     oakterm_config::action_id_of(action).is_some_and(|id| !id.is_performable(ctx))
 }
 
-/// The bytes an unconsumed key sends to the PTY. Cmd/Super chords belong to the
-/// terminal: macOS reports Cmd+C's text as `c`, so a released copy binding would type it.
+/// The bytes an unconsumed key sends to the PTY. Cmd/Super and Ctrl+Shift+letter
+/// are the default `oak_mod` chords, so a copy binding released with nothing
+/// selected would otherwise type `c` or interrupt the job.
 pub(crate) fn pty_bytes(
     key: &Key,
     text: Option<&str>,
     mods: winit::keyboard::ModifiersState,
 ) -> Option<Vec<u8>> {
-    if mods.super_key() {
+    if mods.super_key() || (mods.control_key() && mods.shift_key() && is_letter(key)) {
         return None;
     }
+    // With Alt also held only letters map: Windows reports Left Ctrl+Left Alt
+    // as AltGr, whose symbols (`@`, `[`) must type.
+    if mods.control_key()
+        && (!mods.alt_key() || is_letter(key))
+        && let Some(byte) = ctrl_byte(key)
+    {
+        return Some(vec![byte]);
+    }
     key_to_bytes(key, text)
+}
+
+fn is_letter(key: &Key) -> bool {
+    matches!(key, Key::Character(s) if matches!(s.as_bytes(), [c] if c.is_ascii_alphabetic()))
+}
+
+/// Spec-0011's C0 byte for a Ctrl chord. Read from the key, not the text:
+/// macOS reports Ctrl+C's text as `c`.
+fn ctrl_byte(key: &Key) -> Option<u8> {
+    match key {
+        Key::Named(NamedKey::Space) => Some(0x00),
+        Key::Character(s) => match s.as_str().as_bytes() {
+            [c @ (b'a'..=b'z' | b'A'..=b'Z')] => Some(c.to_ascii_lowercase() - b'a' + 1),
+            [b'@'] => Some(0x00),
+            [b'['] => Some(0x1B),
+            [b'\\'] => Some(0x1C),
+            [b']'] => Some(0x1D),
+            [b'^'] => Some(0x1E),
+            [b'_'] => Some(0x1F),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Resolve a keypress through ADR-0011's dispatch layers: pending
@@ -427,7 +459,55 @@ mod tests {
         assert_eq!(bytes(ModifiersState::SUPER), None);
         assert_eq!(bytes(ModifiersState::SUPER | ModifiersState::SHIFT), None);
         assert_eq!(bytes(ModifiersState::empty()), Some(b"c".to_vec()));
-        assert_eq!(bytes(ModifiersState::CONTROL), Some(b"c".to_vec()));
+        assert_eq!(bytes(ModifiersState::CONTROL), Some(vec![0x03]));
+    }
+
+    #[test]
+    fn ctrl_chords_send_their_control_bytes() {
+        let ctrl = ModifiersState::CONTROL;
+        let ch = |c: &str| Key::Character(c.into());
+        // macOS reports the plain letter as text for a Ctrl chord.
+        assert_eq!(pty_bytes(&ch("c"), Some("c"), ctrl), Some(vec![0x03]));
+        assert_eq!(pty_bytes(&ch("a"), Some("a"), ctrl), Some(vec![0x01]));
+        assert_eq!(pty_bytes(&ch("z"), Some("z"), ctrl), Some(vec![0x1A]));
+        let ctrl_shift = ctrl | ModifiersState::SHIFT;
+        assert_eq!(pty_bytes(&ch("C"), Some("C"), ctrl_shift), None);
+        assert_eq!(pty_bytes(&ch("@"), Some("@"), ctrl_shift), Some(vec![0x00]));
+        let ctrl_alt = ctrl | ModifiersState::ALT;
+        assert_eq!(
+            pty_bytes(&ch("@"), Some("@"), ctrl_alt),
+            Some(b"@".to_vec())
+        );
+        assert_eq!(pty_bytes(&ch("c"), Some("c"), ctrl_alt), Some(vec![0x03]));
+        for (c, byte) in [
+            ("@", 0x00),
+            ("[", 0x1B),
+            ("\\", 0x1C),
+            ("]", 0x1D),
+            ("^", 0x1E),
+            ("_", 0x1F),
+        ] {
+            assert_eq!(
+                pty_bytes(&ch(c), Some(c), ctrl),
+                Some(vec![byte]),
+                "Ctrl+{c}"
+            );
+        }
+        assert_eq!(
+            pty_bytes(&Key::Named(NamedKey::Space), Some(" "), ctrl),
+            Some(vec![0x00])
+        );
+        assert_eq!(pty_bytes(&ch("c"), Some("\u{3}"), ctrl), Some(vec![0x03]));
+        // Without Ctrl, or for keys with no control byte, the text stands.
+        assert_eq!(
+            pty_bytes(&ch("c"), Some("c"), ModifiersState::empty()),
+            Some(b"c".to_vec())
+        );
+        assert_eq!(pty_bytes(&ch("1"), Some("1"), ctrl), Some(b"1".to_vec()));
+        assert_eq!(
+            pty_bytes(&Key::Named(NamedKey::Enter), None, ctrl),
+            Some(b"\r".to_vec())
+        );
     }
 
     #[test]

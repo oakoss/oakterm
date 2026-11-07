@@ -2062,8 +2062,8 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     input::KeyDispatch::Forward => {}
                 }
-                // A key that sends nothing (a dropped Cmd chord) must not
-                // cost the selection it may copy.
+                // A key that sends nothing (a dropped terminal chord) must
+                // not cost the selection it may copy.
                 let Some(bytes) = input::pty_bytes(
                     &event.logical_key,
                     event.text.as_deref(),
