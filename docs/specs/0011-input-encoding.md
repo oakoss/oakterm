@@ -485,7 +485,8 @@ live) falls through to step 3, matching the existing registry contract.
 ### Empty Encodings
 
 A key press that produces no bytes (a bare modifier press, a consumed keybind, a
-preedit keystroke) sends no `KeyInput`. The daemon already treats empty
+preedit keystroke) sends no `KeyInput`, and leaves the selection and scroll
+position alone. The daemon already treats empty
 `key_data` as a no-op; the client should simply not send.
 
 ### Mode-State Races
@@ -550,7 +551,7 @@ The following are bugs against this contract in the code, each owned by an
 implementation task:
 
 1. **Arrows ignore DECCKM.** `key_to_bytes`
-   (`crates/oakterm/src/main.rs`) hardcodes `ESC [ A` … `ESC [ D` for arrows and
+   (`crates/oakterm/src/input.rs`) hardcodes `ESC [ A` … `ESC [ D` for arrows and
    `ESC [ H` / `ESC [ F` for Home/End, never emitting the SS3 form, so
    application-cursor-mode apps (vim, less, fzf) receive the wrong arrow
    encoding. The daemon's mouse alt-scroll path already consults DECCKM
@@ -576,7 +577,12 @@ implementation task:
    winit `text` field before considering modifiers, so control and meta chords
    are encoded inconsistently across platforms depending on whether the platform
    populated `text`. The committed-text path should be reached only after
-   keybind and modifier resolution.
+   keybind and modifier resolution. On macOS this makes Ctrl+letter type the
+   letter (OT-343).
+7. **Super chords send nothing.** A Super (Cmd) chord no keybind consumes is
+   dropped (`input::pty_bytes`) rather than encoded with the Super modifier bit (Modifier Encoding):
+   macOS reports Cmd+C's text as `c`, so forwarding it typed the letter. Super
+   chords join the modifier encoding when item 2 lands.
 
 ## References
 
