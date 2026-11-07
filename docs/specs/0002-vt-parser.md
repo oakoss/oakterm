@@ -554,7 +554,7 @@ The parser accepts UTF-8 encoded input. Incomplete multi-byte sequences at buffe
 
 ### Wide Characters
 
-Characters with East Asian Width property W (wide) or F (fullwidth) occupy two cells. The first cell stores the character. The second cell is a continuation marker (wide_cont flag). Cursor advances by 2 columns after a wide character. Writing to either cell of a wide character clears both cells.
+Characters with East Asian Width property W (wide) or F (fullwidth), and emoji with `Emoji_Presentation=Yes`, occupy two cells. The first cell stores the character. The second cell is a continuation marker (wide_cont flag). Cursor advances by 2 columns after a wide character. Writing to either cell of a wide character clears both cells. Zero-width characters (combining marks, ZWJ, variation selectors) join the previous cell, and VS16/VS15 can widen or narrow an emoji base; Spec-0003 Cell Write holds the exact rules.
 
 ### Alternate Screen Buffer
 
