@@ -50,7 +50,7 @@ impl Selection {
 
     /// Drag the end to a point, keeping the pressed cell selected whichever
     /// half was pressed once the drag leaves it: the start takes the side
-    /// facing away from the drag. Within the pressed cell, jitter selects nothing.
+    /// facing away from the drag. Within the pressed cell the press keeps its side.
     pub fn extend_to(&mut self, row: i64, col: u16, side: AnchorSide) {
         self.update(row, col, side);
         let start_cell = (self.start.row, self.start.col);
