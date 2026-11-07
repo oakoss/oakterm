@@ -109,8 +109,8 @@ pub(crate) fn try_init_font(
         .and_then(|(data, _)| shaper.load_font(data, 0, font_size));
 
     let fallback = shaper.install_fallbacks(&db, font_size);
-    if fallback.loaded == 0 {
-        info!("no emoji/symbol fallback font found; emoji will render as tofu");
+    if fallback == 0 {
+        info!("no fallback font found; emoji and CJK will render as tofu");
     }
 
     debug!(
@@ -118,7 +118,7 @@ pub(crate) fn try_init_font(
         ?bold_key,
         ?italic_key,
         ?bold_italic_key,
-        fallback = fallback.loaded,
+        fallback,
         "font variants loaded"
     );
 
