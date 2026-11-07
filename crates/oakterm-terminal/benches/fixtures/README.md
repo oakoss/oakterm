@@ -21,7 +21,8 @@ Used by: `benches/tree_replay.rs`
 
 A `tree -C` output of a populated `~/.cargo/registry/src` (~7,500 dirs,
 41k files), captured via `script(1)`. Trimmed to ~200 KB at a newline
-boundary.
+boundary. Lines end in `\r\n`, as a terminal receives them; the `*.bin
+binary` rule in `.gitattributes` keeps git from stripping the `\r`.
 
 **Why not synthetic:** the existing synthetic generators in `vt_parser.rs`
 (`make_sgr_color`, `make_mixed_realistic`) cover SGR throughput in
