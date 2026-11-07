@@ -95,9 +95,9 @@ struct GraphemeData { /* implementation-defined */ }
 struct HyperlinkId(u32);
 ```
 
-**Wide character invariant:** A cell with `wide: Wide` must be immediately followed by a cell with `wide: WideCont` in the same row. Writing to either cell clears both. A wide character at the last column wraps to the next row (the continuation cell is the first cell of the next row).
+**Wide character invariant:** A cell with `wide: Wide` must be immediately followed by a cell with `wide: WideCont` in the same row, and a `WideCont` cell is always preceded by its `Wide` head. Writing to either cell clears both, and an edit that shifts or erases only one half (ICH, DCH, ECH, EL, ED, resize) clears the other. A wide character never splits across rows: at the last column it wraps whole (see Cell Write).
 
-**Grapheme invariant:** `codepoint` holds the base character. `extra_codepoints` holds zero or more combining marks or ZWJ-joined characters. The full grapheme cluster is the base codepoint followed by the extra codepoints in order.
+**Grapheme invariant:** `codepoint` holds the base character. `extra_codepoints` holds the zero-width characters that followed it (combining marks, ZWJ, variation selectors; see Cell Write). The cell's text is the base codepoint followed by the extra codepoints in order. Until grapheme clustering lands, a ZWJ sequence spans several cells: each joined emoji takes its own cell, and the ZWJ joins the cell before it.
 
 ### Row
 
@@ -421,12 +421,14 @@ When the terminal window is resized:
 
 When the VT handler writes a character at the cursor position:
 
-1. If the cursor is past the last column and auto-wrap is enabled (DECAWM), the current row is marked wrapped, and the cursor moves to column 0 of the next row (scrolling if necessary).
-2. If the character is wide (East Asian Width W or F) and the cursor is at the last column, the last cell is cleared and the cursor wraps to the next row.
-3. The cell at the cursor position is written: `codepoint`, `fg`, `bg`, `flags` from current attributes.
-4. If the character is wide, the next cell is set to `wide: WideCont`.
-5. The row's `seqno` is updated.
-6. The cursor advances by 1 (narrow) or 2 (wide) columns.
+1. A character's width is its Unicode width per UAX #11 with emoji presentation (the `unicode-width` crate): 2 for East Asian Width W or F and for `Emoji_Presentation=Yes` emoji, 0 for combining marks, ZWJ and variation selectors, 1 otherwise. East Asian Width Ambiguous is 1. U+00AD SOFT HYPHEN is 1 although the crate gives 0, matching the libc `wcwidth` that programs use to place the cursor.
+2. A width-0 character is not written to a cell: it joins the cell before the cursor (the wide character's head when that cell is a `WideCont`), appended to its extra codepoints, and the cursor does not move. It is dropped when the row has no cell before the cursor, when that cell is empty, or when that cell already holds 32 extra codepoints. VS16 (U+FE0F) after a base whose emoji presentation sequence is width 2 makes that cell wide, claiming the next cell as `WideCont` and advancing the cursor by 1; VS15 (U+FE0E) after a wide base whose text presentation sequence is width 1 makes it narrow, clearing the continuation cell and moving the cursor back by 1. A base in the last column has no room to widen and stays narrow. This follows Unicode's emoji presentation sequences, as Ghostty, kitty and WezTerm do, not libc `wcwidth`, which counts VS16 as 0 and so places the next character one column left after a text-default base such as `✔️`; programs that use `wcwidth` drift by one column there. Letting programs opt in or out (DEC mode 2027) is a separate decision.
+3. If the cursor is past the last column and auto-wrap is enabled (DECAWM), the current row is marked wrapped, and the cursor moves to column 0 of the next row (scrolling if necessary).
+4. If the character is wide and the cursor is at the last column, with auto-wrap the last cell is cleared and the cursor wraps to the next row; without auto-wrap the cursor moves back one column so the character fits.
+5. The cell at the cursor position is written: `codepoint`, `fg`, `bg`, `flags` from current attributes. If it or, for a wide character, the next cell belonged to another wide character, that character's other half is cleared.
+6. If the character is wide, the next cell is set to `wide: WideCont` with the same attributes.
+7. The row's `seqno` is updated.
+8. The cursor advances by 1 (narrow) or 2 (wide) columns.
 
 ### Scroll
 

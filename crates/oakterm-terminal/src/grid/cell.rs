@@ -241,6 +241,14 @@ impl Cell {
         }
     }
 
+    /// Heap bytes behind this cell's rare attributes, for memory budgets.
+    #[must_use]
+    pub fn extra_heap_bytes(&self) -> usize {
+        self.extra.as_ref().map_or(0, |e| {
+            std::mem::size_of::<CellExtra>() + e.graphemes.capacity() * std::mem::size_of::<char>()
+        })
+    }
+
     #[must_use]
     pub fn has_graphemes(&self) -> bool {
         self.extra.as_ref().is_some_and(|e| !e.graphemes.is_empty())

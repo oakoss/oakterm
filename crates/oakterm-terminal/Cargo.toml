@@ -20,6 +20,7 @@ ring.workspace = true
 rustix.workspace = true
 serde.workspace = true
 tracing.workspace = true
+unicode-width.workspace = true
 vte = { workspace = true }
 zstd.workspace = true
 

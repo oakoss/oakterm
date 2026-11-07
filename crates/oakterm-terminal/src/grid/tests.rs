@@ -406,6 +406,22 @@ fn osc_133_bumps_row_seqno_for_render() {
 }
 
 #[test]
+fn combining_marks_scrolled_off_count_against_the_scrollback_budget() {
+    let scrolled = |line: &str| {
+        let mut ss = ScreenSet::new(10, 2);
+        let mut sink = Vec::new();
+        ss.process_bytes(format!("{line}\r\n").repeat(5).as_bytes(), &mut sink);
+        ss.scrollback().used_bytes()
+    };
+    let plain = scrolled("eeeeeeeeee");
+    let marked = scrolled(&format!("e{}", "\u{0301}".repeat(32)).repeat(10));
+    assert!(
+        marked >= plain + 4 * 10 * 32 * std::mem::size_of::<char>(),
+        "plain={plain} marked={marked}"
+    );
+}
+
+#[test]
 fn resize_shrink_captures_to_scrollback() {
     let mut ss = ScreenSet::new(10, 5);
     // Write content so rows aren't all empty.

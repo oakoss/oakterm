@@ -115,46 +115,86 @@ impl<'a, T: TermTarget, W: std::io::Write> Terminal<'a, T, W> {
 
 fn write_char(g: &mut Grid, c: char) -> Vec<Row> {
     let c = map_charset(g, c);
+    // Below U+0300, and in box drawing and block elements, every char is one
+    // cell (U+00AD included, per Spec-0003 Cell Write), so plain text and TUI
+    // borders never reach the width table.
+    if c < '\u{0300}' || ('\u{2500}'..='\u{259F}').contains(&c) {
+        write_cell(g, c, 1)
+    } else {
+        write_wide_or_zero_width(g, c)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn write_wide_or_zero_width(g: &mut Grid, c: char) -> Vec<Row> {
+    use unicode_width::UnicodeWidthChar;
+    match c.width() {
+        Some(0) => {
+            attach_zero_width(g, c);
+            Vec::new()
+        }
+        Some(2) if g.cols >= 2 => write_cell(g, c, 2),
+        _ => write_cell(g, c, 1),
+    }
+}
+
+// Measured: plain `#[inline]` left it out of line, +17% on vt_parser/plain_ascii.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn write_cell(g: &mut Grid, c: char, width: u16) -> Vec<Row> {
     let cols = g.cols;
     let mut captured = Vec::new();
 
     if g.cursor.col >= cols {
         if g.modes.get(7) {
-            // DECAWM: auto-wrap to next line.
-            let row = g.cursor.row as usize;
-            if let Some(line) = g.lines.get_mut(row) {
-                line.flags.set_wrapped(true);
-            }
-            g.cursor.col = 0;
-            captured = do_linefeed(g);
-
-            let new_row = g.cursor.row as usize;
-            if let Some(line) = g.lines.get_mut(new_row) {
-                line.flags.set_wrap_continuation(true);
-            }
+            captured = autowrap(g);
         } else {
             // No wrap: overwrite the last column.
             g.cursor.col = cols - 1;
         }
     }
 
+    // A wide char never splits across rows (Spec-0003 Cell Write).
+    if width == 2 && g.cursor.col == cols - 1 {
+        if g.modes.get(7) {
+            let (row, col, bg) = (g.cursor.row as usize, g.cursor.col as usize, g.current_bg);
+            if let Some(line) = g.lines.get_mut(row) {
+                break_wide_pair(line, col, bg);
+                line.cells[col].erase_with_bg(bg);
+            }
+            captured.extend(autowrap(g));
+        } else {
+            g.cursor.col = cols - 2;
+        }
+    }
+
     // IRM (insert mode): shift existing cells right before writing.
     if g.modes.get(4) {
-        do_insert_blank(g, 1);
+        do_insert_blank(g, width.into());
     }
 
     let row = g.cursor.row as usize;
     let col = g.cursor.col as usize;
+    let bg = g.current_bg;
 
     if let Some(line) = g.lines.get_mut(row) {
+        break_wide_pair(line, col, bg);
+        if width == 2 {
+            break_wide_pair(line, col + 1, bg);
+        }
         if let Some(cell) = line.cells.get_mut(col) {
             cell.codepoint = c;
             cell.fg = g.current_fg;
-            cell.bg = g.current_bg;
+            cell.bg = bg;
             cell.flags = g.current_attr;
             cell.underline_style = g.current_underline_style;
             cell.set_underline_color(g.current_underline_color);
-            cell.wide = WideState::Narrow;
+            cell.wide = if width == 2 {
+                WideState::Wide
+            } else {
+                WideState::Narrow
+            };
             cell.clear_graphemes();
             cell.set_hyperlink(None);
 
@@ -162,13 +202,126 @@ fn write_char(g: &mut Grid, c: char) -> Vec<Row> {
                 line.flags.mark_has_styles();
             }
         }
+        if width == 2 {
+            let mut tail = line.cells[col].clone();
+            tail.codepoint = ' ';
+            tail.wide = WideState::WideCont;
+            line.cells[col + 1] = tail;
+        }
 
         let seqno = g.next_seqno();
         g.lines[row].seqno = seqno;
     }
 
-    g.cursor.col += 1;
+    g.cursor.col += width;
     captured
+}
+
+/// Well above real combining-mark stacks, so a flood of marks cannot grow
+/// one cell without limit.
+const MAX_GRAPHEME_EXTRA: usize = 32;
+
+/// Join a zero-width char (combining mark, ZWJ, variation selector) to the
+/// cell before the cursor. VS16 widens an emoji-capable base to two cells and
+/// VS15 narrows one, per Unicode's emoji presentation sequences; a base in
+/// the last column has no room to widen and stays narrow.
+#[cold]
+#[inline(never)]
+fn attach_zero_width(g: &mut Grid, c: char) {
+    let cols = g.cols as usize;
+    let row = g.cursor.row as usize;
+    let cursor = (g.cursor.col as usize).min(cols);
+    let bg = g.current_bg;
+    let Some(line) = g.lines.get_mut(row) else {
+        return;
+    };
+    if cursor == 0 {
+        return;
+    }
+    let mut head = cursor - 1;
+    if line.cells[head].wide == WideState::WideCont && head > 0 {
+        head -= 1;
+    }
+    let base = line.cells[head].codepoint;
+    if base == '\0' || line.cells[head].graphemes().len() >= MAX_GRAPHEME_EXTRA {
+        return;
+    }
+    line.cells[head].push_grapheme(c);
+    line.flags.mark_has_graphemes();
+
+    let sequence_width = || unicode_width::char_iter_width([base, c].into_iter());
+    let mut new_cursor = cursor;
+    match (c, line.cells[head].wide) {
+        ('\u{FE0F}', WideState::Narrow) if head + 1 < cols && sequence_width() == 2 => {
+            break_wide_pair(line, head + 1, bg);
+            line.cells[head].wide = WideState::Wide;
+            let mut tail = line.cells[head].clone();
+            tail.codepoint = ' ';
+            tail.wide = WideState::WideCont;
+            tail.clear_graphemes();
+            line.cells[head + 1] = tail;
+            if cursor == head + 1 {
+                new_cursor = head + 2;
+            }
+        }
+        ('\u{FE0E}', WideState::Wide) if sequence_width() == 1 => {
+            line.cells[head].wide = WideState::Narrow;
+            line.cells[head + 1].erase_with_bg(bg);
+            if cursor == head + 2 {
+                new_cursor = head + 1;
+            }
+        }
+        _ => {}
+    }
+
+    #[allow(clippy::cast_possible_truncation)] // new_cursor <= cols, a u16
+    {
+        g.cursor.col = new_cursor as u16;
+    }
+    let seqno = g.next_seqno();
+    g.lines[row].seqno = seqno;
+}
+
+/// DECAWM wrap: mark the row wrapped and move to column 0 of the next row.
+fn autowrap(g: &mut Grid) -> Vec<Row> {
+    let row = g.cursor.row as usize;
+    if let Some(line) = g.lines.get_mut(row) {
+        line.flags.set_wrapped(true);
+    }
+    g.cursor.col = 0;
+    let captured = do_linefeed(g);
+    let new_row = g.cursor.row as usize;
+    if let Some(line) = g.lines.get_mut(new_row) {
+        line.flags.set_wrap_continuation(true);
+    }
+    captured
+}
+
+/// Before `col` is overwritten, blank the other half of the wide char it
+/// belongs to, so no head is left without its tail or tail without its head.
+#[inline]
+fn break_wide_pair(line: &mut Row, col: usize, bg: cell::Color) {
+    if line
+        .cells
+        .get(col)
+        .is_some_and(|c| c.wide != WideState::Narrow)
+    {
+        unpair(line, col, bg);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn unpair(line: &mut Row, col: usize, bg: cell::Color) {
+    match line.cells.get(col).map(|c| c.wide) {
+        Some(WideState::Wide) => {
+            if let Some(tail) = line.cells.get_mut(col + 1) {
+                tail.erase_with_bg(bg);
+            }
+        }
+        Some(WideState::WideCont) if col > 0 => line.cells[col - 1].erase_with_bg(bg),
+        _ => {}
+    }
 }
 
 fn do_linefeed(g: &mut Grid) -> Vec<Row> {
@@ -253,6 +406,7 @@ fn do_insert_blank(g: &mut Grid, count: usize) {
         for cell in &mut line.cells[col..col + count] {
             cell.erase_with_bg(bg);
         }
+        line.repair_wide_pairs(bg);
     }
 }
 
@@ -568,6 +722,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                     for cell in &mut line.cells[col..] {
                         cell.erase_with_bg(bg);
                     }
+                    line.repair_wide_pairs(bg);
                 }
                 for line in &mut g.lines[row + 1..rows] {
                     *line = Row::new_with_bg(cols, bg);
@@ -581,6 +736,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                     for cell in &mut line.cells[..=col.min(cols - 1)] {
                         cell.erase_with_bg(bg);
                     }
+                    line.repair_wide_pairs(bg);
                 }
             }
             vte::ansi::ClearMode::All => {
@@ -620,6 +776,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
                 }
             }
         }
+        line.repair_wide_pairs(bg);
         g.touch_row(g.cursor.row);
     }
 
@@ -635,6 +792,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             for cell in &mut line.cells[col..end] {
                 cell.erase_with_bg(bg);
             }
+            line.repair_wide_pairs(bg);
         }
         g.touch_row(g.cursor.row);
     }
@@ -658,6 +816,7 @@ impl<T: TermTarget, W: std::io::Write> vte::ansi::Handler for Terminal<'_, T, W>
             for cell in &mut line.cells[cols - count..] {
                 cell.erase_with_bg(bg);
             }
+            line.repair_wide_pairs(bg);
         }
         g.touch_row(g.cursor.row);
     }
@@ -2812,5 +2971,248 @@ mod tests {
         // Stay on primary — flag only affects alternate.
         parse_screen(&mut screen, b"aaa\r\nbbb\r\nccc\r\nddd");
         assert_eq!(screen.scrollback().len(), 1);
+    }
+
+    fn wide_at(grid: &Grid, row: usize, col: usize) -> WideState {
+        grid.lines[row].cells[col].wide
+    }
+
+    #[test]
+    fn a_wide_char_takes_two_cells_and_advances_two() {
+        for s in ["中", "😀"] {
+            let mut grid = test_grid(10, 3);
+            parse(&mut grid, s.as_bytes());
+            assert_eq!(grid.lines[0].cells[0].codepoint, s.chars().next().unwrap());
+            assert_eq!(wide_at(&grid, 0, 0), WideState::Wide, "{s}");
+            assert_eq!(wide_at(&grid, 0, 1), WideState::WideCont, "{s}");
+            assert_cursor_at(&grid, 0, 2);
+        }
+    }
+
+    #[test]
+    fn a_text_presentation_pictograph_stays_one_cell() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "\u{1F3CE}x".as_bytes());
+        assert_eq!(wide_at(&grid, 0, 0), WideState::Narrow);
+        assert_row_text(&grid, 0, "\u{1F3CE}x");
+        assert_cursor_at(&grid, 0, 2);
+    }
+
+    #[test]
+    fn overwriting_either_half_of_a_wide_char_clears_both() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "中\x1b[1;2Hx".as_bytes());
+        assert_row_text(&grid, 0, " x");
+        assert_eq!(wide_at(&grid, 0, 0), WideState::Narrow);
+        assert_eq!(wide_at(&grid, 0, 1), WideState::Narrow);
+
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "中\rx".as_bytes());
+        assert_row_text(&grid, 0, "x");
+        assert_eq!(wide_at(&grid, 0, 1), WideState::Narrow);
+    }
+
+    #[test]
+    fn a_wide_char_written_over_a_wide_head_clears_its_tail() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "a中\r\x1b[Cx文".as_bytes());
+        // "x" lands on 中's head, so its tail clears; 文 then fills 2..=3.
+        assert_eq!(wide_at(&grid, 0, 1), WideState::Narrow);
+        assert_eq!(wide_at(&grid, 0, 2), WideState::Wide);
+        assert_eq!(wide_at(&grid, 0, 3), WideState::WideCont);
+        assert_row_text(&grid, 0, "ax文");
+    }
+
+    #[test]
+    fn a_wide_char_at_the_last_column_wraps_whole() {
+        let mut grid = test_grid(5, 3);
+        parse(&mut grid, "abcd中".as_bytes());
+        assert_row_text(&grid, 0, "abcd");
+        assert!(grid.lines[0].flags.wrapped());
+        assert_eq!(grid.lines[1].cells[0].codepoint, '中');
+        assert_eq!(wide_at(&grid, 1, 0), WideState::Wide);
+        assert_eq!(wide_at(&grid, 1, 1), WideState::WideCont);
+        assert_cursor_at(&grid, 1, 2);
+    }
+
+    #[test]
+    fn a_wide_char_fits_in_the_last_two_columns() {
+        let mut grid = test_grid(4, 3);
+        parse(&mut grid, "ab中".as_bytes());
+        assert_eq!(wide_at(&grid, 0, 2), WideState::Wide);
+        assert_eq!(wide_at(&grid, 0, 3), WideState::WideCont);
+        assert_eq!(grid.cursor.row, 0);
+    }
+
+    #[test]
+    fn without_autowrap_a_wide_char_at_the_last_column_stays_in_the_row() {
+        let mut grid = test_grid(5, 3);
+        parse(&mut grid, "\x1b[?7labcd中".as_bytes());
+        assert_eq!(grid.cursor.row, 0);
+        let row = &grid.lines[0];
+        for (i, cell) in row.cells.iter().enumerate() {
+            if cell.wide == WideState::Wide {
+                assert_eq!(row.cells[i + 1].wide, WideState::WideCont);
+            }
+        }
+        assert_eq!(wide_at(&grid, 0, 3), WideState::Wide);
+    }
+
+    fn assert_pairs_whole(grid: &Grid, row: usize, label: &str) {
+        let cells = &grid.lines[row].cells;
+        for (i, cell) in cells.iter().enumerate() {
+            match cell.wide {
+                WideState::Wide => assert_eq!(
+                    cells.get(i + 1).map(|c| c.wide),
+                    Some(WideState::WideCont),
+                    "{label}: head at {i} lost its tail"
+                ),
+                WideState::WideCont => assert!(
+                    i > 0 && cells[i - 1].wide == WideState::Wide,
+                    "{label}: tail at {i} lost its head"
+                ),
+                WideState::Narrow => {}
+            }
+        }
+    }
+
+    #[test]
+    fn line_edits_never_leave_half_a_wide_char() {
+        let cases: [(&str, &str); 7] = [
+            ("ICH pushes the head to the last column", "ab中\r\x1b[2@"),
+            ("DCH deletes the head", "a中\x1b[1;2H\x1b[P"),
+            ("ECH erases the tail", "a中\x1b[1;3H\x1b[X"),
+            ("EL right from the tail", "a中b\x1b[1;3H\x1b[K"),
+            ("EL left through the head", "a中b\x1b[1;2H\x1b[1K"),
+            ("ED below from the tail", "a中b\x1b[1;3H\x1b[J"),
+            ("ED above through the head", "a中b\x1b[1;2H\x1b[1J"),
+        ];
+        for (name, input) in cases {
+            let mut grid = test_grid(5, 3);
+            parse(&mut grid, input.as_bytes());
+            assert_pairs_whole(&grid, 0, name);
+        }
+    }
+
+    #[test]
+    fn writes_never_leave_half_a_wide_char() {
+        let cases: [(&str, u16, &str); 3] = [
+            ("a wide char's tail lands on a wide head", 6, "a中\r文"),
+            (
+                "VS16 widens onto a wide head",
+                6,
+                "a😀\x1b[H\u{1F3CE}\u{FE0F}",
+            ),
+            ("last-column wrap over a wide tail", 5, "abc中\x1b[1;5H文"),
+        ];
+        for (name, cols, input) in cases {
+            let mut grid = test_grid(cols, 3);
+            parse(&mut grid, input.as_bytes());
+            assert_pairs_whole(&grid, 0, name);
+        }
+    }
+
+    #[test]
+    fn a_last_column_wrap_clears_the_cell_it_leaves() {
+        let mut grid = test_grid(5, 3);
+        parse(&mut grid, "abcde\x1b[1;5H中".as_bytes());
+        assert_row_text(&grid, 0, "abcd");
+    }
+
+    #[test]
+    fn combining_marks_on_one_cell_are_capped() {
+        let mut grid = test_grid(10, 3);
+        let flood = format!("e{}", "\u{0301}".repeat(1000));
+        parse(&mut grid, flood.as_bytes());
+        assert_eq!(grid.lines[0].cells[0].graphemes().len(), MAX_GRAPHEME_EXTRA);
+        assert_cursor_at(&grid, 0, 1);
+    }
+
+    #[test]
+    fn a_narrowing_resize_never_leaves_half_a_wide_char() {
+        let mut grid = test_grid(5, 3);
+        parse(&mut grid, "abc中".as_bytes());
+        grid.resize(4, 3);
+        assert_pairs_whole(&grid, 0, "resize");
+        assert_row_text(&grid, 0, "abc");
+    }
+
+    #[test]
+    fn a_combining_mark_joins_the_previous_cell() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "e\u{0301}x".as_bytes());
+        assert_eq!(grid.lines[0].cells[0].graphemes(), ['\u{0301}']);
+        assert_eq!(grid.lines[0].text(), "e\u{0301}x");
+        assert_cursor_at(&grid, 0, 2);
+    }
+
+    #[test]
+    fn a_combining_mark_after_a_wide_char_joins_its_head() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "中\u{0301}".as_bytes());
+        assert_eq!(grid.lines[0].cells[0].graphemes(), ['\u{0301}']);
+        assert_eq!(wide_at(&grid, 0, 1), WideState::WideCont);
+        assert_cursor_at(&grid, 0, 2);
+    }
+
+    #[test]
+    fn a_soft_hyphen_takes_its_own_cell() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "a\u{AD}b".as_bytes());
+        assert_eq!(grid.lines[0].cells[1].codepoint, '\u{AD}');
+        assert_cursor_at(&grid, 0, 3);
+    }
+
+    #[test]
+    fn a_zero_width_char_at_the_start_of_a_row_is_dropped() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "\u{0301}x".as_bytes());
+        assert_row_text(&grid, 0, "x");
+        assert_cursor_at(&grid, 0, 1);
+    }
+
+    #[test]
+    fn vs16_widens_an_emoji_capable_base() {
+        for base in ['\u{1F3CE}', '\u{2764}'] {
+            let mut grid = test_grid(10, 3);
+            parse(&mut grid, format!("{base}\u{FE0F}x").as_bytes());
+            assert_eq!(wide_at(&grid, 0, 0), WideState::Wide, "{base:?}");
+            assert_eq!(wide_at(&grid, 0, 1), WideState::WideCont, "{base:?}");
+            assert_eq!(grid.lines[0].cells[2].codepoint, 'x', "{base:?}");
+            assert_cursor_at(&grid, 0, 3);
+        }
+    }
+
+    #[test]
+    fn vs16_leaves_a_non_emoji_base_narrow() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "a\u{FE0F}x".as_bytes());
+        assert_eq!(wide_at(&grid, 0, 0), WideState::Narrow);
+        assert_eq!(grid.lines[0].cells[1].codepoint, 'x');
+    }
+
+    #[test]
+    fn vs16_on_a_base_in_the_last_column_stays_narrow() {
+        let mut grid = test_grid(5, 3);
+        parse(&mut grid, "abcd\u{1F3CE}\u{FE0F}".as_bytes());
+        assert_eq!(wide_at(&grid, 0, 4), WideState::Narrow);
+        assert_pairs_whole(&grid, 0, "last column");
+    }
+
+    #[test]
+    fn vs15_narrows_an_emoji_presentation_base() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "\u{231A}\u{FE0E}x".as_bytes());
+        assert_eq!(wide_at(&grid, 0, 0), WideState::Narrow);
+        assert_eq!(grid.lines[0].cells[1].codepoint, 'x');
+        assert_cursor_at(&grid, 0, 2);
+    }
+
+    #[test]
+    fn insert_mode_shifts_right_by_the_char_width() {
+        let mut grid = test_grid(10, 3);
+        parse(&mut grid, "xyz\r\x1b[4h中".as_bytes());
+        assert_row_text(&grid, 0, "中xyz");
+        assert_eq!(grid.lines[0].cells[2].codepoint, 'x');
     }
 }

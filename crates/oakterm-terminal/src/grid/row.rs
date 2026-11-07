@@ -177,6 +177,25 @@ impl Row {
     /// Resize the row, truncating or extending with default cells.
     pub fn resize(&mut self, cols: usize) {
         self.cells.resize_with(cols, Cell::default);
+        self.repair_wide_pairs(super::cell::Color::Default);
+    }
+
+    /// Blank any wide-char head without its tail, or tail without its head,
+    /// left by an edit that shifted or erased only part of a pair
+    /// (Spec-0003 wide character invariant).
+    pub fn repair_wide_pairs(&mut self, bg: super::cell::Color) {
+        use super::cell::WideState;
+        let len = self.cells.len();
+        for i in 0..len {
+            let whole = match self.cells[i].wide {
+                WideState::Narrow => true,
+                WideState::Wide => i + 1 < len && self.cells[i + 1].wide == WideState::WideCont,
+                WideState::WideCont => i > 0 && self.cells[i - 1].wide == WideState::Wide,
+            };
+            if !whole {
+                self.cells[i].erase_with_bg(bg);
+            }
+        }
     }
 
     /// Extract the text content of this row as a `String`.
