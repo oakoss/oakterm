@@ -1956,6 +1956,9 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
+                if input::is_bare_modifier(&event.logical_key) {
+                    return;
+                }
                 // An open palette captures every key ahead of keybind
                 // dispatch and PTY forwarding (Spec-0009 Palette
                 // Lifecycle).
@@ -2059,9 +2062,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     input::KeyDispatch::Forward => {}
                 }
-                let (logical_key, text) = (event.logical_key, event.text);
+                // A key that sends nothing (a dropped Cmd chord) must not
+                // cost the selection it may copy.
+                let Some(bytes) = input::pty_bytes(
+                    &event.logical_key,
+                    event.text.as_deref(),
+                    self.modifiers.state(),
+                ) else {
+                    return;
+                };
 
-                // Clear selection on non-copy keystrokes.
                 let cleared = self
                     .focused_view_mut()
                     .is_some_and(|view| view.selection.take().is_some());
@@ -2077,11 +2087,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.return_to_live(self.focused_pane);
                 }
 
-                if let Some(bytes) =
-                    input::pty_bytes(&logical_key, text.as_deref(), self.modifiers.state())
-                {
-                    self.send_key_bytes(bytes, event_loop);
-                }
+                self.send_key_bytes(bytes, event_loop);
                 self.reset_blink();
             }
             WindowEvent::CursorMoved { position, .. } => {

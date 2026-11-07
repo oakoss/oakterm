@@ -253,6 +253,31 @@ pub(crate) enum KeyDispatch {
     Forward,
 }
 
+/// A modifier or lock key pressed on its own. winit reports these as key
+/// presses; treated as keystrokes they would clear the selection Cmd+C is
+/// about to copy, or end a pending leader before its shifted follow-up.
+pub(crate) fn is_bare_modifier(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
 /// ADR-0011 performable actions; an action outside the catalog always runs.
 pub(crate) fn binding_releases(
     action: &oakterm_config::Action,
@@ -403,6 +428,27 @@ mod tests {
         assert_eq!(bytes(ModifiersState::SUPER | ModifiersState::SHIFT), None);
         assert_eq!(bytes(ModifiersState::empty()), Some(b"c".to_vec()));
         assert_eq!(bytes(ModifiersState::CONTROL), Some(b"c".to_vec()));
+    }
+
+    #[test]
+    fn a_modifier_pressed_alone_is_not_a_keystroke() {
+        for bare in [
+            NamedKey::Super,
+            NamedKey::Shift,
+            NamedKey::Control,
+            NamedKey::Alt,
+            NamedKey::CapsLock,
+        ] {
+            assert!(is_bare_modifier(&Key::Named(bare)), "{bare:?}");
+        }
+        for key in [
+            Key::Named(NamedKey::Enter),
+            Key::Named(NamedKey::Escape),
+            Key::Named(NamedKey::ArrowUp),
+            Key::Character("c".into()),
+        ] {
+            assert!(!is_bare_modifier(&key), "{key:?}");
+        }
     }
 
     mod resolve {
