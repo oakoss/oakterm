@@ -6,6 +6,7 @@
 
 use crate::shaper::FontMetrics;
 use std::io;
+use std::path::{Path, PathBuf};
 
 /// Preferred monospace font families, tried in order.
 const PREFERRED_FAMILIES: &[&str] = &[
@@ -20,18 +21,26 @@ const PREFERRED_FAMILIES: &[&str] = &[
 ];
 
 /// Fallback font families for codepoints the primary monospace font lacks
-/// (emoji, symbols), tried in order. Platform color-emoji fonts come first so
-/// `SwashShaper` routes them through the RGBA atlas.
+/// (emoji, symbols, CJK), tried in order. Platform color-emoji fonts come first
+/// so `SwashShaper` routes them through the RGBA atlas. A Chinese face precedes
+/// the Japanese and Korean ones, so Han characters take Chinese glyph forms.
 const FALLBACK_FAMILIES: &[&str] = &[
     // macOS
     "Apple Color Emoji",
     "Apple Symbols",
+    "Hiragino Sans GB",
+    "Hiragino Sans",
+    "Apple SD Gothic Neo",
     // Linux
     "Noto Color Emoji",
     "Noto Emoji",
+    "Noto Sans CJK SC",
     // Windows
     "Segoe UI Emoji",
     "Segoe UI Symbol",
+    "Microsoft YaHei",
+    "Yu Gothic",
+    "Malgun Gothic",
 ];
 
 /// Create a `fontdb::Database` with system fonts loaded.
@@ -43,16 +52,11 @@ pub fn system_font_db() -> fontdb::Database {
     db
 }
 
-/// Load `(raw data, face index)` for every available fallback family (see
-/// `FALLBACK_FAMILIES`), in priority order. Missing families are skipped; the
-/// result may be empty.
-///
-/// The face index matters: color-emoji fonts (Apple Color Emoji) ship as
-/// `.ttc` collections where the usable face is not necessarily index 0. Pass
-/// the index to `SwashShaper::load_font` so it parses the right face.
+/// `(file, face index)` for each installed `FALLBACK_FAMILIES` entry, in order.
+/// The index picks the face inside a `.ttc` (not always 0 for Apple Color Emoji).
 #[must_use]
-pub fn load_fallback_fonts(db: &fontdb::Database) -> Vec<(Vec<u8>, u32)> {
-    let mut fonts = Vec::new();
+pub fn find_fallback_faces(db: &fontdb::Database) -> Vec<(PathBuf, u32)> {
+    let mut faces = Vec::new();
     for family in FALLBACK_FAMILIES {
         let query = fontdb::Query {
             families: &[fontdb::Family::Name(family)],
@@ -60,19 +64,29 @@ pub fn load_fallback_fonts(db: &fontdb::Database) -> Vec<(Vec<u8>, u32)> {
             stretch: fontdb::Stretch::Normal,
             style: fontdb::Style::Normal,
         };
-        let Some(id) = db.query(&query) else {
+        let Some(face) = db.query(&query).and_then(|id| db.face(id)) else {
             tracing::trace!(family, "fallback family not installed");
             continue;
         };
-        let mut face = None;
-        db.with_face_data(id, |bytes, index| face = Some((bytes.to_vec(), index)));
-        if let Some(pair) = face {
-            fonts.push(pair);
-        } else {
-            tracing::warn!(family, "fallback family indexed but face data unreadable");
+        match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+                faces.push((path.clone(), face.index));
+            }
+            fontdb::Source::Binary(_) => {
+                tracing::warn!(family, "fallback family has no file to map, skipped");
+            }
         }
     }
-    fonts
+    faces
+}
+
+/// Map a font file so only touched pages become resident (Apple Color Emoji is ~190 MB).
+#[allow(unsafe_code)]
+pub(crate) fn map_font_file(path: &Path) -> io::Result<memmap2::Mmap> {
+    let file = std::fs::File::open(path)?;
+    // SAFETY: installers replace fonts by rename, so the mapping keeps the old inode;
+    // only an in-place write breaks it, as it would FreeType's and Core Text's maps.
+    unsafe { memmap2::Mmap::map(&file) }
 }
 
 /// Load the system's default monospace font and compute cell metrics
@@ -337,7 +351,6 @@ fn load_face_with_query(
         style,
     };
     let id = db.query(&query)?;
-    // Verify the match actually has the requested properties.
     // fontdb uses CSS best-match, which can return regular for a bold query.
     let face_info = db.face(id)?;
     if face_info.weight != weight || face_info.style != style {

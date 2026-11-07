@@ -56,7 +56,7 @@ let len: u16 = data.len().try_into().map_err(|_| {
 
 ## Workspace Lints
 
-`unsafe_code = "deny"` workspace-wide. `oakterm-pty` allows unsafe for PTY `pre_exec`, `oakterm-daemon` for `BorrowedFd::borrow_raw` and `AsyncFd::register` on the PTY async read. Minimize unsafe blocks; prefer safe abstractions (rustix over raw libc). Future: oakterm-pty should expose a safe async-ready API to eliminate daemon unsafe.
+`unsafe_code = "deny"` workspace-wide. `oakterm-pty` allows unsafe for PTY `pre_exec`, `oakterm-daemon` for `BorrowedFd::borrow_raw` and `AsyncFd::register` on the PTY async read, `oakterm-renderer` for one `memmap2::Mmap::map` of font files (`font::map_font_file`). Minimize unsafe blocks; prefer safe abstractions (rustix over raw libc). Future: oakterm-pty should expose a safe async-ready API to eliminate daemon unsafe.
 
 ## Bench Fixtures
 

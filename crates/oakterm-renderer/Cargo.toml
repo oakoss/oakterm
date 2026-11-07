@@ -12,6 +12,7 @@ bytemuck = { workspace = true }
 etagere = { workspace = true }
 fontdb = { workspace = true }
 lru = { workspace = true }
+memmap2 = { workspace = true }
 swash = { workspace = true }
 tracing = { workspace = true }
 ttf-parser = { workspace = true }
