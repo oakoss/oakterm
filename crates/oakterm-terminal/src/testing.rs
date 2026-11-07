@@ -3,7 +3,7 @@
 //! Provides factory functions and assertion helpers for writing concise
 //! VT parser and screen buffer tests.
 
-use crate::grid::cell::{CellFlags, Color};
+use crate::grid::cell::{CellFlags, Color, WideState};
 use crate::grid::row::Row;
 use crate::grid::{Grid, ScreenSet};
 
@@ -20,13 +20,14 @@ pub fn test_screen(cols: u16, rows: u16) -> ScreenSet {
 }
 
 /// Extract the text content of a row as a String.
-/// Null bytes (`'\0'`) are converted to spaces for readability,
-/// then trailing spaces are trimmed.
+/// Null bytes (`'\0'`) are converted to spaces for readability, wide-char
+/// continuation cells are skipped, then trailing spaces are trimmed.
 #[must_use]
 pub fn row_text(row: &Row) -> String {
     let s: String = row
         .cells
         .iter()
+        .filter(|c| c.wide != WideState::WideCont)
         .map(|c| {
             if c.codepoint == '\0' {
                 ' '

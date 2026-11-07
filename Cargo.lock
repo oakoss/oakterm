@@ -2153,6 +2153,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tracing",
+ "unicode-width",
  "vte",
  "zstd",
 ]

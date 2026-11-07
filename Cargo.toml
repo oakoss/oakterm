@@ -101,6 +101,7 @@ shlex = "2.0.1"
 regex = "1.13.1"
 
 # VT parser
+unicode-width = "0.2.3"
 vte = { version = "0.15.0", features = ["ansi"] }
 
 # Build metadata
