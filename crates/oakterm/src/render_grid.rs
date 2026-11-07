@@ -464,34 +464,43 @@ impl ClientGrid {
         viewport_offset: u32,
     ) -> Vec<u32> {
         let cursor_idx = self.cursor_cell_index(cursor_visible);
-        let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
-        let cols = usize::from(self.cols);
-
-        self.cells
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let row = i / cols;
-                #[allow(clippy::cast_possible_wrap)]
-                let sel_row = row as i64 - i64::from(viewport_offset);
-                let partner = self.wide_partner(i);
-                let block_cursor =
-                    is_block && cursor_idx.is_some_and(|k| k == i || Some(k) == partner);
-                #[allow(clippy::cast_possible_truncation)] // col < cols, a u16
-                let sel_col = |i: usize| (i % cols) as u16;
-                // A wide char highlights whole when either of its cells is selected.
-                let col = match (partner, selection) {
-                    (Some(p), Some(s))
-                        if !s.contains(sel_row, sel_col(i)) && s.contains(sel_row, sel_col(p)) =>
-                    {
-                        sel_col(p)
-                    }
-                    _ => sel_col(i),
-                };
-                let (_, bg) = shown_colors(c, block_cursor, selection, sel_row, col);
-                pack_bg_color(bg)
+        (0..self.cells.len())
+            .map(|i| {
+                pack_bg_color(
+                    self.cell_colors(i, cursor_idx, selection, viewport_offset)
+                        .1,
+                )
             })
             .collect()
+    }
+
+    /// Cell `i`'s `(fg, bg)` as drawn. A wide char's two cells share one
+    /// cursor and one selection state, so either cell selected or under a
+    /// block cursor inverts both.
+    fn cell_colors(
+        &self,
+        i: usize,
+        cursor_idx: Option<usize>,
+        selection: Option<&Selection>,
+        viewport_offset: u32,
+    ) -> ([u8; 3], [u8; 3]) {
+        let cols = usize::from(self.cols);
+        #[allow(clippy::cast_possible_wrap)]
+        let sel_row = (i / cols) as i64 - i64::from(viewport_offset);
+        #[allow(clippy::cast_possible_truncation)] // col < cols, a u16
+        let sel_col = |i: usize| (i % cols) as u16;
+        let partner = self.wide_partner(i);
+        let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
+        let block_cursor = is_block && cursor_idx.is_some_and(|k| k == i || Some(k) == partner);
+        let col = match (partner, selection) {
+            (Some(p), Some(s))
+                if !s.contains(sel_row, sel_col(i)) && s.contains(sel_row, sel_col(p)) =>
+            {
+                sel_col(p)
+            }
+            _ => sel_col(i),
+        };
+        shown_colors(&self.cells[i], block_cursor, selection, sel_row, col)
     }
 
     /// Build glyph instances and any new bitmap uploads needed.
@@ -657,13 +666,8 @@ impl ClientGrid {
                 let x = col as f32 * metrics.cell_width + pad_left;
                 let y = row as f32 * metrics.cell_height + pad_top;
 
-                let is_cursor = Some(idx) == cursor_idx;
-                let is_block = cursor_shape_from_wire(self.cursor_style) == 0;
-                #[allow(clippy::cast_possible_wrap)]
-                let sel_row = row as i64 - i64::from(viewport_offset);
-                #[allow(clippy::cast_possible_truncation)]
                 let (fg_rgb, bg_rgb) =
-                    shown_colors(cell, is_cursor && is_block, selection, sel_row, col as u16);
+                    self.cell_colors(idx, cursor_idx, selection, viewport_offset);
 
                 // sRGB values passed to shader (linearized in fragment shader).
                 let fg = [
@@ -1316,6 +1320,22 @@ pub(crate) mod tests {
         let grid = grid_with("中_ foo x");
         assert_eq!(word_boundaries(&grid.word_chars(0), 4), (3, 5));
         assert_eq!(word_boundaries(&grid.word_chars(0), 1), (0, 1), "the pair");
+    }
+
+    #[test]
+    fn a_wide_heads_glyph_inverts_with_its_background() {
+        use oakterm_terminal::grid::selection::{AnchorSide, SelectionType};
+        let mut grid = grid_with("a中_b");
+        let (white, black) = ([255, 255, 255], [0, 0, 0]);
+        let mut tail_only = Selection::new(SelectionType::Normal, 0, 2, AnchorSide::Left);
+        tail_only.update(0, 2, AnchorSide::Right);
+        assert_eq!(
+            grid.cell_colors(1, None, Some(&tail_only), 0),
+            (black, white)
+        );
+        grid.cursor_x = 2;
+        let on_tail = grid.cursor_cell_index(true);
+        assert_eq!(grid.cell_colors(1, on_tail, None, 0), (black, white));
     }
 
     #[test]
