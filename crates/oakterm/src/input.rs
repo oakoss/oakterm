@@ -297,7 +297,10 @@ pub(crate) fn pty_bytes(
     if mods.super_key() || (mods.control_key() && mods.shift_key() && is_letter(key)) {
         return None;
     }
+    // With Alt also held only letters map: Windows reports Left Ctrl+Left Alt
+    // as AltGr, whose symbols (`@`, `[`) must type.
     if mods.control_key()
+        && (!mods.alt_key() || is_letter(key))
         && let Some(byte) = ctrl_byte(key)
     {
         return Some(vec![byte]);
@@ -470,6 +473,12 @@ mod tests {
         let ctrl_shift = ctrl | ModifiersState::SHIFT;
         assert_eq!(pty_bytes(&ch("C"), Some("C"), ctrl_shift), None);
         assert_eq!(pty_bytes(&ch("@"), Some("@"), ctrl_shift), Some(vec![0x00]));
+        let ctrl_alt = ctrl | ModifiersState::ALT;
+        assert_eq!(
+            pty_bytes(&ch("@"), Some("@"), ctrl_alt),
+            Some(b"@".to_vec())
+        );
+        assert_eq!(pty_bytes(&ch("c"), Some("c"), ctrl_alt), Some(vec![0x03]));
         for (c, byte) in [
             ("@", 0x00),
             ("[", 0x1B),
