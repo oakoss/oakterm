@@ -9,6 +9,7 @@ use oakterm_protocol::message::{
     CopySelectionType, EnterCopyMode, EnterCopyModeAck, ErrorCode, ExitCopyMode, YankResponse,
     YankSelection,
 };
+use oakterm_terminal::grid::cell::WideState;
 use oakterm_terminal::grid::row::Row;
 use oakterm_terminal::scroll::archive_manager::{ArchiveManager, ArchiveReader};
 use std::sync::Arc;
@@ -141,7 +142,14 @@ fn extract_text<'a>(plan: &YankPlan, rows: impl Iterator<Item = (u64, Option<&'a
         .map(|(abs, row)| {
             row.map_or_else(String::new, |row| {
                 let (start, end) = plan.columns_for(abs);
-                row.text_range(start, end)
+                // A start on a wide char's second cell copies the char, as
+                // the GUI's highlight shows it.
+                let on_tail = start > 0
+                    && row
+                        .cells
+                        .get(start)
+                        .is_some_and(|c| c.wide == WideState::WideCont);
+                row.text_range(if on_tail { start - 1 } else { start }, end)
             })
         })
         .collect();
@@ -1614,10 +1622,39 @@ mod tests {
             "ab漢"
         );
 
-        // Starting on the continuation cell drops the glyph: its head is
-        // outside the range.
+        // Starting on the continuation cell keeps the glyph, as the GUI's
+        // highlight and its own yank of on-screen rows do.
         let frame = yank_frame(pane_id, req(0, 3, 0, 5, CopySelectionType::Character));
-        assert_eq!(expect_yanked(yank_selection(1, &frame, &panes).await), "xy");
+        assert_eq!(
+            expect_yanked(yank_selection(1, &frame, &panes).await),
+            "漢xy"
+        );
+        let frame = yank_frame(pane_id, req(0, 3, 1, 4, CopySelectionType::Block));
+        assert_eq!(
+            expect_yanked(yank_selection(1, &frame, &panes).await),
+            "漢x\n漢x"
+        );
+    }
+
+    /// A malformed row (say, from an old archive) can hold a continuation
+    /// cell at column 0; a yank starting there must not step before it.
+    #[tokio::test]
+    async fn a_yank_from_a_stray_tail_at_column_zero_does_not_underflow() {
+        use oakterm_terminal::grid::cell::WideState;
+
+        let (panes, pane_id) = pane_with_scrollback(&[]).await;
+        {
+            let mut pane = lock_live_pane(&panes, pane_id).await.expect("pane");
+            let line = &mut pane.screens.active_grid_mut().lines[0];
+            *line = row_from("xbcdefghij", COLS);
+            line.cells[0].wide = WideState::WideCont;
+        }
+        enter_live(1, pane_id, &panes).await;
+        let frame = yank_frame(pane_id, req(0, 0, 0, 5, CopySelectionType::Character));
+        assert_eq!(
+            expect_yanked(yank_selection(1, &frame, &panes).await),
+            "bcdef"
+        );
     }
 
     /// A transient archive failure must surface as an error, never as
