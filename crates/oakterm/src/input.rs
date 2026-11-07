@@ -253,6 +253,27 @@ pub(crate) enum KeyDispatch {
     Forward,
 }
 
+/// ADR-0011 performable actions; an action outside the catalog always runs.
+pub(crate) fn binding_releases(
+    action: &oakterm_config::Action,
+    ctx: oakterm_config::ActionContext,
+) -> bool {
+    oakterm_config::action_id_of(action).is_some_and(|id| !id.is_performable(ctx))
+}
+
+/// The bytes an unconsumed key sends to the PTY. Cmd/Super chords belong to the
+/// terminal: macOS reports Cmd+C's text as `c`, so a released copy binding would type it.
+pub(crate) fn pty_bytes(
+    key: &Key,
+    text: Option<&str>,
+    mods: winit::keyboard::ModifiersState,
+) -> Option<Vec<u8>> {
+    if mods.super_key() {
+        return None;
+    }
+    key_to_bytes(key, text)
+}
+
 /// Resolve a keypress through ADR-0011's dispatch layers: pending
 /// leader, then leader arm, then the modal layer (copy mode or an active
 /// key table), then default bindings. Each layer tries the logical chord
@@ -356,6 +377,33 @@ mod tests {
     use oakterm_config::{KeyChord, KeyName, NamedKeyId};
     use winit::event::Modifiers;
     use winit::keyboard::ModifiersState;
+
+    #[test]
+    fn copy_releases_its_key_only_without_a_selection() {
+        use oakterm_config::{Action, ActionContext};
+        let none = ActionContext::default();
+        let selected = ActionContext {
+            has_selection: true,
+            ..ActionContext::default()
+        };
+        assert!(binding_releases(&Action::Copy, none));
+        assert!(!binding_releases(&Action::Copy, selected));
+        assert!(!binding_releases(&Action::Paste, none));
+        assert!(
+            !binding_releases(&Action::ScrollUp(1), none),
+            "outside the catalog"
+        );
+    }
+
+    #[test]
+    fn a_super_chord_never_reaches_the_program() {
+        let c = Key::Character("c".into());
+        let bytes = |mods| pty_bytes(&c, Some("c"), mods);
+        assert_eq!(bytes(ModifiersState::SUPER), None);
+        assert_eq!(bytes(ModifiersState::SUPER | ModifiersState::SHIFT), None);
+        assert_eq!(bytes(ModifiersState::empty()), Some(b"c".to_vec()));
+        assert_eq!(bytes(ModifiersState::CONTROL), Some(b"c".to_vec()));
+    }
 
     mod resolve {
         use super::super::{DispatchContext, KeyDispatch, resolve_key};

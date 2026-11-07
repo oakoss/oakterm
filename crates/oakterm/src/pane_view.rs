@@ -115,6 +115,15 @@ impl PaneView {
         self.viewport_offset
     }
 
+    /// The selection's text, or `None` when there is nothing to copy; a
+    /// plain click leaves a selection that covers no text.
+    #[must_use]
+    pub(crate) fn selected_text(&self) -> Option<String> {
+        let sel = self.selection.as_ref()?;
+        let text = self.grid.extract_selection_text(sel, self.viewport_offset);
+        (!text.is_empty()).then_some(text)
+    }
+
     /// Whether the grid has snapshotted the live view — either the viewport
     /// shows scrollback, or the live view is frozen by `freeze_live`.
     #[must_use]
@@ -692,6 +701,31 @@ mod tests {
                 "copy mode indexes a different page than the viewport shows"
             );
         }
+    }
+
+    #[test]
+    fn only_a_selection_covering_text_has_text_to_copy() {
+        use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
+        let mut view = PaneView::new(crate::render_grid::tests::grid_with("hello"));
+        assert_eq!(view.selected_text(), None, "no selection");
+        view.selection = Some(Selection::new(
+            SelectionType::Normal,
+            0,
+            1,
+            AnchorSide::Left,
+        ));
+        assert_eq!(view.selected_text(), None, "a plain click");
+        view.selection
+            .as_mut()
+            .expect("set above")
+            .update(0, 3, AnchorSide::Right);
+        assert_eq!(view.selected_text().as_deref(), Some("ell"));
+        view.selection = Some(Selection::new(SelectionType::Line, 0, 0, AnchorSide::Left));
+        assert_eq!(
+            view.selected_text().as_deref(),
+            Some("hello"),
+            "a line click"
+        );
     }
 
     #[test]
