@@ -135,12 +135,15 @@ impl Default for HotBuffer {
 }
 
 /// Estimate the memory footprint of a row (struct + cell heap data).
-///
-/// Intentionally excludes small heap contributions from `MarkMetadata`
-/// strings and `CellExtra` (graphemes, underline color, hyperlinks)
-/// since these are rare. The estimate is sufficient for pruning decisions.
+/// Grapheme storage counts because output controls its size; other rare
+/// extras are bounded per cell, so rows without graphemes skip the scan.
 fn row_byte_size(row: &Row) -> usize {
-    std::mem::size_of::<Row>() + row.cells.capacity() * std::mem::size_of::<Cell>()
+    let cells = std::mem::size_of::<Row>() + row.cells.capacity() * std::mem::size_of::<Cell>();
+    if row.flags.has_graphemes() {
+        cells + row.cells.iter().map(Cell::extra_heap_bytes).sum::<usize>()
+    } else {
+        cells
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +152,24 @@ mod tests {
 
     fn make_row(cols: usize) -> Row {
         Row::new(cols)
+    }
+
+    #[test]
+    fn a_row_of_combining_marks_counts_their_heap_bytes() {
+        let mut row = make_row(80);
+        for cell in &mut row.cells {
+            cell.codepoint = 'e';
+            for _ in 0..32 {
+                cell.push_grapheme('\u{0301}');
+            }
+        }
+        row.flags.mark_has_graphemes();
+        let marks = 80 * 32 * std::mem::size_of::<char>();
+        assert!(
+            row_byte_size(&row) >= row_byte_size(&make_row(80)) + marks,
+            "{} bytes counted",
+            row_byte_size(&row)
+        );
     }
 
     #[test]
