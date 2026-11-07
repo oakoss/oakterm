@@ -2,6 +2,7 @@
 //! match finding over the row text yank and motions read. Pure: rows
 //! arrive through [`RowText`], and fetching more of them is the caller's.
 
+use crate::cell_text::ColumnText;
 use crate::copy_keys::{CopyKey, CopyPress};
 use crate::copy_motion::RowText;
 use oakterm_config::CopyModePreset;
@@ -144,14 +145,12 @@ pub(crate) fn matcher(query: &str) -> Option<SearchEngine> {
 #[must_use]
 pub(crate) fn row_matches(engine: &SearchEngine, row: i64, chars: &[char]) -> Vec<Match> {
     let len = chars.iter().rposition(|&c| c != ' ').map_or(0, |i| i + 1);
-    let text: String = chars[..len].iter().collect();
-    let col = |c: usize| u16::try_from(c).unwrap_or(u16::MAX);
+    let text = ColumnText::new(&chars[..len]);
     engine
-        .char_spans(&text)
-        .map(|(start, end)| Match {
-            row,
-            start: col(start),
-            end: col(end),
+        .char_spans(&text.text)
+        .map(|(start, end)| {
+            let (start, end) = text.column_span(start, end);
+            Match { row, start, end }
         })
         .collect()
 }
@@ -312,6 +311,23 @@ mod tests {
         let dot = matcher("a.b").expect("query");
         assert_eq!(row_matches(&dot, 0, &chars).len(), 1, "literal, not regex");
         assert!(matcher("").is_none());
+    }
+
+    #[test]
+    fn a_wide_char_matches_as_one_character_spanning_its_two_columns() {
+        use crate::cell_text::WIDE_TAIL;
+        let chars = ['a', '中', WIDE_TAIL, '文', WIDE_TAIL, 'b'];
+        let engine = matcher("中文").expect("query");
+        assert_eq!(
+            row_matches(&engine, 0, &chars),
+            [Match {
+                row: 0,
+                start: 1,
+                end: 5
+            }]
+        );
+        let after = matcher("b").expect("query");
+        assert_eq!(row_matches(&after, 0, &chars)[0].start, 5);
     }
 
     /// A padded history row and a trimmed page row with the same text

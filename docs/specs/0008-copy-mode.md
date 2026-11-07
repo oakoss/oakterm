@@ -271,6 +271,7 @@ All cursor movement is local to the GUI. No IPC per keystroke.
 - When the cursor moves past the top or bottom of the cache, the GUI sends `GetScrollback` to fetch the next chunk.
 - **Prefetch:** When the display window (see Display) enters the top or bottom 25% of the cache window, the GUI starts fetching the next chunk in the background to hide latency.
 - Word boundaries for `w`/`b`/`e` are defined as transitions between alphanumeric/underscore characters and everything else (matching vim's `iskeyword` default).
+- A wide character's two cells are one character: the cursor never rests on its second cell (moving right steps past it, any other motion lands on its first), its second cell takes its class in word motions, and search, selection and yank read it once.
 
 **As built (TREK-112).** `gg` and `Ctrl+b` clamp to the oldest row the cache currently holds rather than jumping to the true top of scrollback; reaching rows the GUI has not fetched needs a fetch-then-jump, which is deferred to a follow-up task. Word motions stop at the same edge for the same reason: they resolve against text the GUI holds, so an unfetched row ends the scan.
 
