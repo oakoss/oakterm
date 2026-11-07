@@ -107,7 +107,7 @@ Input flows through these layers in order:
 
 _Amended 2026-11-05 (OT-324):_ `oak_mod + F` was reserved for toggling the floating pane; find takes it instead. Cmd+F is the find key on macOS, in browsers and in iTerm2 and WezTerm; Linux terminals such as GNOME Terminal, Konsole and WezTerm put find on Ctrl+Shift+F, since Ctrl+F belongs to the shell. The floating pane gets another key when it is built.
 
-_Amended 2026-11-07 (OT-297):_ `oak_mod + C` and `oak_mod + V` copy and paste, the macOS and Linux terminal convention. Copy is performable only with a selection; with nothing selected the chord falls through, and an unconsumed Cmd chord sends nothing (Spec-0011 divergence 7).
+_Amended 2026-11-07 (OT-297):_ `oak_mod + C` and `oak_mod + V` copy and paste, the macOS and Linux terminal convention. Copy is performable only with a selection; with nothing selected the chord falls through, and an unconsumed Cmd or Ctrl+Shift+letter chord sends nothing (Spec-0011 divergence 7).
 
 Tab cycling deliberately breaks the `oak_mod` pattern: on Linux `oak_mod + Shift` folds into `oak_mod` (a chord cannot repeat a modifier), which would collide with `oak_mod + [` copy mode, so each platform gets its native tab-cycling convention instead. Default keybinds are expanded against the configured `oak_mod` value at config-extraction time (`KeybindRegistry::with_defaults_for`; see As Built).
 
