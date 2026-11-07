@@ -32,6 +32,8 @@ pub enum ActionId {
     ReloadConfig,
     EnterCopyMode,
     Find,
+    Copy,
+    Paste,
 }
 
 impl ActionId {
@@ -41,7 +43,7 @@ impl ActionId {
     /// here as their features land (Spec-0009 lists the full target set);
     /// registering only wired actions keeps the catalog free of entries that
     /// would execute as no-ops.
-    pub const ALL: [ActionId; 16] = [
+    pub const ALL: [ActionId; 18] = [
         ActionId::SplitPaneRight,
         ActionId::SplitPaneDown,
         ActionId::ClosePane,
@@ -58,6 +60,8 @@ impl ActionId {
         ActionId::ReloadConfig,
         ActionId::EnterCopyMode,
         ActionId::Find,
+        ActionId::Copy,
+        ActionId::Paste,
     ];
 
     /// The boundary identifier used by Lua config and the palette.
@@ -80,6 +84,8 @@ impl ActionId {
             ActionId::ReloadConfig => "reload_config",
             ActionId::EnterCopyMode => "enter_copy_mode",
             ActionId::Find => "find",
+            ActionId::Copy => "copy",
+            ActionId::Paste => "paste",
         }
     }
 
@@ -103,6 +109,8 @@ impl ActionId {
             ActionId::ReloadConfig => "Reload Config",
             ActionId::EnterCopyMode => "Enter Copy Mode",
             ActionId::Find => "Find",
+            ActionId::Copy => "Copy",
+            ActionId::Paste => "Paste",
         }
     }
 
@@ -125,6 +133,7 @@ impl ActionId {
             | ActionId::EnterCopyMode
             | ActionId::Find => ActionCategory::View,
             ActionId::ReloadConfig => ActionCategory::Config,
+            ActionId::Copy | ActionId::Paste => ActionCategory::Clipboard,
         }
     }
 
@@ -138,7 +147,11 @@ impl ActionId {
             | ActionId::NewTab
             | ActionId::ToggleFullscreen
             | ActionId::ShowCommandPalette
-            | ActionId::ReloadConfig => true,
+            | ActionId::ReloadConfig
+            | ActionId::Paste => true,
+            // ADR-0011: with nothing selected the key reaches the program, so
+            // binding ctrl+shift+c to copy leaves the shell's own binding working.
+            ActionId::Copy => ctx.has_selection,
             // Closing the last pane closes its tab (Spec-0007); the daemon only
             // refuses the truly-last pane — the last pane of the last tab.
             ActionId::ClosePane => ctx.pane_count > 1 || ctx.tab_count > 1,
@@ -158,7 +171,7 @@ impl ActionId {
 }
 
 /// Palette grouping category (Spec-0009). The full set is fixed even though
-/// `Workspace` and `Clipboard` have no wired core actions yet. `Ord`
+/// `Workspace` has no wired core actions yet. `Ord`
 /// follows declaration order, which is the palette's group display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActionCategory {
@@ -191,6 +204,8 @@ pub struct ActionContext {
     /// Whether the daemon speaks the scrollback semantics copy mode's
     /// row indices depend on.
     pub copy_mode_supported: bool,
+    /// Whether the focused pane's selection holds text to copy.
+    pub has_selection: bool,
 }
 
 /// A catalog entry: an action id plus the keybind hint resolved from the active
@@ -286,7 +301,7 @@ fn resolve_hint(id: ActionId, keybinds: &KeybindRegistry) -> Option<String> {
 
 /// Map a configured keybind action back to its catalog id, if it names a core
 /// action. Returns `None` for actions absent from the palette catalog (scroll,
-/// copy, paste, callbacks, switch-to-tab-N, and not-yet-wired features).
+/// callbacks, switch-to-tab-N, and not-yet-wired features).
 ///
 /// `SplitPane` directions collapse: left/right → `SplitPaneRight` and up/down →
 /// `SplitPaneDown`, mirroring the wire's split-axis dispatch. Focus directions
@@ -316,6 +331,8 @@ pub fn action_id_of(action: &Action) -> Option<ActionId> {
         Action::ReloadConfig => Some(ActionId::ReloadConfig),
         Action::EnterCopyMode => Some(ActionId::EnterCopyMode),
         Action::Find => Some(ActionId::Find),
+        Action::Copy => Some(ActionId::Copy),
+        Action::Paste => Some(ActionId::Paste),
         _ => None,
     }
 }
@@ -347,7 +364,7 @@ mod tests {
 
     #[test]
     fn categories_group_as_specified() {
-        use ActionCategory::{Config, Navigation, Pane, Tab, View};
+        use ActionCategory::{Clipboard, Config, Navigation, Pane, Tab, View};
         let expected = [
             (ActionId::SplitPaneRight, Pane),
             (ActionId::SplitPaneDown, Pane),
@@ -365,6 +382,8 @@ mod tests {
             (ActionId::ReloadConfig, Config),
             (ActionId::EnterCopyMode, View),
             (ActionId::Find, View),
+            (ActionId::Copy, Clipboard),
+            (ActionId::Paste, Clipboard),
         ];
         // Covering every ALL member keeps a mis-assigned category from hiding
         // behind a sampled subset.
@@ -372,6 +391,20 @@ mod tests {
         for (id, category) in expected {
             assert_eq!(id.category(), category, "{}", id.as_str());
         }
+    }
+
+    #[test]
+    fn copy_performs_only_with_a_selection_and_paste_always() {
+        let none = ActionContext::default();
+        let selected = ActionContext {
+            has_selection: true,
+            ..ActionContext::default()
+        };
+        assert!(!ActionId::Copy.is_performable(none));
+        assert!(ActionId::Copy.is_performable(selected));
+        assert!(ActionId::Paste.is_performable(none));
+        assert_eq!(action_id_of(&Action::Copy), Some(ActionId::Copy));
+        assert_eq!(action_id_of(&Action::Paste), Some(ActionId::Paste));
     }
 
     #[test]
@@ -518,7 +551,6 @@ mod tests {
         );
         // Non-catalog actions, including the plausible-future ones a later dev
         // might be tempted to map.
-        assert_eq!(action_id_of(&Action::Copy), None);
         assert_eq!(action_id_of(&Action::ScrollUp(0)), None);
         assert_eq!(
             action_id_of(&Action::SwitchTab(std::num::NonZeroU32::new(1).unwrap())),
@@ -719,10 +751,12 @@ mod tests {
                 | ActionId::ShowCommandPalette
                 | ActionId::ReloadConfig
                 | ActionId::EnterCopyMode
-                | ActionId::Find => {}
+                | ActionId::Find
+                | ActionId::Copy
+                | ActionId::Paste => {}
             }
         }
-        assert_eq!(ActionId::ALL.len(), 16);
+        assert_eq!(ActionId::ALL.len(), 18);
     }
 
     #[test]
@@ -744,6 +778,7 @@ mod tests {
                 ActionId::ToggleFullscreen,
                 ActionId::ShowCommandPalette,
                 ActionId::ReloadConfig,
+                ActionId::Paste,
             ],
         );
     }
@@ -760,6 +795,7 @@ mod tests {
             can_focus_up: true,
             can_focus_down: true,
             copy_mode_supported: true,
+            has_selection: true,
         };
         let ids: Vec<ActionId> = reg.performable(ctx).map(RegisteredAction::id).collect();
         assert_eq!(ids, ActionId::ALL.to_vec());
@@ -787,6 +823,8 @@ mod tests {
             Action::ReloadConfig,
             Action::EnterCopyMode,
             Action::Find,
+            Action::Copy,
+            Action::Paste,
         ];
         let mapped: Vec<ActionId> = actions.iter().filter_map(action_id_of).collect();
         assert_eq!(mapped, ActionId::ALL.to_vec());

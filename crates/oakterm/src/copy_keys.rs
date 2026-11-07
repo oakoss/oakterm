@@ -203,7 +203,7 @@ fn named_copy_key(key: &Key) -> Option<NamedCopyKey> {
 /// copy mode simply does not bind — the two differ in what they do to a
 /// sequence in progress.
 pub(crate) fn copy_press(mods: ModifiersState, composed: &Key, base: &Key) -> CopyPress {
-    if is_modifier(composed) {
+    if crate::input::is_bare_modifier(composed) {
         return CopyPress::ModifierOnly;
     }
     copy_key(mods, composed, base).map_or(CopyPress::Unnameable, CopyPress::Key)
@@ -215,29 +215,6 @@ fn mv(motion: Motion) -> CopyCommand {
         motion,
         selection: SelectionEffect::Keep,
     }
-}
-
-/// Whether the key is a modifier pressed on its own.
-fn is_modifier(key: &Key) -> bool {
-    matches!(
-        key,
-        Key::Named(
-            NamedKey::Alt
-                | NamedKey::AltGraph
-                | NamedKey::CapsLock
-                | NamedKey::Control
-                | NamedKey::Fn
-                | NamedKey::FnLock
-                | NamedKey::Hyper
-                | NamedKey::Meta
-                | NamedKey::NumLock
-                | NamedKey::ScrollLock
-                | NamedKey::Shift
-                | NamedKey::Super
-                | NamedKey::Symbol
-                | NamedKey::SymbolLock
-        )
-    )
 }
 
 /// Advance the pending-prefix state machine by one press: the prefix to

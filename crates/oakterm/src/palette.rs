@@ -408,14 +408,14 @@ mod tests {
         assert!(fuzzy_match("i", "İstanbul").is_some());
     }
 
-    use super::{PaletteResultKind, PaletteState};
+    use super::{MAX_VISIBLE_RESULTS, PaletteResultKind, PaletteState};
     use oakterm_config::{ActionContext, ActionId, ActionRegistry, KeybindRegistry};
 
     fn registry() -> ActionRegistry {
         ActionRegistry::core(&KeybindRegistry::new())
     }
 
-    /// Single pane, single tab, no focus neighbors: only the five
+    /// Single pane, single tab, no focus neighbors, no selection: only the
     /// unconditional actions are performable.
     fn restrictive_ctx() -> ActionContext {
         ActionContext {
@@ -434,15 +434,16 @@ mod tests {
         let mut p = PaletteState::new();
         p.open(&registry(), restrictive_ctx());
         assert!(p.is_visible());
-        // Category order is the catalog's (Pane, Tab, View, Config here);
-        // labels sort alphabetically within each group. Non-performable
-        // actions (close/focus/tab-cycling) are excluded.
+        // Category order is the catalog's (Pane, Tab, Clipboard, View, Config
+        // here); labels sort alphabetically within each group. Non-performable
+        // actions (close/focus/tab-cycling, copy without a selection) are excluded.
         assert_eq!(
             labels(&p),
             vec![
                 "Split Pane Down",
                 "Split Pane Right",
                 "New Tab",
+                "Paste",
                 "Show Command Palette",
                 "Toggle Fullscreen",
                 "Reload Config",
@@ -451,7 +452,7 @@ mod tests {
         assert_eq!(p.selected_index(), 0);
     }
 
-    /// Everything open: all 14 catalog actions performable.
+    /// Everything open: every catalog action performable.
     fn open_ctx() -> ActionContext {
         ActionContext {
             pane_count: 2,
@@ -461,6 +462,7 @@ mod tests {
             can_focus_up: true,
             can_focus_down: true,
             copy_mode_supported: true,
+            has_selection: true,
         }
     }
 
@@ -492,15 +494,16 @@ mod tests {
     fn selection_clamps_at_the_edges_and_resets_on_input() {
         let reg = registry();
         let mut p = PaletteState::new();
-        p.open(&reg, restrictive_ctx()); // 6 results
+        p.open(&reg, restrictive_ctx());
+        let last = labels(&p).len() - 1;
         p.move_up(); // already at the top
         assert_eq!(p.selected_index(), 0);
-        for _ in 0..10 {
+        for _ in 0..=last + 3 {
             p.move_down(); // clamps at the last result
         }
-        assert_eq!(p.selected_index(), 5);
+        assert_eq!(p.selected_index(), last);
         p.move_up();
-        assert_eq!(p.selected_index(), 4);
+        assert_eq!(p.selected_index(), last - 1);
         // Any edit resets the selection to the top.
         p.input_char('n', &reg, restrictive_ctx());
         assert_eq!(p.selected_index(), 0);
@@ -614,22 +617,24 @@ mod tests {
         // Crossing the edge scrolls one row per step.
         p.move_down();
         assert_eq!((p.selected_index(), p.window_start()), (10, 1));
-        for _ in 0..5 {
+        let last = ActionId::ALL.len() - 1;
+        let top = last + 1 - MAX_VISIBLE_RESULTS;
+        for _ in 10..last {
             p.move_down();
         }
-        assert_eq!((p.selected_index(), p.window_start()), (15, 6));
+        assert_eq!((p.selected_index(), p.window_start()), (last, top));
         // Clamped at the last result; the window stays put.
         p.move_down();
-        assert_eq!((p.selected_index(), p.window_start()), (15, 6));
+        assert_eq!((p.selected_index(), p.window_start()), (last, top));
 
         // Moving up moves the cursor within the window first...
         for _ in 0..9 {
             p.move_up();
         }
-        assert_eq!((p.selected_index(), p.window_start()), (6, 6));
+        assert_eq!((p.selected_index(), p.window_start()), (top, top));
         // ...and only scrolls once the selection crosses the top edge.
         p.move_up();
-        assert_eq!((p.selected_index(), p.window_start()), (5, 5));
+        assert_eq!((p.selected_index(), p.window_start()), (top - 1, top - 1));
 
         // Any edit resets the window with the selection.
         p.input_char('t', &reg, open_ctx());

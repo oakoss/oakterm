@@ -47,6 +47,8 @@ struct ActionContext {
     can_focus_right: bool,
     can_focus_up: bool,
     can_focus_down: bool,
+    copy_mode_supported: bool,  // daemon speaks Spec-0001 1.4 scrollback
+    has_selection: bool,        // focused pane's selection covers text
 }
 
 /// Catalog entry: id + hint resolved from the active bindings.
@@ -81,7 +83,7 @@ enum ActionCategory {
 }
 ```
 
-**Registration policy:** only actions with a working handler register; the catalog never contains entries that would execute as no-ops. Registered today: split_pane_right, split_pane_down, close_pane, focus_pane_left, focus_pane_right, focus_pane_up, focus_pane_down, new_tab, close_tab, next_tab, previous_tab, toggle_fullscreen, show_command_palette, reload_config, enter_copy_mode, find.
+**Registration policy:** only actions with a working handler register; the catalog never contains entries that would execute as no-ops. Registered today: split_pane_right, split_pane_down, close_pane, focus_pane_left, focus_pane_right, focus_pane_up, focus_pane_down, new_tab, close_tab, next_tab, previous_tab, toggle_fullscreen, show_command_palette, reload_config, enter_copy_mode, find, copy, paste. `copy` is performable only when the focused pane's selection covers text, so a binding such as `ctrl+shift+c` reaches the program when nothing is selected (ADR-0011).
 
 **Target set** (register as their features land): new_workspace, switch_workspace, toggle_floating, enter_resize_mode.
 

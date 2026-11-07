@@ -1956,6 +1956,9 @@ impl ApplicationHandler<UserEvent> for App {
                     },
                 ..
             } => {
+                if input::is_bare_modifier(&event.logical_key) {
+                    return;
+                }
                 // An open palette captures every key ahead of keybind
                 // dispatch and PTY forwarding (Spec-0009 Palette
                 // Lifecycle).
@@ -1992,8 +1995,11 @@ impl ApplicationHandler<UserEvent> for App {
                         if self.active_key_table.is_some() {
                             tracing::debug!("leader chord armed while a modal key table is active");
                         }
-                        let buffered =
-                            input::key_to_bytes(&event.logical_key, event.text.as_deref());
+                        let buffered = input::pty_bytes(
+                            &event.logical_key,
+                            event.text.as_deref(),
+                            self.modifiers.state(),
+                        );
                         self.leader_pending = Some(LeaderPending {
                             deadline: std::time::Instant::now()
                                 + std::time::Duration::from_millis(timeout_ms),
@@ -2056,9 +2062,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     input::KeyDispatch::Forward => {}
                 }
-                let (logical_key, text) = (event.logical_key, event.text);
+                // A key that sends nothing (a dropped Cmd chord) must not
+                // cost the selection it may copy.
+                let Some(bytes) = input::pty_bytes(
+                    &event.logical_key,
+                    event.text.as_deref(),
+                    self.modifiers.state(),
+                ) else {
+                    return;
+                };
 
-                // Clear selection on non-copy keystrokes.
                 let cleared = self
                     .focused_view_mut()
                     .is_some_and(|view| view.selection.take().is_some());
@@ -2074,9 +2087,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.return_to_live(self.focused_pane);
                 }
 
-                if let Some(bytes) = input::key_to_bytes(&logical_key, text.as_deref()) {
-                    self.send_key_bytes(bytes, event_loop);
-                }
+                self.send_key_bytes(bytes, event_loop);
                 self.reset_blink();
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -2930,10 +2941,8 @@ impl App {
         // Performable gate (ADR-0011): an action that cannot run in the
         // current context releases the key to the PTY instead of
         // consuming it (Ghostty's `performable:` semantics, per-action).
-        if let Some(id) = oakterm_config::action_id_of(action)
-            && !id.is_performable(self.action_context())
-        {
-            tracing::debug!(action = ?id, "keybind not performable here; key released to PTY");
+        if input::binding_releases(action, self.action_context()) {
+            tracing::debug!(?action, "keybind not performable here; key released to PTY");
             return false;
         }
         let action_desc = match desc_of_action(action) {
@@ -3008,10 +3017,8 @@ impl App {
             );
             return;
         };
-        if let Some(id) = oakterm_config::action_id_of(action)
-            && !id.is_performable(self.action_context())
-        {
-            tracing::debug!(action = ?id, "leader action not performable here; consumed");
+        if input::binding_releases(action, self.action_context()) {
+            tracing::debug!(?action, "leader action not performable here; consumed");
             return;
         }
         let action_desc = match desc_of_action(action) {
@@ -3160,16 +3167,10 @@ impl App {
                 true
             }
             ActionDesc::Copy => {
-                if let Some((sel, view)) = self
-                    .focused_view()
-                    .and_then(|v| v.selection.as_ref().map(|sel| (sel, v)))
+                if let Some(text) = self.focused_view().and_then(PaneView::selected_text)
+                    && !write_clipboard(&text)
                 {
-                    let text = view
-                        .grid()
-                        .extract_selection_text(sel, view.viewport_offset());
-                    if !text.is_empty() && !write_clipboard(&text) {
-                        self.ring_bell();
-                    }
+                    self.ring_bell();
                 }
                 true
             }
@@ -3177,6 +3178,10 @@ impl App {
                 match arboard::Clipboard::new() {
                     Ok(mut cb) => match cb.get_text() {
                         Ok(text) if !text.is_empty() => {
+                            // As a typed key does: the paste lands at the live prompt.
+                            if self.viewport_offset() > 0 {
+                                self.return_to_live(self.focused_pane);
+                            }
                             let bracketed = self.focused_view().is_some_and(|v| v.bracketed_paste);
                             if let Some(daemon) = &mut self.daemon {
                                 // Normalize line endings: PTY expects \r.
@@ -3347,6 +3352,7 @@ impl App {
             can_focus_up: can(FocusDirection::Up),
             can_focus_down: can(FocusDirection::Down),
             copy_mode_supported: copy_mode_supported(self.server_minor),
+            has_selection: self.focused_view().is_some_and(PaneView::has_selection),
         }
     }
 
@@ -3370,6 +3376,8 @@ impl App {
             ActionId::ReloadConfig => ActionDesc::ReloadConfig,
             ActionId::EnterCopyMode => ActionDesc::EnterCopyMode,
             ActionId::Find => ActionDesc::Find,
+            ActionId::Copy => ActionDesc::Copy,
+            ActionId::Paste => ActionDesc::Paste,
         }
     }
 
