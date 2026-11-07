@@ -660,8 +660,8 @@ struct App {
     last_mouse_cell: (u16, u16),
     /// Current keyboard modifier state for intercepting Shift+key.
     modifiers: winit::event::Modifiers,
-    /// Buttons whose press was swallowed before reaching the PTY, by a
-    /// Shift bypass or by copy mode; their release is swallowed with it
+    /// Buttons whose press was swallowed before reaching the PTY (see
+    /// `copy_session::swallows_press`); their release is swallowed with it
     /// so an application never sees half a click.
     suppressed_buttons: u8,
     /// Blink phase: true = cursor visible, false = cursor hidden.
@@ -1537,11 +1537,11 @@ impl App {
             .font
             .as_ref()
             .map_or(8.0, |f| f64::from(f.metrics().cell_width));
-        let side = if (self.last_mouse_pixel.0 % cw) > (cw / 2.0) {
-            AnchorSide::Right
-        } else {
-            AnchorSide::Left
-        };
+        let side = input::cell_side(
+            self.last_mouse_pixel.0,
+            f64::from(self.config.padding.left),
+            cw,
+        );
 
         // Multi-click detection: same cell within 300ms increments click count.
         let same_cell = self.last_click_pos == (col, row);
@@ -2118,13 +2118,11 @@ impl ApplicationHandler<UserEvent> for App {
                         use oakterm_terminal::grid::selection::{
                             AnchorSide, SelectionType, word_boundaries,
                         };
-                        let cw = f64::from(font.metrics().cell_width);
-                        let adj_x = (position.x - f64::from(self.config.padding.left)).max(0.0);
-                        let side = if (adj_x % cw) > (cw / 2.0) {
-                            AnchorSide::Right
-                        } else {
-                            AnchorSide::Left
-                        };
+                        let side = input::cell_side(
+                            position.x,
+                            f64::from(self.config.padding.left),
+                            f64::from(font.metrics().cell_width),
+                        );
                         if let Some(view) = self.panes.get_mut(&self.focused_pane) {
                             let sel_row = i64::from(row) - i64::from(view.viewport_offset());
                             let grid_rows = view.grid().rows;
@@ -2157,7 +2155,7 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                     }
                                 } else {
-                                    sel.update(sel_row, col, side);
+                                    sel.extend_to(sel_row, col, side);
                                 }
                             }
                         }
@@ -2223,13 +2221,15 @@ impl ApplicationHandler<UserEvent> for App {
                 let pressed = state == ElementState::Pressed;
                 let shift = self.modifiers.state().shift_key();
                 let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
-                // Two reasons to keep a press from the PTY, one mask: the
-                // release pairs with the press it belongs to, so neither
-                // reason has to still hold when the button comes up.
-                let swallow_press = shift || copy_mode;
+                let mouse_reporting = self.focused_view().is_some_and(|v| v.mouse_reporting);
+                let swallow_press = copy_session::swallows_press(copy_mode, shift, mouse_reporting);
 
-                // Runs whether or not the press is then forwarded.
-                match copy_session::left_press(pressed && btn == 0, copy_mode, shift) {
+                let left = if pressed && btn == 0 {
+                    copy_session::left_press(copy_mode, shift, mouse_reporting)
+                } else {
+                    copy_session::LeftPress::Ignore
+                };
+                match left {
                     copy_session::LeftPress::StartSelection => self.start_selection(),
                     copy_session::LeftPress::ClearSelection => {
                         let cleared = self
@@ -2249,7 +2249,7 @@ impl ApplicationHandler<UserEvent> for App {
                     button_passthrough(pressed, swallow_press, self.suppressed_buttons, btn_bit);
                 self.suppressed_buttons = pass.suppressed;
                 // A swallowed release ends the drag it belongs to; only a
-                // Shift press ever starts one, so this cannot end a drag
+                // swallowed press ever starts one, so this cannot end a drag
                 // some other suppression owns.
                 if !pressed && !pass.forward && btn == 0 {
                     self.mouse_pressed = false;
@@ -2354,6 +2354,8 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 };
                 view.bracketed_paste = update.bracketed_paste;
+                view.mouse_reporting =
+                    update.input_flags & oakterm_protocol::render::INPUT_FLAG_MOUSE_REPORTING != 0;
                 view.apply_update(&update);
                 if !view.is_scrolled() {
                     let dirty_rows: Vec<(u16, String)> = update

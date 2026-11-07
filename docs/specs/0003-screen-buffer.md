@@ -383,7 +383,7 @@ enum AnchorSide {
 }
 ```
 
-**Anchor side:** Half-cell precision for selection. When clicking between two characters, `side` determines which cell is included. This prevents the common UX issue of needing pixel-perfect clicks.
+**Anchor side:** Half-cell precision for selection. When clicking between two characters, `side` determines which cell is included. This prevents the common UX issue of needing pixel-perfect clicks. A mouse drag keeps the pressed cell: once the pointer leaves it, the start anchor takes the side facing away from the drag (`Selection::extend_to`), so the pressed character is selected whichever half was pressed, while the end keeps half-cell precision. Within the pressed cell the press keeps its own side, so the cell is selected only by crossing its midpoint from the left half.
 
 **Scrollback-aware rows:** Selection uses `i64` row indices where row 0 is the first visible row and negative values reference scrollback lines. This allows selection to span from scrollback into the visible area.
 

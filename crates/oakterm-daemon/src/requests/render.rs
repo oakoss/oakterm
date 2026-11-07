@@ -77,8 +77,12 @@ pub(super) async fn get_render_update(
         bg_b,
         bracketed_paste: g.modes.get(2004),
         alt_screen,
-        // Zero until TREK-236 populates the input-mode state (Spec-0011).
-        input_flags: 0,
+        // Bits 0-3 stay zero until OT-247 populates the key-encoding modes.
+        input_flags: if g.modes.get(1000) || g.modes.get(1002) || g.modes.get(1003) {
+            oakterm_protocol::render::INPUT_FLAG_MOUSE_REPORTING
+        } else {
+            0
+        },
         kitty_kbd_flags: 0,
         history_len,
         dirty_rows,
@@ -146,5 +150,48 @@ mod tests {
             oakterm_protocol::render::RenderUpdate::decode(&reply.payload).expect("decode");
         assert_eq!(update.history_len, 3);
         assert_eq!((update.input_flags, update.kitty_kbd_flags), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn a_render_update_reports_mouse_reporting_modes() {
+        use oakterm_protocol::render::INPUT_FLAG_MOUSE_REPORTING;
+        let panes = Arc::new(Mutex::new(PaneManager::new()));
+        let pane_id = panes
+            .lock()
+            .await
+            .create(80, 24, String::new(), String::new());
+        let flags = |panes: Arc<Mutex<PaneManager>>| async move {
+            let req = GetRenderUpdate {
+                pane_id,
+                since_seqno: 0,
+            };
+            let frame = Frame::new(0x71, 9, req.encode()).expect("frame");
+            let RequestResult::Response(reply) = get_render_update(1, &frame, &panes).await else {
+                panic!("expected a RenderUpdate response");
+            };
+            oakterm_protocol::render::RenderUpdate::decode(&reply.payload)
+                .expect("decode")
+                .input_flags
+        };
+        assert_eq!(flags(panes.clone()).await & INPUT_FLAG_MOUSE_REPORTING, 0);
+        for (on, off) in [
+            ("\x1b[?1000h", "\x1b[?1000l"),
+            ("\x1b[?1002h", "\x1b[?1002l"),
+            ("\x1b[?1003h", "\x1b[?1003l"),
+        ] {
+            for (seq, want) in [(on, INPUT_FLAG_MOUSE_REPORTING), (off, 0)] {
+                {
+                    let mut pane = crate::pane::lock_live_pane(&panes, pane_id)
+                        .await
+                        .expect("pane");
+                    pane.screens.process_bytes(seq.as_bytes(), &mut Vec::new());
+                }
+                assert_eq!(
+                    flags(panes.clone()).await & INPUT_FLAG_MOUSE_REPORTING,
+                    want,
+                    "{seq:?}"
+                );
+            }
+        }
     }
 }

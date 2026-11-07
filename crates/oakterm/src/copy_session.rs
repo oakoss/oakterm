@@ -167,14 +167,22 @@ pub(crate) enum LeftPress {
     Ignore,
 }
 
-/// Shift starts a selection and a plain press drops the one on screen,
-/// except in copy mode, which owns the pane's only selection (Spec-0008
-/// Mouse).
-pub(crate) fn left_press(left_pressed: bool, copy_mode: bool, shift: bool) -> LeftPress {
-    match (left_pressed && !copy_mode, shift) {
-        (false, _) => LeftPress::Ignore,
-        (true, true) => LeftPress::StartSelection,
-        (true, false) => LeftPress::ClearSelection,
+/// Whether a press stays out of the PTY. Every press that starts a selection
+/// must, or its release would reach the PTY instead of ending the drag.
+pub(crate) fn swallows_press(copy_mode: bool, shift: bool, mouse_reporting: bool) -> bool {
+    shift || copy_mode || !mouse_reporting
+}
+
+/// What a left-button press does. It selects unless the application asked for
+/// mouse reports, when it goes to the application and only Shift selects.
+/// Copy mode owns the pane's only selection (Spec-0008 Mouse).
+pub(crate) fn left_press(copy_mode: bool, shift: bool, mouse_reporting: bool) -> LeftPress {
+    if copy_mode {
+        LeftPress::Ignore
+    } else if shift || !mouse_reporting {
+        LeftPress::StartSelection
+    } else {
+        LeftPress::ClearSelection
     }
 }
 
@@ -246,25 +254,52 @@ pub(crate) fn entry_announcement(transition: &str, bar: Option<&str>) -> String 
 mod tests {
     use super::{
         CopyModeAnnouncer, LeaderFlush, LeftPress, PendingEnter, PendingEnters, PendingYanks,
-        WheelRoute, YankDisposition, YankOutcome, left_press, plan_leader_flush, wheel_route,
-        yank_disposition,
+        WheelRoute, YankDisposition, YankOutcome, left_press, plan_leader_flush, swallows_press,
+        wheel_route, yank_disposition,
     };
 
     #[test]
     fn copy_mode_keeps_the_mouse_off_the_host_selection() {
-        assert_eq!(left_press(true, false, true), LeftPress::StartSelection);
-        assert_eq!(left_press(true, false, false), LeftPress::ClearSelection);
-        assert_eq!(
-            left_press(true, true, true),
-            LeftPress::Ignore,
-            "Shift+click"
+        for reporting in [false, true] {
+            assert_eq!(
+                left_press(true, true, reporting),
+                LeftPress::Ignore,
+                "Shift+click"
+            );
+            assert_eq!(left_press(true, false, reporting), LeftPress::Ignore);
+        }
+    }
+
+    #[test]
+    fn a_press_that_starts_a_selection_never_reaches_the_pty() {
+        for copy_mode in [false, true] {
+            for shift in [false, true] {
+                for reporting in [false, true] {
+                    if left_press(copy_mode, shift, reporting) == LeftPress::StartSelection {
+                        assert!(
+                            swallows_press(copy_mode, shift, reporting),
+                            "copy_mode={copy_mode} shift={shift} reporting={reporting}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            !swallows_press(false, false, true),
+            "a click the application asked for"
         );
-        assert_eq!(left_press(true, true, false), LeftPress::Ignore);
+    }
+
+    #[test]
+    fn a_plain_press_selects_unless_the_application_wants_the_mouse() {
+        assert_eq!(left_press(false, false, false), LeftPress::StartSelection);
+        assert_eq!(left_press(false, false, true), LeftPress::ClearSelection);
         assert_eq!(
-            left_press(false, false, true),
-            LeftPress::Ignore,
-            "not a left press"
+            left_press(false, true, true),
+            LeftPress::StartSelection,
+            "Shift overrides mouse reporting"
         );
+        assert_eq!(left_press(false, true, false), LeftPress::StartSelection);
     }
 
     #[test]

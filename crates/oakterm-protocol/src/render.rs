@@ -237,6 +237,10 @@ impl DirtyRow {
     }
 }
 
+/// `input_flags` bit: the application asked for mouse reports (DEC 1000,
+/// 1002 or 1003), so a plain click belongs to it rather than the selection.
+pub const INPUT_FLAG_MOUSE_REPORTING: u8 = 1 << 4;
+
 /// `RenderUpdate` (0x72): daemon responds with dirty rows and cursor state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderUpdate {
@@ -257,8 +261,8 @@ pub struct RenderUpdate {
     /// primary screen → host scrollback.
     pub alt_screen: bool,
     /// Input-mode flags (Spec-0011): bit0 DECCKM, bit1 application
-    /// keypad, bits2-3 modifyOtherKeys level. Zero until TREK-236
-    /// populates them.
+    /// keypad, bits2-3 modifyOtherKeys level, bit4
+    /// [`INPUT_FLAG_MOUSE_REPORTING`]. Bits 0-3 stay zero until OT-247.
     pub input_flags: u8,
     /// Top of the active grid's Kitty keyboard flag stack (Spec-0011).
     /// Zero until TREK-236 populates it.
