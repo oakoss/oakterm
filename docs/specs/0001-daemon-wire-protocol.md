@@ -265,13 +265,14 @@ codepoint          u32 LE      Unicode codepoint (0 = empty cell)
 fg_r               u8          Foreground red
 fg_g               u8          Foreground green
 fg_b               u8          Foreground blue
-fg_type            u8          0=default, 1=rgb, 2=indexed (fg_r = palette index)
+fg_type            u8          Source of the color: 0=default, 1=named, 2=indexed, 3=rgb;
+                               fg_r/g/b always hold the resolved RGB
 bg_r               u8          Background red
 bg_g               u8          Background green
 bg_b               u8          Background blue
-bg_type            u8          0=default, 1=rgb, 2=indexed (bg_r = palette index)
-flags              u16 LE      Bitfield: bold(0), italic(1), underline(2), strikethrough(3),
-                               inverse(4), blink(5), dim(6), hidden(7), wide(8), wide_cont(9)
+bg_type            u8          As fg_type
+flags              u16 LE      Bitfield: bold(0), dim(1), italic(2), blink(3), inverse(4),
+                               hidden(5), strikethrough(6), overline(7), wide(8), wide_cont(9)
 extra_len          u16 LE      Length of optional extra data (0 for most cells)
 extra              bytes       Hyperlink URL, combining characters, underline color, etc.
 ```
