@@ -402,10 +402,9 @@ pub(crate) struct MousePassthrough {
 }
 
 /// Route one mouse button event to the PTY or swallow it. `swallow_press`
-/// is the caller's reason — a Shift bypass, copy mode — and it only ever
-/// decides a press: the release pairs with its own press through the
-/// mask, since a reason that appears or clears mid-click would otherwise
-/// hand a mouse-mode application half a click.
+/// (`copy_session::swallows_press`) only ever decides a press: the release
+/// pairs with its own press through the mask, since a reason that appears or
+/// clears mid-click would otherwise hand a mouse-mode application half a click.
 pub(crate) fn button_passthrough(
     pressed: bool,
     swallow_press: bool,

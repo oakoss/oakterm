@@ -75,6 +75,8 @@ pub(crate) struct PaneView {
     scroll_base: Option<u64>,
     /// Whether the terminal has DECSET 2004 (bracketed paste) active.
     pub(crate) bracketed_paste: bool,
+    /// Whether the application asked for mouse reports (DEC 1000/1002/1003).
+    pub(crate) mouse_reporting: bool,
     /// Last `(cols, rows)` sent to the daemon; suppresses redundant resizes.
     pub(crate) last_sent_dims: (u16, u16),
     /// Last OSC title pushed by the daemon; the status bar displays the
@@ -94,6 +96,7 @@ impl PaneView {
             render_base: None,
             scroll_base: None,
             bracketed_paste: false,
+            mouse_reporting: false,
             last_sent_dims: (0, 0),
             title: String::new(),
         }

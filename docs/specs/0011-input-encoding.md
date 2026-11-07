@@ -427,7 +427,8 @@ alt_screen         u8          (existing)
 input_flags        u8   NEW    bit0: DECCKM cursor-key mode (g.modes.get(1))
                                bit1: application keypad mode (g.modes.get(66))
                                bits2-3: modifyOtherKeys level (0,1,2)
-                               bits4-7: reserved, must be 0
+                               bit4: mouse reporting (modes 1000/1002/1003)
+                               bits5-7: reserved, must be 0
 kitty_kbd_flags    u8   NEW    Kitty progressive-enhancement flags at the top of
                                the active grid's flag stack. 0 = protocol
                                disabled (legacy encoding).
@@ -531,7 +532,8 @@ scope here beyond noting the flag's existing home.
 
 - **Not mouse encoding.** Mouse reporting (SGR 1006, X10, modes 1000–1007) is
   already specified by Spec-0002's mode inventory and implemented in the
-  daemon's `MouseInput` path; this spec is keyboard-only.
+  daemon's `MouseInput` path; this spec is keyboard-only, apart from the
+  `input_flags` mouse-reporting bit the GUI reads to route a plain click.
 - **Not keybind semantics.** Which actions exist and their default chords live
   in `19-smart-keybinds.md` and the config runtime (Spec-0005). This spec only
   fixes how a chord is _resolved_ to a physical key so encoding and binding
