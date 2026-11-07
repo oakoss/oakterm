@@ -502,6 +502,10 @@ impl KeybindRegistry {
             ("oak_mod+p", Action::ShowCommandPalette),
             ("oak_mod+[", Action::EnterCopyMode),
             ("oak_mod+f", Action::Find),
+            // Copy is performable only with a selection, so with nothing
+            // selected the chord still reaches the shell (ADR-0011).
+            ("oak_mod+c", Action::Copy),
+            ("oak_mod+v", Action::Paste),
             (NEXT_TAB_CHORD, Action::NextTab),
             (PREVIOUS_TAB_CHORD, Action::PreviousTab),
         ];
@@ -1066,6 +1070,20 @@ mod tests {
         assert!(matches!(
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
+        ));
+    }
+
+    #[test]
+    fn defaults_include_copy_and_paste() {
+        let reg = KeybindRegistry::with_defaults();
+        let chord = |s| KeyChord::parse_with_oak_mod(s, platform_mods()).unwrap();
+        assert!(matches!(
+            reg.lookup(&chord("oak_mod+c")),
+            Some(Action::Copy)
+        ));
+        assert!(matches!(
+            reg.lookup(&chord("oak_mod+v")),
+            Some(Action::Paste)
         ));
     }
 
