@@ -108,6 +108,8 @@ fn screen_selection(screen: &OnScreen<'_>) -> Option<SelectionRange> {
 /// highlight and the copied text do.
 fn offsets_of(mut range: SelectionRange, grid: &ClientGrid) -> SelectionRange {
     let anchor_first = (range.anchor_row, range.anchor_col) <= (range.focus_row, range.focus_col);
+    // Equal endpoints are a caret; round both the same way so it stays one.
+    let collapsed = (range.anchor_row, range.anchor_col) == (range.focus_row, range.focus_col);
     let offset = |row: u16, col: usize, first: bool| {
         let text = grid.column_text(row);
         if first {
@@ -117,7 +119,7 @@ fn offsets_of(mut range: SelectionRange, grid: &ClientGrid) -> SelectionRange {
         }
     };
     range.anchor_col = offset(range.anchor_row, range.anchor_col, anchor_first);
-    range.focus_col = offset(range.focus_row, range.focus_col, !anchor_first);
+    range.focus_col = offset(range.focus_row, range.focus_col, !anchor_first || collapsed);
     range
 }
 
@@ -2086,6 +2088,19 @@ mod tests {
         };
         let offsets = offsets_of(range, &grid);
         assert_eq!((offsets.anchor_col, offsets.focus_col), (2, 4));
+    }
+
+    #[test]
+    fn an_empty_selection_inside_a_wide_char_stays_a_caret() {
+        let grid = crate::render_grid::tests::grid_with("a中_b");
+        let range = SelectionRange {
+            anchor_row: 0,
+            anchor_col: 2,
+            focus_row: 0,
+            focus_col: 2,
+        };
+        let offsets = offsets_of(range, &grid);
+        assert_eq!(offsets.anchor_col, offsets.focus_col);
     }
 
     #[test]
