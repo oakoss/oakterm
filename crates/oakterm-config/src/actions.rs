@@ -171,7 +171,7 @@ impl ActionId {
 }
 
 /// Palette grouping category (Spec-0009). The full set is fixed even though
-/// `Workspace` and `Clipboard` have no wired core actions yet. `Ord`
+/// `Workspace` has no wired core actions yet. `Ord`
 /// follows declaration order, which is the palette's group display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActionCategory {

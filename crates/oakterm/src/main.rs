@@ -3178,6 +3178,10 @@ impl App {
                 match arboard::Clipboard::new() {
                     Ok(mut cb) => match cb.get_text() {
                         Ok(text) if !text.is_empty() => {
+                            // As a typed key does: the paste lands at the live prompt.
+                            if self.viewport_offset() > 0 {
+                                self.return_to_live(self.focused_pane);
+                            }
                             let bracketed = self.focused_view().is_some_and(|v| v.bracketed_paste);
                             if let Some(daemon) = &mut self.daemon {
                                 // Normalize line endings: PTY expects \r.
@@ -3348,10 +3352,7 @@ impl App {
             can_focus_up: can(FocusDirection::Up),
             can_focus_down: can(FocusDirection::Down),
             copy_mode_supported: copy_mode_supported(self.server_minor),
-            has_selection: self
-                .focused_view()
-                .and_then(PaneView::selected_text)
-                .is_some(),
+            has_selection: self.focused_view().is_some_and(PaneView::has_selection),
         }
     }
 

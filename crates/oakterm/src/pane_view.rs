@@ -115,11 +115,16 @@ impl PaneView {
         self.viewport_offset
     }
 
-    /// The selection's text, or `None` when there is nothing to copy; a
-    /// plain click leaves a selection that covers no text.
+    /// Judged by anchors, not visible text, so an off-screen selection counts.
+    #[must_use]
+    pub(crate) fn has_selection(&self) -> bool {
+        self.selection.as_ref().is_some_and(Selection::covers_cells)
+    }
+
+    /// The selection's visible text, or `None` when there is nothing to copy.
     #[must_use]
     pub(crate) fn selected_text(&self) -> Option<String> {
-        let sel = self.selection.as_ref()?;
+        let sel = self.selection.as_ref().filter(|_| self.has_selection())?;
         let text = self.grid.extract_selection_text(sel, self.viewport_offset);
         (!text.is_empty()).then_some(text)
     }
@@ -726,6 +731,24 @@ mod tests {
             Some("hello"),
             "a line click"
         );
+        view.selection = Some(Selection::new(
+            SelectionType::Normal,
+            0,
+            0,
+            AnchorSide::Left,
+        ));
+        assert_eq!(view.selected_text(), None, "a plain click in column 0");
+        assert!(!view.has_selection());
+    }
+
+    #[test]
+    fn a_selection_scrolled_off_screen_still_counts() {
+        use oakterm_terminal::grid::selection::{AnchorSide, Selection, SelectionType};
+        let mut view = PaneView::new(crate::render_grid::tests::grid_with("hello"));
+        let mut sel = Selection::new(SelectionType::Normal, -40, 0, AnchorSide::Left);
+        sel.update(-40, 3, AnchorSide::Right);
+        view.selection = Some(sel);
+        assert!(view.has_selection());
     }
 
     #[test]

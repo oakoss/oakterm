@@ -129,6 +129,23 @@ impl Selection {
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }
+
+    /// Whether any whole cell lies between the anchors: a cell counts once
+    /// the selection reaches past its midpoint from both sides.
+    #[must_use]
+    pub fn covers_cells(&self) -> bool {
+        if self.ty == SelectionType::Line {
+            return true;
+        }
+        let (start, end) = self.normalized();
+        if start.row != end.row {
+            return true;
+        }
+        let first = start.col + u16::from(start.side == AnchorSide::Right);
+        end.col
+            .checked_sub(u16::from(end.side == AnchorSide::Left))
+            .is_some_and(|last| first <= last)
+    }
 }
 
 /// Find word boundaries around a column position in a row of text.
@@ -181,6 +198,38 @@ mod tests {
         assert_eq!(sel.start.col, 10);
         assert_eq!(sel.end, sel.start);
         assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn covers_a_cell_only_when_its_half_cell_ends_enclose_one() {
+        use AnchorSide::{Left, Right};
+        let sel = |a: (u16, AnchorSide), b: (u16, AnchorSide)| {
+            let mut s = Selection::new(SelectionType::Normal, 0, a.0, a.1);
+            s.update(0, b.0, b.1);
+            s
+        };
+        assert!(!sel((2, Left), (2, Left)).covers_cells(), "a click");
+        assert!(
+            !sel((0, Left), (0, Left)).covers_cells(),
+            "a click in column 0"
+        );
+        assert!(
+            !sel((2, Right), (2, Left)).covers_cells(),
+            "a drift within a cell"
+        );
+        assert!(
+            !sel((2, Right), (3, Left)).covers_cells(),
+            "across a cell boundary"
+        );
+        assert!(sel((2, Left), (2, Right)).covers_cells());
+        assert!(
+            sel((3, Right), (1, Left)).covers_cells(),
+            "dragged leftward"
+        );
+        let mut rows = Selection::new(SelectionType::Normal, 0, 5, Right);
+        rows.update(1, 0, Left);
+        assert!(rows.covers_cells(), "spans rows");
+        assert!(Selection::new(SelectionType::Line, 0, 0, Left).covers_cells());
     }
 
     #[test]
