@@ -1537,11 +1537,11 @@ impl App {
             .font
             .as_ref()
             .map_or(8.0, |f| f64::from(f.metrics().cell_width));
-        let side = if (self.last_mouse_pixel.0 % cw) > (cw / 2.0) {
-            AnchorSide::Right
-        } else {
-            AnchorSide::Left
-        };
+        let side = input::cell_side(
+            self.last_mouse_pixel.0,
+            f64::from(self.config.padding.left),
+            cw,
+        );
 
         // Multi-click detection: same cell within 300ms increments click count.
         let same_cell = self.last_click_pos == (col, row);
@@ -2118,13 +2118,11 @@ impl ApplicationHandler<UserEvent> for App {
                         use oakterm_terminal::grid::selection::{
                             AnchorSide, SelectionType, word_boundaries,
                         };
-                        let cw = f64::from(font.metrics().cell_width);
-                        let adj_x = (position.x - f64::from(self.config.padding.left)).max(0.0);
-                        let side = if (adj_x % cw) > (cw / 2.0) {
-                            AnchorSide::Right
-                        } else {
-                            AnchorSide::Left
-                        };
+                        let side = input::cell_side(
+                            position.x,
+                            f64::from(self.config.padding.left),
+                            f64::from(font.metrics().cell_width),
+                        );
                         if let Some(view) = self.panes.get_mut(&self.focused_pane) {
                             let sel_row = i64::from(row) - i64::from(view.viewport_offset());
                             let grid_rows = view.grid().rows;

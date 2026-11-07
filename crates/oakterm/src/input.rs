@@ -375,6 +375,21 @@ pub(crate) fn resolve_key(
     either(&|c| ctx.registry.lookup_index(c)).map_or(KeyDispatch::Forward, KeyDispatch::Binding)
 }
 
+/// Which half of its cell window pixel `x` falls in, measured from the grid's
+/// left edge past the padding.
+pub(crate) fn cell_side(
+    x: f64,
+    padding_left: f64,
+    cell_width: f64,
+) -> oakterm_terminal::grid::selection::AnchorSide {
+    use oakterm_terminal::grid::selection::AnchorSide;
+    if ((x - padding_left).max(0.0) % cell_width) > cell_width / 2.0 {
+        AnchorSide::Right
+    } else {
+        AnchorSide::Left
+    }
+}
+
 /// Encode winit modifier state to xterm mouse modifier bits.
 /// Shift=4, Alt/Meta=8, Ctrl=16.
 #[must_use]
@@ -459,6 +474,19 @@ mod tests {
         assert_eq!(bytes(ModifiersState::SUPER | ModifiersState::SHIFT), None);
         assert_eq!(bytes(ModifiersState::empty()), Some(b"c".to_vec()));
         assert_eq!(bytes(ModifiersState::CONTROL), Some(vec![0x03]));
+    }
+
+    #[test]
+    fn the_half_of_a_cell_is_measured_past_the_padding() {
+        use oakterm_terminal::grid::selection::AnchorSide;
+        // 10px cells behind 6px of padding: the second cell spans x 16..26.
+        assert_eq!(cell_side(18.0, 6.0, 10.0), AnchorSide::Left);
+        assert_eq!(cell_side(24.0, 6.0, 10.0), AnchorSide::Right);
+        assert_eq!(
+            cell_side(3.0, 6.0, 10.0),
+            AnchorSide::Left,
+            "in the padding"
+        );
     }
 
     #[test]
