@@ -2155,7 +2155,7 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                     }
                                 } else {
-                                    sel.update(sel_row, col, side);
+                                    sel.extend_to(sel_row, col, side);
                                 }
                             }
                         }

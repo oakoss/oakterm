@@ -48,6 +48,21 @@ impl Selection {
         self.end = SelectionAnchor { row, col, side };
     }
 
+    /// Drag the end to a point, keeping the pressed cell selected whichever
+    /// half was pressed once the drag leaves it: the start takes the side
+    /// facing away from the drag. Within the pressed cell, jitter selects nothing.
+    pub fn extend_to(&mut self, row: i64, col: u16, side: AnchorSide) {
+        self.update(row, col, side);
+        let start_cell = (self.start.row, self.start.col);
+        if (row, col) != start_cell {
+            self.start.side = if (row, col) < start_cell {
+                AnchorSide::Right
+            } else {
+                AnchorSide::Left
+            };
+        }
+    }
+
     /// Return (earlier, later) anchors regardless of drag direction.
     #[must_use]
     pub fn normalized(&self) -> (SelectionAnchor, SelectionAnchor) {
@@ -230,6 +245,26 @@ mod tests {
         rows.update(1, 0, Left);
         assert!(rows.covers_cells(), "spans rows");
         assert!(Selection::new(SelectionType::Line, 0, 0, Left).covers_cells());
+    }
+
+    #[test]
+    fn a_drag_keeps_the_pressed_cell_whichever_half_was_pressed() {
+        use AnchorSide::{Left, Right};
+        let cols = |s: &Selection| (0..10).filter(|&c| s.contains(0, c)).collect::<Vec<_>>();
+        let mut right_half = Selection::new(SelectionType::Normal, 0, 3, Right);
+        right_half.extend_to(0, 5, Left);
+        assert_eq!(cols(&right_half), [3, 4], "forward from a right half");
+        let mut left_half = Selection::new(SelectionType::Normal, 0, 3, Left);
+        left_half.extend_to(0, 1, Left);
+        assert_eq!(cols(&left_half), [1, 2, 3], "backward from a left half");
+        for end in [Left, Right] {
+            let mut wiggle = Selection::new(SelectionType::Normal, 0, 3, Right);
+            wiggle.extend_to(0, 3, end);
+            assert!(
+                !wiggle.covers_cells(),
+                "jitter within the pressed cell ({end:?})"
+            );
+        }
     }
 
     #[test]
