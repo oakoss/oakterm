@@ -186,9 +186,20 @@ impl<'a, R: RowText> Scan<'a, R> {
         true
     }
 
+    /// Like `step_forward`, but over a wide char's second cell. Backward needs
+    /// no skip: that cell reads as its char's class.
+    fn forward(&mut self) -> bool {
+        while self.step_forward() {
+            if self.chars.get(usize::from(self.at.1)) != Some(&WIDE_TAIL) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Step one cell in reading order, or `false` at the end of the
     /// served region.
-    fn forward(&mut self) -> bool {
+    fn step_forward(&mut self) -> bool {
         let (row, col) = self.at;
         if col < self.bounds.last_col() {
             self.at = (row, col + 1);
@@ -397,6 +408,16 @@ mod tests {
         assert_eq!(go(Motion::WordEnd, (0, 2), &rows, b), (0, 4));
         assert_eq!(go(Motion::WordBackward, (0, 7), &rows, b), (0, 2));
         assert_eq!(go(Motion::WordForward, (0, 2), &rows, b), (0, 7));
+    }
+
+    #[test]
+    fn repeated_word_end_walks_past_words_ending_in_a_wide_char() {
+        let rows = wide_rows(0, &["a 中_文_ b"]);
+        let b = bounds(0, 0, 12);
+        assert_eq!(go(Motion::WordEnd, (0, 2), &rows, b), (0, 4));
+        assert_eq!(go(Motion::WordEnd, (0, 4), &rows, b), (0, 7));
+        let rows = wide_rows(0, &["中_ x"]);
+        assert_eq!(go(Motion::WordEnd, (0, 0), &rows, bounds(0, 0, 6)), (0, 3));
     }
 
     // --- Arrow-equivalent motions ---
