@@ -187,6 +187,10 @@ fn shape_run(c: &mut Criterion) {
     group.bench_function("emoji_fallback", |b| {
         b.iter(|| shape_each("🦀✨🚀"));
     });
+    // Deepest walk: CJK passes the emoji and symbol faces first, Hangul furthest.
+    group.bench_function("cjk_fallback", |b| {
+        b.iter(|| shape_each("中文あア한글"));
+    });
     group.finish();
 }
 
