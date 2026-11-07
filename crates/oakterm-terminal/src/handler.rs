@@ -217,8 +217,8 @@ fn write_cell(g: &mut Grid, c: char, width: u16) -> Vec<Row> {
     captured
 }
 
-/// Fits real clusters (a skin-toned ZWJ family is about a dozen) while a
-/// flood of combining marks cannot grow one cell without limit.
+/// Well above real combining-mark stacks, so a flood of marks cannot grow
+/// one cell without limit.
 const MAX_GRAPHEME_EXTRA: usize = 32;
 
 /// Join a zero-width char (combining mark, ZWJ, variation selector) to the
