@@ -2116,7 +2116,7 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(btn) = input::forwarded_drag_button(
                         self.held_pane_buttons,
                         self.suppressed_buttons,
-                    ) && !self.send_mouse_event(2, btn)
+                    ) && !self.send_mouse_event(self.focused_pane, 2, btn)
                     {
                         event_loop.exit();
                         return;
@@ -2285,7 +2285,9 @@ impl ApplicationHandler<UserEvent> for App {
                 if !pressed && !pass.forward && btn == 0 {
                     self.mouse_pressed = false;
                 }
-                if pass.forward && !self.send_mouse_event(u8::from(!pressed), btn) {
+                if pass.forward
+                    && !self.send_mouse_event(self.focused_pane, u8::from(!pressed), btn)
+                {
                     event_loop.exit();
                 }
             }
@@ -2304,42 +2306,38 @@ impl ApplicationHandler<UserEvent> for App {
                 #[allow(clippy::cast_possible_wrap)]
                 let scroll_lines = (3 * count) as i32;
 
+                // The wheel scrolls the pane under the pointer without
+                // moving focus.
+                let Some((pane_id, _)) = self.mouse_pane() else {
+                    return;
+                };
+                if let Some(cell) = self.mouse_cell() {
+                    self.last_mouse_cell = cell;
+                }
+                let view = self.panes.get(&pane_id);
                 let shift = self.modifiers.state().shift_key();
-                let alt_screen = self.focused_view().is_some_and(|v| v.grid().alt_screen);
+                let alt_screen = view.is_some_and(|v| v.grid().alt_screen);
+                let copy_mode = view.is_some_and(PaneView::is_copy_mode);
 
                 let delta = if scroll_up {
                     scroll_lines
                 } else {
                     -scroll_lines
                 };
-                let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
-                let route =
-                    copy_session::wheel_route(copy_mode, self.viewport_offset(), shift, alt_screen);
+                let route = copy_session::wheel_route(
+                    copy_mode,
+                    self.pane_viewport_offset(pane_id),
+                    shift,
+                    alt_screen,
+                );
                 if route == copy_session::WheelRoute::Screen {
-                    self.scroll_screen(self.focused_pane, delta);
-                } else if let Some(daemon) = self.daemon.as_mut() {
-                    let (x, y) = self.last_mouse_cell;
+                    self.scroll_screen(pane_id, delta);
+                } else {
                     let event_type = if scroll_up { 3u8 } else { 4u8 };
-                    let mods = input::encode_mouse_modifiers(self.modifiers);
                     for _ in 0..count.min(5) {
-                        let msg = MouseInput {
-                            pane_id: self.focused_pane,
-                            event_type,
-                            x,
-                            y,
-                            modifiers: mods,
-                            button: 0,
-                        };
-                        match msg.to_frame() {
-                            Ok(frame) => {
-                                if let Err(e) = daemon.send_frame(&frame) {
-                                    error!(error = %e, "daemon write failed");
-                                    self.daemon = None;
-                                    event_loop.exit();
-                                    return;
-                                }
-                            }
-                            Err(e) => error!(error = %e, "failed to encode mouse wheel"),
+                        if !self.send_mouse_event(pane_id, event_type, 0) {
+                            event_loop.exit();
+                            return;
                         }
                     }
                 }
@@ -3452,13 +3450,13 @@ impl App {
         )
     }
 
-    /// Send a mouse event at the pointer's cell to the focused pane's PTY;
-    /// `event_type` is 0 press, 1 release, 2 motion. Returns `false` when
-    /// the daemon write failed (connection dropped).
-    fn send_mouse_event(&mut self, event_type: u8, button: u8) -> bool {
+    /// Send a mouse event at the pointer's cell to `pane_id`'s PTY;
+    /// `event_type` is 0 press, 1 release, 2 motion, 3/4 wheel up/down.
+    /// Returns `false` when the daemon write failed (connection dropped).
+    fn send_mouse_event(&mut self, pane_id: u32, event_type: u8, button: u8) -> bool {
         let (x, y) = self.last_mouse_cell;
         let msg = MouseInput {
-            pane_id: self.focused_pane,
+            pane_id,
             event_type,
             x,
             y,
