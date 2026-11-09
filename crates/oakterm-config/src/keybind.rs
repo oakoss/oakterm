@@ -1073,10 +1073,9 @@ mod tests {
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
         ));
-        if cfg!(target_os = "macos") {
-            let cmd_p = KeyChord::parse("super+p").unwrap();
-            assert!(reg.lookup(&cmd_p).is_none(), "Cmd+P stays free");
-        }
+        let mac = KeybindRegistry::with_defaults_for(ModifierSet::parse("super").unwrap());
+        let cmd_p = KeyChord::parse("super+p").unwrap();
+        assert!(mac.lookup(&cmd_p).is_none(), "Cmd+P stays free");
     }
 
     #[test]
