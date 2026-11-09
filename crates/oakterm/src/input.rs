@@ -1120,8 +1120,8 @@ mod tests {
             palette_key_effect(&Key::Character("t".into()), none, Some("t")),
             E::Input("t".to_string())
         );
-        // A chord's base character must not leak into the query: Cmd+P
-        // (the palette's own bind), Ctrl+X, Alt+F all ignore.
+        // A chord's base character must not leak into the query: Cmd+P,
+        // Ctrl+X, Alt+F all ignore.
         for state in [
             ModifiersState::SUPER,
             ModifiersState::CONTROL,

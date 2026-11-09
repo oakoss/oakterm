@@ -261,7 +261,7 @@ This hint text is configurable and auto-hides after `status_bar_hint_duration` (
 
 ### Palette Lifecycle
 
-1. User presses `oak_mod + P` (or configured keybind).
+1. User presses `oak_mod + Shift + P` (or configured keybind).
 2. Palette appears centered at the top of the window, overlaying pane content.
 3. User types to filter. Results update on each keystroke; selection and scroll window reset to the top.
 4. `Up`/`Down` or `Ctrl+p`/`Ctrl+n` navigate results. At most `MAX_VISIBLE_RESULTS` (10) rows are visible; the window scrolls only when the selection crosses its edge.

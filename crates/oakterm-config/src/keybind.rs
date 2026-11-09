@@ -499,7 +499,9 @@ impl KeybindRegistry {
             ("oak_mod+l", Action::FocusPaneDirection("right".to_string())),
             ("oak_mod+t", Action::NewTab),
             ("oak_mod+w", Action::ClosePane),
-            ("oak_mod+p", Action::ShowCommandPalette),
+            // Cmd+Shift+P on macOS; on Linux oak_mod already holds Shift, so
+            // this stays Ctrl+Shift+P.
+            ("oak_mod+shift+p", Action::ShowCommandPalette),
             ("oak_mod+[", Action::EnterCopyMode),
             ("oak_mod+f", Action::Find),
             // Copy is performable only with a selection, so with nothing
@@ -1066,11 +1068,15 @@ mod tests {
     #[test]
     fn defaults_include_the_command_palette() {
         let reg = KeybindRegistry::with_defaults();
-        let chord = KeyChord::parse_with_oak_mod("oak_mod+p", platform_mods()).unwrap();
+        let chord = KeyChord::parse_with_oak_mod("oak_mod+shift+p", platform_mods()).unwrap();
         assert!(matches!(
             reg.lookup(&chord),
             Some(Action::ShowCommandPalette)
         ));
+        if cfg!(target_os = "macos") {
+            let cmd_p = KeyChord::parse("super+p").unwrap();
+            assert!(reg.lookup(&cmd_p).is_none(), "Cmd+P stays free");
+        }
     }
 
     #[test]
