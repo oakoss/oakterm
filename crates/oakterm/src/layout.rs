@@ -168,6 +168,62 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         .collect()
 }
 
+/// The pane a mouse event belongs to, with its rect: the focused pane while
+/// any button is held (the press focused it), else the pane nearest the
+/// pointer, so a point in the padding or on a border goes to the pane beside
+/// it. `geometry` is `None` for a single pane, which fills `content`.
+#[must_use]
+pub fn mouse_target(
+    geometry: Option<&LayoutGeometry>,
+    content: PixelRect,
+    x: f64,
+    y: f64,
+    focused: u32,
+    held: bool,
+) -> Option<(u32, PixelRect)> {
+    let Some(geo) = geometry else {
+        return Some((focused, content));
+    };
+    let target = if held {
+        geo.panes.iter().find(|p| p.pane_id == focused)
+    } else {
+        nearest_pane(geo, x, y)
+    };
+    target.map(|p| (p.pane_id, p.rect))
+}
+
+/// The pane whose rect is closest to the point (zero inside it); ties go to
+/// the first in traversal order.
+fn nearest_pane(geometry: &LayoutGeometry, x: f64, y: f64) -> Option<&PaneRect> {
+    let distance = |r: PixelRect| {
+        let (x0, y0) = (f64::from(r.x), f64::from(r.y));
+        let (x1, y1) = (x0 + f64::from(r.width), y0 + f64::from(r.height));
+        let dx = (x0 - x).max(x - x1).max(0.0);
+        let dy = (y0 - y).max(y - y1).max(0.0);
+        dx * dx + dy * dy
+    };
+    geometry
+        .panes
+        .iter()
+        .min_by(|a, b| distance(a.rect).total_cmp(&distance(b.rect)))
+}
+
+/// The `(col, row)` cell window pixel `(x, y)` falls in, measured from
+/// `rect`'s origin, clamped to the rect's grid: a drag past the pane's
+/// edge reports its edge cell, as xterm keeps reports on screen.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped non-negative
+pub fn cell_in(rect: PixelRect, x: f64, y: f64, cell_width: f64, cell_height: f64) -> (u16, u16) {
+    let axis = |offset: f64, extent: u32, cell: f64| {
+        let last = ((f64::from(extent) / cell).floor() - 1.0).max(0.0);
+        (offset.max(0.0) / cell).min(last) as u16
+    };
+    (
+        axis(x - f64::from(rect.x), rect.width, cell_width),
+        axis(y - f64::from(rect.y), rect.height, cell_height),
+    )
+}
+
 /// Index of the border under the pixel position, if any. The 1px border
 /// rect is expanded by `pad` on its thin axis so it is grabbable; the
 /// long axis is exact. Overlapping grab zones resolve to the first
@@ -823,6 +879,64 @@ mod tests {
 
     fn pair(before: u32, after: u32) -> FlankedPanes {
         FlankedPanes { before, after }
+    }
+
+    #[test]
+    fn mouse_target_follows_the_pointer_until_a_button_is_held() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let in_right = f64::from(g.panes[1].rect.x) + 5.0;
+        let target = |held| mouse_target(Some(&g), CONTENT, in_right, 300.0, 1, held).map(|t| t.0);
+        assert_eq!(target(false), Some(2), "the pane under the pointer");
+        assert_eq!(
+            target(true),
+            Some(1),
+            "the pressed pane while a button is held"
+        );
+        let gutter = f64::from(CONTENT.x) - 4.0;
+        assert_eq!(
+            mouse_target(Some(&g), CONTENT, gutter, 300.0, 2, false).map(|t| t.0),
+            Some(1),
+            "in the padding, the pane beside it"
+        );
+        let below = f64::from(CONTENT.y + CONTENT.height) + 4.0;
+        assert_eq!(
+            mouse_target(Some(&g), CONTENT, in_right, below, 1, false).map(|t| t.0),
+            Some(2),
+            "under the panes, the one above"
+        );
+        assert_eq!(
+            mouse_target(None, CONTENT, 5.0, 5.0, 7, false),
+            Some((7, CONTENT)),
+            "a single pane fills the content area"
+        );
+    }
+
+    #[test]
+    fn cell_in_measures_from_the_pane_origin() {
+        let rect = PixelRect {
+            x: 400,
+            y: 30,
+            width: 400,
+            height: 300,
+        };
+        assert_eq!(cell_in(rect, 400.0 + 25.0, 30.0 + 41.0, 10.0, 20.0), (2, 2));
+        assert_eq!(
+            cell_in(rect, 100.0, 5.0, 10.0, 20.0),
+            (0, 0),
+            "left of and above the pane"
+        );
+        assert_eq!(
+            cell_in(rect, 2000.0, 2000.0, 10.0, 20.0),
+            (39, 14),
+            "past the right and bottom edges: the last cell"
+        );
     }
 
     #[test]

@@ -375,15 +375,15 @@ pub(crate) fn resolve_key(
     either(&|c| ctx.registry.lookup_index(c)).map_or(KeyDispatch::Forward, KeyDispatch::Binding)
 }
 
-/// Which half of its cell window pixel `x` falls in, measured from the grid's
-/// left edge past the padding.
+/// Which half of its cell window pixel `x` falls in, measured from the
+/// pane's left edge `origin_x`.
 pub(crate) fn cell_side(
     x: f64,
-    padding_left: f64,
+    origin_x: f64,
     cell_width: f64,
 ) -> oakterm_terminal::grid::selection::AnchorSide {
     use oakterm_terminal::grid::selection::AnchorSide;
-    if ((x - padding_left).max(0.0) % cell_width) > cell_width / 2.0 {
+    if ((x - origin_x).max(0.0) % cell_width) > cell_width / 2.0 {
         AnchorSide::Right
     } else {
         AnchorSide::Left
@@ -414,6 +414,13 @@ pub(crate) fn encode_mouse_modifiers(mods: winit::event::Modifiers) -> u8 {
 pub(crate) struct MousePassthrough {
     pub(crate) forward: bool,
     pub(crate) suppressed: u8,
+}
+
+/// The button a drag reports to the application: the lowest held button
+/// whose press reached it. A swallowed press (a selection) reports nothing.
+pub(crate) fn forwarded_drag_button(held: u8, suppressed: u8) -> Option<u8> {
+    let forwarded = held & !suppressed;
+    (forwarded != 0).then(|| u8::try_from(forwarded.trailing_zeros()).unwrap_or(0))
 }
 
 /// Route one mouse button event to the PTY or swallow it. `swallow_press`
@@ -464,6 +471,25 @@ mod tests {
             !binding_releases(&Action::ScrollUp(1), none),
             "outside the catalog"
         );
+    }
+
+    #[test]
+    fn a_drag_reports_the_held_button_the_application_saw_pressed() {
+        let (left, middle, right) = (1u8, 1 << 1, 1 << 2);
+        assert_eq!(forwarded_drag_button(0, 0), None, "no button held");
+        assert_eq!(forwarded_drag_button(left, 0), Some(0));
+        assert_eq!(forwarded_drag_button(right, 0), Some(2));
+        assert_eq!(
+            forwarded_drag_button(left | middle, 0),
+            Some(0),
+            "lowest first"
+        );
+        assert_eq!(
+            forwarded_drag_button(left, left),
+            None,
+            "a selection drag, swallowed"
+        );
+        assert_eq!(forwarded_drag_button(left | right, left), Some(2));
     }
 
     #[test]
