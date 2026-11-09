@@ -593,7 +593,7 @@ mod tests {
             Some(expected_new_tab)
         );
         let expected_palette = if cfg!(target_os = "macos") {
-            "Cmd+P"
+            "Cmd+Shift+P"
         } else {
             "Ctrl+Shift+P"
         };
