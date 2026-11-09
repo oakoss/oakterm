@@ -168,21 +168,10 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         .collect()
 }
 
-/// The pane whose rect contains the pixel position, if any; borders
-/// belong to no pane.
-#[must_use]
-pub fn pane_at(geometry: &LayoutGeometry, x: f64, y: f64) -> Option<&PaneRect> {
-    geometry.panes.iter().find(|p| {
-        let r = p.rect;
-        let (x0, y0) = (f64::from(r.x), f64::from(r.y));
-        x >= x0 && x < x0 + f64::from(r.width) && y >= y0 && y < y0 + f64::from(r.height)
-    })
-}
-
 /// The pane a mouse event belongs to, with its rect: the focused pane while
-/// any button is held (the press focused it), else the pane under the
-/// pointer, falling back to the focused pane over a border. `geometry` is
-/// `None` for a single pane, which fills `content`.
+/// any button is held (the press focused it), else the pane nearest the
+/// pointer, so a point in the padding or on a border goes to the pane beside
+/// it. `geometry` is `None` for a single pane, which fills `content`.
 #[must_use]
 pub fn mouse_target(
     geometry: Option<&LayoutGeometry>,
@@ -195,10 +184,28 @@ pub fn mouse_target(
     let Some(geo) = geometry else {
         return Some((focused, content));
     };
-    let hovered = (!held).then(|| pane_at(geo, x, y)).flatten();
-    hovered
-        .or_else(|| geo.panes.iter().find(|p| p.pane_id == focused))
-        .map(|p| (p.pane_id, p.rect))
+    let target = if held {
+        geo.panes.iter().find(|p| p.pane_id == focused)
+    } else {
+        nearest_pane(geo, x, y)
+    };
+    target.map(|p| (p.pane_id, p.rect))
+}
+
+/// The pane whose rect is closest to the point (zero inside it); ties go to
+/// the first in traversal order.
+fn nearest_pane(geometry: &LayoutGeometry, x: f64, y: f64) -> Option<&PaneRect> {
+    let distance = |r: PixelRect| {
+        let (x0, y0) = (f64::from(r.x), f64::from(r.y));
+        let (x1, y1) = (x0 + f64::from(r.width), y0 + f64::from(r.height));
+        let dx = (x0 - x).max(x - x1).max(0.0);
+        let dy = (y0 - y).max(y - y1).max(0.0);
+        dx * dx + dy * dy
+    };
+    geometry
+        .panes
+        .iter()
+        .min_by(|a, b| distance(a.rect).total_cmp(&distance(b.rect)))
 }
 
 /// The `(col, row)` cell window pixel `(x, y)` falls in, measured from
@@ -875,32 +882,6 @@ mod tests {
     }
 
     #[test]
-    fn pane_at_finds_the_pane_under_a_point() {
-        let g = compute_layout(
-            &container(
-                LayoutDirection::Horizontal,
-                vec![leaf(1), leaf(2)],
-                vec![0.5, 0.5],
-            ),
-            CONTENT,
-        );
-        let right = g.panes[1].rect;
-        assert_eq!(
-            pane_at(&g, f64::from(CONTENT.x) + 5.0, 300.0).map(|p| p.pane_id),
-            Some(1)
-        );
-        assert_eq!(
-            pane_at(&g, f64::from(right.x) + 5.0, 300.0).map(|p| p.pane_id),
-            Some(2)
-        );
-        assert_eq!(
-            pane_at(&g, f64::from(g.borders[0].x), 300.0),
-            None,
-            "on the border"
-        );
-    }
-
-    #[test]
     fn mouse_target_follows_the_pointer_until_a_button_is_held() {
         let g = compute_layout(
             &container(
@@ -918,11 +899,17 @@ mod tests {
             Some(1),
             "the pressed pane while a button is held"
         );
-        let border = f64::from(g.borders[0].x);
+        let gutter = f64::from(CONTENT.x) - 4.0;
         assert_eq!(
-            mouse_target(Some(&g), CONTENT, border, 300.0, 1, false).map(|t| t.0),
+            mouse_target(Some(&g), CONTENT, gutter, 300.0, 2, false).map(|t| t.0),
             Some(1),
-            "over a border, the focused pane"
+            "in the padding, the pane beside it"
+        );
+        let below = f64::from(CONTENT.y + CONTENT.height) + 4.0;
+        assert_eq!(
+            mouse_target(Some(&g), CONTENT, in_right, below, 1, false).map(|t| t.0),
+            Some(2),
+            "under the panes, the one above"
         );
         assert_eq!(
             mouse_target(None, CONTENT, 5.0, 5.0, 7, false),

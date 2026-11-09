@@ -1946,9 +1946,12 @@ impl ApplicationHandler<UserEvent> for App {
                         let (x, y) = self.last_mouse_pixel;
                         self.update_border_hover(x, y);
                     }
-                    // Likewise a held pane button: stuck, it would pin mouse
-                    // events to this pane and report drags with no button down.
+                    // Likewise every button mask: a stuck bit would pin mouse
+                    // events to this pane, report drags with no button down,
+                    // or swallow the next click's release.
                     self.held_pane_buttons = 0;
+                    self.suppressed_buttons = 0;
+                    self.chrome_pressed_buttons = 0;
                     self.mouse_pressed = false;
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -2235,6 +2238,9 @@ impl ApplicationHandler<UserEvent> for App {
                     && pane_id != self.focused_pane
                 {
                     self.focus_pane(pane_id);
+                    // Click cells are pane-relative: a click in another pane
+                    // never continues the last pane's double-click.
+                    self.last_click_time = None;
                 }
                 if let Some(cell) = self.mouse_cell() {
                     self.last_mouse_cell = cell;
