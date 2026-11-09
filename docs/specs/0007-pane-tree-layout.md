@@ -252,6 +252,8 @@ Directional focus (left, right, up, down) finds the nearest pane in the requeste
 
 Focus navigation is purely geometric, not tree-structural. This avoids confusing behavior when the tree structure does not match the visual layout.
 
+**Mouse focus.** A mouse press inside a pane's rect focuses that pane before the press acts, so selection and mouse reports go to the pane under the pointer with cell coordinates measured from its own origin. A press on a border starts a resize instead (see Resize). While any button pressed in a pane is held, events stay with that pane, so a drag that crosses into another pane neither refocuses nor remeasures; motion during a drag the application saw pressed is reported to it each time the pointer changes cells (forwarded by the daemon only under mode 1002 or 1003).
+
 ### Tab Operations
 
 - **New tab:** Append a new tab with a single pane (default shell). The new tab becomes active.

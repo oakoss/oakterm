@@ -168,6 +168,55 @@ pub fn focused_border_indices(geometry: &LayoutGeometry, focused_pane: u32) -> V
         .collect()
 }
 
+/// The pane whose rect contains the pixel position, if any; borders
+/// belong to no pane.
+#[must_use]
+pub fn pane_at(geometry: &LayoutGeometry, x: f64, y: f64) -> Option<&PaneRect> {
+    geometry.panes.iter().find(|p| {
+        let r = p.rect;
+        let (x0, y0) = (f64::from(r.x), f64::from(r.y));
+        x >= x0 && x < x0 + f64::from(r.width) && y >= y0 && y < y0 + f64::from(r.height)
+    })
+}
+
+/// The pane a mouse event belongs to, with its rect: the focused pane while
+/// any button is held (the press focused it), else the pane under the
+/// pointer, falling back to the focused pane over a border. `geometry` is
+/// `None` for a single pane, which fills `content`.
+#[must_use]
+pub fn mouse_target(
+    geometry: Option<&LayoutGeometry>,
+    content: PixelRect,
+    x: f64,
+    y: f64,
+    focused: u32,
+    held: bool,
+) -> Option<(u32, PixelRect)> {
+    let Some(geo) = geometry else {
+        return Some((focused, content));
+    };
+    let hovered = (!held).then(|| pane_at(geo, x, y)).flatten();
+    hovered
+        .or_else(|| geo.panes.iter().find(|p| p.pane_id == focused))
+        .map(|p| (p.pane_id, p.rect))
+}
+
+/// The `(col, row)` cell window pixel `(x, y)` falls in, measured from
+/// `rect`'s origin, clamped to the rect's grid: a drag past the pane's
+/// edge reports its edge cell, as xterm keeps reports on screen.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped non-negative
+pub fn cell_in(rect: PixelRect, x: f64, y: f64, cell_width: f64, cell_height: f64) -> (u16, u16) {
+    let axis = |offset: f64, extent: u32, cell: f64| {
+        let last = ((f64::from(extent) / cell).floor() - 1.0).max(0.0);
+        (offset.max(0.0) / cell).min(last) as u16
+    };
+    (
+        axis(x - f64::from(rect.x), rect.width, cell_width),
+        axis(y - f64::from(rect.y), rect.height, cell_height),
+    )
+}
+
 /// Index of the border under the pixel position, if any. The 1px border
 /// rect is expanded by `pad` on its thin axis so it is grabbable; the
 /// long axis is exact. Overlapping grab zones resolve to the first
@@ -823,6 +872,84 @@ mod tests {
 
     fn pair(before: u32, after: u32) -> FlankedPanes {
         FlankedPanes { before, after }
+    }
+
+    #[test]
+    fn pane_at_finds_the_pane_under_a_point() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let right = g.panes[1].rect;
+        assert_eq!(
+            pane_at(&g, f64::from(CONTENT.x) + 5.0, 300.0).map(|p| p.pane_id),
+            Some(1)
+        );
+        assert_eq!(
+            pane_at(&g, f64::from(right.x) + 5.0, 300.0).map(|p| p.pane_id),
+            Some(2)
+        );
+        assert_eq!(
+            pane_at(&g, f64::from(g.borders[0].x), 300.0),
+            None,
+            "on the border"
+        );
+    }
+
+    #[test]
+    fn mouse_target_follows_the_pointer_until_a_button_is_held() {
+        let g = compute_layout(
+            &container(
+                LayoutDirection::Horizontal,
+                vec![leaf(1), leaf(2)],
+                vec![0.5, 0.5],
+            ),
+            CONTENT,
+        );
+        let in_right = f64::from(g.panes[1].rect.x) + 5.0;
+        let target = |held| mouse_target(Some(&g), CONTENT, in_right, 300.0, 1, held).map(|t| t.0);
+        assert_eq!(target(false), Some(2), "the pane under the pointer");
+        assert_eq!(
+            target(true),
+            Some(1),
+            "the pressed pane while a button is held"
+        );
+        let border = f64::from(g.borders[0].x);
+        assert_eq!(
+            mouse_target(Some(&g), CONTENT, border, 300.0, 1, false).map(|t| t.0),
+            Some(1),
+            "over a border, the focused pane"
+        );
+        assert_eq!(
+            mouse_target(None, CONTENT, 5.0, 5.0, 7, false),
+            Some((7, CONTENT)),
+            "a single pane fills the content area"
+        );
+    }
+
+    #[test]
+    fn cell_in_measures_from_the_pane_origin() {
+        let rect = PixelRect {
+            x: 400,
+            y: 30,
+            width: 400,
+            height: 300,
+        };
+        assert_eq!(cell_in(rect, 400.0 + 25.0, 30.0 + 41.0, 10.0, 20.0), (2, 2));
+        assert_eq!(
+            cell_in(rect, 100.0, 5.0, 10.0, 20.0),
+            (0, 0),
+            "left of and above the pane"
+        );
+        assert_eq!(
+            cell_in(rect, 2000.0, 2000.0, 10.0, 20.0),
+            (39, 14),
+            "past the right and bottom edges: the last cell"
+        );
     }
 
     #[test]

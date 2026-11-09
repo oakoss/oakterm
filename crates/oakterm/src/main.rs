@@ -664,6 +664,9 @@ struct App {
     /// `copy_session::swallows_press`); their release is swallowed with it
     /// so an application never sees half a click.
     suppressed_buttons: u8,
+    /// Buttons pressed in a pane and not yet released (bit per button), so
+    /// a drag stays with the pane it started in.
+    held_pane_buttons: u8,
     /// Blink phase: true = cursor visible, false = cursor hidden.
     blink_visible: bool,
     /// Next blink toggle deadline. `None` when blink is paused.
@@ -764,6 +767,7 @@ impl App {
             last_mouse_cell: (0, 0),
             modifiers: winit::event::Modifiers::default(),
             suppressed_buttons: 0,
+            held_pane_buttons: 0,
             blink_visible: true,
             blink_deadline: None,
             clock_deadline: None,
@@ -1537,11 +1541,10 @@ impl App {
             .font
             .as_ref()
             .map_or(8.0, |f| f64::from(f.metrics().cell_width));
-        let side = input::cell_side(
-            self.last_mouse_pixel.0,
-            f64::from(self.config.padding.left),
-            cw,
-        );
+        let origin_x = self
+            .mouse_pane()
+            .map_or(f64::from(self.config.padding.left), |(_, r)| f64::from(r.x));
+        let side = input::cell_side(self.last_mouse_pixel.0, origin_x, cw);
 
         // Multi-click detection: same cell within 300ms increments click count.
         let same_cell = self.last_click_pos == (col, row);
@@ -1943,6 +1946,10 @@ impl ApplicationHandler<UserEvent> for App {
                         let (x, y) = self.last_mouse_pixel;
                         self.update_border_hover(x, y);
                     }
+                    // Likewise a held pane button: stuck, it would pin mouse
+                    // events to this pane and report drags with no button down.
+                    self.held_pane_buttons = 0;
+                    self.mouse_pressed = false;
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -2097,22 +2104,24 @@ impl ApplicationHandler<UserEvent> for App {
                     return;
                 }
                 self.update_border_hover(position.x, position.y);
-                let (top_px, _) = self.chrome_px();
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::cast_precision_loss // padding values are small
-                )]
-                if let Some(font) = &self.font {
-                    // Subtract padding and top chrome so clicks in the
-                    // gutter map to cell 0.
-                    let px = (position.x as f32 - self.config.padding.left as f32).max(0.0);
-                    let py = (position.y as f32 - self.config.padding.top as f32 - top_px as f32)
-                        .max(0.0);
-                    let col = (px / font.metrics().cell_width) as u16;
-                    let row = (py / font.metrics().cell_height) as u16;
-                    self.last_mouse_cell = (col, row);
-
+                let pane_rect = self.mouse_pane().map(|(_, rect)| rect);
+                let cell = self.mouse_cell();
+                if let Some(cell) = cell
+                    && cell != self.last_mouse_cell
+                {
+                    self.last_mouse_cell = cell;
+                    if let Some(btn) = input::forwarded_drag_button(
+                        self.held_pane_buttons,
+                        self.suppressed_buttons,
+                    ) && !self.send_mouse_event(2, btn)
+                    {
+                        event_loop.exit();
+                        return;
+                    }
+                }
+                if let (Some(font), Some(pane_rect), Some((col, row))) =
+                    (&self.font, pane_rect, cell)
+                {
                     // Update selection end during drag.
                     if self.mouse_pressed {
                         use oakterm_terminal::grid::selection::{
@@ -2120,7 +2129,7 @@ impl ApplicationHandler<UserEvent> for App {
                         };
                         let side = input::cell_side(
                             position.x,
-                            f64::from(self.config.padding.left),
+                            f64::from(pane_rect.x),
                             f64::from(font.metrics().cell_width),
                         );
                         if let Some(view) = self.panes.get_mut(&self.focused_pane) {
@@ -2219,6 +2228,22 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 let btn_bit = 1u8 << btn;
                 let pressed = state == ElementState::Pressed;
+                // A press acts on the pane under it, so it focuses that pane
+                // before the selection and PTY routing below read focus.
+                if pressed
+                    && let Some((pane_id, _)) = self.mouse_pane()
+                    && pane_id != self.focused_pane
+                {
+                    self.focus_pane(pane_id);
+                }
+                if let Some(cell) = self.mouse_cell() {
+                    self.last_mouse_cell = cell;
+                }
+                if pressed {
+                    self.held_pane_buttons |= btn_bit;
+                } else {
+                    self.held_pane_buttons &= !btn_bit;
+                }
                 let shift = self.modifiers.state().shift_key();
                 let copy_mode = self.focused_view().is_some_and(PaneView::is_copy_mode);
                 let mouse_reporting = self.focused_view().is_some_and(|v| v.mouse_reporting);
@@ -2254,27 +2279,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if !pressed && !pass.forward && btn == 0 {
                     self.mouse_pressed = false;
                 }
-                if let Some(daemon) = self.daemon.as_mut().filter(|_| pass.forward) {
-                    let (x, y) = self.last_mouse_cell;
-                    let event_type = u8::from(!pressed);
-                    let msg = MouseInput {
-                        pane_id: self.focused_pane,
-                        event_type,
-                        x,
-                        y,
-                        modifiers: input::encode_mouse_modifiers(self.modifiers),
-                        button: btn,
-                    };
-                    match msg.to_frame() {
-                        Ok(frame) => {
-                            if let Err(e) = daemon.send_frame(&frame) {
-                                error!(error = %e, "daemon write failed");
-                                self.daemon = None;
-                                event_loop.exit();
-                            }
-                        }
-                        Err(e) => error!(error = %e, "failed to encode mouse input"),
-                    }
+                if pass.forward && !self.send_mouse_event(u8::from(!pressed), btn) {
+                    event_loop.exit();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3425,6 +3431,62 @@ impl App {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+    }
+
+    /// The pane a mouse event at the pointer belongs to (`layout::mouse_target`).
+    fn mouse_pane(&self) -> Option<(u32, layout::PixelRect)> {
+        let (x, y) = self.last_mouse_pixel;
+        layout::mouse_target(
+            self.layout.active_geometry(),
+            self.content_rect()?,
+            x,
+            y,
+            self.focused_pane,
+            self.mouse_pressed || self.held_pane_buttons != 0,
+        )
+    }
+
+    /// Send a mouse event at the pointer's cell to the focused pane's PTY;
+    /// `event_type` is 0 press, 1 release, 2 motion. Returns `false` when
+    /// the daemon write failed (connection dropped).
+    fn send_mouse_event(&mut self, event_type: u8, button: u8) -> bool {
+        let (x, y) = self.last_mouse_cell;
+        let msg = MouseInput {
+            pane_id: self.focused_pane,
+            event_type,
+            x,
+            y,
+            modifiers: input::encode_mouse_modifiers(self.modifiers),
+            button,
+        };
+        let Some(daemon) = self.daemon.as_mut() else {
+            return true;
+        };
+        match msg.to_frame() {
+            Ok(frame) => {
+                if let Err(e) = daemon.send_frame(&frame) {
+                    error!(error = %e, "daemon write failed");
+                    self.daemon = None;
+                    return false;
+                }
+            }
+            Err(e) => error!(error = %e, "failed to encode mouse input"),
+        }
+        true
+    }
+
+    /// The pointer's cell in the pane it targets.
+    fn mouse_cell(&self) -> Option<(u16, u16)> {
+        let (_, rect) = self.mouse_pane()?;
+        let metrics = self.font.as_ref()?.metrics();
+        let (x, y) = self.last_mouse_pixel;
+        Some(layout::cell_in(
+            rect,
+            x,
+            y,
+            f64::from(metrics.cell_width),
+            f64::from(metrics.cell_height),
+        ))
     }
 
     /// Move focus to `pane_id`, keeping the daemon's Spec-0007 focus
